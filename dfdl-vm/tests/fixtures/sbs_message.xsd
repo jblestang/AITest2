@@ -5,8 +5,7 @@
 
   <xs:complexType name="SbsPayloadType">
     <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
-      <!-- Field 2: empty for AIR/ID -->
-      <xs:element name="transmissionType" type="xs:string"/>
+      <xs:element name="transmissionType" type="SbsOptionalTransmissionType"/>
       <xs:element name="sessionId" type="xs:unsignedInt"/>
       <xs:element name="aircraftId" type="xs:unsignedInt"/>
       <xs:element name="hexIdent" type="SbsHexIdent"/>
@@ -15,19 +14,18 @@
       <xs:element name="timeGenerated" type="SbsTime"/>
       <xs:element name="dateLogged" type="SbsDate"/>
       <xs:element name="timeLogged" type="SbsTime"/>
-      <!-- Fields 11-22: populated depending on message/subtype -->
-      <xs:element name="callsign" type="xs:string"/>
-      <xs:element name="altitude" type="xs:string"/>
-      <xs:element name="groundSpeed" type="xs:string"/>
-      <xs:element name="track" type="xs:string"/>
-      <xs:element name="latitude" type="xs:string"/>
-      <xs:element name="longitude" type="xs:string"/>
-      <xs:element name="verticalRate" type="xs:string"/>
-      <xs:element name="squawk" type="xs:string"/>
-      <xs:element name="alert" type="xs:string"/>
-      <xs:element name="emergency" type="xs:string"/>
-      <xs:element name="spi" type="xs:string"/>
-      <xs:element name="isOnGround" type="xs:string"/>
+      <xs:element name="callsign" type="SbsCallsign"/>
+      <xs:element name="altitude" type="SbsOptionalUnsignedInt"/>
+      <xs:element name="groundSpeed" type="SbsOptionalUnsignedInt"/>
+      <xs:element name="track" type="SbsOptionalSignedDecimal"/>
+      <xs:element name="latitude" type="SbsOptionalLatitude"/>
+      <xs:element name="longitude" type="SbsOptionalLongitude"/>
+      <xs:element name="verticalRate" type="SbsOptionalSignedDecimal"/>
+      <xs:element name="squawk" type="SbsOptionalSquawk"/>
+      <xs:element name="alert" type="SbsOptionalFlag"/>
+      <xs:element name="emergency" type="SbsOptionalFlag"/>
+      <xs:element name="spi" type="SbsOptionalFlag"/>
+      <xs:element name="isOnGround" type="SbsOptionalFlag"/>
     </xs:sequence>
   </xs:complexType>
 

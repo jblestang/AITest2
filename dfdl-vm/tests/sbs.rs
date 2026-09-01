@@ -3,13 +3,17 @@ use dfdl_vm::{DfdlSpec, DfdlValue, SchemaResolver};
 /// MSG,3 airborne position (dump1090 / BaseStation format).
 const MSG3_SAMPLE: &[u8] = b"MSG,3,496,211,4CA2D6,10057,2008/11/28,14:53:50.594,2008/11/28,14:58:51.153,,37000,,,51.45735,-1.02826,,,0,0,0,0\r\n";
 
-/// MSG,4 velocity message.
+/// MSG,4 velocity message (with position fields populated for round-trip).
 const MSG4_SAMPLE: &[u8] =
-    b"MSG,4,1,1,3C6545,1,2026/03/13,14:30:00.234,2026/03/13,14:30:00.567,,,450,125.3,,,,0,,,,\r\n";
+    b"MSG,4,1,1,3C6545,1,2026/03/13,14:30:00.234,2026/03/13,14:30:00.567,,,450,125.3,51.0,8.0,,,0,0,0,0\r\n";
 
 /// AIR new-aircraft announcement (empty transmission type and trailing fields).
 const AIR_SAMPLE: &[u8] =
     b"AIR,,1,1,3C6545,1,2026/03/13,14:29:55.000,2026/03/13,14:29:55.100,,,,,,,,,,,,\r\n";
+
+/// MSG,1 identification with callsign.
+const MSG1_SAMPLE: &[u8] =
+    b"MSG,1,1,1,3C6545,1,2026/03/13,14:30:01.345,2026/03/13,14:30:01.678,DLH1234 ,,,,,,,,,,,\r\n";
 
 fn sbs_spec(xsd: &str) -> DfdlSpec {
     let resolver = SchemaResolver::new()
@@ -130,6 +134,9 @@ fn sbs_msg_typed_msg4_round_trip() {
         Some(&DfdlValue::String("450".into()))
     );
     assert_eq!(body.field("track"), Some(&DfdlValue::String("125.3".into())));
+    assert_eq!(body.field("latitude"), Some(&DfdlValue::String("51.0".into())));
+    assert_eq!(body.field("longitude"), Some(&DfdlValue::String("8.0".into())));
+    assert_eq!(body.field("alert"), Some(&DfdlValue::String("0".into())));
     let encoded = spec.encode(&decoded).expect("encode");
     assert_eq!(encoded, MSG4_SAMPLE);
 }
@@ -152,5 +159,67 @@ fn sbs_typed_rejects_invalid_transmission_type() {
 fn sbs_typed_rejects_invalid_date_format() {
     let spec = sbs_spec(include_str!("fixtures/sbs_msg.xsd"));
     let bad = b"MSG,3,1,1,3C6545,1,2026-03-13,14:30:00.123,2026/03/13,14:30:00.456,,36000,,,,47.45,19.26,,,,0,,0\r\n";
+    assert!(spec.decode(bad).is_err());
+}
+
+#[test]
+fn sbs_typed_rejects_invalid_time_format() {
+    let spec = sbs_spec(include_str!("fixtures/sbs_msg.xsd"));
+    let bad = b"MSG,3,1,1,3C6545,1,2026/03/13,143000.123,2026/03/13,14:30:00.456,,36000,,,,47.45,19.26,,,,0,,0\r\n";
+    assert!(spec.decode(bad).is_err());
+}
+
+#[test]
+fn sbs_typed_rejects_invalid_latitude() {
+    let spec = sbs_spec(include_str!("fixtures/sbs_msg.xsd"));
+    let bad = b"MSG,3,1,1,3C6545,1,2026/03/13,14:30:00.123,2026/03/13,14:30:00.456,,36000,,,notlat,19.26,,,,0,,0\r\n";
+    assert!(spec.decode(bad).is_err());
+}
+
+#[test]
+fn sbs_typed_rejects_invalid_longitude() {
+    let spec = sbs_spec(include_str!("fixtures/sbs_msg.xsd"));
+    let bad = b"MSG,3,1,1,3C6545,1,2026/03/13,14:30:00.123,2026/03/13,14:30:00.456,,36000,,,,47.45,notlon,,,,0,,0\r\n";
+    assert!(spec.decode(bad).is_err());
+}
+
+#[test]
+fn sbs_typed_rejects_invalid_squawk() {
+    let spec = sbs_spec(include_str!("fixtures/sbs_msg.xsd"));
+    let bad = b"MSG,6,1,1,3C6545,1,2026/03/13,14:30:00.123,2026/03/13,14:30:00.456,,,,,,,,789A,,,,\r\n";
+    assert!(spec.decode(bad).is_err());
+}
+
+#[test]
+fn sbs_typed_rejects_invalid_flag() {
+    let spec = sbs_spec(include_str!("fixtures/sbs_msg.xsd"));
+    let bad = b"MSG,3,1,1,3C6545,1,2026/03/13,14:30:00.123,2026/03/13,14:30:00.456,,36000,,,,47.45,19.26,,,,1,,0\r\n";
+    assert!(spec.decode(bad).is_err());
+}
+
+#[test]
+fn sbs_typed_rejects_callsign_too_long() {
+    let spec = sbs_spec(include_str!("fixtures/sbs_msg.xsd"));
+    let bad = b"MSG,1,1,1,3C6545,1,2026/03/13,14:30:00.123,2026/03/13,14:30:00.456,ABCDEFGHI,,,,,,,,,,,\r\n";
+    assert!(spec.decode(bad).is_err());
+}
+
+#[test]
+fn sbs_msg_typed_callsign_round_trip() {
+    let spec = sbs_spec(include_str!("fixtures/sbs_msg.xsd"));
+    let decoded = spec.decode(MSG1_SAMPLE).expect("decode");
+    let body = decoded.field("body").expect("body");
+    assert_eq!(
+        body.field("callsign"),
+        Some(&DfdlValue::String("DLH1234 ".into()))
+    );
+    let encoded = spec.encode(&decoded).expect("encode");
+    assert_eq!(encoded, MSG1_SAMPLE);
+}
+
+#[test]
+fn sbs_message_typed_rejects_invalid_transmission_type_on_air() {
+    let spec = sbs_spec(include_str!("fixtures/sbs_message.xsd"));
+    let bad = b"AIR,9,1,1,3C6545,1,2026/03/13,14:29:55.000,2026/03/13,14:29:55.100,,,,,,,,,,,,\r\n";
     assert!(spec.decode(bad).is_err());
 }

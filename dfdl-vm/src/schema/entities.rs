@@ -426,6 +426,17 @@ mod tests {
     }
 
     #[test]
+    fn match_sbs_optional_patterns() {
+        assert_eq!(match_length_pattern(b"125.3", "(-?[0-9]+(\\.[0-9]+)?)?"), Some(5));
+        assert_eq!(match_length_pattern(b"450", "([0-9]+)?"), Some(3));
+        assert_eq!(match_length_pattern(b"", "([0-9]+)?"), Some(0));
+        assert_eq!(match_length_pattern(b"0", "(-1|0)?"), Some(1));
+        assert_eq!(match_length_pattern(b"", "(-1|0)?"), Some(0));
+        assert_eq!(match_length_pattern(b"0,,,,", "(-1|0)?"), Some(1));
+        assert_eq!(match_length_pattern(b"125.3,,", "(-?[0-9]+(\\.[0-9]+)?)?"), Some(5));
+    }
+
+    #[test]
     fn match_unicode_property_pattern() {
         assert_eq!(match_length_pattern(b"abcDEFG", r"\p{L}{2,5}"), Some(5));
         assert_eq!(match_length_pattern(b"a1", r"\p{L}{2,5}"), None);

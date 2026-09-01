@@ -88,7 +88,7 @@ See `tests/fixtures/` for sample XSD schemas:
 - `sbs_line.xsd` — generic SBS-1 BaseStation CSV line (22 comma fields, `\r\n`)
 - `sbs_message.xsd` — typed SBS messages (`MSG`, `AIR`, `ID`, `STA`, `SEL`, `CLK`)
 - `sbs_msg.xsd` — typed MSG-only schema with format validation
-- `sbs_types.xsd` — shared SBS types (hex ident, date/time, transmission subtype, flags)
+- `sbs_types.xsd` — shared SBS types (hex ident, date/time, transmission subtype, lat/lon decimals, optional flags/squawk/callsign)
 
 Typed schemas use `xs:unsignedInt`/`xs:unsignedByte`/`xs:float` where appropriate; lat/lon stay strings (ddmm.mmmm) in NMEA, decimal degrees as strings in SBS optional fields, and fixed-width numeric fields use `textNumberPadCharacter="0"` for NMEA leading-zero round-trip.
 

@@ -36,7 +36,7 @@
     <xs:restriction base="xs:string"/>
   </xs:simpleType>
 
-  <!-- MSG subtypes 1-8 (field 2); empty for AIR/ID -->
+  <!-- MSG subtypes 1-8 (required on MSG lines) -->
   <xs:simpleType name="SbsTransmissionType">
     <xs:annotation>
       <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
@@ -47,23 +47,88 @@
     <xs:restriction base="xs:unsignedByte"/>
   </xs:simpleType>
 
-  <!-- Flag fields: -1, 0, or empty -->
-  <xs:simpleType name="SbsFlag">
+  <!-- Field 2: empty for AIR/ID/STA/SEL/CLK, or 1-8 for MSG -->
+  <xs:simpleType name="SbsOptionalTransmissionType">
     <xs:annotation>
       <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
         <dfdl:lengthKind>pattern</dfdl:lengthKind>
-        <dfdl:lengthPattern>-1|0</dfdl:lengthPattern>
+        <dfdl:lengthPattern>([1-8])?</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- Up to 8-character flight ID / callsign (may be empty or space-padded) -->
+  <xs:simpleType name="SbsCallsign">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>([A-Z0-9 ]{0,8})?</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- Decimal degrees (SBS uses signed decimal lat/lon, not NMEA ddmm.mmmm) -->
+  <xs:simpleType name="SbsOptionalLatitude">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>(-?[0-9]+(\.[0-9]+)?)?</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="SbsOptionalLongitude">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>(-?[0-9]+(\.[0-9]+)?)?</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- Altitude (feet) or ground speed (knots): non-negative integer when present -->
+  <xs:simpleType name="SbsOptionalUnsignedInt">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>([0-9]+)?</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- Track (degrees) or vertical rate (ft/min): signed decimal/int when present -->
+  <xs:simpleType name="SbsOptionalSignedDecimal">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>(-?[0-9]+(\.[0-9]+)?)?</dfdl:lengthPattern>
       </xs:appinfo>
     </xs:annotation>
     <xs:restriction base="xs:string"/>
   </xs:simpleType>
 
   <!-- 4-digit octal squawk when present -->
-  <xs:simpleType name="SbsSquawk">
+  <xs:simpleType name="SbsOptionalSquawk">
     <xs:annotation>
       <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
         <dfdl:lengthKind>pattern</dfdl:lengthKind>
-        <dfdl:lengthPattern>[0-7]{4}</dfdl:lengthPattern>
+        <dfdl:lengthPattern>([0-7]{4})?</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- Flag fields: -1, 0, or empty -->
+  <xs:simpleType name="SbsOptionalFlag">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>(-1|0)?</dfdl:lengthPattern>
       </xs:appinfo>
     </xs:annotation>
     <xs:restriction base="xs:string"/>
