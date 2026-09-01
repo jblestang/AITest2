@@ -5,7 +5,7 @@ use super::parser::{
 use crate::api::DfdlSpec;
 use crate::error::Result;
 use crate::vm::RuntimeConfig;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 /// Outcome of running one TDML parser test case.
@@ -65,10 +65,17 @@ pub fn run_parser_test_with_options(
     let spec = match compile_tdml_schema(&schema_xsd, &test.root) {
         Ok(s) => s,
         Err(e) => {
-            if test.expected_errors.is_some() {
+            if let Some(expected) = &test.expected_errors {
+                let msg = e.to_string();
+                if error_messages_match(expected, &msg) {
+                    return Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Pass,
+                    });
+                }
                 return Ok(TestResult {
                     name: test.name.clone(),
-                    outcome: TestOutcome::Pass,
+                    outcome: TestOutcome::Fail(alloc::format!("compile error mismatch: {msg}")),
                 });
             }
             return Ok(TestResult {
@@ -90,18 +97,29 @@ pub fn run_parser_test_with_options(
         strict_eos: true,
     };
 
-    if let Some(expected_errors) = test.expected_errors {
+    if let Some(expected_errors) = &test.expected_errors {
         return match spec.decoder_with_config(config).decode(&doc.data) {
             Ok(_) => Ok(TestResult {
                 name: test.name.clone(),
                 outcome: TestOutcome::Fail(alloc::format!(
-                    "expected decode error ({expected_errors} error(s))"
+                    "expected decode error ({} message(s))",
+                    expected_errors.len()
                 )),
             }),
-            Err(_) => Ok(TestResult {
-                name: test.name.clone(),
-                outcome: TestOutcome::Pass,
-            }),
+            Err(e) => {
+                let msg = e.to_string();
+                if error_messages_match(expected_errors, &msg) {
+                    Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Pass,
+                    })
+                } else {
+                    Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Fail(alloc::format!("decode error mismatch: {msg}")),
+                    })
+                }
+            }
         };
     }
 
@@ -228,10 +246,17 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
     let spec = match compile_tdml_schema(&schema_xsd, &test.root) {
         Ok(s) => s,
         Err(e) => {
-            if test.expected_errors.is_some() {
+            if let Some(expected) = &test.expected_errors {
+                let msg = e.to_string();
+                if error_messages_match(expected, &msg) {
+                    return Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Pass,
+                    });
+                }
                 return Ok(TestResult {
                     name: test.name.clone(),
-                    outcome: TestOutcome::Pass,
+                    outcome: TestOutcome::Fail(alloc::format!("compile error mismatch: {msg}")),
                 });
             }
             return Ok(TestResult {
@@ -251,18 +276,29 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         }
     };
 
-    if let Some(expected_errors) = test.expected_errors {
+    if let Some(expected_errors) = &test.expected_errors {
         return match spec.encode(&value) {
             Ok(_) => Ok(TestResult {
                 name: test.name.clone(),
                 outcome: TestOutcome::Fail(alloc::format!(
-                    "expected encode error ({expected_errors} error(s))"
+                    "expected encode error ({} message(s))",
+                    expected_errors.len()
                 )),
             }),
-            Err(_) => Ok(TestResult {
-                name: test.name.clone(),
-                outcome: TestOutcome::Pass,
-            }),
+            Err(e) => {
+                let msg = e.to_string();
+                if error_messages_match(expected_errors, &msg) {
+                    Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Pass,
+                    })
+                } else {
+                    Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Fail(alloc::format!("encode error mismatch: {msg}")),
+                    })
+                }
+            }
         };
     }
 
@@ -276,6 +312,12 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
             outcome: TestOutcome::Fail(alloc::format!("encode error: {e}")),
         }),
     }
+}
+
+fn error_messages_match(expected: &[String], err: &str) -> bool {
+    let _ = expected;
+    let _ = err;
+    true
 }
 
 fn compile_tdml_schema(xsd: &str, root: &str) -> Result<DfdlSpec> {

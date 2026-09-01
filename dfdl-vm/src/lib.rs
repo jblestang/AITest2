@@ -34,6 +34,7 @@ extern crate alloc;
 pub mod api;
 pub mod error;
 pub mod ir;
+pub mod length_validate;
 pub mod schema;
 pub mod tdml;
 pub mod value;

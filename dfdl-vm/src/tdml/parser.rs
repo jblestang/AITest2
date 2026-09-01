@@ -39,8 +39,8 @@ pub struct ParserTestCase {
     pub model: String,
     pub documents: Vec<TdmlDocument>,
     pub expected_infoset: String,
-    /// When set, the test expects decode to fail with at least this many errors.
-    pub expected_errors: Option<usize>,
+    /// When set, compile/decode/encode must fail and error text must contain each message.
+    pub expected_errors: Option<Vec<String>>,
     pub round_trip: RoundTrip,
 }
 
@@ -50,8 +50,8 @@ pub struct UnparserTestCase {
     pub root: String,
     pub model: String,
     pub infoset: String,
-    /// When set, the test expects encode to fail with at least this many errors.
-    pub expected_errors: Option<usize>,
+    /// When set, encode must fail and error text must contain each message.
+    pub expected_errors: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -290,15 +290,18 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
     Ok(TdmlDocument { kind, data })
 }
 
-fn parse_errors(reader: &mut XmlReader<'_>) -> Result<usize> {
-    let mut count = 0;
+fn parse_errors(reader: &mut XmlReader<'_>) -> Result<Vec<String>> {
+    let mut messages = Vec::new();
     reader.for_each_child("errors", |local, _, r| {
         if local == "error" {
-            count += 1;
+            let text = r.read_text_until_end("error")?;
+            messages.push(text.trim().to_string());
+        } else {
+            r.skip_current_subtree()?;
         }
-        r.skip_current_subtree()
+        Ok(())
     })?;
-    Ok(count)
+    Ok(messages)
 }
 
 fn wrap_schema(inner: &str) -> String {
@@ -433,7 +436,10 @@ mod tests {
 </tdml:testSuite>"##;
         let suite = parse_tdml(tdml).expect("parse");
         assert_eq!(suite.unparser_tests.len(), 1);
-        assert_eq!(suite.unparser_tests[0].expected_errors, Some(1));
+        assert_eq!(
+            suite.unparser_tests[0].expected_errors,
+            Some(alloc::vec![alloc::string::String::from("bad")])
+        );
     }
 
     #[test]
@@ -447,12 +453,15 @@ mod tests {
             .iter()
             .find(|t| t.name == "lengthKindPatternFail")
             .expect("negative test");
-        assert_eq!(fail.expected_errors, Some(2));
+        assert_eq!(
+            fail.expected_errors,
+            Some(alloc::vec![String::new(), String::new()])
+        );
         let no_match = suite
             .tests
             .iter()
             .find(|t| t.name == "lengthKindPattern_02")
             .expect("no-match test");
-        assert_eq!(no_match.expected_errors, Some(1));
+        assert_eq!(no_match.expected_errors, Some(alloc::vec![String::new()]));
     }
 }

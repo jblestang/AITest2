@@ -1,5 +1,6 @@
 use super::{ChoiceBranch, IrNode, IrProgram, IrPrefixLength, IrProps, StringId, StringPool, ValueKind};
 use crate::error::{Result, SchemaError};
+use crate::length_validate::validate_data_length_schema;
 use crate::schema::{
     BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, Particle, Representation,
     SchemaDocument, SimpleBase, TypeDef, TypeName,
@@ -370,8 +371,12 @@ impl<'a> IrBuilder<'a> {
         let mut prefix_props =
             merge_dfdl_props(&self.defaults.clone(), props, &DfdlProps::default(), &mut self.strings);
         self.attach_prefix_length(props, &DfdlProps::default(), &mut prefix_props)?;
+        let kind = value_kind_from_simple(base);
+        if let Some(len) = prefix_props.length {
+            validate_data_length_schema(kind, len, prefix_props.length_units)?;
+        }
         Ok(IrPrefixLength {
-            kind: value_kind_from_simple(base),
+            kind,
             props: prefix_props,
             min_inclusive,
             max_inclusive,
@@ -414,6 +419,11 @@ fn finalize_element_props(
 ) -> Result<IrProps> {
     validate_binary_delimited(kind, &ir)?;
     validate_prefixed_character_encoding(kind, &ir, strings)?;
+    if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
+        if let Some(len) = ir.length {
+            validate_data_length_schema(kind, len, ir.length_units)?;
+        }
+    }
     // Binary schemas default to binary representation, but length-delimited string
     // payloads are still textual. HexBinary keeps binary bytes even with a text prefix.
     if kind == ValueKind::String

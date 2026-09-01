@@ -73,6 +73,59 @@ fn daffodil_explicit_length_address() {
 }
 
 #[test]
+fn daffodil_explicit_length_suite() {
+    let tdml = daffodil_tdml!("ExplicitTests.tdml");
+    for name in [
+        "Lesson1_lengthKind_explicit",
+        "explicitBytes_int_01",
+        "explicitBytes_int_02",
+        "explicitBytes_string_01",
+        "inRangeLengthBinaryInteger6",
+        "inRangeLengthBinaryInteger7",
+        "insufficientBitsByte",
+        "insufficientBitsComplex",
+        "invalidByteBitLength",
+        "invalidIntBitLength",
+        "invalidLongBitLength",
+        "invalidLongBitLengthExpr",
+        "invalidShortBitLength",
+        "invalidUnsignedByteBitLength",
+        "invalidUnsignedIntBitLength",
+        "invalidUnsignedLongBitLength",
+        "invalidUnsignedLongByteLength",
+        "invalidUnsignedShortBitLength",
+        "lengthUnitsBitsForDecimal_explicit",
+        "lengthUnitsBitsForDouble_explicit1",
+        "lengthUnitsBitsForDouble_explicit2",
+        "lengthUnitsBitsForDouble_explicit3",
+        "lengthUnitsBitsForFloat_explicit1",
+        "lengthUnitsBitsForFloat_explicit2",
+        "lengthUnitsBitsForFloat_explicit3",
+        "lengthUnitsBitsForInteger_explicit",
+        "lengthUnitsBitsForInteger_explicit2",
+        "outOfRangeLengthBinaryDecimal1",
+        "outOfRangeLengthBinaryDecimal2",
+        "outOfRangeLengthBinaryDecimal7",
+        "outOfRangeLengthBinaryDecimal9",
+        "outOfRangeLengthBinaryInteger1",
+        "outOfRangeLengthBinaryInteger10",
+        "outOfRangeLengthBinaryInteger11",
+        "outOfRangeLengthBinaryInteger12",
+        "outOfRangeLengthBinaryInteger13",
+        "outOfRangeLengthBinaryInteger2",
+        "test_ExplicitLengthBytesBroken",
+        "test_ExplicitLengthBytesNotGiven",
+        "test_ExplicitLengthChildLengthMoreParent_Chars",
+        "test_lengthRuntimeDoubleNaN_PE",
+        "test_lengthRuntimeDoubleNegative_SDE",
+        "test_lengthRuntimeIntNaN_PE",
+        "test_lengthRuntimeIntNegative_SDE",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
 fn daffodil_section12_pattern_suite() {
     assert_named_test_passes(daffodil_tdml!("PatternTests.tdml"), "AI000_rev");
 }

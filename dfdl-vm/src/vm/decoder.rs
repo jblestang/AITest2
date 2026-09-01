@@ -3,6 +3,7 @@ use super::runtime::{
     prefixed_payload_byte_length, read_delimited_bytes, read_length_span, read_prefixed_payload,
     read_simple, read_until_separator, Cursor, RuntimeConfig, VmContext,
 };
+use crate::length_validate::validate_data_length_vm;
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
 use crate::schema::{match_delimiter, InputValueCalc, LengthKind, LengthUnits, SeparatorPosition};
@@ -272,7 +273,7 @@ impl<'a> Decoder<'a> {
                 props,
                 child,
             } => {
-                let props = resolve_length_props(props, siblings, self.ctx.strings())?;
+                let props = resolve_length_props(props, siblings, *kind, self.ctx.strings())?;
                 consume_alignment(cursor, &props)?;
                 if let Some(child_id) = child {
                     self.consume_initiator(&props, cursor)?;
@@ -780,6 +781,7 @@ fn value_byte_length(value: &DfdlValue) -> Result<usize> {
 fn resolve_length_props(
     props: &IrProps,
     siblings: Option<&BTreeMap<String, SiblingState>>,
+    kind: ValueKind,
     strings: &crate::ir::StringPool,
 ) -> Result<IrProps> {
     if props.length_kind != LengthKind::Explicit || props.length.is_some() {
@@ -797,6 +799,9 @@ fn resolve_length_props(
         })?;
     let mut resolved = props.clone();
     resolved.length = Some(length_from_value(sib_val)?);
+    if let Some(len) = resolved.length {
+        validate_data_length_vm(kind, len, resolved.length_units)?;
+    }
     Ok(resolved)
 }
 

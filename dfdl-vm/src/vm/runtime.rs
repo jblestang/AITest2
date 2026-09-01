@@ -2,6 +2,7 @@ use super::encoding::{
     character_span_byte_length, count_characters, decode_text_bytes, encode_document_text,
     read_character_bytes,
 };
+use crate::length_validate::validate_data_length_vm;
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool};
 use crate::schema::{
     encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, ByteOrder, LengthKind,
@@ -689,6 +690,7 @@ fn binary_bit_length(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
             })?;
+            validate_data_length_vm(kind, len, LengthUnits::Bits)?;
             Ok(len as usize)
         }
         LengthKind::Pattern => {
@@ -722,6 +724,7 @@ fn binary_byte_length(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
             })?;
+            validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
             Ok(len as usize)
         }
         LengthKind::Pattern => {
@@ -1242,7 +1245,7 @@ fn read_until_delimiters(
         cursor.pos = cursor.data.len();
         return Ok(rest);
     }
-    read_until_any_delimiter(cursor, &patterns, require_delimiter)
+    read_until_any_delimiter(cursor, &patterns, require_delimiter, &patterns)
 }
 
 pub(crate) fn read_until_separator(
@@ -1250,7 +1253,8 @@ pub(crate) fn read_until_separator(
     separator: &str,
     require_delimiter: bool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
-    read_until_any_delimiter(cursor, &[separator.to_string()], require_delimiter)
+    let patterns = [separator.to_string()];
+    read_until_any_delimiter(cursor, &patterns, require_delimiter, &patterns)
 }
 
 pub(crate) fn read_length_span(
@@ -1298,6 +1302,7 @@ fn read_until_any_delimiter(
     cursor: &mut Cursor<'_>,
     delimiters: &[alloc::string::String],
     require_delimiter: bool,
+    patterns_for_error: &[alloc::string::String],
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let start = cursor.pos;
@@ -1312,8 +1317,13 @@ fn read_until_any_delimiter(
         cursor.advance(1);
     }
     if require_delimiter {
+        let terms = patterns_for_error
+            .iter()
+            .map(|p| alloc::format!("`{p}`"))
+            .collect::<alloc::vec::Vec<_>>()
+            .join(", ");
         return Err(VmError::InvalidValue {
-            message: "delimited field missing enclosing delimiter".into(),
+            message: alloc::format!("terminator {terms} not found"),
         });
     }
     Ok(cursor.data[start..].to_vec())
