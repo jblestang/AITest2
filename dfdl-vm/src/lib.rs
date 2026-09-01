@@ -19,6 +19,15 @@
 //! ```
 
 #![no_std]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::panic,
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::unreachable
+    )
+)]
 
 extern crate alloc;
 

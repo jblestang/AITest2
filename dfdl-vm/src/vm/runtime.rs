@@ -99,7 +99,7 @@ pub(crate) fn type_size(kind: crate::ir::ValueKind) -> usize {
     }
 }
 
-fn pattern_str<'a>(strings: &'a StringPool, id: StringId) -> &'a str {
+fn pattern_str(strings: &StringPool, id: StringId) -> Result<&str, crate::error::VmError> {
     strings.get(id)
 }
 
@@ -153,12 +153,10 @@ fn binary_byte_length(
             Ok(len as usize)
         }
         LengthKind::Pattern => {
-            let pat = props
-                .length_pattern
-                .ok_or(VmError::InvalidValue {
-                    message: "pattern length missing lengthPattern".into(),
-                })
-                .map(|id| pattern_str(strings, id))?;
+            let id = props.length_pattern.ok_or(VmError::InvalidValue {
+                message: "pattern length missing lengthPattern".into(),
+            })?;
+            let pat = pattern_str(strings, id)?;
             match_length_pattern(&cursor.data[cursor.pos..], pat).ok_or(VmError::InvalidValue {
                 message: alloc::format!("pattern `{pat}` mismatch"),
             })
@@ -236,21 +234,17 @@ pub(crate) fn read_text_scalar(
             cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?
         }
         LengthKind::Delimited => {
-            let term = props
-                .terminator
-                .ok_or(VmError::InvalidValue {
-                    message: "delimited text missing terminator".into(),
-                })
-                .map(|id| pattern_str(strings, id))?;
+            let id = props.terminator.ok_or(VmError::InvalidValue {
+                message: "delimited text missing terminator".into(),
+            })?;
+            let term = pattern_str(strings, id)?;
             read_until_delimiter(cursor, term)?
         }
         LengthKind::Pattern => {
-            let pat = props
-                .length_pattern
-                .ok_or(VmError::InvalidValue {
-                    message: "pattern length missing lengthPattern".into(),
-                })
-                .map(|id| pattern_str(strings, id))?;
+            let id = props.length_pattern.ok_or(VmError::InvalidValue {
+                message: "pattern length missing lengthPattern".into(),
+            })?;
+            let pat = pattern_str(strings, id)?;
             let len = match_length_pattern(&cursor.data[cursor.pos..], pat).ok_or(
                 VmError::InvalidValue {
                     message: alloc::format!("pattern `{pat}` mismatch"),
@@ -306,12 +300,12 @@ fn parse_text_boolean(
 ) -> Result<bool, crate::error::VmError> {
     use crate::error::VmError;
     if let Some(id) = props.text_boolean_true_rep {
-        if trimmed == strings.get(id) {
+        if trimmed == strings.get(id)? {
             return Ok(true);
         }
     }
     if let Some(id) = props.text_boolean_false_rep {
-        if trimmed == strings.get(id) {
+        if trimmed == strings.get(id)? {
             return Ok(false);
         }
     }
@@ -406,15 +400,15 @@ pub(crate) fn write_text_scalar(
     let text = match (kind, value) {
         (Boolean, DfdlValue::Boolean(v)) => {
             if *v {
-                props
-                    .text_boolean_true_rep
-                    .map(|id| strings.get(id).to_string())
-                    .unwrap_or_else(|| alloc::string::String::from("true"))
+                match props.text_boolean_true_rep {
+                    Some(id) => strings.get(id)?.to_string(),
+                    None => alloc::string::String::from("true"),
+                }
             } else {
-                props
-                    .text_boolean_false_rep
-                    .map(|id| strings.get(id).to_string())
-                    .unwrap_or_else(|| alloc::string::String::from("false"))
+                match props.text_boolean_false_rep {
+                    Some(id) => strings.get(id)?.to_string(),
+                    None => alloc::string::String::from("false"),
+                }
             }
         }
         (Byte, DfdlValue::Byte(v)) => alloc::format!("{v}"),
@@ -548,7 +542,7 @@ pub(crate) fn read_simple(
     use crate::error::VmError;
 
     if let Some(id) = props.initiator {
-        let pat = strings.get(id);
+        let pat = strings.get(id)?;
         if !cursor.consume_delimiter(pat) {
             return Err(VmError::InvalidValue {
                 message: "initiator mismatch".into(),
@@ -561,7 +555,7 @@ pub(crate) fn read_simple(
     };
     if props.length_kind != LengthKind::Delimited {
         if let Some(id) = props.terminator {
-            let pat = strings.get(id);
+            let pat = strings.get(id)?;
             if !cursor.consume_delimiter(pat) {
                 return Err(VmError::InvalidValue {
                     message: "terminator mismatch".into(),
@@ -580,14 +574,14 @@ pub(crate) fn write_simple(
     strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
     if let Some(id) = props.initiator {
-        out.extend(encode_delimiter(strings.get(id)));
+        out.extend(encode_delimiter(strings.get(id)?));
     }
     match props.representation {
         Representation::Binary => write_binary_scalar(out, value, kind, props)?,
         Representation::Text => write_text_scalar(out, value, kind, props, strings)?,
     }
     if let Some(id) = props.terminator {
-        out.extend(encode_delimiter(strings.get(id)));
+        out.extend(encode_delimiter(strings.get(id)?));
     }
     Ok(())
 }
@@ -600,7 +594,7 @@ pub(crate) fn default_value_for(
     use crate::ir::ValueKind::*;
     use crate::value::DfdlValue;
 
-    let raw = props.default_value.map(|id| strings.get(id))?;
+    let raw = props.default_value.and_then(|id| strings.get(id).ok())?;
     match kind {
         Boolean => parse_text_boolean(raw, props, strings).ok().map(DfdlValue::Boolean),
         Byte => parse_int(raw).ok().map(DfdlValue::Byte),

@@ -41,7 +41,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_node(&self, node_id: u32, cursor: &mut Cursor<'_>) -> Result<DfdlValue> {
-        match self.ctx.program.node(node_id) {
+        match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
                 let mut map = BTreeMap::new();
                 for (idx, &child) in children.iter().enumerate() {
@@ -55,14 +55,14 @@ impl<'a> Decoder<'a> {
                 for branch in branches {
                     let saved = cursor.clone();
                     if let Some(init_id) = branch.initiator {
-                        let pat = self.ctx.strings().get(init_id);
+                        let pat = self.ctx.strings().get(init_id)?;
                         // Match initiator for dispatch only; branch decode consumes it once.
                         if match_delimiter(&cursor.data[cursor.pos..], pat).is_none() {
                             continue;
                         }
                     }
                     if let Ok(value) = self.decode_node(branch.node, cursor) {
-                        let name = self.ctx.strings().get(branch.name).to_string();
+                        let name = self.ctx.strings().get(branch.name)?.to_string();
                         return Ok(DfdlValue::choice(name, value));
                     }
                     *cursor = saved;
@@ -74,7 +74,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_particle(&self, node_id: u32, cursor: &mut Cursor<'_>) -> Result<DfdlValue> {
-        match self.ctx.program.node(node_id) {
+        match self.ctx.program.node(node_id)? {
             IrNode::Element { props, .. } => self.decode_element_occurrences(node_id, props, cursor),
             _ => self.decode_node(node_id, cursor),
         }
@@ -103,7 +103,7 @@ impl<'a> Decoder<'a> {
                         break;
                     }
                     if let Some(default) = default_value_for(
-                        element_kind(self.ctx.program, node_id),
+                        element_kind(self.ctx.program, node_id)?,
                         props,
                         self.ctx.strings(),
                     ) {
@@ -124,14 +124,14 @@ impl<'a> Decoder<'a> {
         }
 
         if items.len() == 1 {
-            Ok(items.into_iter().next().unwrap())
+            Ok(items.remove(0))
         } else {
             Ok(DfdlValue::Array(items))
         }
     }
 
     fn decode_single_element(&self, node_id: u32, cursor: &mut Cursor<'_>) -> Result<DfdlValue> {
-        match self.ctx.program.node(node_id) {
+        match self.ctx.program.node(node_id)? {
             IrNode::Element {
                 name,
                 kind,
@@ -141,7 +141,7 @@ impl<'a> Decoder<'a> {
                 if let Some(child_id) = child {
                     let inner = self.decode_node(*child_id, cursor)?;
                     Ok(wrap_named(
-                        self.ctx.strings().get(*name),
+                        self.ctx.strings().get(*name)?,
                         inner,
                         ValueKind::Complex,
                     ))
@@ -164,7 +164,7 @@ impl<'a> Decoder<'a> {
             return Ok(());
         }
         if let Some(id) = props.separator {
-            let pat = self.ctx.strings().get(id);
+            let pat = self.ctx.strings().get(id)?;
             if !cursor.consume_delimiter(pat) {
                 return Err(VmError::InvalidValue {
                     message: "separator mismatch".into(),
@@ -176,10 +176,10 @@ impl<'a> Decoder<'a> {
     }
 }
 
-fn element_kind(program: &IrProgram, node_id: u32) -> ValueKind {
-    match program.node(node_id) {
-        IrNode::Element { kind, .. } => *kind,
-        _ => ValueKind::Complex,
+fn element_kind(program: &IrProgram, node_id: u32) -> core::result::Result<ValueKind, VmError> {
+    match program.node(node_id)? {
+        IrNode::Element { kind, .. } => Ok(*kind),
+        _ => Ok(ValueKind::Complex),
     }
 }
 
@@ -189,9 +189,9 @@ fn insert_child(
     value: DfdlValue,
     program: &IrProgram,
 ) -> Result<()> {
-    match program.node(node_id) {
+    match program.node(node_id)? {
         IrNode::Element { name, .. } => {
-            let key = program.strings.get(*name).to_string();
+            let key = program.strings.get(*name)?.to_string();
             insert_field(map, key, value);
             Ok(())
         }

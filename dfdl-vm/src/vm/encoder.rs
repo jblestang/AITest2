@@ -36,7 +36,7 @@ impl<'a> Encoder<'a> {
     }
 
     fn encode_node(&self, node_id: u32, value: &DfdlValue, out: &mut Vec<u8>) -> Result<()> {
-        match self.ctx.program.node(node_id) {
+        match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
                 let map = value.as_sequence_fields()?;
                 for (idx, &child) in children.iter().enumerate() {
@@ -49,7 +49,13 @@ impl<'a> Encoder<'a> {
                 let (discriminator, branch_value) = value.as_choice_fields()?;
                 let branch = branches
                     .iter()
-                    .find(|b| self.ctx.strings().get(b.name) == discriminator)
+                    .find(|b| {
+                        self.ctx
+                            .strings()
+                            .get(b.name)
+                            .map(|name| name == discriminator)
+                            .unwrap_or(false)
+                    })
                     .ok_or(VmError::InvalidChoice)?;
                 self.encode_node(branch.node, branch_value, out)
             }
@@ -60,7 +66,7 @@ impl<'a> Encoder<'a> {
                 child,
             } => {
                 if let Some(child_id) = child {
-                    let field = value_for_element(value, self.ctx.strings().get(*name))?;
+                    let field = value_for_element(value, self.ctx.strings().get(*name)?)?;
                     self.encode_element_occurrences(*child_id, props, field, out)
                 } else {
                     write_simple(out, value, *kind, props, self.ctx.strings()).map_err(Into::into)
@@ -93,9 +99,9 @@ impl<'a> Encoder<'a> {
         map: &alloc::collections::BTreeMap<alloc::string::String, DfdlValue>,
         out: &mut Vec<u8>,
     ) -> Result<()> {
-        match self.ctx.program.node(node_id) {
+        match self.ctx.program.node(node_id)? {
             IrNode::Element { name, props, .. } => {
-                let key = self.ctx.strings().get(*name);
+                let key = self.ctx.strings().get(*name)?;
                 let value = map
                     .get(key)
                     .ok_or_else(|| VmError::MissingField { name: key.into() })?;
@@ -130,7 +136,7 @@ impl<'a> Encoder<'a> {
             return Ok(());
         }
         if let Some(id) = props.separator {
-            out.extend(encode_delimiter(self.ctx.strings().get(id)));
+            out.extend(encode_delimiter(self.ctx.strings().get(id)?));
         }
         Ok(())
     }
@@ -168,12 +174,15 @@ fn value_for_element<'a>(value: &'a DfdlValue, name: &str) -> Result<&'a DfdlVal
 }
 
 fn branches_contain(program: &IrProgram, node_id: u32, name: &str) -> bool {
-    if let IrNode::Choice { branches, .. } = program.node(node_id) {
-        branches
-            .iter()
-            .any(|b| program.strings.get(b.name) == name)
-    } else {
-        false
+    match program.node(node_id) {
+        Ok(IrNode::Choice { branches, .. }) => branches.iter().any(|b| {
+            program
+                .strings
+                .get(b.name)
+                .map(|branch_name| branch_name == name)
+                .unwrap_or(false)
+        }),
+        _ => false,
     }
 }
 

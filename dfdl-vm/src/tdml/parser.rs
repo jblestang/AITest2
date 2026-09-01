@@ -254,7 +254,7 @@ mod tests {
         let suite = parse_tdml(tdml).expect("parse");
         let schema = suite.schemas.get("AI.dfdl.xsd").expect("schema");
         if let Err(e) = parse_schema(&schema.xsd) {
-            panic!("schema compile failed: {e}\n---\n{}", schema.xsd);
+            assert!(false, "schema compile failed: {e}\n---\n{}", schema.xsd);
         }
     }
 

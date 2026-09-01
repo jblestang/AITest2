@@ -150,12 +150,7 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     let prefix = name.prefix.clone();
-                    let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
-                            unreachable!();
-                        };
-                        attrs_to_map(&attributes)
-                    };
+                    let child_attrs = self.reader.take_start_attributes()?;
                     match local.as_str() {
                         "element" => self.parse_global_element(child_attrs)?,
                         "complexType" => self.parse_complex_type(None, child_attrs)?,
@@ -350,12 +345,7 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
-                    let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
-                            unreachable!();
-                        };
-                        attrs_to_map(&attributes)
-                    };
+                    let child_attrs = self.reader.take_start_attributes()?;
                     match local.as_str() {
                         "sequence" => {
                             return Ok(ComplexContent::Sequence(self.parse_sequence(child_attrs)?))
@@ -410,12 +400,7 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
-                    let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
-                            unreachable!();
-                        };
-                        attrs_to_map(&attributes)
-                    };
+                    let child_attrs = self.reader.take_start_attributes()?;
                     match local.as_str() {
                         "element" => particles.push(Particle::Element(self.parse_element_decl(child_attrs)?)),
                         "sequence" => {
@@ -471,12 +456,7 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
-                    let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
-                            unreachable!();
-                        };
-                        attrs_to_map(&attributes)
-                    };
+                    let child_attrs = self.reader.take_start_attributes()?;
                     match local.as_str() {
                         "element" => branches.push(Particle::Element(self.parse_element_decl(child_attrs)?)),
                         "sequence" => {
@@ -605,12 +585,7 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
-                    let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
-                            unreachable!();
-                        };
-                        attrs_to_map(&attributes)
-                    };
+                    let child_attrs = self.reader.take_start_attributes()?;
                     if local == "restriction" {
                         let base_name = child_attrs.get("base").cloned().ok_or_else(|| {
                             ParseError::MissingAttribute {
@@ -655,13 +630,7 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     if local == "annotation" {
-                        let child_attrs = {
-                            let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()?
-                            else {
-                                unreachable!();
-                            };
-                            attrs_to_map(&attributes)
-                        };
+                        let child_attrs = self.reader.take_start_attributes()?;
                         props = merge_props(props, self.parse_annotation(child_attrs)?);
                     } else if allowed.iter().any(|a| *a == local.as_str()) {
                         break;
@@ -708,12 +677,7 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
-                    let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
-                            unreachable!();
-                        };
-                        attrs_to_map(&attributes)
-                    };
+                    let child_attrs = self.reader.take_start_attributes()?;
                     if local == "appinfo" {
                         props = merge_props(props, self.parse_appinfo(child_attrs)?);
                     } else {
@@ -759,13 +723,7 @@ impl<'a> XsdParser<'a> {
                     XmlEvent::StartElement { name, .. } => {
                         let local = name.local_name.clone();
                         let prefix = name.prefix.clone();
-                        let child_attrs = {
-                            let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()?
-                            else {
-                                unreachable!();
-                            };
-                            attrs_to_map(&attributes)
-                        };
+                        let child_attrs = self.reader.take_start_attributes()?;
                         if Self::is_dfdl_element(prefix.as_deref(), &local) {
                             let dfdl_props =
                                 self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
@@ -857,12 +815,7 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     let prefix = name.prefix.clone();
-                    let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
-                            unreachable!();
-                        };
-                        attrs_to_map(&attributes)
-                    };
+                    let child_attrs = self.reader.take_start_attributes()?;
                     if Self::is_dfdl_element(prefix.as_deref(), &local) {
                         let child_props =
                             self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;

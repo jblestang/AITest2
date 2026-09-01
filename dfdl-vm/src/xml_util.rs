@@ -33,7 +33,13 @@ impl<'a> XmlReader<'a> {
         if self.peeked.is_none() {
             self.peeked = Some(self.next_event()?);
         }
-        Ok(self.peeked.as_ref().expect("peeked"))
+        match self.peeked.as_ref() {
+            Some(ev) => Ok(ev),
+            None => Err(ParseError::InvalidXml {
+                message: "xml reader internal error: missing peeked event".into(),
+            }
+            .into()),
+        }
     }
 
     pub fn skip_insignificant_ws(&mut self) -> Result<()> {
@@ -92,14 +98,26 @@ impl<'a> XmlReader<'a> {
         }
     }
 
+    /// Consume the next event, which must be a `StartElement`, and return its attributes.
+    pub fn take_start_attributes(&mut self) -> Result<BTreeMap<String, String>> {
+        match self.next_event()? {
+            XmlEvent::StartElement { attributes, .. } => Ok(attrs_to_map(&attributes)),
+            other => Err(ParseError::InvalidXml {
+                message: alloc::format!(
+                    "expected start element, found {:?}",
+                    event_label(&other)
+                ),
+            }
+            .into()),
+        }
+    }
+
     /// If the next event is `StartElement` with `local`, consume it and return attributes.
     pub fn take_start_if(&mut self, local: &str) -> Result<Option<BTreeMap<String, String>>> {
         match self.peek()? {
             XmlEvent::StartElement { name, .. } if name.local_name == local => {
-                let XmlEvent::StartElement { attributes, .. } = self.next_event()? else {
-                    unreachable!();
-                };
-                Ok(Some(attrs_to_map(&attributes)))
+                let attrs = self.take_start_attributes()?;
+                Ok(Some(attrs))
             }
             _ => Ok(None),
         }
@@ -226,10 +244,8 @@ impl<'a> XmlReader<'a> {
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
-                    let XmlEvent::StartElement { attributes, .. } = self.next_event()? else {
-                        unreachable!();
-                    };
-                    f(&local, attrs_to_map(&attributes), self)?;
+                    let attrs = self.take_start_attributes()?;
+                    f(&local, attrs, self)?;
                 }
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
                     let _ = self.next_event()?;

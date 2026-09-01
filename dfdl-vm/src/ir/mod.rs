@@ -1,6 +1,7 @@
 mod builder;
 
 pub use builder::{compile, compile_named};
+use crate::error::VmError;
 use crate::schema::{
     BinaryFloatRep, BinaryNumberRep, BitOrder, ByteOrder, LengthKind, LengthUnits, Representation,
     SeparatorPosition, SequenceKind, TextTrimKind,
@@ -137,13 +138,20 @@ impl StringPool {
         id
     }
 
-    pub fn get(&self, id: StringId) -> &str {
-        &self.values[id.0 as usize]
+    pub fn get(&self, id: StringId) -> Result<&str, VmError> {
+        self.values
+            .get(id.0 as usize)
+            .map(|s| s.as_str())
+            .ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!("invalid string pool id {}", id.0),
+            })
     }
 }
 
 impl IrProgram {
-    pub fn node(&self, id: u32) -> &IrNode {
-        &self.nodes[id as usize]
+    pub fn node(&self, id: u32) -> Result<&IrNode, VmError> {
+        self.nodes.get(id as usize).ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("invalid IR node id {id}"),
+        })
     }
 }

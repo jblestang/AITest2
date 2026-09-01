@@ -119,12 +119,17 @@ impl<'a> IrBuilder<'a> {
                     }))
                 } else {
                     let child = self.compile_type(&element.type_name, &element.props)?;
+                    let child_node = self.nodes.get(child as usize).ok_or_else(|| {
+                        SchemaError::InvalidProperty {
+                            message: alloc::format!("invalid child node id {child}"),
+                        }
+                    })?;
                     if let IrNode::Element {
                         kind,
                         props: child_props,
                         child: nested,
                         ..
-                    } = self.nodes[child as usize].clone()
+                    } = child_node.clone()
                     {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
@@ -408,7 +413,12 @@ pub fn compile_named(schema: &SchemaDocument, root: Option<&str>) -> Result<IrPr
             if schema.global_elements.len() > 1 {
                 return Err(SchemaError::AmbiguousRootElement.into());
             }
-            schema.global_elements.keys().next().unwrap().clone()
+            schema
+                .global_elements
+                .keys()
+                .next()
+                .cloned()
+                .ok_or(SchemaError::NoRootElement)?
         }
     };
 
@@ -448,7 +458,7 @@ mod tests {
         let program = compile(&schema).expect("compile");
         let tag_node = program.nodes.iter().find_map(|n| {
             if let IrNode::Element { name, props, .. } = n {
-                if program.strings.get(*name) == "tag" {
+                if program.strings.get(*name).ok() == Some("tag") {
                     return Some(props.clone());
                 }
             }
