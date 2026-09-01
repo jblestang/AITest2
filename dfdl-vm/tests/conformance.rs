@@ -469,3 +469,81 @@ fn daffodil_prefixed_character_units_suite() {
         assert_named_test_passes(tdml, name);
     }
 }
+
+#[test]
+fn daffodil_prefixed_remaining_types_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_text_string_txt_bits_nil",
+        "pl_text_string_txt_chars_nil",
+        "pl_text_string_bin_bytes_nil",
+        "pl_text_string_bin_bits_nil",
+        "pl_text_int_txt_chars",
+        "pl_text_int_txt_chars_includes",
+        "pl_text_int_bin_bytes_includes",
+        "pl_text_int_bin_bits_includes",
+        "pl_text_dec_bin_bytes",
+        "pl_text_dec_bin_bits",
+        "pl_text_date_txt_chars",
+        "pl_text_date_bin_bytes",
+        "pl_text_date_bin_bits",
+        "pl_text_bool_txt_bits",
+        "pl_text_bool_bin_bytes",
+        "pl_text_bool_bin_bits",
+        "pl_bin_hex_txt_bits",
+        "pl_bin_hex_bin_bits",
+        "pl_bin_bool_txt_bits",
+        "pl_bin_int_bin_bytes_ibm4690",
+        "pl_bin_int_bin_bits_ibm4690",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_prefixed_sde_error_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_complex_err",
+        "pl_delimited_err",
+        "pl_endofparent_err",
+        "pl_pattern_err",
+        "pl_expression_err",
+        "pl_ovc_err",
+        "pl_initiator_err",
+        "pl_terminator_err",
+        "pl_alignment_err",
+        "pl_leadingskip_err",
+        "pl_trailingskip_err",
+        "pl_lengthunits_err",
+        "pl_nest_err",
+        "pl_decimal_err",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_prefixed_negative_runtime_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_text_string_txt_bytes_neg_len",
+        "pl_text_string_txt_bytes_not_enough_data",
+        "pl_text_string_txt_bytes_not_enough_prefix_data",
+        "invalidUnsignedIntBitLength",
+        "invalidUnsignedShortBitLength",
+        "invalidUnsignedByteBitLength",
+        "invalidUnsignedLongBitLength",
+        "invalidUnsignedLongByteLength",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_prefixed_bits_nonnegative_integer() {
+    assert_named_test_passes(
+        daffodil_tdml!("PrefixedTests.tdml"),
+        "lengthUnitsBitsForNonNegativeInteger_prefixed",
+    );
+}

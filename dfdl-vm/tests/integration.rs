@@ -99,3 +99,27 @@ fn ir_is_populated() {
     assert_eq!(spec.root_element(), "Record");
     assert!(spec.program().nodes.len() >= 3);
 }
+
+#[test]
+fn prefixed_text_string_round_trip() {
+    use dfdl_vm::tdml::parse_tdml;
+
+    let tdml = include_str!(
+        "../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/lengthKind/PrefixedTests.tdml"
+    );
+    let suite = parse_tdml(tdml).expect("parse tdml");
+    let test = suite
+        .tests
+        .iter()
+        .find(|t| t.name == "pl_text_string_txt_bytes")
+        .expect("test");
+    let schema = suite
+        .schemas
+        .get("lengthKindPrefixed-text.dfdl.xsd")
+        .expect("schema");
+    let spec =
+        DfdlSpec::from_xsd_root(&schema.xsd, Some("pl_text_string_txt_bytes")).expect("spec");
+    let decoded = spec.decode(&test.documents[0].data).expect("decode");
+    let encoded = spec.encode(&decoded).expect("encode");
+    assert_eq!(encoded, test.documents[0].data);
+}

@@ -424,7 +424,7 @@ fn value_kind_from_builtin(builtin: BuiltinType) -> ValueKind {
         BuiltinType::Long => ValueKind::Long,
         BuiltinType::Short => ValueKind::Short,
         BuiltinType::Byte => ValueKind::Byte,
-        BuiltinType::UnsignedInt => ValueKind::UnsignedInt,
+        BuiltinType::UnsignedInt | BuiltinType::NonNegativeInteger => ValueKind::UnsignedInt,
         BuiltinType::UnsignedShort => ValueKind::UnsignedShort,
         BuiltinType::UnsignedByte => ValueKind::UnsignedByte,
         BuiltinType::Float => ValueKind::Float,
