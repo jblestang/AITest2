@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
            xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
-  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"/>
+  <xs:include schemaLocation="nmea_types.xsd"/>
 
   <xs:element name="GPVTG" dfdl:terminator="%CR;%LF;">
     <xs:complexType>
@@ -9,23 +9,19 @@
         <xs:element name="body" dfdl:initiator="$GPVTG," dfdl:terminator="*" dfdl:lengthKind="implicit">
           <xs:complexType>
             <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
-              <xs:element name="trackTrue" type="xs:float"
-                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
-              <xs:element name="trackTrueUnit" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="trackMagnetic" type="xs:float" minOccurs="0"
-                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
-              <xs:element name="trackMagneticUnit" type="xs:string" minOccurs="0"/>
-              <xs:element name="speedKnots" type="xs:float"
-                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
-              <xs:element name="speedKnotsUnit" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="speedKmh" type="xs:float"
-                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
-              <xs:element name="speedKmhUnit" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="mode" type="xs:string" minOccurs="0"/>
+              <xs:element name="trackTrue" type="NmeaAngle"/>
+              <xs:element name="trackTrueUnit" type="NmeaTrackUnitTrue"/>
+              <xs:element name="trackMagnetic" type="NmeaAngle" minOccurs="0"/>
+              <xs:element name="trackMagneticUnit" type="NmeaTrackUnitMagnetic" minOccurs="0"/>
+              <xs:element name="speedKnots" type="NmeaAngle"/>
+              <xs:element name="speedKnotsUnit" type="NmeaSpeedUnitKnots"/>
+              <xs:element name="speedKmh" type="NmeaAngle"/>
+              <xs:element name="speedKmhUnit" type="NmeaSpeedUnitKmh"/>
+              <xs:element name="mode" type="NmeaMode" minOccurs="0"/>
             </xs:sequence>
           </xs:complexType>
         </xs:element>
-        <xs:element name="checksum" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="2"/>
+        <xs:element name="checksum" type="NmeaChecksum"/>
       </xs:sequence>
     </xs:complexType>
   </xs:element>

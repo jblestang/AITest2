@@ -8,6 +8,11 @@ use alloc::vec::Vec;
 use xml_no_std::reader::XmlEvent;
 
 const DFDL_NS: &str = "http://www.ogf.org/dfdl/";
+const DFDL_NS_V1: &str = "http://www.ogf.org/dfdl/dfdl-1.0/";
+
+fn is_dfdl_appinfo_source(source: Option<&str>) -> bool {
+    matches!(source, None | Some(DFDL_NS) | Some(DFDL_NS_V1))
+}
 
 /// Options controlling XSD parsing and include resolution.
 #[derive(Debug, Clone, Default)]
@@ -719,7 +724,7 @@ impl<'a> XsdParser<'a> {
         }
 
         let mut props = DfdlProps::default();
-        if source == Some(DFDL_NS) || source.is_none() {
+        if is_dfdl_appinfo_source(source) {
             loop {
                 self.reader.skip_insignificant_ws()?;
                 match self.reader.peek()? {
@@ -799,9 +804,49 @@ impl<'a> XsdParser<'a> {
         if self.reader.peek_is_end(local)? {
             self.expect_end_local(local)?;
         } else {
-            self.reader.skip_current_subtree()?;
+            let text = self.read_element_text_content(local)?;
+            if !text.is_empty() {
+                let mut body = BTreeMap::new();
+                body.insert(local.to_string(), text);
+                props = merge_props(props, props_from_attrs(&body)?);
+            }
         }
         Ok(props)
+    }
+
+    fn read_element_text_content(&mut self, end_local: &str) -> Result<String> {
+        let mut text = String::new();
+        loop {
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { name } if name.local_name == end_local => {
+                    let _ = self.reader.next_event()?;
+                    break;
+                }
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::Characters(s) | XmlEvent::CData(s) => {
+                    text.push_str(s);
+                    let _ = self.reader.next_event()?;
+                }
+                XmlEvent::Whitespace(s) => {
+                    let ws = s.clone();
+                    let _ = self.reader.next_event()?;
+                    if !ws.chars().all(char::is_whitespace) {
+                        text.push_str(&ws);
+                    }
+                }
+                other => {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "expected text in `{end_local}`, found {:?}",
+                            event_kind(other)
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+        Ok(text.trim().to_string())
     }
 
     fn parse_define_format(&mut self, attrs: BTreeMap<String, String>) -> Result<DfdlProps> {

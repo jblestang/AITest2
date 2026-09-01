@@ -43,7 +43,7 @@ pub mod xml_util;
 pub use api::{DfdlCodec, DfdlSchema, DfdlSpec};
 pub use error::{Error, ParseError, Result, SchemaError, VmError};
 pub use ir::{compile, IrProgram, IrProps};
-pub use schema::{parse_schema, SchemaDocument};
+pub use schema::{parse_schema, parse_schema_with_resolver, SchemaDocument, SchemaResolver};
 pub use value::DfdlValue;
 pub use vm::{Decoder, Encoder, RuntimeConfig};
 pub use tdml::{parse_tdml, run_parser_test, run_suite, TestOutcome, TestResult};

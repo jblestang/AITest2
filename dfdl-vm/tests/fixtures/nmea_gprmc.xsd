@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
            xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
-  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"/>
+  <xs:include schemaLocation="nmea_types.xsd"/>
 
   <xs:element name="GPRMC" dfdl:terminator="%CR;%LF;">
     <xs:complexType>
@@ -9,24 +9,21 @@
         <xs:element name="body" dfdl:initiator="$GPRMC," dfdl:terminator="*" dfdl:lengthKind="implicit">
           <xs:complexType>
             <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
-              <xs:element name="utcTime" type="xs:unsignedInt"/>
-              <xs:element name="status" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="latitude" type="xs:string"/>
-              <xs:element name="latHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="longitude" type="xs:string"/>
-              <xs:element name="lonHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="speedKnots" type="xs:float"
-                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
-              <xs:element name="trackTrue" type="xs:float"
-                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
-              <xs:element name="date" type="xs:unsignedInt" dfdl:lengthKind="fixed" dfdl:length="6"/>
-              <xs:element name="magneticVariation" type="xs:float"
-                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
-              <xs:element name="magVarHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="utcTime" type="NmeaUtcTime"/>
+              <xs:element name="status" type="NmeaStatus"/>
+              <xs:element name="latitude" type="NmeaLatitude"/>
+              <xs:element name="latHemisphere" type="NmeaLatHemisphere"/>
+              <xs:element name="longitude" type="NmeaLongitude"/>
+              <xs:element name="lonHemisphere" type="NmeaLonHemisphere"/>
+              <xs:element name="speedKnots" type="NmeaAngle"/>
+              <xs:element name="trackTrue" type="NmeaAngle"/>
+              <xs:element name="date" type="NmeaDate"/>
+              <xs:element name="magneticVariation" type="NmeaAngle"/>
+              <xs:element name="magVarHemisphere" type="NmeaMagVarHemisphere"/>
             </xs:sequence>
           </xs:complexType>
         </xs:element>
-        <xs:element name="checksum" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="2"/>
+        <xs:element name="checksum" type="NmeaChecksum"/>
       </xs:sequence>
     </xs:complexType>
   </xs:element>

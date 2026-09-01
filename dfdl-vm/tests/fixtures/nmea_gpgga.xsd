@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
            xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
-  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"/>
+  <xs:include schemaLocation="nmea_types.xsd"/>
 
   <xs:element name="GPGGA" dfdl:terminator="%CR;%LF;">
     <xs:complexType>
@@ -9,25 +9,24 @@
         <xs:element name="body" dfdl:initiator="$GPGGA," dfdl:terminator="*" dfdl:lengthKind="implicit">
           <xs:complexType>
             <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
-              <xs:element name="utcTime" type="xs:unsignedInt"/>
-              <xs:element name="latitude" type="xs:string"/>
-              <xs:element name="latHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="longitude" type="xs:string"/>
-              <xs:element name="lonHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="fixQuality" type="xs:unsignedByte" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="numSatellites" type="xs:unsignedByte"
-                dfdl:lengthKind="fixed" dfdl:length="2" dfdl:textNumberPadCharacter="0"/>
+              <xs:element name="utcTime" type="NmeaUtcTime"/>
+              <xs:element name="latitude" type="NmeaLatitude"/>
+              <xs:element name="latHemisphere" type="NmeaLatHemisphere"/>
+              <xs:element name="longitude" type="NmeaLongitude"/>
+              <xs:element name="lonHemisphere" type="NmeaLonHemisphere"/>
+              <xs:element name="fixQuality" type="NmeaFixQuality"/>
+              <xs:element name="numSatellites" type="NmeaSatelliteCount"/>
               <xs:element name="hdop" type="xs:float"/>
               <xs:element name="altitude" type="xs:float"/>
-              <xs:element name="altitudeUnits" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="altitudeUnits" type="NmeaAltitudeUnit"/>
               <xs:element name="geoidSeparation" type="xs:float"/>
-              <xs:element name="geoidUnits" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="geoidUnits" type="NmeaAltitudeUnit"/>
               <xs:element name="dgpsAge" type="xs:string"/>
               <xs:element name="dgpsStationId" type="xs:string"/>
             </xs:sequence>
           </xs:complexType>
         </xs:element>
-        <xs:element name="checksum" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="2"/>
+        <xs:element name="checksum" type="NmeaChecksum"/>
       </xs:sequence>
     </xs:complexType>
   </xs:element>

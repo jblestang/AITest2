@@ -85,7 +85,8 @@ See `tests/fixtures/` for sample XSD schemas:
 - `nmea_gll.xsd` — typed GPGLL geographic position sentence
 - `nmea_vtg.xsd` — typed GPVTG course/speed sentence
 
-Typed schemas use `xs:int`/`xs:unsignedInt`/`xs:float` where appropriate; lat/lon stay strings (ddmm.mmmm), and fixed-width numeric fields use `textNumberPadCharacter="0"` for NMEA leading-zero round-trip.
+Typed schemas use `xs:unsignedInt`/`xs:unsignedByte`/`xs:float` where appropriate; lat/lon stay strings (ddmm.mmmm), and fixed-width numeric fields use `textNumberPadCharacter="0"` for NMEA leading-zero round-trip.
+
 - `text_message.xsd` — text format with fixed and delimited fields
 
 Run tests:

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use crate::error::Result;
 use crate::ir::{compile, compile_named, IrProgram};
-use crate::schema::{parse_schema, SchemaDocument};
+use crate::schema::{parse_schema, parse_schema_with_resolver, SchemaDocument, SchemaResolver};
 use crate::value::DfdlValue;
 use crate::vm::{Decoder, Encoder, RuntimeConfig};
 
@@ -18,9 +18,25 @@ impl DfdlSpec {
         Self::from_xsd_root(xsd, None)
     }
 
+    /// Parse with a custom include resolver (for multi-file schemas).
+    pub fn from_xsd_with_resolver(xsd: &str, resolver: SchemaResolver) -> Result<Self> {
+        Self::from_xsd_root_with_resolver(xsd, None, resolver)
+    }
+
     /// Parse and compile, selecting a specific global root element.
     pub fn from_xsd_root(xsd: &str, root_element: Option<&str>) -> Result<Self> {
         let schema = parse_schema(xsd)?;
+        let program = compile_named(&schema, root_element)?;
+        Ok(Self { schema, program })
+    }
+
+    /// Parse and compile with a custom include resolver.
+    pub fn from_xsd_root_with_resolver(
+        xsd: &str,
+        root_element: Option<&str>,
+        resolver: SchemaResolver,
+    ) -> Result<Self> {
+        let schema = parse_schema_with_resolver(xsd, resolver)?;
         let program = compile_named(&schema, root_element)?;
         Ok(Self { schema, program })
     }

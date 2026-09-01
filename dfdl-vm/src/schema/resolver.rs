@@ -48,6 +48,12 @@ impl SchemaResolver {
         self
     }
 
+    /// Register additional bundled schema content for `xs:include` / `xs:import` resolution.
+    pub fn with_bundled(mut self, location: impl Into<String>, content: &'static str) -> Self {
+        self.bundled.insert(location.into(), content);
+        self
+    }
+
     pub fn resolve(&self, location: &str) -> Result<String> {
         let loc = location.trim();
         if let Some(content) = self.bundled.get(loc) {

@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
+  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"/>
+
+  <!-- Time: hhmmss[.sss] -->
+  <xs:simpleType name="NmeaUtcTime">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[0-9]{6}(\.[0-9]+)?</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:unsignedInt"/>
+  </xs:simpleType>
+
+  <!-- Date: ddmmyy -->
+  <xs:simpleType name="NmeaDate">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>fixed</dfdl:lengthKind>
+        <dfdl:length>6</dfdl:length>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:unsignedInt"/>
+  </xs:simpleType>
+
+  <!-- Latitude ddmm.mmmmm (2-digit degrees) -->
+  <xs:simpleType name="NmeaLatitude">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[0-9]{4}\.[0-9]+</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- Longitude dddmm.mmmmm (3-digit degrees) -->
+  <xs:simpleType name="NmeaLongitude">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[0-9]{5}\.[0-9]+</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaLatHemisphere">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[NS]</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaLonHemisphere">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[EW]</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaMagVarHemisphere">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[EW]</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- A=valid, V=invalid warning -->
+  <xs:simpleType name="NmeaStatus">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[AV]</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- NMEA 2.3+ mode indicator -->
+  <xs:simpleType name="NmeaMode">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[ADEMNS]</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaAisChannel">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[AB]</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaAltitudeUnit">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>M</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaTrackUnitTrue">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>T</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaTrackUnitMagnetic">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>M</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaSpeedUnitKnots">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>N</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaSpeedUnitKmh">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>K</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaChecksum">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[0-9A-Fa-f]{2}</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaFixQuality">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[0-8]</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:unsignedByte"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaAngle">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>fixed</dfdl:lengthKind>
+        <dfdl:length>5</dfdl:length>
+        <dfdl:textNumberPadCharacter>0</dfdl:textNumberPadCharacter>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:float"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaSatelliteCount">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>fixed</dfdl:lengthKind>
+        <dfdl:length>2</dfdl:length>
+        <dfdl:textNumberPadCharacter>0</dfdl:textNumberPadCharacter>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:unsignedByte"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaAisSentenceCount">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[1-9]</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:unsignedByte"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NmeaFillBits">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[0-5]</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:unsignedByte"/>
+  </xs:simpleType>
+</xs:schema>

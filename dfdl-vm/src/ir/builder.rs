@@ -163,7 +163,21 @@ impl<'a> IrBuilder<'a> {
                     {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
-                            let merged = merge_ir_props(&child_props, &overlay);
+                            let mut merged = merge_ir_props(&child_props, &overlay);
+                            // Simple-type length props apply unless the element declares lengthKind.
+                            if element.props.length_kind.is_none() {
+                                merged.length_kind = child_props.length_kind;
+                                if child_props.length.is_some() {
+                                    merged.length = child_props.length;
+                                }
+                                if child_props.length_pattern.is_some() {
+                                    merged.length_pattern = child_props.length_pattern;
+                                }
+                                if child_props.text_number_pad_character.is_some() {
+                                    merged.text_number_pad_character =
+                                        child_props.text_number_pad_character;
+                                }
+                            }
                             validate_implicit_text_length(kind, &merged)?;
                             return Ok(self.push(IrNode::Element {
                                 name,
