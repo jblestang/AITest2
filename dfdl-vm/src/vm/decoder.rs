@@ -30,7 +30,7 @@ impl<'a> Decoder<'a> {
     /// Decode one logical value from `input`.
     pub fn decode(&self, input: &[u8]) -> Result<DfdlValue> {
         let mut cursor = Cursor::new(input);
-        let value = self.decode_node(self.ctx.program.root, &mut cursor, false, None)?;
+        let value = self.decode_node(self.ctx.program.root, &mut cursor, false, None, None)?;
         self.consume_root_delimited_suffix(&mut cursor)?;
         if self.ctx.config.strict_eos && !cursor.is_empty() {
             return Err(VmError::TrailingData {
@@ -50,6 +50,7 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         has_following_sibling: bool,
         parent_sequence: Option<&IrProps>,
+        enclosing_terminator: Option<&str>,
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
@@ -59,7 +60,13 @@ impl<'a> Decoder<'a> {
                     let child_has_following = idx + 1 < children.len();
                     self.consume_separator(props, cursor, idx, children.len())?;
                     let saved = cursor.clone();
-                    match self.decode_particle(child, cursor, child_has_following, Some(props)) {
+                    match self.decode_particle(
+                        child,
+                        cursor,
+                        child_has_following,
+                        Some(props),
+                        enclosing_terminator,
+                    ) {
                         Ok(child_value) => {
                             insert_child(&mut map, child, child_value, self.ctx.program)?;
                         }
@@ -81,9 +88,13 @@ impl<'a> Decoder<'a> {
                             continue;
                         }
                     }
-                    if let Ok(value) =
-                        self.decode_node(branch.node, cursor, has_following_sibling, parent_sequence)
-                    {
+                    if let Ok(value) = self.decode_node(
+                        branch.node,
+                        cursor,
+                        has_following_sibling,
+                        parent_sequence,
+                        enclosing_terminator,
+                    ) {
                         let name = self.ctx.strings().get(branch.name)?.to_string();
                         return Ok(DfdlValue::choice(name, value));
                     }
@@ -97,6 +108,7 @@ impl<'a> Decoder<'a> {
                 cursor,
                 has_following_sibling,
                 parent_sequence,
+                enclosing_terminator,
             ),
         }
     }
@@ -107,6 +119,7 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         has_following_sibling: bool,
         parent_sequence: Option<&IrProps>,
+        enclosing_terminator: Option<&str>,
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element { props, .. } => self.decode_element_occurrences(
@@ -115,8 +128,15 @@ impl<'a> Decoder<'a> {
                 cursor,
                 has_following_sibling,
                 parent_sequence,
+                enclosing_terminator,
             ),
-            _ => self.decode_node(node_id, cursor, has_following_sibling, parent_sequence),
+            _ => self.decode_node(
+                node_id,
+                cursor,
+                has_following_sibling,
+                parent_sequence,
+                enclosing_terminator,
+            ),
         }
     }
 
@@ -127,6 +147,7 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         has_following_sibling: bool,
         parent_sequence: Option<&IrProps>,
+        enclosing_terminator: Option<&str>,
     ) -> Result<DfdlValue> {
         let min = props.occurs_min;
         let max = props.occurs_max.unwrap_or(u64::MAX);
@@ -137,11 +158,25 @@ impl<'a> Decoder<'a> {
                 break;
             }
             if !items.is_empty() {
+                if let Some(extra) = self.try_decode_consecutive_empty_fields(
+                    parent_sequence,
+                    cursor,
+                    enclosing_terminator,
+                )? {
+                    items.extend(extra);
+                    continue;
+                }
                 self.consume_occurrence_separator(parent_sequence, cursor)?;
             }
             let require_delimiter = has_following_sibling;
             let saved = cursor.clone();
-            match self.decode_single_element(node_id, cursor, require_delimiter, parent_sequence) {
+            match self.decode_single_element(
+                node_id,
+                cursor,
+                require_delimiter,
+                parent_sequence,
+                enclosing_terminator,
+            ) {
                 Ok(v) => items.push(v),
                 Err(e) => {
                     if (items.len() as u64) >= min {
@@ -189,8 +224,13 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         require_delimiter: bool,
         parent_sequence: Option<&IrProps>,
+        enclosing_terminator: Option<&str>,
     ) -> Result<DfdlValue> {
-        let parent_term = parent_terminator_str(parent_sequence, self.ctx.strings())?;
+        let parent_term = effective_stop_delimiter(
+            parent_sequence,
+            enclosing_terminator,
+            self.ctx.strings(),
+        )?;
         match self.ctx.program.node(node_id)? {
             IrNode::Element {
                 name,
@@ -198,6 +238,8 @@ impl<'a> Decoder<'a> {
                 props,
                 child,
             } => {
+                let child_enclosing =
+                    element_terminator_str(props, self.ctx.strings())?.or(enclosing_terminator);
                 if let Some(child_id) = child {
                     self.consume_initiator(props, cursor)?;
                     if props.length_kind == LengthKind::Explicit {
@@ -206,7 +248,7 @@ impl<'a> Decoder<'a> {
                         })? as usize;
                         let bytes = read_length_span(cursor, len, props.length_units)?;
                         let mut sub = Cursor::new(&bytes);
-                        let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                        let inner = self.decode_node(*child_id, &mut sub, false, None, None)?;
                         if !sub.is_empty() {
                             return Err(VmError::InvalidValue {
                                 message: "unconsumed bytes in explicit-length complex element".into(),
@@ -229,7 +271,7 @@ impl<'a> Decoder<'a> {
                         )?;
                         consume_enclosing_delimiter(cursor, props, self.ctx.strings(), parent_term)?;
                         let mut sub = Cursor::new(&bytes);
-                        let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                        let inner = self.decode_node(*child_id, &mut sub, false, None, None)?;
                         if !sub.is_empty() {
                             return Err(VmError::InvalidValue {
                                 message: "unconsumed bytes in delimited complex element".into(),
@@ -251,7 +293,8 @@ impl<'a> Decoder<'a> {
                                     let _ = cursor.consume_delimiter(term);
                                 }
                                 let mut sub = Cursor::new(&bytes);
-                                let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                                let inner =
+                                    self.decode_node(*child_id, &mut sub, false, None, None)?;
                                 if !sub.is_empty() {
                                     return Err(VmError::InvalidValue {
                                         message:
@@ -277,7 +320,13 @@ impl<'a> Decoder<'a> {
                                         let _ = cursor.consume_delimiter(sep);
                                     }
                                     let mut sub = Cursor::new(&bytes);
-                                    let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                                    let inner = self.decode_node(
+                                        *child_id,
+                                        &mut sub,
+                                        false,
+                                        None,
+                                        None,
+                                    )?;
                                     if !sub.is_empty() {
                                         return Err(VmError::InvalidValue {
                                             message:
@@ -295,7 +344,13 @@ impl<'a> Decoder<'a> {
                             }
                         }
                     }
-                    let inner = self.decode_node(*child_id, cursor, false, parent_sequence)?;
+                    let inner = self.decode_node(
+                        *child_id,
+                        cursor,
+                        false,
+                        parent_sequence,
+                        child_enclosing,
+                    )?;
                     self.consume_terminator(props, cursor)?;
                     Ok(wrap_named(
                         self.ctx.strings().get(*name)?,
@@ -314,7 +369,7 @@ impl<'a> Decoder<'a> {
                     .map_err(Into::into)
                 }
             }
-            _ => self.decode_node(node_id, cursor, false, None),
+            _ => self.decode_node(node_id, cursor, false, None, None),
         }
     }
 
@@ -339,6 +394,61 @@ impl<'a> Decoder<'a> {
             }
         }
         Ok(())
+    }
+
+    /// In infix-separated unbounded lists, `,,` before end is two empty fields and
+    /// `,,X` is one empty field then `X` (NMEA/CSV trailing-empty semantics).
+    fn try_decode_consecutive_empty_fields(
+        &self,
+        parent_sequence: Option<&IrProps>,
+        cursor: &mut Cursor<'_>,
+        enclosing_terminator: Option<&str>,
+    ) -> Result<Option<Vec<DfdlValue>>> {
+        let Some(props) = parent_sequence else {
+            return Ok(None);
+        };
+        if props.separator_position != SeparatorPosition::Infix {
+            return Ok(None);
+        }
+        let Some(sep_id) = props.separator else {
+            return Ok(None);
+        };
+        let sep = self.ctx.strings().get(sep_id)?;
+        if sep.is_empty() {
+            return Ok(None);
+        }
+
+        let start = cursor.pos;
+        let mut count = 0usize;
+        while let Some(n) = match_delimiter(&cursor.data[cursor.pos..], sep) {
+            if n == 0 {
+                break;
+            }
+            cursor.advance(n);
+            count += 1;
+        }
+        if count <= 1 {
+            cursor.pos = start;
+            return Ok(None);
+        }
+
+        let stop = effective_stop_delimiter(
+            parent_sequence,
+            enclosing_terminator,
+            self.ctx.strings(),
+        )?;
+        let followed_by_data =
+            !cursor.is_empty() && !at_stop_delimiter(cursor, stop);
+        let num_empties = if followed_by_data {
+            count - 1
+        } else {
+            count
+        };
+        let mut out = Vec::with_capacity(num_empties);
+        for _ in 0..num_empties {
+            out.push(DfdlValue::String(String::new()));
+        }
+        Ok(Some(out))
     }
 
     fn consume_root_delimited_suffix(&self, cursor: &mut Cursor<'_>) -> Result<()> {
@@ -441,6 +551,39 @@ fn parent_terminator_str<'a>(
     } else {
         Ok(Some(pat))
     }
+}
+
+fn element_terminator_str<'a>(
+    props: &'a IrProps,
+    strings: &'a crate::ir::StringPool,
+) -> Result<Option<&'a str>> {
+    let Some(id) = props.terminator else {
+        return Ok(None);
+    };
+    let pat = strings.get(id)?;
+    if pat.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(pat))
+    }
+}
+
+fn effective_stop_delimiter<'a>(
+    parent_sequence: Option<&'a IrProps>,
+    enclosing_terminator: Option<&'a str>,
+    strings: &'a crate::ir::StringPool,
+) -> Result<Option<&'a str>> {
+    if let Some(term) = parent_terminator_str(parent_sequence, strings)? {
+        return Ok(Some(term));
+    }
+    Ok(enclosing_terminator)
+}
+
+fn at_stop_delimiter(cursor: &Cursor<'_>, stop: Option<&str>) -> bool {
+    stop.filter(|term| !term.is_empty())
+        .and_then(|term| match_delimiter(&cursor.data[cursor.pos..], term))
+        .map(|n| n > 0)
+        .unwrap_or(false)
 }
 
 fn is_element_absent(err: &Error) -> bool {

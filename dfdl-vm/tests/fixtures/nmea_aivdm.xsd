@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
+  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"/>
+
+  <xs:element name="AIVDM" dfdl:terminator="%CR;%LF;">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="body" dfdl:initiator="!AIVDM," dfdl:terminator="*" dfdl:lengthKind="implicit">
+          <xs:complexType>
+            <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
+              <xs:element name="totalSentences" type="xs:string"/>
+              <xs:element name="sentenceNumber" type="xs:string"/>
+              <xs:element name="sequentialId" type="xs:string" minOccurs="0"/>
+              <xs:element name="channel" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="payload" type="xs:string"/>
+              <xs:element name="fillBits" type="xs:string"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="checksum" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="2"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

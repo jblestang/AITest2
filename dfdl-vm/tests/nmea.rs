@@ -4,38 +4,37 @@ use dfdl_vm::{DfdlSpec, DfdlValue};
 const GPGGA_SAMPLE: &[u8] =
     b"$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47\r\n";
 
-#[test]
-fn nmea_payload_element_has_terminator_in_ir() {
-    use dfdl_vm::ir::IrNode;
-    let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_sentence.xsd")).expect("spec");
-    let payload = spec
-        .program()
-        .nodes
-        .iter()
-        .find_map(|n| {
-            if let IrNode::Element { name, props, .. } = n {
-                if spec.program().strings.get(*name).ok() == Some("payload") {
-                    return Some(props.terminator);
-                }
-            }
-            None
-        })
-        .expect("payload node");
-    assert!(payload.is_some(), "payload element should have * terminator in IR");
-    let term = spec
-        .program()
-        .strings
-        .get(payload.unwrap())
-        .expect("terminator string");
-    assert_eq!(term, "*");
+const GPRMC_SAMPLE: &[u8] =
+    b"$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A\r\n";
 
-    let root = spec.program().node(spec.program().root).expect("root node");
-    if let IrNode::Element { props, child, .. } = root {
-        assert!(props.terminator.is_some(), "NmeaSentence root should have CRLF terminator");
-        assert!(child.is_some(), "root should wrap inner content");
-    } else {
-        panic!("expected root element wrapper, got {root:?}");
+const AIVDM_SAMPLE: &[u8] = b"!AIVDM,1,1,,A,15M67FC000G?l`nQ@`WplQ@T400,0*7F\r\n";
+
+const GPGLL_SAMPLE: &[u8] = b"$GPGLL,4807.038,N,01131.000,E,123519,A,A*58\r\n";
+
+const GPVTG_SAMPLE: &[u8] = b"$GPVTG,054.7,T,034.4,M,005.5,N,010.2,K,A*48\r\n";
+
+#[test]
+fn nmea_consecutive_empty_fields_before_checksum() {
+    let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_sentence.xsd")).expect("spec");
+    let decoded = spec.decode(GPGGA_SAMPLE).expect("decode");
+    let standard = decoded.field("Standard").expect("Standard");
+    let payload = standard.field("payload").expect("payload");
+    match payload.field("field").expect("fields") {
+        DfdlValue::Array(items) => {
+            assert_eq!(items.len(), 14);
+            assert_eq!(items[12], DfdlValue::String("".into()));
+            assert_eq!(items[13], DfdlValue::String("".into()));
+        }
+        other => panic!("expected field array, got {other:?}"),
     }
+}
+
+#[test]
+fn nmea_gpgga_full_round_trip() {
+    let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_sentence.xsd")).expect("spec");
+    let decoded = spec.decode(GPGGA_SAMPLE).expect("decode");
+    let encoded = spec.encode(&decoded).expect("encode");
+    assert_eq!(encoded, GPGGA_SAMPLE);
 }
 
 #[test]
@@ -48,20 +47,12 @@ fn nmea_gpgga_typed_decode() {
         Some(&DfdlValue::String("123519".into()))
     );
     assert_eq!(
-        body.field("latitude"),
-        Some(&DfdlValue::String("4807.038".into()))
+        body.field("dgpsAge"),
+        Some(&DfdlValue::String("".into()))
     );
     assert_eq!(
-        body.field("latHemisphere"),
-        Some(&DfdlValue::String("N".into()))
-    );
-    assert_eq!(
-        body.field("longitude"),
-        Some(&DfdlValue::String("01131.000".into()))
-    );
-    assert_eq!(
-        body.field("lonHemisphere"),
-        Some(&DfdlValue::String("E".into()))
+        body.field("dgpsStationId"),
+        Some(&DfdlValue::String("".into()))
     );
     assert_eq!(
         decoded.field("checksum"),
@@ -74,90 +65,86 @@ fn nmea_gpgga_typed_round_trip() {
     let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_gpgga.xsd")).expect("spec");
     let decoded = spec.decode(GPGGA_SAMPLE).expect("decode");
     let encoded = spec.encode(&decoded).expect("encode");
-    // Trailing optional empty DGPS fields may collapse on decode.
-    assert!(encoded.starts_with(b"$GPGGA,123519,"));
-    assert!(encoded.ends_with(b"*47\r\n"));
+    assert_eq!(encoded, GPGGA_SAMPLE);
 }
 
 #[test]
-fn nmea_sentence_generic_gpgga() {
-    let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_sentence.xsd")).expect("spec");
-    let decoded = spec.decode(GPGGA_SAMPLE).expect("decode");
-    let standard = decoded.field("Standard").expect("Standard branch");
+fn nmea_gprmc_typed_decode_and_round_trip() {
+    let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_gprmc.xsd")).expect("spec");
+    let decoded = spec.decode(GPRMC_SAMPLE).expect("decode");
+    let body = decoded.field("body").expect("body");
+    assert_eq!(body.field("status"), Some(&DfdlValue::String("A".into())));
     assert_eq!(
-        standard.field("address"),
-        Some(&DfdlValue::String("GPGGA".into()))
+        body.field("speedKnots"),
+        Some(&DfdlValue::String("022.4".into()))
     );
-    assert_eq!(
-        standard.field("checksum"),
-        Some(&DfdlValue::String("47".into()))
-    );
-    let payload = standard.field("payload").expect("payload");
-    let fields = payload.field("field").expect("fields");
-    match fields {
-        DfdlValue::Array(items) => {
-            assert_eq!(items.len(), 13);
-            assert_eq!(items[0], DfdlValue::String("123519".into()));
-            assert_eq!(items[10], DfdlValue::String("46.9".into()));
-            assert_eq!(items[11], DfdlValue::String("M".into()));
-            assert_eq!(items[12], DfdlValue::String("".into()));
-        }
-        other => panic!("expected field array, got {other:?}"),
-    }
-}
-
-#[test]
-fn nmea_sentence_generic_round_trip() {
-    let input = b"$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A\r\n";
-    let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_sentence.xsd")).expect("spec");
-    let decoded = spec.decode(input).expect("decode");
     let encoded = spec.encode(&decoded).expect("encode");
-    assert_eq!(encoded, input);
+    assert_eq!(encoded, GPRMC_SAMPLE);
 }
 
 #[test]
-fn nmea_sentence_encapsulated_aivdm() {
-    let input = b"!AIVDM,1,1,,A,15M67FC000G?l`nQ@`WplQ@T400,0*7F\r\n";
+fn nmea_aivdm_typed_decode_and_round_trip() {
+    let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_aivdm.xsd")).expect("spec");
+    let decoded = spec.decode(AIVDM_SAMPLE).expect("decode");
+    let body = decoded.field("body").expect("body");
+    assert_eq!(
+        body.field("totalSentences"),
+        Some(&DfdlValue::String("1".into()))
+    );
+    assert_eq!(
+        body.field("sequentialId"),
+        Some(&DfdlValue::String("".into()))
+    );
+    assert_eq!(body.field("channel"), Some(&DfdlValue::String("A".into())));
+    assert_eq!(
+        body.field("payload"),
+        Some(&DfdlValue::String("15M67FC000G?l`nQ@`WplQ@T400".into()))
+    );
+    assert_eq!(body.field("fillBits"), Some(&DfdlValue::String("0".into())));
+    let encoded = spec.encode(&decoded).expect("encode");
+    assert_eq!(encoded, AIVDM_SAMPLE);
+}
+
+#[test]
+fn nmea_gll_typed_decode_and_round_trip() {
+    let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_gll.xsd")).expect("spec");
+    let decoded = spec.decode(GPGLL_SAMPLE).expect("decode");
+    let body = decoded.field("body").expect("body");
+    assert_eq!(
+        body.field("latitude"),
+        Some(&DfdlValue::String("4807.038".into()))
+    );
+    assert_eq!(body.field("mode"), Some(&DfdlValue::String("A".into())));
+    let encoded = spec.encode(&decoded).expect("encode");
+    assert_eq!(encoded, GPGLL_SAMPLE);
+}
+
+#[test]
+fn nmea_vtg_typed_decode_and_round_trip() {
+    let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_vtg.xsd")).expect("spec");
+    let decoded = spec.decode(GPVTG_SAMPLE).expect("decode");
+    let body = decoded.field("body").expect("body");
+    assert_eq!(
+        body.field("speedKnots"),
+        Some(&DfdlValue::String("005.5".into()))
+    );
+    assert_eq!(body.field("mode"), Some(&DfdlValue::String("A".into())));
+    let encoded = spec.encode(&decoded).expect("encode");
+    assert_eq!(encoded, GPVTG_SAMPLE);
+}
+
+#[test]
+fn nmea_sentence_generic_aivdm() {
     let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_sentence.xsd")).expect("spec");
-    let decoded = spec.decode(input).expect("decode");
-    let encapsulated = decoded.field("Encapsulated").expect("Encapsulated branch");
-    assert_eq!(
-        encapsulated.field("address"),
-        Some(&DfdlValue::String("AIVDM".into()))
-    );
-    assert_eq!(
-        encapsulated.field("checksum"),
-        Some(&DfdlValue::String("7F".into()))
-    );
+    let decoded = spec.decode(AIVDM_SAMPLE).expect("decode");
+    let encapsulated = decoded.field("Encapsulated").expect("Encapsulated");
     let payload = encapsulated.field("payload").expect("payload");
     match payload.field("field").expect("fields") {
         DfdlValue::Array(items) => {
-            assert_eq!(items.len(), 5);
+            assert_eq!(items.len(), 6);
             assert_eq!(items[0], DfdlValue::String("1".into()));
-            assert_eq!(items[1], DfdlValue::String("1".into()));
-            assert_eq!(items[2], DfdlValue::String("A".into()));
-        }
-        other => panic!("expected array, got {other:?}"),
-    }
-}
-
-#[test]
-fn nmea_sentence_gprmc() {
-    let input = b"$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A\r\n";
-    let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_sentence.xsd")).expect("spec");
-    let decoded = spec.decode(input).expect("decode");
-    let standard = decoded.field("Standard").expect("Standard");
-    assert_eq!(
-        standard.field("address"),
-        Some(&DfdlValue::String("GPRMC".into()))
-    );
-    let payload = standard.field("payload").expect("payload");
-    match payload.field("field").expect("fields") {
-        DfdlValue::Array(items) => {
-            assert_eq!(items.len(), 11);
-            assert_eq!(items[0], DfdlValue::String("123519".into()));
-            assert_eq!(items[1], DfdlValue::String("A".into()));
-            assert_eq!(items[10], DfdlValue::String("W".into()));
+            assert_eq!(items[2], DfdlValue::String("".into()));
+            assert_eq!(items[3], DfdlValue::String("A".into()));
         }
         other => panic!("expected array, got {other:?}"),
     }
@@ -165,9 +152,8 @@ fn nmea_sentence_gprmc() {
 
 #[test]
 fn nmea_sentence_gprmc_round_trip() {
-    let input = b"$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A\r\n";
     let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_sentence.xsd")).expect("spec");
-    let decoded = spec.decode(input).expect("decode");
+    let decoded = spec.decode(GPRMC_SAMPLE).expect("decode");
     let encoded = spec.encode(&decoded).expect("encode");
-    assert_eq!(encoded, input);
+    assert_eq!(encoded, GPRMC_SAMPLE);
 }

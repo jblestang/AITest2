@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
+  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"/>
+
+  <xs:element name="GPVTG" dfdl:terminator="%CR;%LF;">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="body" dfdl:initiator="$GPVTG," dfdl:terminator="*" dfdl:lengthKind="implicit">
+          <xs:complexType>
+            <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
+              <xs:element name="trackTrue" type="xs:string"/>
+              <xs:element name="trackTrueUnit" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="trackMagnetic" type="xs:string" minOccurs="0"/>
+              <xs:element name="trackMagneticUnit" type="xs:string" minOccurs="0"/>
+              <xs:element name="speedKnots" type="xs:string"/>
+              <xs:element name="speedKnotsUnit" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="speedKmh" type="xs:string"/>
+              <xs:element name="speedKmhUnit" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="mode" type="xs:string" minOccurs="0"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="checksum" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="2"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

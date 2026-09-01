@@ -241,6 +241,36 @@ mod tests {
     use crate::DfdlSpec;
 
     #[test]
+    fn decode_consecutive_empty_csv_fields() {
+        use crate::schema::parse_schema;
+        use crate::DfdlSpec;
+        let xsd = r##"<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
+  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"/>
+  <xs:element name="Row" dfdl:terminator=";">
+    <xs:complexType>
+      <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
+        <xs:element name="field" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"##;
+        parse_schema(xsd).expect("parse");
+        let spec = DfdlSpec::from_xsd(xsd).expect("spec");
+        let decoded = spec.decode(b"a,,;").expect("decode");
+        match decoded.field("field").expect("fields") {
+            crate::DfdlValue::Array(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], crate::DfdlValue::String("a".into()));
+                assert_eq!(items[1], crate::DfdlValue::String("".into()));
+                assert_eq!(items[2], crate::DfdlValue::String("".into()));
+            }
+            other => panic!("expected array, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn encodes_nmea_root_line_ending() {
         let input = b"$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A\r\n";
         let spec = DfdlSpec::from_xsd(include_str!(

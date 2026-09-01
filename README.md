@@ -80,6 +80,10 @@ See `tests/fixtures/` for sample XSD schemas:
 - `record.xsd` — binary struct (u32 + u8)
 - `nmea_sentence.xsd` — generic NMEA 0183 sentence parser (`$`/`!`, comma fields, `*checksum`)
 - `nmea_gpgga.xsd` — typed GPGGA fix sentence
+- `nmea_gprmc.xsd` — typed GPRMC minimum-recommended navigation sentence
+- `nmea_aivdm.xsd` — typed AIVDM AIS VHF sentence (outer NMEA layer)
+- `nmea_gll.xsd` — typed GPGLL geographic position sentence
+- `nmea_vtg.xsd` — typed GPVTG course/speed sentence
 - `text_message.xsd` — text format with fixed and delimited fields
 
 Run tests:
