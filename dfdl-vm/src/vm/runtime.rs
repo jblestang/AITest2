@@ -1,7 +1,7 @@
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool};
 use crate::schema::{
-    encode_delimiter, match_delimiter, match_length_pattern, ByteOrder, LengthKind, LengthUnits,
-    Representation, TextTrimKind,
+    encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, ByteOrder, LengthKind,
+    LengthUnits, Representation, TextTrimKind,
 };
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -120,21 +120,26 @@ pub(crate) fn read_binary_scalar(
     use crate::error::VmError;
     use crate::ir::ValueKind;
 
-    if props.length_units == LengthUnits::Bits {
-        return Err(VmError::UnsupportedOperation {
-            op: "bit-level decode".into(),
-        });
-    }
-
     if props.length_kind == LengthKind::Delimited {
         let bytes =
             read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)?;
-        return decode_binary_bytes(kind, &bytes, props.byte_order == ByteOrder::LittleEndian);
+        return decode_binary_scalar(kind, &bytes, props);
     }
 
     if props.length_kind == LengthKind::Prefixed {
         let bytes = read_prefixed_payload(cursor, props, strings)?;
-        return decode_binary_bytes(kind, &bytes, props.byte_order == ByteOrder::LittleEndian);
+        return decode_binary_scalar(kind, &bytes, props);
+    }
+
+    if props.length_units == LengthUnits::Bits {
+        let len = binary_bit_length(cursor, kind, props, strings)?;
+        if len == 0 && kind != ValueKind::String && kind != ValueKind::HexBinary {
+            return Err(VmError::InvalidValue {
+                message: "zero-length scalar".into(),
+            });
+        }
+        let bytes = read_length_span(cursor, len, LengthUnits::Bits)?;
+        return decode_binary_scalar(kind, &bytes, props);
     }
 
     let size = binary_byte_length(cursor, kind, props, strings)?;
@@ -151,7 +156,166 @@ pub(crate) fn read_binary_scalar(
         cursor.read_bytes(size).ok_or(VmError::UnexpectedEof)?
     };
 
-    decode_binary_bytes(kind, &bytes, props.byte_order == ByteOrder::LittleEndian)
+    decode_binary_scalar(kind, &bytes, props)
+}
+
+fn decode_binary_scalar(
+    kind: crate::ir::ValueKind,
+    bytes: &[u8],
+    props: &IrProps,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    match props.binary_number_rep {
+        BinaryNumberRep::Binary => {
+            decode_binary_bytes(kind, bytes, props.byte_order == ByteOrder::LittleEndian)
+        }
+        BinaryNumberRep::Bcd => decode_bcd_number(kind, bytes, props.byte_order == ByteOrder::LittleEndian),
+        BinaryNumberRep::PackedBcd => {
+            decode_packed_bcd_number(kind, bytes, props.byte_order == ByteOrder::LittleEndian)
+        }
+    }
+}
+
+fn decode_bcd_number(
+    kind: crate::ir::ValueKind,
+    bytes: &[u8],
+    le: bool,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    use crate::error::VmError;
+
+    let ordered = if le {
+        bytes.iter().copied().rev().collect::<Vec<_>>()
+    } else {
+        bytes.to_vec()
+    };
+    let mut value = 0u64;
+    for b in ordered {
+        let hi = (b >> 4) & 0x0f;
+        let lo = b & 0x0f;
+        if hi > 9 || lo > 9 {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("invalid BCD byte `0x{b:02x}`"),
+            });
+        }
+        value = value
+            .checked_mul(100)
+            .and_then(|v| v.checked_add(hi as u64 * 10 + lo as u64))
+            .ok_or(VmError::InvalidValue {
+                message: "BCD value overflow".into(),
+            })?;
+    }
+    bcd_value_to_dfdl(kind, value)
+}
+
+fn decode_packed_bcd_number(
+    kind: crate::ir::ValueKind,
+    bytes: &[u8],
+    le: bool,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    use crate::error::VmError;
+
+    if bytes.is_empty() {
+        return Err(VmError::InvalidValue {
+            message: "empty packed BCD".into(),
+        });
+    }
+    let ordered = if le {
+        bytes.iter().copied().rev().collect::<Vec<_>>()
+    } else {
+        bytes.to_vec()
+    };
+    let mut digits = Vec::new();
+    for (i, b) in ordered.iter().enumerate() {
+        let hi = (b >> 4) & 0x0f;
+        let lo = b & 0x0f;
+        if i + 1 == ordered.len() {
+            if hi > 9 {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("invalid packed BCD digit `0x{hi:x}`"),
+                });
+            }
+            digits.push(hi);
+        } else if hi > 9 || lo > 9 {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("invalid packed BCD byte `0x{b:02x}`"),
+            });
+        } else {
+            digits.push(hi);
+            digits.push(lo);
+        }
+    }
+    let mut value = 0u64;
+    for d in digits {
+        value = value
+            .checked_mul(10)
+            .and_then(|v| v.checked_add(d as u64))
+            .ok_or(VmError::InvalidValue {
+                message: "packed BCD value overflow".into(),
+            })?;
+    }
+    bcd_value_to_dfdl(kind, value)
+}
+
+fn bcd_value_to_dfdl(
+    kind: crate::ir::ValueKind,
+    value: u64,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::ir::ValueKind::*;
+    use crate::value::DfdlValue;
+
+    macro_rules! fit {
+        ($t:ty, $cons:expr) => {{
+            <$t>::try_from(value).map($cons).map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("BCD value `{value}` out of range"),
+            })
+        }};
+    }
+
+    match kind {
+        Byte => fit!(i8, DfdlValue::Byte),
+        UnsignedByte => fit!(u8, DfdlValue::UnsignedByte),
+        Short => fit!(i16, DfdlValue::Short),
+        UnsignedShort => fit!(u16, DfdlValue::UnsignedShort),
+        Int => fit!(i32, DfdlValue::Int),
+        UnsignedInt => fit!(u32, DfdlValue::UnsignedInt),
+        Long => fit!(i64, DfdlValue::Long),
+        other => Err(VmError::TypeMismatch {
+            expected: alloc::format!("BCD number for `{other:?}`"),
+        }),
+    }
+}
+
+fn binary_bit_length(
+    cursor: &Cursor<'_>,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<usize, crate::error::VmError> {
+    use crate::error::VmError;
+
+    match props.length_kind {
+        LengthKind::Fixed => Ok(props.length.unwrap_or((type_size(kind) * 8) as u64) as usize),
+        LengthKind::Implicit => Ok(type_size(kind) * 8),
+        LengthKind::Explicit => {
+            let len = props.length.ok_or(VmError::InvalidValue {
+                message: "explicit binary missing length".into(),
+            })?;
+            Ok(len as usize)
+        }
+        LengthKind::Pattern => {
+            let id = props.length_pattern.ok_or(VmError::InvalidValue {
+                message: "pattern length missing lengthPattern".into(),
+            })?;
+            let pat = pattern_str(strings, id)?;
+            match_length_pattern(&cursor.data[cursor.pos..], pat).ok_or(VmError::InvalidValue {
+                message: alloc::format!("pattern `{pat}` mismatch"),
+            })
+        }
+        LengthKind::EndOfParent => Ok(cursor.remaining().saturating_mul(8)),
+        LengthKind::Prefixed | LengthKind::Delimited => Err(VmError::InvalidValue {
+            message: "bit length handled before binary_bit_length".into(),
+        }),
+    }
 }
 
 fn binary_byte_length(
@@ -201,9 +365,15 @@ fn decode_binary_bytes(
 
     macro_rules! int {
         ($t:ty) => {{
+            let size = core::mem::size_of::<$t>();
             let mut buf = [0u8; core::mem::size_of::<$t>()];
-            let n = core::mem::size_of::<$t>().min(bytes.len());
-            buf[..n].copy_from_slice(&bytes[bytes.len() - n..]);
+            let n = size.min(bytes.len());
+            let src = &bytes[bytes.len() - n..];
+            if le {
+                buf[..n].copy_from_slice(src);
+            } else {
+                buf[(size - n)..].copy_from_slice(src);
+            }
             if le {
                 <$t>::from_le_bytes(buf)
             } else {
@@ -223,7 +393,8 @@ fn decode_binary_bytes(
         Long => Ok(DfdlValue::Long(int!(i64))),
         Float => Ok(DfdlValue::Float(f32::from_bits(int!(u32)))),
         Double => Ok(DfdlValue::Double(f64::from_bits(int!(u64)))),
-        String | HexBinary | Complex => Err(VmError::TypeMismatch {
+        HexBinary => Ok(DfdlValue::HexBinary(bytes.to_vec())),
+        String | Complex => Err(VmError::TypeMismatch {
             expected: "binary scalar".into(),
         }),
     }

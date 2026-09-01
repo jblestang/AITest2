@@ -1152,7 +1152,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.binary_number_rep = Some(match value.as_str() {
                     "binary" => BinaryNumberRep::Binary,
                     "bcd" => BinaryNumberRep::Bcd,
-                    "packedBCD" => BinaryNumberRep::PackedBcd,
+                    "packed" | "packedBCD" => BinaryNumberRep::PackedBcd,
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!("unknown binaryNumberRep `{other}`"),

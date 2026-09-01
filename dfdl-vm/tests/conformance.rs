@@ -361,3 +361,29 @@ fn daffodil_prefixed_extended_suite() {
         assert_named_test_passes(tdml, name);
     }
 }
+
+#[test]
+fn daffodil_prefixed_bin_representation_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_bin_int_txt_bytes",
+        "pl_bin_int_txt_bits",
+        "pl_bin_int_bin_bytes",
+        "pl_bin_int_bin_bits",
+        "pl_bin_int_txt_bytes_includes",
+        "pl_bin_int_txt_bits_includes",
+        "pl_bin_int_bin_bytes_includes",
+        "pl_bin_int_bin_bits_includes",
+        "pl_bin_int_bin_bytes_packed",
+        "pl_bin_int_bin_bits_packed",
+        "pl_bin_int_bin_bytes_bcd",
+        "pl_bin_int_bin_bits_bcd",
+        "pl_bin_hex_txt_bytes",
+        "pl_bin_hex_bin_bytes",
+        "pl_bin_bool_txt_bytes",
+        "pl_bin_bool_bin_bytes",
+        "pl_bin_bool_bin_bits",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
