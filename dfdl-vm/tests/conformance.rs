@@ -1,4 +1,7 @@
-use dfdl_vm::tdml::{effective_round_trip, parse_tdml, run_parser_test, run_parser_test_with_options, run_unparser_test, RoundTrip, TestOutcome};
+use dfdl_vm::tdml::{
+    effective_round_trip, parse_tdml, run_parser_test, run_parser_test_with_options, run_unparser_test,
+    ParserTestRunOptions, RoundTrip, TestOutcome,
+};
 
 macro_rules! daffodil_tdml {
     ($file:literal) => {
@@ -504,13 +507,30 @@ fn daffodil_prefixed_character_units_suite() {
 }
 
 #[test]
-fn daffodil_prefixed_character_unit_prefix_roundtrip_suite() {
+fn daffodil_prefixed_canonical_roundtrip_suite() {
     let tdml = daffodil_tdml!("PrefixedTests.tdml");
-    for name in [
-        // Canonical left/X padding for character-unit prefixed fields.
-        "pl_text_string_txt_chars_padding",
-    ] {
-        assert_decode_encode_roundtrip(tdml, name);
+    let suite = parse_tdml(tdml).expect("parse tdml");
+    for test in &suite.tests {
+        if test.expected_errors.is_some() {
+            continue;
+        }
+        if effective_round_trip(test.round_trip, suite.default_round_trip) != RoundTrip::Disabled {
+            continue;
+        }
+        let result = run_parser_test_with_options(
+            &suite,
+            test,
+            ParserTestRunOptions {
+                verify_canonical_round_trip: true,
+                ..ParserTestRunOptions::default()
+            },
+        )
+        .expect("run test");
+        match result.outcome {
+            TestOutcome::Pass => {}
+            TestOutcome::Fail(msg) => panic!("canonical roundtrip test `{}` failed: {msg}", test.name),
+            TestOutcome::Skip(msg) => panic!("canonical roundtrip test `{}` skipped: {msg}", test.name),
+        }
     }
 }
 
@@ -658,7 +678,15 @@ fn daffodil_prefixed_onepass_roundtrip_suite() {
         if rt != RoundTrip::OnePass {
             continue;
         }
-        let result = run_parser_test_with_options(&suite, test, true).expect("run test");
+        let result = run_parser_test_with_options(
+            &suite,
+            test,
+            ParserTestRunOptions {
+                verify_round_trip: true,
+                ..ParserTestRunOptions::default()
+            },
+        )
+        .expect("run test");
         match result.outcome {
             TestOutcome::Pass => {}
             TestOutcome::Fail(msg) => panic!("onePass test `{}` failed: {msg}", test.name),
@@ -675,7 +703,15 @@ fn daffodil_prefixed_twopass_roundtrip_suite() {
         if test.round_trip != RoundTrip::TwoPass {
             continue;
         }
-        let result = run_parser_test_with_options(&suite, test, true).expect("run test");
+        let result = run_parser_test_with_options(
+            &suite,
+            test,
+            ParserTestRunOptions {
+                verify_round_trip: true,
+                ..ParserTestRunOptions::default()
+            },
+        )
+        .expect("run test");
         match result.outcome {
             TestOutcome::Pass => {}
             TestOutcome::Fail(msg) => panic!("twoPass test `{}` failed: {msg}", test.name),

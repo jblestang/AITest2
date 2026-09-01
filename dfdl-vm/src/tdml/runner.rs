@@ -32,16 +32,25 @@ pub fn run_suite(tdml: &str) -> Result<Vec<TestResult>> {
     Ok(results)
 }
 
-/// Run a single parser test case from an already-parsed suite.
-pub fn run_parser_test(suite: &TdmlSuite, test: &ParserTestCase) -> Result<TestResult> {
-    run_parser_test_with_options(suite, test, false)
+/// Options for [`run_parser_test_with_options`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParserTestRunOptions {
+    /// Verify byte-identical encode for `roundTrip="onePass"` / `"twoPass"` tests.
+    pub verify_round_trip: bool,
+    /// For `roundTrip="false"` tests, verify decode → encode → decode preserves infoset.
+    pub verify_canonical_round_trip: bool,
 }
 
-/// Run a parser test case, optionally verifying `roundTrip="twoPass"` after a successful parse.
+/// Run a single parser test case from an already-parsed suite.
+pub fn run_parser_test(suite: &TdmlSuite, test: &ParserTestCase) -> Result<TestResult> {
+    run_parser_test_with_options(suite, test, ParserTestRunOptions::default())
+}
+
+/// Run a parser test case, optionally verifying roundtrip behavior after a successful parse.
 pub fn run_parser_test_with_options(
     suite: &TdmlSuite,
     test: &ParserTestCase,
-    verify_round_trip: bool,
+    options: ParserTestRunOptions,
 ) -> Result<TestResult> {
     let schema_xsd = match resolve_model_schema(suite, &test.model) {
         Ok(xsd) => xsd,
@@ -109,7 +118,7 @@ pub fn run_parser_test_with_options(
     match compare_infoset(&decoded, &test.expected_infoset) {
         Ok(()) => {
             let rt = effective_round_trip(test.round_trip, suite.default_round_trip);
-            let should_verify = verify_round_trip
+            let should_verify = options.verify_round_trip
                 && matches!(rt, RoundTrip::TwoPass | RoundTrip::OnePass);
             if should_verify {
                 match spec.encode(&decoded) {
@@ -156,6 +165,38 @@ pub fn run_parser_test_with_options(
                     Err(e) => Ok(TestResult {
                         name: test.name.clone(),
                         outcome: TestOutcome::Fail(alloc::format!("roundtrip encode error: {e}")),
+                    }),
+                }
+            } else if options.verify_canonical_round_trip && rt == RoundTrip::Disabled {
+                match spec.encode(&decoded) {
+                    Ok(encoded) => match spec.decode(&encoded) {
+                        Ok(redecoded) => {
+                            if compare_infoset(&redecoded, &test.expected_infoset).is_ok() {
+                                Ok(TestResult {
+                                    name: test.name.clone(),
+                                    outcome: TestOutcome::Pass,
+                                })
+                            } else {
+                                Ok(TestResult {
+                                    name: test.name.clone(),
+                                    outcome: TestOutcome::Fail(
+                                        "canonical roundtrip infoset mismatch".into(),
+                                    ),
+                                })
+                            }
+                        }
+                        Err(e) => Ok(TestResult {
+                            name: test.name.clone(),
+                            outcome: TestOutcome::Fail(alloc::format!(
+                                "canonical roundtrip re-parse error: {e}"
+                            )),
+                        }),
+                    },
+                    Err(e) => Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Fail(alloc::format!(
+                            "canonical roundtrip encode error: {e}"
+                        )),
                     }),
                 }
             } else {
