@@ -1,4 +1,5 @@
-use super::runtime::{default_value_for, read_simple, Cursor, RuntimeConfig, VmContext};
+use super::runtime::{default_value_for, read_simple, consume_enclosing_delimiter, Cursor, RuntimeConfig, VmContext};
+use crate::schema::LengthKind;
 use crate::error::{Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
 use crate::schema::{match_delimiter, SeparatorPosition};
@@ -28,6 +29,7 @@ impl<'a> Decoder<'a> {
     pub fn decode(&self, input: &[u8]) -> Result<DfdlValue> {
         let mut cursor = Cursor::new(input);
         let value = self.decode_node(self.ctx.program.root, &mut cursor)?;
+        self.consume_root_delimited_suffix(&mut cursor)?;
         if self.ctx.config.strict_eos && !cursor.is_empty() {
             return Err(VmError::TrailingData {
                 remaining: cursor.remaining(),
@@ -49,6 +51,7 @@ impl<'a> Decoder<'a> {
                     let child_value = self.decode_particle(child, cursor)?;
                     insert_child(&mut map, child, child_value, self.ctx.program)?;
                 }
+                self.consume_terminator(props, cursor)?;
                 Ok(DfdlValue::Sequence(map))
             }
             IrNode::Choice { branches, .. } => {
@@ -153,6 +156,35 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    fn consume_root_delimited_suffix(&self, cursor: &mut Cursor<'_>) -> Result<()> {
+        let node = self.ctx.program.node(self.ctx.program.root)?;
+        if let IrNode::Element { props, child, .. } = node {
+            if child.is_none() && props.length_kind == LengthKind::Delimited && !cursor.is_empty() {
+                consume_enclosing_delimiter(cursor, props, self.ctx.strings())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn consume_terminator(&self, props: &IrProps, cursor: &mut Cursor<'_>) -> Result<()> {
+        if let Some(id) = props.terminator {
+            let pat = self.ctx.strings().get(id)?;
+            if pat.is_empty() {
+                return Ok(());
+            }
+            if !cursor.consume_delimiter(pat) {
+                if cursor.is_empty() {
+                    return Ok(());
+                }
+                return Err(VmError::InvalidValue {
+                    message: "terminator mismatch".into(),
+                }
+                .into());
+            }
+        }
+        Ok(())
+    }
+
     fn consume_separator(
         &self,
         props: &IrProps,
@@ -165,11 +197,13 @@ impl<'a> Decoder<'a> {
         }
         if let Some(id) = props.separator {
             let pat = self.ctx.strings().get(id)?;
-            if !cursor.consume_delimiter(pat) {
-                return Err(VmError::InvalidValue {
-                    message: "separator mismatch".into(),
+            if match_delimiter(&cursor.data[cursor.pos..], pat).is_some() {
+                if !cursor.consume_delimiter(pat) {
+                    return Err(VmError::InvalidValue {
+                        message: "separator mismatch".into(),
+                    }
+                    .into());
                 }
-                .into());
             }
         }
         Ok(())

@@ -183,9 +183,9 @@ impl<'a> IrBuilder<'a> {
     }
 
     fn compile_complex(&mut self, content: &ComplexContent, props: &IrProps) -> Result<u32> {
-        let ir_props = props.clone();
         match content {
             ComplexContent::Sequence(sequence) => {
+                let ir_props = merge_dfdl_props(props, &sequence.props, &DfdlProps::default(), &mut self.strings);
                 let mut children = Vec::new();
                 for particle in &sequence.particles {
                     children.push(self.compile_particle(particle, &ir_props)?);
@@ -196,6 +196,7 @@ impl<'a> IrBuilder<'a> {
                 }))
             }
             ComplexContent::Choice(choice) => {
+                let ir_props = merge_dfdl_props(props, &choice.props, &DfdlProps::default(), &mut self.strings);
                 let mut branches = Vec::new();
                 for branch in &choice.branches {
                     let node = self.compile_particle(branch, &ir_props)?;
@@ -212,7 +213,7 @@ impl<'a> IrBuilder<'a> {
             }
             ComplexContent::Empty => Ok(self.push(IrNode::Sequence {
                 children: Vec::new(),
-                props: ir_props,
+                props: props.clone(),
             })),
         }
     }
@@ -307,14 +308,20 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.binary_float_rep {
         base.binary_float_rep = v;
     }
-    if props.initiator.is_some() {
-        base.initiator = props.initiator.as_ref().map(|s| strings.intern(s.clone()));
+    if let Some(ref s) = props.initiator {
+        if !s.is_empty() {
+            base.initiator = Some(strings.intern(s.clone()));
+        }
     }
-    if props.terminator.is_some() {
-        base.terminator = props.terminator.as_ref().map(|s| strings.intern(s.clone()));
+    if let Some(ref s) = props.terminator {
+        if !s.is_empty() {
+            base.terminator = Some(strings.intern(s.clone()));
+        }
     }
-    if props.separator.is_some() {
-        base.separator = props.separator.as_ref().map(|s| strings.intern(s.clone()));
+    if let Some(ref s) = props.separator {
+        if !s.is_empty() {
+            base.separator = Some(strings.intern(s.clone()));
+        }
     }
     if props.occurs_min.is_some() {
         base.occurs_min = props.occurs_min.unwrap_or(1);

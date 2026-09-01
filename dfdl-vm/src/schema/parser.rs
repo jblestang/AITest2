@@ -41,6 +41,8 @@ struct XsdParser<'a> {
     doc: SchemaDocument,
     pending_props: DfdlProps,
     resolver: SchemaResolver,
+    /// True while parsing `dfdl:defineFormat`; nested `dfdl:format` must not alter schema defaults.
+    in_define_format: bool,
 }
 
 impl<'a> XsdParser<'a> {
@@ -51,6 +53,7 @@ impl<'a> XsdParser<'a> {
             doc: SchemaDocument::default(),
             pending_props: DfdlProps::default(),
             resolver,
+            in_define_format: false,
         }
     }
 
@@ -156,11 +159,14 @@ impl<'a> XsdParser<'a> {
                         "complexType" => self.parse_complex_type(None, child_attrs)?,
                         "simpleType" => self.parse_simple_type(None, child_attrs)?,
                         "include" => self.parse_include(child_attrs)?,
-                        "format" | "defineFormat" => {
+                        "format" => {
                             let props =
                                 self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
                             self.doc.format_defaults.props =
                                 merge_props(self.doc.format_defaults.props.clone(), props);
+                        }
+                        "defineFormat" => {
+                            let _ = self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
                         }
                         "annotation" => {
                             let props = self.parse_annotation(child_attrs)?;
@@ -781,8 +787,10 @@ impl<'a> XsdParser<'a> {
                     props = merge_props(base, props);
                 }
             }
-            self.doc.format_defaults.props =
-                merge_props(self.doc.format_defaults.props.clone(), props.clone());
+            if !self.in_define_format {
+                self.doc.format_defaults.props =
+                    merge_props(self.doc.format_defaults.props.clone(), props.clone());
+            }
         }
 
         self.reader.skip_insignificant_ws()?;
@@ -804,6 +812,7 @@ impl<'a> XsdParser<'a> {
         }
 
         let mut props = DfdlProps::default();
+        self.in_define_format = true;
         loop {
             self.reader.skip_insignificant_ws()?;
             match self.reader.peek()? {
@@ -811,7 +820,10 @@ impl<'a> XsdParser<'a> {
                     let _ = self.reader.next_event()?;
                     break;
                 }
-                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::EndDocument => {
+                    self.in_define_format = false;
+                    return Err(ParseError::UnexpectedEof.into());
+                }
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     let prefix = name.prefix.clone();
@@ -828,6 +840,7 @@ impl<'a> XsdParser<'a> {
                     let _ = self.reader.next_event()?;
                 }
                 other => {
+                    self.in_define_format = false;
                     return Err(ParseError::InvalidXml {
                         message: alloc::format!(
                             "expected defineFormat child, found {:?}",
@@ -838,6 +851,7 @@ impl<'a> XsdParser<'a> {
                 }
             }
         }
+        self.in_define_format = false;
 
         if let Some(name) = format_name {
             self.doc.named_formats.insert(name, props.clone());
@@ -1189,7 +1203,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
 }
 
 fn parse_delimiter_literal(raw: &str) -> Result<String> {
-    Ok(raw.to_string())
+    Ok(crate::schema::expand_entities_str(raw))
 }
 
 fn parse_byte_literal(raw: &str) -> Result<Vec<u8>> {
@@ -1369,6 +1383,49 @@ mod tests {
     fn parse_schema_with_tns_type() {
         let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="Record" type="tns:RecordType"/><xs:complexType name="RecordType"><xs:sequence/></xs:complexType></xs:schema>"#;
         parse_schema(xsd).expect("tns type");
+    }
+
+    #[test]
+    fn define_format_does_not_clobber_schema_format_defaults() {
+        let xsd = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
+           xmlns:ex="http://example.com">
+  <xs:include schemaLocation="/org/apache/daffodil/xsd/DFDLGeneralFormat.dfdl.xsd"/>
+  <dfdl:format ref="ex:GeneralFormat" lengthKind="delimited" representation="text"/>
+  <dfdl:defineFormat name="trimmed">
+    <dfdl:format ref="ex:GeneralFormat" textTrimKind="padChar"/>
+  </dfdl:defineFormat>
+  <xs:element name="A" type="xs:int"/>
+</xs:schema>"#;
+        let doc = parse_schema(xsd).expect("parse");
+        assert_eq!(
+            doc.format_defaults.props.length_kind,
+            Some(LengthKind::Delimited),
+            "defineFormat inner format must not reset schema format defaults"
+        );
+        assert!(doc.named_formats.contains_key("trimmed"));
+    }
+
+    #[test]
+    fn format_delimited_overrides_general_format() {
+        let xsd = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
+           xmlns:ex="http://example.com">
+  <xs:include schemaLocation="/org/apache/daffodil/xsd/DFDLGeneralFormat.dfdl.xsd"/>
+  <dfdl:format ref="ex:GeneralFormat" lengthKind="delimited"
+    lengthUnits="bytes" encoding="ascii" separator="" initiator=""
+    terminator="" occursCountKind="implicit" ignoreCase="no"
+    textNumberRep="standard" representation="text" initiatedContent="no" />
+  <xs:element name="A" type="xs:int"/>
+</xs:schema>"#;
+        let doc = parse_schema(xsd).expect("parse");
+        assert_eq!(
+            doc.format_defaults.props.length_kind,
+            Some(LengthKind::Delimited),
+            "format lengthKind=delimited should override GeneralFormat implicit default"
+        );
     }
 
     #[test]

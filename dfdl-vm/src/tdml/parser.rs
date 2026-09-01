@@ -1,4 +1,5 @@
 use crate::error::{ParseError, Result};
+use crate::schema::expand_entities;
 use crate::xml_util::{attrs_to_map, local_name_str, XmlReader};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
@@ -175,9 +176,19 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
         Some("hex") => DocumentKind::Hex,
         _ => DocumentKind::Text,
     };
+    let replace_entities = attrs
+        .get("replaceDFDLEntities")
+        .map(|v| v == "true")
+        .unwrap_or(false);
     let text = reader.read_text_until_end("documentPart")?;
     let data = match kind {
-        DocumentKind::Text => text.into_bytes(),
+        DocumentKind::Text => {
+            if replace_entities {
+                expand_entities(&text)
+            } else {
+                text.into_bytes()
+            }
+        }
         DocumentKind::Hex => parse_hex_document(&text)?,
     };
     Ok(TdmlDocument { kind, data })

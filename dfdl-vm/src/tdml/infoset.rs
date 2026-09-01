@@ -130,7 +130,7 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
             text: None,
             children: map
                 .iter()
-                .map(|(k, v)| (k.clone(), vec![value_to_node(k, v)]))
+                .map(|(k, v)| (k.clone(), field_values_to_infoset_nodes(k, v)))
                 .collect(),
         },
         DfdlValue::Array(items) => InfosetNode {
@@ -144,6 +144,13 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
             text: Some(scalar_to_string(scalar)),
             children: BTreeMap::new(),
         },
+    }
+}
+
+fn field_values_to_infoset_nodes(name: &str, value: &DfdlValue) -> Vec<InfosetNode> {
+    match value {
+        DfdlValue::Array(items) => items.iter().map(|v| value_to_node(name, v)).collect(),
+        other => vec![value_to_node(name, other)],
     }
 }
 

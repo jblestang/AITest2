@@ -60,29 +60,35 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
 /// Supports literal bytes (after entity expansion) plus simple regex suffixes: `+`, `*`, `?`.
 /// Compound patterns like `%NL;%WSP*;` are matched segment-by-segment.
 pub fn match_pattern(input: &[u8], pattern: &str) -> Option<usize> {
-    let pat = pattern.trim();
-    if pat.is_empty() {
+    if pattern.is_empty() {
         return Some(0);
     }
 
+    // Single-byte literals (e.g. CSV `*` separator) — never quantifiers.
+    if pattern.len() == 1 {
+        let b = pattern.as_bytes()[0];
+        return if input.first() == Some(&b) { Some(1) } else { None };
+    }
+
     // Regex-style character class: [abc]+ or [a-zA-Z]+
-    if pat.starts_with('[') {
-        return match_char_class(input, pat);
+    if pattern.starts_with('[') {
+        return match_char_class(input, pattern);
     }
 
     // DFDL whitespace entity with optional quantifier
-    if pat.starts_with("%WSP") || pat.starts_with("%WS") {
-        return match_wsp_entity(input, pat);
+    if pattern.starts_with("%WSP") || pattern.starts_with("%WS") {
+        return match_wsp_entity(input, pattern);
     }
 
-    let expanded = expand_entities(pat);
+    let expanded = expand_entities(pattern);
     if expanded.is_empty() {
         return Some(0);
     }
 
-    let last = pat.as_bytes().last().copied();
+    let last = pattern.as_bytes().last().copied();
+    // Lone `+`, `*`, or `?` are literal delimiter bytes (e.g. CSV `*` separator), not quantifiers.
     let quantifier = match last {
-        Some(b'+') | Some(b'*') | Some(b'?') => last,
+        Some(b'+') | Some(b'*') | Some(b'?') if expanded.len() > 1 => last,
         _ => None,
     };
 
@@ -127,12 +133,14 @@ pub fn match_pattern(input: &[u8], pattern: &str) -> Option<usize> {
 
 /// Match a compound DFDL delimiter (e.g. `%NL;%WSP*;`).
 pub fn match_delimiter(input: &[u8], pattern: &str) -> Option<usize> {
-    let pat = pattern.trim();
-    if pat.is_empty() {
+    if pattern.is_empty() {
         return Some(0);
     }
+    if pattern.len() == 1 {
+        return match_pattern(input, pattern);
+    }
     let mut pos = 0;
-    for segment in split_delimiter_segments(pat) {
+    for segment in split_delimiter_segments(pattern) {
         let matched = match_pattern(&input[pos..], segment)?;
         pos += matched;
     }
@@ -366,6 +374,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn match_newline_delimiter() {
+        assert_eq!(match_delimiter(b"1\nrest", "\n"), Some(1));
+        assert_eq!(match_delimiter(b"1\n", "\n"), Some(1));
+    }
+
+    #[test]
     fn expand_nl() {
         assert_eq!(expand_entities("%NL;"), b"\n");
         assert_eq!(expand_entities("%#r3b;"), b";");
@@ -403,7 +417,9 @@ mod tests {
     }
 
     #[test]
-    fn match_literal_with_space_pattern() {
-        assert_eq!(match_length_pattern(b"3 4x", "3 4"), Some(3));
+    fn match_literal_star_separator() {
+        assert_eq!(super::match_pattern(b"*x", "*"), Some(1));
+        assert_eq!(match_delimiter(b"*x", "*"), Some(1));
+        assert_eq!(match_delimiter(b"*", "*"), Some(1));
     }
 }
