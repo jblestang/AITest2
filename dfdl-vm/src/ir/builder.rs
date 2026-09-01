@@ -6,7 +6,7 @@ use crate::length_validate::{
 };
 use crate::schema::{
     BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, Particle, Representation,
-    SchemaDocument, SimpleBase, TypeDef, TypeName,
+    SchemaDocument, SimpleBase, TypeDef, TypeName, validate_length_pattern,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -512,10 +512,20 @@ fn finalize_element_props(
     if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
         if let Some(len) = ir.length {
             validate_float_double_bit_length(kind, len, ir.length_units)?;
-            if kind != ValueKind::Decimal {
-                validate_data_length_schema(kind, len, ir.length_units)?;
-                validate_signed_one_bit_length_schema(kind, len, ir.length_units, &tunables)?;
+            if ir.representation == Representation::Binary {
+                if kind != ValueKind::Decimal {
+                    validate_data_length_schema(kind, len, ir.length_units)?;
+                    validate_signed_one_bit_length_schema(kind, len, ir.length_units, &tunables)?;
+                }
             }
+        }
+    }
+    if ir.length_kind == LengthKind::Pattern {
+        if let Some(id) = ir.length_pattern {
+            let pat = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
+                message: e.to_string(),
+            })?;
+            validate_length_pattern(pat).map_err(|msg| SchemaError::InvalidProperty { message: msg })?;
         }
     }
     if matches!(kind, ValueKind::Float | ValueKind::Double)

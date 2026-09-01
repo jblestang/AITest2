@@ -7,7 +7,7 @@ use super::runtime::{
 use crate::length_validate::validate_data_length_vm;
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
-use crate::schema::{match_delimiter, InputValueCalc, LengthKind, LengthUnits, Representation, SeparatorPosition};
+use crate::schema::{match_delimiter, match_length_pattern, InputValueCalc, LengthKind, LengthUnits, Representation, SeparatorPosition};
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -46,6 +46,7 @@ impl<'a> Decoder<'a> {
             None,
             None,
             None,
+            false,
         )?;
         self.consume_root_delimited_suffix(&mut cursor)?;
         if self.ctx.config.strict_eos && cursor.bit_count == 0 && cursor.remaining() > 0 {
@@ -68,6 +69,7 @@ impl<'a> Decoder<'a> {
         parent_sequence: Option<&IrProps>,
         siblings: Option<&BTreeMap<String, SiblingState>>,
         content_scope_bytes: Option<usize>,
+        pattern_text_frame: bool,
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
@@ -86,6 +88,7 @@ impl<'a> Decoder<'a> {
                         Some(props),
                         Some(&seq_siblings),
                         content_scope_bytes,
+                        pattern_text_frame,
                     ) {
                         Ok(child_value) => {
                             let consumed = cursor.pos.saturating_sub(start);
@@ -135,6 +138,7 @@ impl<'a> Decoder<'a> {
                         parent_sequence,
                         siblings,
                         content_scope_bytes,
+                        pattern_text_frame,
                     ) {
                         let name = self.ctx.strings().get(branch.name)?.to_string();
                         return Ok(DfdlValue::choice(name, value));
@@ -151,6 +155,7 @@ impl<'a> Decoder<'a> {
                 parent_sequence,
                 siblings,
                 content_scope_bytes,
+                pattern_text_frame,
             ),
         }
     }
@@ -163,6 +168,7 @@ impl<'a> Decoder<'a> {
         parent_sequence: Option<&IrProps>,
         siblings: Option<&BTreeMap<String, SiblingState>>,
         content_scope_bytes: Option<usize>,
+        pattern_text_frame: bool,
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element { props, .. } => self.decode_element_occurrences(
@@ -173,6 +179,7 @@ impl<'a> Decoder<'a> {
                 parent_sequence,
                 siblings,
                 content_scope_bytes,
+                pattern_text_frame,
             ),
             _ => self.decode_node(
                 node_id,
@@ -181,6 +188,7 @@ impl<'a> Decoder<'a> {
                 parent_sequence,
                 siblings,
                 content_scope_bytes,
+                pattern_text_frame,
             ),
         }
     }
@@ -194,6 +202,7 @@ impl<'a> Decoder<'a> {
         parent_sequence: Option<&IrProps>,
         siblings: Option<&BTreeMap<String, SiblingState>>,
         content_scope_bytes: Option<usize>,
+        pattern_text_frame: bool,
     ) -> Result<DfdlValue> {
         let min = props.occurs_min;
         let max = props.occurs_max.unwrap_or(u64::MAX);
@@ -215,6 +224,7 @@ impl<'a> Decoder<'a> {
                 parent_sequence,
                 siblings,
                 content_scope_bytes,
+                pattern_text_frame,
             ) {
                 Ok(v) => items.push(v),
                 Err(e) => {
@@ -265,6 +275,7 @@ impl<'a> Decoder<'a> {
         parent_sequence: Option<&IrProps>,
         siblings: Option<&BTreeMap<String, SiblingState>>,
         content_scope_bytes: Option<usize>,
+        pattern_text_frame: bool,
     ) -> Result<DfdlValue> {
         let parent_term = parent_terminator_str(parent_sequence, self.ctx.strings())?;
         match self.ctx.program.node(node_id)? {
@@ -281,9 +292,56 @@ impl<'a> Decoder<'a> {
                     self.ctx.strings(),
                     &self.ctx.program.tunables,
                 )?;
+                if pattern_text_frame
+                    && props.representation == Representation::Binary
+                    && !matches!(*kind, ValueKind::HexBinary)
+                {
+                    return Err(VmError::InvalidValue {
+                        message:
+                            "Parse Error. lengthKind pattern complex type requires text representation"
+                                .into(),
+                    }
+                    .into());
+                }
                 consume_alignment(cursor, &props)?;
                 if let Some(child_id) = child {
                     self.consume_initiator(&props, cursor)?;
+                    if props.length_kind == LengthKind::Pattern {
+                        let id = props.length_pattern.ok_or(VmError::InvalidValue {
+                            message: "pattern complex missing lengthPattern".into(),
+                        })?;
+                        let pat = self.ctx.strings().get(id)?;
+                        let len = match_length_pattern(&cursor.data[cursor.pos..], pat).ok_or(
+                            VmError::InvalidValue {
+                                message: alloc::format!("pattern `{pat}` mismatch"),
+                            },
+                        )?;
+                        let bytes = cursor
+                            .read_bytes(len)
+                            .ok_or(VmError::UnexpectedEof)?;
+                        let mut sub = Cursor::new(&bytes);
+                        let scope = bytes.len();
+                        let inner = self.decode_node(
+                            *child_id,
+                            &mut sub,
+                            false,
+                            None,
+                            None,
+                            Some(scope),
+                            true,
+                        )?;
+                        if !sub.is_empty() {
+                            return Err(VmError::InvalidValue {
+                                message: "unconsumed bytes in pattern-length complex element".into(),
+                            }
+                            .into());
+                        }
+                        return Ok(wrap_named(
+                            self.ctx.strings().get(*name)?,
+                            inner,
+                            ValueKind::Complex,
+                        ));
+                    }
                     if props.length_kind == LengthKind::Explicit {
                         let len = props.length.ok_or(VmError::InvalidValue {
                             message: "explicit complex missing length".into(),
@@ -309,6 +367,7 @@ impl<'a> Decoder<'a> {
                                 None,
                                 None,
                                 Some(scope),
+                                pattern_text_frame,
                             )?;
                             if props.truncate_specified_length_string && !sub.is_empty() {
                                 return Err(VmError::InvalidValue {
@@ -339,6 +398,7 @@ impl<'a> Decoder<'a> {
                             None,
                             None,
                             None,
+                            pattern_text_frame,
                         )?;
                         if props.truncate_specified_length_string
                             && !cursor.is_frame_consumed()
@@ -371,7 +431,7 @@ impl<'a> Decoder<'a> {
                         consume_enclosing_delimiter(cursor, &props, self.ctx.strings(), parent_term)?;
                         let mut sub = Cursor::new(&bytes);
                         let scope = bytes.len();
-                        let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope))?;
+                        let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope), pattern_text_frame)?;
                         if !sub.is_empty() {
                             return Err(VmError::InvalidValue {
                                 message: "unconsumed bytes in delimited complex element".into(),
@@ -393,7 +453,7 @@ impl<'a> Decoder<'a> {
                         )?;
                         let mut sub = Cursor::new(&bytes);
                         let scope = bytes.len();
-                        let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope))?;
+                        let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope), pattern_text_frame)?;
                         if !sub.is_empty() {
                             return Err(VmError::InvalidValue {
                                 message: "unconsumed bytes in prefixed complex element".into(),
@@ -416,7 +476,7 @@ impl<'a> Decoder<'a> {
                                 }
                                 let mut sub = Cursor::new(&bytes);
                                 let scope = bytes.len();
-                                let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope))?;
+                                let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope), pattern_text_frame)?;
                                 if !sub.is_empty() {
                                     return Err(VmError::InvalidValue {
                                         message:
@@ -443,7 +503,7 @@ impl<'a> Decoder<'a> {
                                     }
                                     let mut sub = Cursor::new(&bytes);
                                     let scope = bytes.len();
-                                    let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope))?;
+                                    let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope), pattern_text_frame)?;
                                     if !sub.is_empty() {
                                         return Err(VmError::InvalidValue {
                                             message:
@@ -468,6 +528,7 @@ impl<'a> Decoder<'a> {
                         parent_sequence,
                         None,
                         content_scope_bytes,
+                        pattern_text_frame,
                     )?;
                     self.consume_terminator(&props, cursor)?;
                     Ok(wrap_named(
@@ -499,7 +560,7 @@ impl<'a> Decoder<'a> {
                     .map_err(Into::into)
                 }
             }
-            _ => self.decode_node(node_id, cursor, false, None, None, content_scope_bytes),
+            _ => self.decode_node(node_id, cursor, false, None, None, content_scope_bytes, pattern_text_frame),
         }
     }
 

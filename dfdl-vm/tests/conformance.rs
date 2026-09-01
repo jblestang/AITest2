@@ -212,6 +212,56 @@ fn daffodil_length_kind_delimited_mixed_implicit() {
     assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "NumSeq_04");
 }
 
+#[test]
+fn daffodil_length_kind_delimited_fixed_length() {
+    assert_named_test_passes(
+        daffodil_tdml!("DelimitedTests.tdml"),
+        "Lesson4_delimited_fixed_length",
+    );
+}
+
+#[test]
+fn daffodil_length_kind_delimited_infix_separator() {
+    let tdml = daffodil_tdml!("DelimitedTests.tdml");
+    assert_named_test_passes(tdml, "NumSeq_10");
+    assert_named_test_passes(tdml, "NumSeq_13");
+    assert_named_unparser_test_passes(tdml, "NumSeq_13a");
+}
+
+#[test]
+fn daffodil_length_kind_delimited_infix_separator_fail() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "NumSeq_13Fail");
+}
+
+#[test]
+fn daffodil_section12_pattern_extended_suite() {
+    let tdml = daffodil_tdml!("PatternTests.tdml");
+    for name in [
+        "LengthKindPatternCompound2",
+        "LengthPatternIllegalBits_01",
+        "LengthPatternLegalBits_01",
+        "LengthPatternLegalBits_02",
+        "LengthPatternNil_FindsNil",
+        "LengthPatternNil_NoNil",
+        "LengthPatternNil_EmptyStringAllowed",
+        "lengthPatternBinaryPatternLimit",
+        "ComplexWithBinaryChild",
+        "invalid_pattern",
+        "invalid_pattern2",
+        "invalid_pattern3",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_end_of_parent_nyi_complex() {
+    assert_named_test_passes(
+        daffodil_tdml!("EndOfParentTests.tdml"),
+        "TestEndOfParentNYIComplexTypes",
+    );
+}
+
 // --- AN path delimited (Section 12) ---
 
 #[test]

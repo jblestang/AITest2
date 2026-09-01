@@ -2324,6 +2324,11 @@ fn parse_int<T: core::str::FromStr>(s: &str) -> Result<T, crate::error::VmError>
 }
 
 fn parse_int_typed<T: core::str::FromStr>(s: &str, type_name: &str) -> Result<T, crate::error::VmError> {
+    if s.is_empty() {
+        return Err(crate::error::VmError::InvalidValue {
+            message: "Parse Error. empty string".into(),
+        });
+    }
     s.parse().map_err(|_| crate::error::VmError::InvalidValue {
         message: alloc::format!("Parse Error. {type_name} {s}"),
     })

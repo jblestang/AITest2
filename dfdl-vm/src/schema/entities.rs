@@ -1,4 +1,5 @@
-use alloc::string::String;
+use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use regex_automata::{meta::Regex, Anchored, Input};
@@ -288,6 +289,133 @@ fn match_wsp_entity(input: &[u8], pattern: &str) -> Option<usize> {
     }
 }
 
+/// Validate a DFDL `lengthPattern` at schema compile time.
+pub fn validate_length_pattern(pattern: &str) -> Result<(), String> {
+    let pat = pattern.trim();
+    if pat.is_empty() {
+        return Ok(());
+    }
+    if let Some(err) = validate_length_pattern_syntax(pat) {
+        return Err(err);
+    }
+    Regex::new(pat)
+        .map(|_| ())
+        .map_err(|e| format_length_pattern_error(pat, e))
+}
+
+fn validate_length_pattern_syntax(pat: &str) -> Option<String> {
+    let bytes = pat.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i = usize::min(i + 2, bytes.len());
+            continue;
+        }
+        if bytes[i] != b'{' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        if i >= bytes.len() {
+            return Some(length_pattern_syntax_error(
+                "Unclosed counted closure",
+                pat,
+                start,
+            ));
+        }
+        if bytes[i] == b'}' {
+            return Some(length_pattern_syntax_error("Illegal repetition", pat, start));
+        }
+        let mut j = i;
+        let mut has_comma = false;
+        while j < bytes.len() && bytes[j] != b'}' {
+            if bytes[j] == b',' {
+                has_comma = true;
+            }
+            if bytes[j] == b' ' || bytes[j] == b'\t' {
+                return Some(length_pattern_syntax_error(
+                    "Unclosed counted closure",
+                    pat,
+                    start,
+                ));
+            }
+            j += 1;
+        }
+        if j >= bytes.len() {
+            return Some(length_pattern_syntax_error(
+                "Unclosed counted closure",
+                pat,
+                start,
+            ));
+        }
+        let body = &pat[i..j];
+        let valid = if has_comma {
+            let parts: alloc::vec::Vec<&str> = body.splitn(2, ',').collect();
+            parts.len() == 2
+                && parts[0].chars().all(|c| c.is_ascii_digit())
+                && parts[1].chars().all(|c| c.is_ascii_digit())
+        } else {
+            body.chars().all(|c| c.is_ascii_digit())
+        };
+        if !valid {
+            return Some(length_pattern_syntax_error("Illegal repetition", pat, start));
+        }
+        i = j + 1;
+    }
+
+    if pat == "*" {
+        return Some(length_pattern_syntax_error(
+            "Dangling meta character '*'",
+            pat,
+            0,
+        ));
+    }
+    None
+}
+
+fn length_pattern_syntax_error(reason: &str, pattern: &str, index: usize) -> String {
+    alloc::format!(
+        "Schema Definition Error. {reason} near index {index} in `{pattern}`"
+    )
+}
+
+fn format_length_pattern_error(pattern: &str, err: impl core::fmt::Display) -> String {
+    let detail = err.to_string();
+    let lower = detail.to_ascii_lowercase();
+    let suffix = if let Some(idx) = detail.find("at offset ") {
+        detail[idx..].to_string()
+    } else if let Some(idx) = lower.find(" near index ") {
+        detail[idx + 1..].to_string()
+    } else if let Some(idx) = lower.find(" at index ") {
+        format!(" near index{}", &detail[idx + 9..])
+    } else {
+        String::new()
+    };
+
+    let reason = if pattern.contains("{") && pattern.contains(' ') && lower.contains("repetition") {
+        "Unclosed counted closure"
+    } else if lower.contains("repetition") || lower.contains("invalid repetition") {
+        "Illegal repetition"
+    } else if pattern.trim() == "*"
+        || pattern.trim() == "+"
+        || pattern.trim() == "?"
+        || lower.contains("dangling")
+    {
+        "Dangling meta character '*'"
+    } else if lower.contains("unclosed") {
+        "Unclosed counted closure"
+    } else {
+        return alloc::format!("Schema Definition Error. invalid lengthPattern `{pattern}`: {detail}");
+    };
+
+    if suffix.is_empty() {
+        alloc::format!("Schema Definition Error. {reason}")
+    } else {
+        alloc::format!("Schema Definition Error. {reason} {suffix}")
+    }
+}
+
 /// Match value bytes against a DFDL length pattern (full ECMAScript-style regex).
 ///
 /// Uses [`regex-automata`](https://docs.rs/regex-automata) (`no_std` + `alloc`) for
@@ -452,6 +580,21 @@ mod tests {
         assert_eq!(pos, sep.len());
         assert_eq!(match_delimiter(sep, pat), Some(sep.len()));
         assert_eq!(match_delimiter(&b"abcd  +\n\t\t  efg"[4..], pat), Some(sep.len()));
+    }
+
+    #[test]
+    fn validate_invalid_length_patterns() {
+        let e1 = validate_length_pattern("[a-z]{1, 2}").unwrap_err();
+        assert!(e1.contains("Schema Definition Error"));
+        assert!(e1.contains("Unclosed counted closure"), "{e1}");
+
+        let e2 = validate_length_pattern("[a-z]{B}").unwrap_err();
+        assert!(e2.contains("Schema Definition Error"));
+        assert!(e2.contains("Illegal repetition"), "{e2}");
+
+        let e3 = validate_length_pattern("*").unwrap_err();
+        assert!(e3.contains("Schema Definition Error"));
+        assert!(e3.contains("Dangling meta character '*'"), "{e3}");
     }
 
     #[test]
