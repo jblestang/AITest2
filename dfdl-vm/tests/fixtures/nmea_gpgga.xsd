@@ -9,17 +9,18 @@
         <xs:element name="body" dfdl:initiator="$GPGGA," dfdl:terminator="*" dfdl:lengthKind="implicit">
           <xs:complexType>
             <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
-              <xs:element name="utcTime" type="xs:string"/>
+              <xs:element name="utcTime" type="xs:unsignedInt"/>
               <xs:element name="latitude" type="xs:string"/>
               <xs:element name="latHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
               <xs:element name="longitude" type="xs:string"/>
               <xs:element name="lonHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="fixQuality" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="numSatellites" type="xs:string"/>
-              <xs:element name="hdop" type="xs:string"/>
-              <xs:element name="altitude" type="xs:string"/>
+              <xs:element name="fixQuality" type="xs:unsignedByte" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="numSatellites" type="xs:unsignedByte"
+                dfdl:lengthKind="fixed" dfdl:length="2" dfdl:textNumberPadCharacter="0"/>
+              <xs:element name="hdop" type="xs:float"/>
+              <xs:element name="altitude" type="xs:float"/>
               <xs:element name="altitudeUnits" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="geoidSeparation" type="xs:string"/>
+              <xs:element name="geoidSeparation" type="xs:float"/>
               <xs:element name="geoidUnits" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
               <xs:element name="dgpsAge" type="xs:string"/>
               <xs:element name="dgpsStationId" type="xs:string"/>

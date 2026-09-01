@@ -13,7 +13,7 @@
               <xs:element name="latHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
               <xs:element name="longitude" type="xs:string"/>
               <xs:element name="lonHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="utcTime" type="xs:string"/>
+              <xs:element name="utcTime" type="xs:unsignedInt"/>
               <xs:element name="status" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
               <xs:element name="mode" type="xs:string" minOccurs="0"/>
             </xs:sequence>

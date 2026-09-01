@@ -9,16 +9,19 @@
         <xs:element name="body" dfdl:initiator="$GPRMC," dfdl:terminator="*" dfdl:lengthKind="implicit">
           <xs:complexType>
             <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
-              <xs:element name="utcTime" type="xs:string"/>
+              <xs:element name="utcTime" type="xs:unsignedInt"/>
               <xs:element name="status" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
               <xs:element name="latitude" type="xs:string"/>
               <xs:element name="latHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
               <xs:element name="longitude" type="xs:string"/>
               <xs:element name="lonHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="speedKnots" type="xs:string"/>
-              <xs:element name="trackTrue" type="xs:string"/>
-              <xs:element name="date" type="xs:string"/>
-              <xs:element name="magneticVariation" type="xs:string"/>
+              <xs:element name="speedKnots" type="xs:float"
+                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
+              <xs:element name="trackTrue" type="xs:float"
+                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
+              <xs:element name="date" type="xs:unsignedInt" dfdl:lengthKind="fixed" dfdl:length="6"/>
+              <xs:element name="magneticVariation" type="xs:float"
+                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
               <xs:element name="magVarHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
             </xs:sequence>
           </xs:complexType>

@@ -44,7 +44,15 @@ fn nmea_gpgga_typed_decode() {
     let body = decoded.field("body").expect("body");
     assert_eq!(
         body.field("utcTime"),
-        Some(&DfdlValue::String("123519".into()))
+        Some(&DfdlValue::UnsignedInt(123519))
+    );
+    assert_eq!(body.field("fixQuality"), Some(&DfdlValue::UnsignedByte(1)));
+    assert_eq!(body.field("numSatellites"), Some(&DfdlValue::UnsignedByte(8)));
+    assert_eq!(body.field("hdop"), Some(&DfdlValue::Float(0.9)));
+    assert_eq!(body.field("altitude"), Some(&DfdlValue::Float(545.4)));
+    assert_eq!(
+        body.field("geoidSeparation"),
+        Some(&DfdlValue::Float(46.9))
     );
     assert_eq!(
         body.field("dgpsAge"),
@@ -73,10 +81,17 @@ fn nmea_gprmc_typed_decode_and_round_trip() {
     let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_gprmc.xsd")).expect("spec");
     let decoded = spec.decode(GPRMC_SAMPLE).expect("decode");
     let body = decoded.field("body").expect("body");
-    assert_eq!(body.field("status"), Some(&DfdlValue::String("A".into())));
     assert_eq!(
-        body.field("speedKnots"),
-        Some(&DfdlValue::String("022.4".into()))
+        body.field("utcTime"),
+        Some(&DfdlValue::UnsignedInt(123519))
+    );
+    assert_eq!(body.field("status"), Some(&DfdlValue::String("A".into())));
+    assert_eq!(body.field("speedKnots"), Some(&DfdlValue::Float(22.4)));
+    assert_eq!(body.field("trackTrue"), Some(&DfdlValue::Float(84.4)));
+    assert_eq!(body.field("date"), Some(&DfdlValue::UnsignedInt(230394)));
+    assert_eq!(
+        body.field("magneticVariation"),
+        Some(&DfdlValue::Float(3.1))
     );
     let encoded = spec.encode(&decoded).expect("encode");
     assert_eq!(encoded, GPRMC_SAMPLE);
@@ -89,7 +104,11 @@ fn nmea_aivdm_typed_decode_and_round_trip() {
     let body = decoded.field("body").expect("body");
     assert_eq!(
         body.field("totalSentences"),
-        Some(&DfdlValue::String("1".into()))
+        Some(&DfdlValue::UnsignedByte(1))
+    );
+    assert_eq!(
+        body.field("sentenceNumber"),
+        Some(&DfdlValue::UnsignedByte(1))
     );
     assert_eq!(
         body.field("sequentialId"),
@@ -100,7 +119,7 @@ fn nmea_aivdm_typed_decode_and_round_trip() {
         body.field("payload"),
         Some(&DfdlValue::String("15M67FC000G?l`nQ@`WplQ@T400".into()))
     );
-    assert_eq!(body.field("fillBits"), Some(&DfdlValue::String("0".into())));
+    assert_eq!(body.field("fillBits"), Some(&DfdlValue::UnsignedByte(0)));
     let encoded = spec.encode(&decoded).expect("encode");
     assert_eq!(encoded, AIVDM_SAMPLE);
 }
@@ -114,6 +133,10 @@ fn nmea_gll_typed_decode_and_round_trip() {
         body.field("latitude"),
         Some(&DfdlValue::String("4807.038".into()))
     );
+    assert_eq!(
+        body.field("utcTime"),
+        Some(&DfdlValue::UnsignedInt(123519))
+    );
     assert_eq!(body.field("mode"), Some(&DfdlValue::String("A".into())));
     let encoded = spec.encode(&decoded).expect("encode");
     assert_eq!(encoded, GPGLL_SAMPLE);
@@ -124,10 +147,10 @@ fn nmea_vtg_typed_decode_and_round_trip() {
     let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_vtg.xsd")).expect("spec");
     let decoded = spec.decode(GPVTG_SAMPLE).expect("decode");
     let body = decoded.field("body").expect("body");
-    assert_eq!(
-        body.field("speedKnots"),
-        Some(&DfdlValue::String("005.5".into()))
-    );
+    assert_eq!(body.field("trackTrue"), Some(&DfdlValue::Float(54.7)));
+    assert_eq!(body.field("trackMagnetic"), Some(&DfdlValue::Float(34.4)));
+    assert_eq!(body.field("speedKnots"), Some(&DfdlValue::Float(5.5)));
+    assert_eq!(body.field("speedKmh"), Some(&DfdlValue::Float(10.2)));
     assert_eq!(body.field("mode"), Some(&DfdlValue::String("A".into())));
     let encoded = spec.encode(&decoded).expect("encode");
     assert_eq!(encoded, GPVTG_SAMPLE);

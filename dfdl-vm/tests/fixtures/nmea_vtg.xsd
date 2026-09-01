@@ -9,13 +9,17 @@
         <xs:element name="body" dfdl:initiator="$GPVTG," dfdl:terminator="*" dfdl:lengthKind="implicit">
           <xs:complexType>
             <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
-              <xs:element name="trackTrue" type="xs:string"/>
+              <xs:element name="trackTrue" type="xs:float"
+                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
               <xs:element name="trackTrueUnit" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="trackMagnetic" type="xs:string" minOccurs="0"/>
+              <xs:element name="trackMagnetic" type="xs:float" minOccurs="0"
+                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
               <xs:element name="trackMagneticUnit" type="xs:string" minOccurs="0"/>
-              <xs:element name="speedKnots" type="xs:string"/>
+              <xs:element name="speedKnots" type="xs:float"
+                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
               <xs:element name="speedKnotsUnit" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
-              <xs:element name="speedKmh" type="xs:string"/>
+              <xs:element name="speedKmh" type="xs:float"
+                dfdl:lengthKind="fixed" dfdl:length="5" dfdl:textNumberPadCharacter="0"/>
               <xs:element name="speedKmhUnit" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
               <xs:element name="mode" type="xs:string" minOccurs="0"/>
             </xs:sequence>

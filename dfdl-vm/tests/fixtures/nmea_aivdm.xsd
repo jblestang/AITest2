@@ -9,12 +9,12 @@
         <xs:element name="body" dfdl:initiator="!AIVDM," dfdl:terminator="*" dfdl:lengthKind="implicit">
           <xs:complexType>
             <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
-              <xs:element name="totalSentences" type="xs:string"/>
-              <xs:element name="sentenceNumber" type="xs:string"/>
+              <xs:element name="totalSentences" type="xs:unsignedByte" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="sentenceNumber" type="xs:unsignedByte" dfdl:lengthKind="fixed" dfdl:length="1"/>
               <xs:element name="sequentialId" type="xs:string" minOccurs="0"/>
               <xs:element name="channel" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
               <xs:element name="payload" type="xs:string"/>
-              <xs:element name="fillBits" type="xs:string"/>
+              <xs:element name="fillBits" type="xs:unsignedByte" dfdl:lengthKind="fixed" dfdl:length="1"/>
             </xs:sequence>
           </xs:complexType>
         </xs:element>

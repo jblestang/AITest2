@@ -616,6 +616,18 @@ pub(crate) fn write_text_scalar(
     };
 
     let mut payload = text.into_bytes();
+    if is_numeric_text_kind(kind) {
+        if let (Some(len), Some(pad_id)) = (props.length, props.text_number_pad_character) {
+            let target = len as usize;
+            if payload.len() < target {
+                let pad = strings.get(pad_id)?.as_bytes().first().copied().unwrap_or(b'0');
+                let mut padded = alloc::vec::Vec::with_capacity(target);
+                padded.extend(core::iter::repeat(pad).take(target - payload.len()));
+                padded.extend_from_slice(&payload);
+                payload = padded;
+            }
+        }
+    }
     match props.length_kind {
         LengthKind::Fixed | LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
