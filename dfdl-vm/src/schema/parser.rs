@@ -1,9 +1,11 @@
 use super::ast::*;
 use super::resolver::SchemaResolver;
 use crate::error::{ParseError, Result};
+use crate::xml_util::{attrs_to_map, local_name_str, XmlReader};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use xml_no_std::reader::XmlEvent;
 
 const DFDL_NS: &str = "http://www.ogf.org/dfdl/";
 
@@ -34,23 +36,21 @@ pub fn parse_schema_with_resolver(input: &str, resolver: SchemaResolver) -> Resu
 }
 
 struct XsdParser<'a> {
-    input: &'a str,
-    pos: usize,
+    reader: XmlReader<'a>,
+    inline_counter: usize,
     doc: SchemaDocument,
     pending_props: DfdlProps,
     resolver: SchemaResolver,
-    included: bool,
 }
 
 impl<'a> XsdParser<'a> {
     fn new(input: &'a str, resolver: SchemaResolver) -> Self {
         Self {
-            input,
-            pos: 0,
+            reader: XmlReader::new(input),
+            inline_counter: 0,
             doc: SchemaDocument::default(),
             pending_props: DfdlProps::default(),
             resolver,
-            included: false,
         }
     }
 
@@ -68,114 +68,140 @@ impl<'a> XsdParser<'a> {
             merge_props(self.doc.format_defaults.props.clone(), other.format_defaults.props);
     }
 
+    fn consume_start(&mut self) -> Result<(String, Option<String>, BTreeMap<String, String>)> {
+        let XmlEvent::StartElement { name, attributes, .. } = self.reader.next()? else {
+            return Err(ParseError::InvalidXml {
+                message: "expected start element".into(),
+            }
+            .into());
+        };
+        Ok((
+            name.local_name.clone(),
+            name.prefix.clone(),
+            attrs_to_map(&attributes),
+        ))
+    }
+
+    fn expect_end_local(&mut self, local: &str) -> Result<()> {
+        self.reader.skip_insignificant_ws()?;
+        self.reader.expect_end(local)
+    }
+
+    fn skip_element_body(&mut self, local: &str) -> Result<()> {
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end(local)? {
+            self.expect_end_local(local)
+        } else {
+            self.reader.skip_current_subtree()
+        }
+    }
+
+    fn is_dfdl_element(prefix: Option<&str>, local: &str) -> bool {
+        prefix == Some("dfdl") || is_dfdl_local(local)
+    }
+
     fn parse_document(&mut self) -> Result<SchemaDocument> {
         loop {
-            self.skip_ws_and_comments();
-            if self.eof() {
-                break;
-            }
-            if !self.try_consume('<') {
-                return Err(ParseError::InvalidXml {
-                    message: "expected '<'".into(),
+            match self.reader.next()? {
+                XmlEvent::StartElement { name, attributes, .. } => {
+                    if local_name_str(&name.local_name) == "schema" {
+                        self.parse_schema_element(attrs_to_map(&attributes))?;
+                    } else {
+                        self.reader.skip_current_subtree()?;
+                    }
                 }
-                .into());
-            }
-            if self.try_consume('!') {
-                self.skip_declaration()?;
-                continue;
-            }
-            if self.try_consume('?') {
-                self.skip_processing_instruction()?;
-                continue;
-            }
-            if self.try_consume('/') {
-                return Err(ParseError::InvalidXml {
-                    message: "unexpected closing tag at top level".into(),
+                XmlEvent::EndDocument => break,
+                XmlEvent::StartDocument { .. }
+                | XmlEvent::ProcessingInstruction { .. }
+                | XmlEvent::Comment(_)
+                | XmlEvent::Whitespace(_)
+                | XmlEvent::Characters(_) => {}
+                other => {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "unexpected top-level {:?}",
+                            event_kind(&other)
+                        ),
+                    }
+                    .into());
                 }
-                .into());
-            }
-
-            let name = self.read_name()?;
-            if local_tag(&name) == "schema" {
-                self.parse_schema_element()?;
-            } else {
-                self.skip_element(&name)?;
             }
         }
         Ok(core::mem::take(&mut self.doc))
     }
 
-    fn parse_schema_element(&mut self) -> Result<()> {
-        let attrs = self.read_attributes()?;
+    fn parse_schema_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
         self.doc.target_namespace = attrs.get("targetNamespace").cloned();
         self.pending_props = DfdlProps::default();
 
-        if self.try_consume('/') {
-            self.expect('>')?;
-            return Ok(());
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("schema")? {
+            return self.expect_end_local("schema");
         }
-        self.expect('>')?;
 
         loop {
-            self.skip_ws_and_comments();
-            if self.eof() {
-                return Err(ParseError::UnexpectedEof.into());
-            }
-            if self.try_consume('<') {
-                if self.try_consume('/') {
-                    let end = self.read_name()?;
-                    if local_tag(&end) != "schema" {
-                        return Err(ParseError::InvalidXml {
-                            message: alloc::format!("expected </schema>, found </{end}>"),
-                        }
-                        .into());
-                    }
-                    self.read_attributes()?;
-                    self.expect('>')?;
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { name } if name.local_name == "schema" => {
+                    let _ = self.reader.next()?;
                     break;
                 }
-
-                let tag = self.read_name()?;
-                match local_tag(&tag) {
-                    "element" => self.parse_global_element()?,
-                    "complexType" => self.parse_complex_type(None)?,
-                    "simpleType" => self.parse_simple_type(None)?,
-                    "include" => self.parse_include()?,
-                    "format" => {
-                        let props = self.parse_dfdl_element(&tag)?;
-                        self.doc.format_defaults.props =
-                            merge_props(self.doc.format_defaults.props.clone(), props);
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    let prefix = name.prefix.clone();
+                    let child_attrs = {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                            unreachable!();
+                        };
+                        attrs_to_map(&attributes)
+                    };
+                    match local.as_str() {
+                        "element" => self.parse_global_element(child_attrs)?,
+                        "complexType" => self.parse_complex_type(None, child_attrs)?,
+                        "simpleType" => self.parse_simple_type(None, child_attrs)?,
+                        "include" => self.parse_include(child_attrs)?,
+                        "format" | "defineFormat" => {
+                            let props =
+                                self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
+                            self.doc.format_defaults.props =
+                                merge_props(self.doc.format_defaults.props.clone(), props);
+                        }
+                        "annotation" => {
+                            let props = self.parse_annotation(child_attrs)?;
+                            self.doc.format_defaults.props =
+                                merge_props(self.doc.format_defaults.props.clone(), props);
+                        }
+                        _ => self.skip_element_body(&local)?,
                     }
-                    "defineFormat" => {
-                        let props = self.parse_dfdl_element(&tag)?;
-                        self.doc.format_defaults.props =
-                            merge_props(self.doc.format_defaults.props.clone(), props);
+                }
+                XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                    let _ = self.reader.next()?;
+                }
+                other => {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "expected schema child, found {:?}",
+                            event_kind(other)
+                        ),
                     }
-                    "annotation" => {
-                        self.pos -= tag.len() + 1;
-                        let props = self.parse_annotation()?;
-                        self.doc.format_defaults.props =
-                            merge_props(self.doc.format_defaults.props.clone(), props);
-                    }
-                    _ => self.skip_element(&tag)?,
+                    .into());
                 }
             }
         }
         Ok(())
     }
 
-    fn parse_include(&mut self) -> Result<()> {
-        let attrs = self.read_attributes()?;
+    fn parse_include(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
         let location = attrs
             .get("schemaLocation")
             .ok_or_else(|| ParseError::MissingAttribute {
                 element: "include".into(),
                 attribute: "schemaLocation".into(),
             })?;
-        if self.try_consume('/') {
-            self.expect('>')?;
-        } else {
-            self.expect('>')?;
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("include")? {
+            self.expect_end_local("include")?;
         }
         let content = self.resolver.resolve(location)?;
         let included = parse_schema_with_resolver(&content, self.resolver.clone())?;
@@ -183,8 +209,7 @@ impl<'a> XsdParser<'a> {
         Ok(())
     }
 
-    fn parse_global_element(&mut self) -> Result<()> {
-        let attrs = self.read_attributes()?;
+    fn parse_global_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
         let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
         let name = xsd_attrs
             .get("name")
@@ -193,41 +218,43 @@ impl<'a> XsdParser<'a> {
                 element: "element".into(),
                 attribute: "name".into(),
             })?;
-        let mut props = merge_props(core::mem::take(&mut self.pending_props), dfdl_from_attrs);
+        let pending = core::mem::take(&mut self.pending_props);
+        let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &xsd_attrs);
 
         let type_name = if let Some(t) = xsd_attrs.get("type") {
             TypeName::new(normalize_qname(t))
-        } else if self.try_consume('/') {
-            self.expect('>')?;
-            return Err(ParseError::MissingAttribute {
-                element: "element".into(),
-                attribute: "type".into(),
-            }
-            .into());
         } else {
-            self.expect('>')?;
+            self.reader.skip_insignificant_ws()?;
+            if self.reader.peek_is_end("element")? {
+                self.expect_end_local("element")?;
+                return Err(ParseError::MissingAttribute {
+                    element: "element".into(),
+                    attribute: "type".into(),
+                }
+                .into());
+            }
             props = self.parse_inline_content(props, &["complexType", "simpleType", "annotation"])?;
             let inline = self.parse_inline_type()?;
             props = merge_props(props, inline.1);
-            self.expect_close_tag("element")?;
+            self.expect_end_local("element")?;
             self.doc.global_elements.insert(
                 name.clone(),
                 GlobalElement {
                     name,
                     type_name: inline.0,
-                    props,
+                    props: self.finalize_props(props),
                 },
             );
             return Ok(());
         };
 
-        if self.try_consume('/') {
-            self.expect('>')?;
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("element")? {
+            self.expect_end_local("element")?;
         } else {
-            self.expect('>')?;
             props = self.parse_inline_content(props, &["annotation"])?;
-            self.expect_close_tag("element")?;
+            self.expect_end_local("element")?;
         }
 
         self.doc.global_elements.insert(
@@ -235,19 +262,23 @@ impl<'a> XsdParser<'a> {
             GlobalElement {
                 name,
                 type_name,
-                props,
+                props: self.finalize_props(props),
             },
         );
         Ok(())
     }
 
-    fn parse_complex_type(&mut self, inline_name: Option<String>) -> Result<()> {
-        let attrs = self.read_attributes()?;
+    fn parse_complex_type(
+        &mut self,
+        inline_name: Option<String>,
+        attrs: BTreeMap<String, String>,
+    ) -> Result<()> {
         let name = inline_name.or_else(|| attrs.get("name").cloned());
         let mut props = core::mem::take(&mut self.pending_props);
 
-        if self.try_consume('/') {
-            self.expect('>')?;
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("complexType")? {
+            self.expect_end_local("complexType")?;
             if let Some(type_name) = name {
                 self.doc.types.insert(
                     TypeName::new(type_name.clone()),
@@ -260,11 +291,10 @@ impl<'a> XsdParser<'a> {
             }
             return Ok(());
         }
-        self.expect('>')?;
 
         props = self.parse_inline_content(props, &["sequence", "choice", "annotation"])?;
         let content = self.parse_complex_content()?;
-        self.expect_close_tag("complexType")?;
+        self.expect_end_local("complexType")?;
 
         if let Some(type_name) = name {
             self.doc.types.insert(
@@ -279,20 +309,23 @@ impl<'a> XsdParser<'a> {
         Ok(())
     }
 
-    fn parse_simple_type(&mut self, inline_name: Option<String>) -> Result<()> {
-        let attrs = self.read_attributes()?;
+    fn parse_simple_type(
+        &mut self,
+        inline_name: Option<String>,
+        attrs: BTreeMap<String, String>,
+    ) -> Result<()> {
         let name = inline_name.or_else(|| attrs.get("name").cloned());
-        let mut props = core::mem::take(&mut self.pending_props);
+        let props = core::mem::take(&mut self.pending_props);
 
-        if self.try_consume('/') {
-            self.expect('>')?;
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("simpleType")? {
+            self.expect_end_local("simpleType")?;
             return Ok(());
         }
-        self.expect('>')?;
 
-        props = self.parse_inline_content(props, &["restriction", "annotation"])?;
+        let props = self.parse_inline_content(props, &["restriction", "annotation"])?;
         let base = self.parse_restriction()?;
-        self.expect_close_tag("simpleType")?;
+        self.expect_end_local("simpleType")?;
 
         if let Some(type_name) = name {
             self.doc.types.insert(
@@ -309,149 +342,170 @@ impl<'a> XsdParser<'a> {
 
     fn parse_complex_content(&mut self) -> Result<ComplexContent> {
         loop {
-            self.skip_ws_and_comments();
-            if self.try_consume('<') {
-                if self.try_consume('/') {
-                    let tag = self.read_name()?;
-                    if local_tag(&tag) == "complexType" {
-                        self.read_attributes()?;
-                        self.expect('>')?;
-                        return Ok(ComplexContent::Empty);
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { name } if name.local_name == "complexType" => {
+                    return Ok(ComplexContent::Empty);
+                }
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    let child_attrs = {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                            unreachable!();
+                        };
+                        attrs_to_map(&attributes)
+                    };
+                    match local.as_str() {
+                        "sequence" => {
+                            return Ok(ComplexContent::Sequence(self.parse_sequence(child_attrs)?))
+                        }
+                        "choice" => {
+                            return Ok(ComplexContent::Choice(self.parse_choice(child_attrs)?))
+                        }
+                        "annotation" => self.skip_element_body("annotation")?,
+                        _ => self.skip_element_body(&local)?,
                     }
+                }
+                XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                    let _ = self.reader.next()?;
+                }
+                other => {
                     return Err(ParseError::InvalidXml {
-                        message: alloc::format!("unexpected closing tag </{tag}>"),
+                        message: alloc::format!(
+                            "expected complexType child, found {:?}",
+                            event_kind(other)
+                        ),
                     }
                     .into());
                 }
-
-                let tag = self.read_name()?;
-                match local_tag(&tag) {
-                    "sequence" => return Ok(ComplexContent::Sequence(self.parse_sequence()?)),
-                    "choice" => return Ok(ComplexContent::Choice(self.parse_choice()?)),
-                    "annotation" => {
-                        self.skip_rest_of_element(local_tag(&tag))?;
-                    }
-                    _ => self.skip_element(&tag)?,
-                }
-            } else if self.eof() {
-                return Err(ParseError::UnexpectedEof.into());
-            } else {
-                return Err(ParseError::InvalidXml {
-                    message: "expected complexType child".into(),
-                }
-                .into());
             }
         }
     }
 
-    fn parse_sequence(&mut self) -> Result<SequenceDecl> {
-        let attrs = self.read_attributes()?;
+    fn parse_sequence(&mut self, attrs: BTreeMap<String, String>) -> Result<SequenceDecl> {
         let (_xsd, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
-        let mut props = merge_props(core::mem::take(&mut self.pending_props), dfdl_from_attrs);
+        let pending = core::mem::take(&mut self.pending_props);
+        let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);
 
-        if self.try_consume('/') {
-            self.expect('>')?;
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("sequence")? {
+            self.expect_end_local("sequence")?;
             return Ok(SequenceDecl {
                 props,
                 particles: Vec::new(),
             });
         }
-        self.expect('>')?;
 
         props = self.parse_inline_content(props, &["element", "sequence", "choice", "annotation"])?;
         let mut particles = Vec::new();
         loop {
-            self.skip_ws_and_comments();
-            if self.try_consume('<') {
-                if self.try_consume('/') {
-                    let tag = self.read_name()?;
-                    if local_tag(&tag) == "sequence" {
-                        self.read_attributes()?;
-                        self.expect('>')?;
-                        break;
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { name } if name.local_name == "sequence" => {
+                    let _ = self.reader.next()?;
+                    break;
+                }
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    let child_attrs = {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                            unreachable!();
+                        };
+                        attrs_to_map(&attributes)
+                    };
+                    match local.as_str() {
+                        "element" => particles.push(Particle::Element(self.parse_element_decl(child_attrs)?)),
+                        "sequence" => {
+                            particles.push(Particle::Sequence(self.parse_sequence(child_attrs)?))
+                        }
+                        "choice" => particles.push(Particle::Choice(self.parse_choice(child_attrs)?)),
+                        "annotation" => self.skip_element_body("annotation")?,
+                        _ => self.skip_element_body(&local)?,
                     }
+                }
+                XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                    let _ = self.reader.next()?;
+                }
+                other => {
                     return Err(ParseError::InvalidXml {
-                        message: alloc::format!("unexpected closing tag </{tag}>"),
+                        message: alloc::format!(
+                            "expected sequence child, found {:?}",
+                            event_kind(other)
+                        ),
                     }
                     .into());
                 }
-                let tag = self.read_name()?;
-                match local_tag(&tag) {
-                    "element" => particles.push(Particle::Element(self.parse_element_decl()?)),
-                    "sequence" => particles.push(Particle::Sequence(self.parse_sequence()?)),
-                    "choice" => particles.push(Particle::Choice(self.parse_choice()?)),
-                    "annotation" => self.skip_rest_of_element(local_tag(&tag))?,
-                    _ => self.skip_element(&tag)?,
-                }
-            } else if self.eof() {
-                return Err(ParseError::UnexpectedEof.into());
-            } else {
-                return Err(ParseError::InvalidXml {
-                    message: "expected sequence child".into(),
-                }
-                .into());
             }
         }
 
         Ok(SequenceDecl { props, particles })
     }
 
-    fn parse_choice(&mut self) -> Result<ChoiceDecl> {
-        let attrs = self.read_attributes()?;
+    fn parse_choice(&mut self, attrs: BTreeMap<String, String>) -> Result<ChoiceDecl> {
         let (_xsd, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
-        let mut props = merge_props(core::mem::take(&mut self.pending_props), dfdl_from_attrs);
+        let pending = core::mem::take(&mut self.pending_props);
+        let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);
 
-        if self.try_consume('/') {
-            self.expect('>')?;
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("choice")? {
+            self.expect_end_local("choice")?;
             return Ok(ChoiceDecl {
                 props,
                 branches: Vec::new(),
             });
         }
-        self.expect('>')?;
 
         props = self.parse_inline_content(props, &["element", "sequence", "choice", "annotation"])?;
         let mut branches = Vec::new();
         loop {
-            self.skip_ws_and_comments();
-            if self.try_consume('<') {
-                if self.try_consume('/') {
-                    let tag = self.read_name()?;
-                    if local_tag(&tag) == "choice" {
-                        self.read_attributes()?;
-                        self.expect('>')?;
-                        break;
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { name } if name.local_name == "choice" => {
+                    let _ = self.reader.next()?;
+                    break;
+                }
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    let child_attrs = {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                            unreachable!();
+                        };
+                        attrs_to_map(&attributes)
+                    };
+                    match local.as_str() {
+                        "element" => branches.push(Particle::Element(self.parse_element_decl(child_attrs)?)),
+                        "sequence" => {
+                            branches.push(Particle::Sequence(self.parse_sequence(child_attrs)?))
+                        }
+                        "choice" => branches.push(Particle::Choice(self.parse_choice(child_attrs)?)),
+                        "annotation" => self.skip_element_body("annotation")?,
+                        _ => self.skip_element_body(&local)?,
                     }
+                }
+                XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                    let _ = self.reader.next()?;
+                }
+                other => {
                     return Err(ParseError::InvalidXml {
-                        message: alloc::format!("unexpected closing tag </{tag}>"),
+                        message: alloc::format!(
+                            "expected choice child, found {:?}",
+                            event_kind(other)
+                        ),
                     }
                     .into());
                 }
-                let tag = self.read_name()?;
-                match tag.as_str() {
-                    "element" => branches.push(Particle::Element(self.parse_element_decl()?)),
-                    "sequence" => branches.push(Particle::Sequence(self.parse_sequence()?)),
-                    "choice" => branches.push(Particle::Choice(self.parse_choice()?)),
-                    "annotation" => self.skip_rest_of_element("annotation")?,
-                    _ => self.skip_element(&tag)?,
-                }
-            } else if self.eof() {
-                return Err(ParseError::UnexpectedEof.into());
-            } else {
-                return Err(ParseError::InvalidXml {
-                    message: "expected choice child".into(),
-                }
-                .into());
             }
         }
 
         Ok(ChoiceDecl { props, branches })
     }
 
-    fn parse_element_decl(&mut self) -> Result<ElementDecl> {
-        let attrs = self.read_attributes()?;
+    fn parse_element_decl(&mut self, attrs: BTreeMap<String, String>) -> Result<ElementDecl> {
         let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
         let name = xsd_attrs
             .get("name")
@@ -461,243 +515,293 @@ impl<'a> XsdParser<'a> {
                 attribute: "name".into(),
             })?;
         let default_value = xsd_attrs.get("default").cloned();
-        let mut props = merge_props(core::mem::take(&mut self.pending_props), dfdl_from_attrs);
+        let pending = core::mem::take(&mut self.pending_props);
+        let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &xsd_attrs);
 
         let type_name = if let Some(t) = xsd_attrs.get("type") {
             TypeName::new(normalize_qname(t))
-        } else if self.try_consume('/') {
-            self.expect('>')?;
-            return Err(ParseError::MissingAttribute {
-                element: "element".into(),
-                attribute: "type".into(),
-            }
-            .into());
         } else {
-            self.expect('>')?;
+            self.reader.skip_insignificant_ws()?;
+            if self.reader.peek_is_end("element")? {
+                self.expect_end_local("element")?;
+                return Err(ParseError::MissingAttribute {
+                    element: "element".into(),
+                    attribute: "type".into(),
+                }
+                .into());
+            }
             props = self.parse_inline_content(props, &["complexType", "simpleType", "annotation"])?;
             let inline = self.parse_inline_type()?;
-            self.expect_close_tag("element")?;
+            self.expect_end_local("element")?;
             return Ok(ElementDecl {
                 name,
                 type_name: inline.0,
-                props: merge_props(props, inline.1),
+                props: self.finalize_props(merge_props(props, inline.1)),
                 particle: None,
                 default_value,
             });
         };
 
-        if self.try_consume('/') {
-            self.expect('>')?;
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("element")? {
+            self.expect_end_local("element")?;
         } else {
-            self.expect('>')?;
             props = self.parse_inline_content(props, &["annotation"])?;
-            self.expect_close_tag("element")?;
+            self.expect_end_local("element")?;
         }
 
         Ok(ElementDecl {
             name,
             type_name,
-            props,
+            props: self.finalize_props(props),
             particle: None,
             default_value,
         })
     }
 
     fn parse_inline_type(&mut self) -> Result<(TypeName, DfdlProps)> {
-        self.skip_ws_and_comments();
-        if !self.try_consume('<') {
-            return Err(ParseError::InvalidXml {
-                message: "expected inline type".into(),
-            }
-            .into());
-        }
-        let tag = self.read_name()?;
-        match local_tag(&tag) {
+        self.reader.skip_insignificant_ws()?;
+        let (local, _, attrs) = self.consume_start()?;
+        match local.as_str() {
             "complexType" => {
-                let name = alloc::format!("__inline_complex_{}", self.pos);
-                self.parse_complex_type(Some(name.clone()))?;
+                let name = alloc::format!("__inline_complex_{}", self.inline_counter);
+                self.inline_counter += 1;
+                self.parse_complex_type(Some(name.clone()), attrs)?;
                 Ok((TypeName::new(name), DfdlProps::default()))
             }
             "simpleType" => {
-                let name = alloc::format!("__inline_simple_{}", self.pos);
-                self.parse_simple_type(Some(name.clone()))?;
+                let name = alloc::format!("__inline_simple_{}", self.inline_counter);
+                self.inline_counter += 1;
+                self.parse_simple_type(Some(name.clone()), attrs)?;
                 Ok((TypeName::new(name), DfdlProps::default()))
             }
-            _ => Err(ParseError::UnknownElement { name: tag }.into()),
+            _ => Err(ParseError::UnknownElement { name: local }.into()),
         }
     }
 
     fn parse_restriction(&mut self) -> Result<SimpleBase> {
         loop {
-            self.skip_ws_and_comments();
-            if self.try_consume('<') {
-                if self.try_consume('/') {
-                    let tag = self.read_name()?;
-                    if local_tag(&tag) == "simpleType" {
-                        self.read_attributes()?;
-                        self.expect('>')?;
-                        return Err(ParseError::InvalidXml {
-                            message: "simpleType missing restriction".into(),
-                        }
-                        .into());
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { name } if name.local_name == "simpleType" => {
+                    return Err(ParseError::InvalidXml {
+                        message: "simpleType missing restriction".into(),
                     }
+                    .into());
                 }
-                let tag = self.read_name()?;
-                if local_tag(&tag) == "restriction" {
-                    let attrs = self.read_attributes()?;
-                    let base_name = attrs.get("base").cloned().ok_or_else(|| {
-                        ParseError::MissingAttribute {
-                            element: "restriction".into(),
-                            attribute: "base".into(),
-                        }
-                    })?;
-                    let base = BuiltinType::from_xsd(&normalize_qname(&base_name)).ok_or_else(|| {
-                        ParseError::UnknownType {
-                            name: base_name.clone(),
-                        }
-                    })?;
-                    self.skip_rest_of_element("restriction")?;
-                    return Ok(SimpleBase::Restriction {
-                        base,
-                        max_length: None,
-                    });
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    let child_attrs = {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                            unreachable!();
+                        };
+                        attrs_to_map(&attributes)
+                    };
+                    if local == "restriction" {
+                        let base_name = child_attrs.get("base").cloned().ok_or_else(|| {
+                            ParseError::MissingAttribute {
+                                element: "restriction".into(),
+                                attribute: "base".into(),
+                            }
+                        })?;
+                        let base = BuiltinType::from_xsd(&normalize_qname(&base_name)).ok_or_else(|| {
+                            ParseError::UnknownType {
+                                name: base_name.clone(),
+                            }
+                        })?;
+                        self.skip_element_body("restriction")?;
+                        return Ok(SimpleBase::Restriction {
+                            base,
+                            max_length: None,
+                        });
+                    }
+                    self.skip_element_body(&local)?;
                 }
-                self.skip_element(&tag)?;
-            } else if self.eof() {
-                return Err(ParseError::UnexpectedEof.into());
+                XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                    let _ = self.reader.next()?;
+                }
+                other => {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "expected restriction, found {:?}",
+                            event_kind(other)
+                        ),
+                    }
+                    .into());
+                }
             }
         }
     }
 
     fn parse_inline_content(&mut self, mut props: DfdlProps, allowed: &[&str]) -> Result<DfdlProps> {
         loop {
-            self.skip_ws_and_comments();
-            if !self.try_consume('<') {
-                break;
-            }
-            if self.try_consume('/') {
-                // Caller handles the closing tag: rewind to '<'.
-                self.pos -= 2;
-                break;
-            }
-            let tag = self.read_name()?;
-            if local_tag(&tag) == "annotation" {
-                self.pos -= tag.len() + 1;
-                props = merge_props(props, self.parse_annotation()?);
-            } else if allowed.iter().any(|a| *a == local_tag(&tag)) {
-                self.pos -= tag.len() + 1;
-                break;
-            } else {
-                self.skip_element(&tag)?;
-            }
-        }
-        Ok(props)
-    }
-
-    fn parse_annotation(&mut self) -> Result<DfdlProps> {
-        if !self.try_consume('<') {
-            return Err(ParseError::InvalidXml {
-                message: "expected <annotation>".into(),
-            }
-            .into());
-        }
-        let tag = self.read_name()?;
-        if local_tag(&tag) != "annotation" {
-            return Err(ParseError::InvalidXml {
-                message: alloc::format!("expected <annotation>, found <{tag}>"),
-            }
-            .into());
-        }
-
-        let mut props = DfdlProps::default();
-        let attrs = self.read_attributes()?;
-        let _ = attrs;
-        if self.try_consume('/') {
-            self.expect('>')?;
-            return Ok(props);
-        }
-        self.expect('>')?;
-
-        loop {
-            self.skip_ws_and_comments();
-            if self.try_consume('<') {
-                if self.try_consume('/') {
-                    let end = self.read_name()?;
-                    if local_tag(&end) == "annotation" {
-                        self.read_attributes()?;
-                        self.expect('>')?;
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { .. } => break,
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    if local == "annotation" {
+                        let child_attrs = {
+                            let XmlEvent::StartElement { attributes, .. } = self.reader.next()?
+                            else {
+                                unreachable!();
+                            };
+                            attrs_to_map(&attributes)
+                        };
+                        props = merge_props(props, self.parse_annotation(child_attrs)?);
+                    } else if allowed.iter().any(|a| *a == local.as_str()) {
                         break;
+                    } else {
+                        let _ = self.reader.next()?;
+                        self.reader.skip_current_subtree()?;
                     }
+                }
+                XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                    let _ = self.reader.next()?;
+                }
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                other => {
                     return Err(ParseError::InvalidXml {
-                        message: alloc::format!("unexpected closing tag </{end}>"),
+                        message: alloc::format!(
+                            "unexpected {:?} in inline content",
+                            event_kind(other)
+                        ),
                     }
                     .into());
                 }
-                let child = self.read_name()?;
-                if local_tag(&child) == "appinfo" {
-                    props = merge_props(props, self.parse_appinfo()?);
-                } else {
-                    self.skip_element(&child)?;
-                }
-            } else if self.eof() {
-                return Err(ParseError::UnexpectedEof.into());
-            } else {
-                return Err(ParseError::InvalidXml {
-                    message: "expected annotation child".into(),
-                }
-                .into());
             }
         }
         Ok(props)
     }
 
-    fn parse_appinfo(&mut self) -> Result<DfdlProps> {
-        let attrs = self.read_attributes()?;
+    fn parse_annotation(&mut self, attrs: BTreeMap<String, String>) -> Result<DfdlProps> {
+        let _ = attrs;
+        let mut props = DfdlProps::default();
+
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("annotation")? {
+            self.expect_end_local("annotation")?;
+            return Ok(props);
+        }
+
+        loop {
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { name } if name.local_name == "annotation" => {
+                    let _ = self.reader.next()?;
+                    break;
+                }
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    let child_attrs = {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                            unreachable!();
+                        };
+                        attrs_to_map(&attributes)
+                    };
+                    if local == "appinfo" {
+                        props = merge_props(props, self.parse_appinfo(child_attrs)?);
+                    } else {
+                        self.skip_element_body(&local)?;
+                    }
+                }
+                XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                    let _ = self.reader.next()?;
+                }
+                other => {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "expected annotation child, found {:?}",
+                            event_kind(other)
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+        Ok(props)
+    }
+
+    fn parse_appinfo(&mut self, attrs: BTreeMap<String, String>) -> Result<DfdlProps> {
         let source = attrs.get("source").map(String::as_str);
-        if self.try_consume('/') {
-            self.expect('>')?;
+
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("appinfo")? {
+            self.expect_end_local("appinfo")?;
             return Ok(DfdlProps::default());
         }
-        self.expect('>')?;
 
         let mut props = DfdlProps::default();
         if source == Some(DFDL_NS) || source.is_none() {
             loop {
-                self.skip_ws_and_comments();
-                if self.try_consume('<') {
-                    if self.try_consume('/') {
-                        let tag = self.read_name()?;
-                        if local_tag(&tag) == "appinfo" {
-                            self.read_attributes()?;
-                            self.expect('>')?;
-                            break;
+                self.reader.skip_insignificant_ws()?;
+                match self.reader.peek()? {
+                    XmlEvent::EndElement { name } if name.local_name == "appinfo" => {
+                        let _ = self.reader.next()?;
+                        break;
+                    }
+                    XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                    XmlEvent::StartElement { name, .. } => {
+                        let local = name.local_name.clone();
+                        let prefix = name.prefix.clone();
+                        let child_attrs = {
+                            let XmlEvent::StartElement { attributes, .. } = self.reader.next()?
+                            else {
+                                unreachable!();
+                            };
+                            attrs_to_map(&attributes)
+                        };
+                        if Self::is_dfdl_element(prefix.as_deref(), &local) {
+                            let dfdl_props =
+                                self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
+                            props = merge_props(props, dfdl_props);
+                        } else {
+                            self.skip_element_body(&local)?;
                         }
                     }
-                    let tag = self.read_name()?;
-                    if tag.starts_with("dfdl:") || is_dfdl_local(&tag) {
-                        let dfdl_props = self.parse_dfdl_element(&tag)?;
-                        props = merge_props(props, dfdl_props);
-                    } else {
-                        self.skip_element(&tag)?;
+                    XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                        let _ = self.reader.next()?;
                     }
-                } else if self.eof() {
-                    return Err(ParseError::UnexpectedEof.into());
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!(
+                                "expected appinfo child, found {:?}",
+                                event_kind(other)
+                            ),
+                        }
+                        .into());
+                    }
                 }
             }
         } else {
-            self.skip_rest_of_element("appinfo")?;
+            self.reader.skip_current_subtree()?;
         }
         Ok(props)
     }
 
-    fn parse_dfdl_element(&mut self, tag: &str) -> Result<DfdlProps> {
-        let local = local_tag(tag);
+    fn finalize_props(&self, mut props: DfdlProps) -> DfdlProps {
+        if let Some(ref_name) = props.format_ref.take() {
+            let key = format_ref_key(&ref_name);
+            if let Some(base) = self.doc.named_formats.get(&key) {
+                props = merge_props(base.clone(), props);
+            }
+        }
+        props
+    }
+
+    fn parse_dfdl_element(
+        &mut self,
+        local: &str,
+        _prefix: Option<&str>,
+        attrs: BTreeMap<String, String>,
+    ) -> Result<DfdlProps> {
         if local == "defineFormat" {
-            return self.parse_define_format(tag);
+            return self.parse_define_format(attrs);
         }
 
-        let attrs = self.read_attributes()?;
         let mut props = props_from_attrs(&attrs)?;
 
         if local == "format" {
@@ -710,46 +814,63 @@ impl<'a> XsdParser<'a> {
             self.doc.format_defaults.props =
                 merge_props(self.doc.format_defaults.props.clone(), props.clone());
         }
-        if self.try_consume('/') {
-            self.expect('>')?;
+
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end(local)? {
+            self.expect_end_local(local)?;
         } else {
-            self.expect('>')?;
-            self.skip_rest_of_element(local)?;
+            self.reader.skip_current_subtree()?;
         }
         Ok(props)
     }
 
-    fn parse_define_format(&mut self, tag: &str) -> Result<DfdlProps> {
-        let attrs = self.read_attributes()?;
+    fn parse_define_format(&mut self, attrs: BTreeMap<String, String>) -> Result<DfdlProps> {
         let format_name = attrs.get("name").cloned();
-        if self.try_consume('/') {
-            self.expect('>')?;
+
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("defineFormat")? {
+            self.expect_end_local("defineFormat")?;
             return Ok(DfdlProps::default());
         }
-        self.expect('>')?;
 
         let mut props = DfdlProps::default();
         loop {
-            self.skip_ws_and_comments();
-            if self.try_consume('<') {
-                if self.try_consume('/') {
-                    let end = self.read_name()?;
-                    self.read_attributes()?;
-                    self.expect('>')?;
-                    if local_tag(&end) == "defineFormat" {
-                        break;
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { name } if name.local_name == "defineFormat" => {
+                    let _ = self.reader.next()?;
+                    break;
+                }
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    let prefix = name.prefix.clone();
+                    let child_attrs = {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                            unreachable!();
+                        };
+                        attrs_to_map(&attributes)
+                    };
+                    if Self::is_dfdl_element(prefix.as_deref(), &local) {
+                        let child_props =
+                            self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
+                        props = merge_props(props, child_props);
+                    } else {
+                        self.skip_element_body(&local)?;
                     }
-                    continue;
                 }
-                let child = self.read_name()?;
-                if child.starts_with("dfdl:") || is_dfdl_local(&child) {
-                    let child_props = self.parse_dfdl_element(&child)?;
-                    props = merge_props(props, child_props);
-                } else {
-                    self.skip_element(&child)?;
+                XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                    let _ = self.reader.next()?;
                 }
-            } else if self.eof() {
-                return Err(ParseError::UnexpectedEof.into());
+                other => {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "expected defineFormat child, found {:?}",
+                            event_kind(other)
+                        ),
+                    }
+                    .into());
+                }
             }
         }
 
@@ -758,184 +879,19 @@ impl<'a> XsdParser<'a> {
         }
         Ok(props)
     }
+}
 
-    fn skip_element(&mut self, name: &str) -> Result<()> {
-        let attrs = self.read_attributes()?;
-        let _ = attrs;
-        if self.try_consume('/') {
-            self.expect('>')?;
-            return Ok(());
-        }
-        self.expect('>')?;
-        self.skip_rest_of_element(name)
-    }
-
-    fn skip_rest_of_element(&mut self, name: &str) -> Result<()> {
-        let expected = local_tag(name);
-        loop {
-            self.skip_ws_and_comments();
-            if self.eof() {
-                return Err(ParseError::UnexpectedEof.into());
-            }
-            if self.try_consume('<') {
-                if self.try_consume('/') {
-                    let end = self.read_name()?;
-                    self.read_attributes()?;
-                    self.expect('>')?;
-                    if local_tag(&end) == expected {
-                        return Ok(());
-                    }
-                } else {
-                    let inner = self.read_name()?;
-                    self.skip_element(&inner)?;
-                }
-            }
-        }
-    }
-
-    fn expect_close_tag(&mut self, name: &str) -> Result<()> {
-        let expected = local_tag(name);
-        self.skip_ws_and_comments();
-        if !self.try_consume('<') || !self.try_consume('/') {
-            return Err(ParseError::InvalidXml {
-                message: alloc::format!("expected </{expected}>"),
-            }
-            .into());
-        }
-        let end = self.read_name()?;
-        if local_tag(&end) != expected {
-            return Err(ParseError::InvalidXml {
-                message: alloc::format!("expected </{expected}>, found </{end}>"),
-            }
-            .into());
-        }
-        self.read_attributes()?;
-        self.expect('>')?;
-        Ok(())
-    }
-
-    fn skip_declaration(&mut self) -> Result<()> {
-        let rest = self.remaining();
-        let end = rest.find("-->").ok_or(ParseError::UnexpectedEof)?;
-        self.pos += end + 3;
-        Ok(())
-    }
-
-    fn skip_processing_instruction(&mut self) -> Result<()> {
-        // Already consumed '<?'
-        let rest = self.remaining();
-        let end = rest.find("?>").ok_or(ParseError::UnexpectedEof)?;
-        self.pos += end + 2;
-        Ok(())
-    }
-
-    fn skip_ws_and_comments(&mut self) {
-        loop {
-            while self.peek().map(|c| c.is_whitespace()).unwrap_or(false) {
-                self.pos += 1;
-            }
-            if self.remaining().starts_with("<!--") {
-                let _ = self.skip_declaration();
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn read_attributes(&mut self) -> Result<BTreeMap<String, String>> {
-        let mut attrs = BTreeMap::new();
-        loop {
-            self.skip_ws_and_comments();
-            if self.try_consume('>') || self.try_consume('/') {
-                self.pos -= 1;
-                break;
-            }
-            let name = self.read_name()?;
-            self.skip_ws_and_comments();
-            if !self.try_consume('=') {
-                return Err(ParseError::InvalidXml {
-                    message: alloc::format!("expected '=' after attribute `{name}`"),
-                }
-                .into());
-            }
-            self.skip_ws_and_comments();
-            let value = self.read_quoted_value()?;
-            attrs.insert(name, value);
-        }
-        Ok(attrs)
-    }
-
-    fn read_quoted_value(&mut self) -> Result<String> {
-        let quote = self.peek().ok_or(ParseError::UnexpectedEof)?;
-        if quote != '"' && quote != '\'' {
-            return Err(ParseError::InvalidXml {
-                message: "expected quoted attribute value".into(),
-            }
-            .into());
-        }
-        self.pos += 1;
-        let start = self.pos;
-        while let Some(ch) = self.peek() {
-            if ch == quote {
-                let value = self.input[start..self.pos].to_string();
-                self.pos += 1;
-                return Ok(decode_xml_entities(&value));
-            }
-            self.pos += 1;
-        }
-        Err(ParseError::UnexpectedEof.into())
-    }
-
-    fn read_name(&mut self) -> Result<String> {
-        let start = self.pos;
-        let first = self.peek().ok_or(ParseError::UnexpectedEof)?;
-        if !is_name_start(first) {
-            return Err(ParseError::InvalidXml {
-                message: "expected XML name".into(),
-            }
-            .into());
-        }
-        self.pos += 1;
-        while let Some(ch) = self.peek() {
-            if is_name_char(ch) {
-                self.pos += 1;
-            } else {
-                break;
-            }
-        }
-        Ok(self.input[start..self.pos].to_string())
-    }
-
-    fn expect(&mut self, ch: char) -> Result<()> {
-        if self.try_consume(ch) {
-            Ok(())
-        } else {
-            Err(ParseError::InvalidXml {
-                message: alloc::format!("expected '{ch}'"),
-            }
-            .into())
-        }
-    }
-
-    fn try_consume(&mut self, ch: char) -> bool {
-        if self.peek() == Some(ch) {
-            self.pos += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn peek(&self) -> Option<char> {
-        self.remaining().chars().next()
-    }
-
-    fn remaining(&self) -> &str {
-        &self.input[self.pos..]
-    }
-
-    fn eof(&self) -> bool {
-        self.pos >= self.input.len()
+fn event_kind(ev: &XmlEvent) -> &'static str {
+    match ev {
+        XmlEvent::StartDocument { .. } => "StartDocument",
+        XmlEvent::EndDocument => "EndDocument",
+        XmlEvent::ProcessingInstruction { .. } => "ProcessingInstruction",
+        XmlEvent::StartElement { .. } => "StartElement",
+        XmlEvent::EndElement { .. } => "EndElement",
+        XmlEvent::CData(_) => "CData",
+        XmlEvent::Comment(_) => "Comment",
+        XmlEvent::Characters(_) => "Characters",
+        XmlEvent::Whitespace(_) => "Whitespace",
     }
 }
 
@@ -1165,6 +1121,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     "trim" => TextTrimKind::Trim,
                     "left" => TextTrimKind::Left,
                     "right" => TextTrimKind::Right,
+                    "padChar" => TextTrimKind::PadChar,
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!("unknown textTrimKind `{other}`"),
@@ -1243,7 +1200,8 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 });
             }
             "fillByte" => props.fill_byte = Some(parse_byte_literal(value)?),
-            "ref" | "format" => {}
+            "ref" => props.format_ref = Some(format_ref_key(value)),
+            "format" => {}
             "choiceDispatchKey" => props.choice_dispatch_key = Some(value.clone()),
             _ => {}
         }
@@ -1280,22 +1238,6 @@ fn parse_byte_literal(raw: &str) -> Result<Vec<u8>> {
     }
 }
 
-fn decode_xml_entities(input: &str) -> String {
-    input
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-}
-
-fn is_name_start(ch: char) -> bool {
-    ch == ':' || ch == '_' || ch.is_ascii_alphabetic()
-}
-
-fn is_name_char(ch: char) -> bool {
-    is_name_start(ch) || ch.is_ascii_digit() || ch == '-' || ch == '.'
-}
 
 fn is_dfdl_local(tag: &str) -> bool {
     matches!(
@@ -1314,6 +1256,10 @@ fn strip_prefix(tag: &str) -> &str {
 
 fn normalize_qname(name: &str) -> String {
     name.rsplit(':').next().unwrap_or(name).to_string()
+}
+
+fn format_ref_key(name: &str) -> String {
+    normalize_qname(name)
 }
 
 #[cfg(test)]
