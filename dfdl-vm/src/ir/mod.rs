@@ -1,6 +1,6 @@
 mod builder;
 
-pub use builder::{compile, compile_named};
+pub use builder::{compile, compile_named, compile_named_with_tunables};
 use crate::error::VmError;
 use crate::schema::{
     BinaryFloatRep, BinaryNumberRep, BitOrder, ByteOrder, InputValueCalc, LengthKind, LengthUnits,
@@ -83,6 +83,7 @@ pub struct IrProps {
     pub length_units: LengthUnits,
     pub encoding: StringId,
     pub text_trim_kind: TextTrimKind,
+    pub truncate_specified_length_string: bool,
     pub text_number_pad_character: Option<StringId>,
     pub text_string_pad_character: Option<StringId>,
     pub binary_number_rep: BinaryNumberRep,
@@ -127,6 +128,7 @@ impl Default for IrProps {
             length_units: LengthUnits::Bytes,
             encoding: StringId(0),
             text_trim_kind: TextTrimKind::None,
+            truncate_specified_length_string: false,
             text_number_pad_character: None,
             text_string_pad_character: None,
             binary_number_rep: BinaryNumberRep::Binary,

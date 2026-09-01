@@ -2,6 +2,20 @@ use crate::error::{SchemaError, VmError};
 use crate::ir::ValueKind;
 use crate::schema::LengthUnits;
 
+/// Daffodil tunables affecting compile-time validation (from TDML `defineConfig`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DaffodilTunables {
+    pub allow_signed_integer_length1_bit: bool,
+}
+
+impl Default for DaffodilTunables {
+    fn default() -> Self {
+        Self {
+            allow_signed_integer_length1_bit: true,
+        }
+    }
+}
+
 fn max_bits_for_kind(kind: ValueKind) -> Option<u64> {
     use ValueKind::{Byte, Int, Long, Short, UnsignedByte, UnsignedInt, UnsignedShort};
     match kind {
@@ -63,6 +77,39 @@ pub fn validate_data_length_schema(
             message: length_error_message(bit_length, max_bits),
         }
     })
+}
+
+fn is_signed_kind(kind: ValueKind) -> bool {
+    matches!(
+        kind,
+        ValueKind::Byte | ValueKind::Short | ValueKind::Int | ValueKind::Long | ValueKind::Decimal
+    )
+}
+
+fn bit_length(length: u64, units: LengthUnits) -> Option<u64> {
+    match units {
+        LengthUnits::Bits => Some(length),
+        LengthUnits::Bytes => length.checked_mul(8),
+        LengthUnits::Characters => None,
+    }
+}
+
+/// Reject 1-bit signed binary integers when the tunable disallows them.
+pub fn validate_signed_one_bit_length_schema(
+    kind: ValueKind,
+    length: u64,
+    units: LengthUnits,
+    tunables: &DaffodilTunables,
+) -> Result<(), SchemaError> {
+    if tunables.allow_signed_integer_length1_bit || !is_signed_kind(kind) {
+        return Ok(());
+    }
+    if bit_length(length, units) == Some(1) {
+        return Err(SchemaError::InvalidProperty {
+            message: "signed binary integer length 1 bit(s) out of range".into(),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]

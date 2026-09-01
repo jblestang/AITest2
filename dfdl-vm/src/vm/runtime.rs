@@ -5,10 +5,11 @@ use super::encoding::{
 use crate::length_validate::validate_data_length_vm;
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool};
 use crate::schema::{
-    encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, ByteOrder, LengthKind,
-    LengthUnits, Representation, TextNumberJustification, TextTrimKind,
+    encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, BitOrder, ByteOrder,
+    LengthKind, LengthUnits, Representation, TextNumberJustification, TextTrimKind,
 };
 use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::iter;
 
@@ -32,6 +33,8 @@ pub struct Cursor<'a> {
     pub pos: usize,
     pub bit_buffer: u8,
     pub bit_count: u8,
+    /// When set, absolute bit index (from start of `data`) that must not be read past.
+    pub frame_bit_limit: Option<usize>,
 }
 
 impl<'a> Cursor<'a> {
@@ -41,6 +44,28 @@ impl<'a> Cursor<'a> {
             pos: 0,
             bit_buffer: 0,
             bit_count: 0,
+            frame_bit_limit: None,
+        }
+    }
+
+    pub fn with_frame_bits(data: &'a [u8], frame_bits: usize) -> Self {
+        Self {
+            data,
+            pos: 0,
+            bit_buffer: 0,
+            bit_count: 0,
+            frame_bit_limit: Some(frame_bits),
+        }
+    }
+
+    pub fn absolute_bit_index(&self) -> usize {
+        self.pos * 8 + self.bit_count as usize
+    }
+
+    pub fn is_frame_consumed(&self) -> bool {
+        match self.frame_bit_limit {
+            Some(limit) => self.absolute_bit_index() >= limit,
+            None => self.remaining() == 0 && self.bit_count == 0,
         }
     }
 
@@ -49,14 +74,18 @@ impl<'a> Cursor<'a> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.remaining() == 0 && self.bit_count == 0
+        self.is_frame_consumed()
     }
 
     pub fn advance(&mut self, n: usize) {
         self.pos = self.pos.saturating_add(n).min(self.data.len());
+        self.bit_count = 0;
     }
 
     pub fn slice(&self, n: usize) -> Option<&[u8]> {
+        if self.bit_count != 0 {
+            return None;
+        }
         if self.remaining() >= n {
             Some(&self.data[self.pos..self.pos + n])
         } else {
@@ -65,10 +94,113 @@ impl<'a> Cursor<'a> {
     }
 
     pub fn read_bytes(&mut self, n: usize) -> Option<Vec<u8>> {
+        if self.bit_count != 0 {
+            return None;
+        }
         let slice = self.slice(n)?;
         let out = slice.to_vec();
         self.advance(n);
         Some(out)
+    }
+
+    pub fn skip_stream_bits(
+        &mut self,
+        n: usize,
+        bit_order: BitOrder,
+    ) -> Result<(), crate::error::VmError> {
+        for _ in 0..n {
+            let _ = self.read_stream_bit(bit_order)?;
+        }
+        Ok(())
+    }
+
+    pub fn skip_to_bit_index(
+        &mut self,
+        target: usize,
+        bit_order: BitOrder,
+    ) -> Result<(), crate::error::VmError> {
+        let current = self.absolute_bit_index();
+        if target > current {
+            self.skip_stream_bits(target - current, bit_order)?;
+        }
+        Ok(())
+    }
+
+    pub fn read_stream_bits(
+        &mut self,
+        n: usize,
+        bit_order: BitOrder,
+    ) -> Result<u64, crate::error::VmError> {
+        use crate::error::VmError;
+        if n == 0 {
+            return Ok(0);
+        }
+        if n > 64 {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("cannot read more than 64 stream bits at once ({n})"),
+            });
+        }
+        let mut value = 0u64;
+        match bit_order {
+            BitOrder::MostSignificantBitFirst => {
+                for _ in 0..n {
+                    value = (value << 1) | self.read_stream_bit(bit_order)?;
+                }
+            }
+            BitOrder::LeastSignificantBitFirst => {
+                for i in 0..n {
+                    value |= self.read_stream_bit(bit_order)? << i;
+                }
+            }
+        }
+        Ok(value)
+    }
+
+    pub fn read_stream_bits_as_bytes(
+        &mut self,
+        n: usize,
+        bit_order: BitOrder,
+    ) -> Result<Vec<u8>, crate::error::VmError> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let byte_len = n.div_ceil(8);
+        let mut out = vec![0u8; byte_len];
+        for i in 0..n {
+            let bit = self.read_stream_bit(bit_order)? as u8;
+            match bit_order {
+                BitOrder::LeastSignificantBitFirst => {
+                    out[i / 8] |= bit << (i % 8);
+                }
+                BitOrder::MostSignificantBitFirst => {
+                    out[i / 8] |= bit << (7 - (i % 8));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn read_stream_bit(&mut self, bit_order: BitOrder) -> Result<u64, crate::error::VmError> {
+        use crate::error::VmError;
+        if let Some(limit) = self.frame_bit_limit {
+            if self.absolute_bit_index() >= limit {
+                return Err(VmError::UnexpectedEof);
+            }
+        }
+        if self.pos >= self.data.len() {
+            return Err(VmError::UnexpectedEof);
+        }
+        let byte = self.data[self.pos];
+        let bit = match bit_order {
+            BitOrder::MostSignificantBitFirst => (byte >> (7 - self.bit_count)) & 1,
+            BitOrder::LeastSignificantBitFirst => (byte >> self.bit_count) & 1,
+        };
+        self.bit_count += 1;
+        if self.bit_count == 8 {
+            self.bit_count = 0;
+            self.pos += 1;
+        }
+        Ok(bit as u64)
     }
 
     pub fn consume_delimiter(&mut self, pattern: &str) -> bool {
@@ -135,12 +267,12 @@ pub(crate) fn read_binary_scalar(
     if props.length_kind == LengthKind::Delimited {
         let bytes =
             read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)?;
-        return decode_binary_scalar(kind, &bytes, props, strings);
+        return decode_binary_scalar(kind, &bytes, props, strings, None);
     }
 
     if props.length_kind == LengthKind::Prefixed {
         let bytes = read_prefixed_payload(cursor, props, strings)?;
-        return decode_binary_scalar(kind, &bytes, props, strings);
+        return decode_binary_scalar(kind, &bytes, props, strings, None);
     }
 
     if props.length_units == LengthUnits::Bits {
@@ -150,8 +282,12 @@ pub(crate) fn read_binary_scalar(
                 message: "zero-length scalar".into(),
             });
         }
-        let bytes = read_length_span(cursor, len, LengthUnits::Bits, "utf-8")?;
-        return decode_binary_scalar(kind, &bytes, props, strings);
+        if kind == ValueKind::String || kind == ValueKind::HexBinary {
+            let bytes = cursor.read_stream_bits_as_bytes(len, props.bit_order)?;
+            return decode_binary_scalar(kind, &bytes, props, strings, None);
+        }
+        let raw = cursor.read_stream_bits(len, props.bit_order)?;
+        return decode_binary_from_raw_bits(kind, raw, len, props, strings);
     }
 
     let size = binary_byte_length(cursor, kind, props, strings)?;
@@ -168,7 +304,7 @@ pub(crate) fn read_binary_scalar(
         cursor.read_bytes(size).ok_or(VmError::UnexpectedEof)?
     };
 
-    decode_binary_scalar(kind, &bytes, props, strings)
+    decode_binary_scalar(kind, &bytes, props, strings, None)
 }
 
 fn decode_binary_scalar(
@@ -176,6 +312,7 @@ fn decode_binary_scalar(
     bytes: &[u8],
     props: &IrProps,
     strings: &StringPool,
+    bit_width: Option<usize>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::ir::ValueKind;
     use crate::value::DfdlValue;
@@ -194,7 +331,7 @@ fn decode_binary_scalar(
 
     match props.binary_number_rep {
         BinaryNumberRep::Binary => {
-            decode_binary_bytes(kind, bytes, props.byte_order == ByteOrder::LittleEndian)
+            decode_binary_bytes(kind, bytes, props.byte_order == ByteOrder::LittleEndian, bit_width)
         }
         BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed => {
             decode_bcd_number(kind, bytes, props.byte_order == ByteOrder::LittleEndian)
@@ -746,10 +883,121 @@ fn binary_byte_length(
     }
 }
 
+fn decode_binary_from_raw_bits(
+    kind: crate::ir::ValueKind,
+    raw: u64,
+    bit_width: usize,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::ir::ValueKind::*;
+    use crate::value::DfdlValue;
+
+    if kind == Decimal {
+        return Ok(DfdlValue::Decimal(format_virtual_decimal(
+            raw,
+            props.binary_decimal_virtual_point,
+        )));
+    }
+    if kind == DateTime {
+        let bytes = stream_bits_to_bytes(raw, bit_width, props.byte_order);
+        return decode_binary_datetime(&bytes, props, strings);
+    }
+
+    macro_rules! unsigned {
+        ($t:ty, $cons:expr) => {{
+            <$t>::try_from(raw).map($cons).map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("bit value `{raw}` out of range"),
+            })
+        }};
+    }
+
+    match kind {
+        Boolean => Ok(DfdlValue::Boolean(raw != 0)),
+        Byte => {
+            let v = if bit_width == 1 {
+                raw as i8
+            } else {
+                sign_extend_u64(raw, bit_width) as i8
+            };
+            Ok(DfdlValue::Byte(v))
+        }
+        UnsignedByte => unsigned!(u8, DfdlValue::UnsignedByte),
+        Short => {
+            let v = if bit_width == 1 {
+                raw as i16
+            } else {
+                sign_extend_u64(raw, bit_width) as i16
+            };
+            Ok(DfdlValue::Short(v))
+        }
+        UnsignedShort => unsigned!(u16, DfdlValue::UnsignedShort),
+        Int => {
+            let v = if bit_width == 1 {
+                raw as i32
+            } else {
+                sign_extend_u64(raw, bit_width) as i32
+            };
+            Ok(DfdlValue::Int(v))
+        }
+        UnsignedInt => unsigned!(u32, DfdlValue::UnsignedInt),
+        Long => {
+            let v = if bit_width == 1 {
+                raw as i64
+            } else {
+                sign_extend_u64(raw, bit_width)
+            };
+            Ok(DfdlValue::Long(v))
+        }
+        Float => Ok(DfdlValue::Float(f32::from_bits(raw as u32))),
+        Double => Ok(DfdlValue::Double(f64::from_bits(raw))),
+        Decimal | DateTime => unreachable!("handled above"),
+        String | HexBinary | Complex => Err(VmError::TypeMismatch {
+            expected: "binary scalar".into(),
+        }),
+    }
+}
+
+fn stream_bits_to_bytes(value: u64, num_bits: usize, byte_order: ByteOrder) -> Vec<u8> {
+    let byte_len = num_bits.div_ceil(8);
+    let mut out = vec![0u8; byte_len];
+    let mut v = value;
+    match byte_order {
+        ByteOrder::LittleEndian => {
+            for byte in out.iter_mut() {
+                *byte = (v & 0xff) as u8;
+                v >>= 8;
+            }
+        }
+        ByteOrder::BigEndian => {
+            for byte in out.iter_mut().rev() {
+                *byte = (v & 0xff) as u8;
+                v >>= 8;
+            }
+        }
+    }
+    out
+}
+
+fn sign_extend_u64(value: u64, bits: usize) -> i64 {
+    if bits == 0 {
+        return 0;
+    }
+    let sign = 1u64 << (bits - 1);
+    if value & sign != 0 {
+        let mask = (1u64 << bits) - 1;
+        (value | (!mask)) as i64
+    } else {
+        value as i64
+    }
+}
+
 fn decode_binary_bytes(
     kind: crate::ir::ValueKind,
     bytes: &[u8],
     le: bool,
+    bit_width: Option<usize>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -776,13 +1024,48 @@ fn decode_binary_bytes(
 
     match kind {
         Boolean => Ok(DfdlValue::Boolean(bytes.last().copied().unwrap_or(0) != 0)),
-        Byte => Ok(DfdlValue::Byte(int!(i8))),
+        Byte => {
+            if bit_width == Some(1) {
+                Ok(DfdlValue::Byte(decode_unsigned_binary_bytes(bytes, le) as i8))
+            } else if let Some(bits) = bit_width {
+                Ok(DfdlValue::Byte(sign_extend_u64(decode_unsigned_binary_bytes(bytes, le), bits) as i8))
+            } else {
+                Ok(DfdlValue::Byte(int!(i8)))
+            }
+        }
         UnsignedByte => Ok(DfdlValue::UnsignedByte(int!(u8))),
-        Short => Ok(DfdlValue::Short(int!(i16))),
+        Short => {
+            if bit_width == Some(1) {
+                Ok(DfdlValue::Short(decode_unsigned_binary_bytes(bytes, le) as i16))
+            } else if let Some(bits) = bit_width {
+                Ok(DfdlValue::Short(sign_extend_u64(decode_unsigned_binary_bytes(bytes, le), bits) as i16))
+            } else {
+                Ok(DfdlValue::Short(int!(i16)))
+            }
+        }
         UnsignedShort => Ok(DfdlValue::UnsignedShort(int!(u16))),
-        Int => Ok(DfdlValue::Int(int!(i32))),
+        Int => {
+            if bit_width == Some(1) {
+                Ok(DfdlValue::Int(decode_unsigned_binary_bytes(bytes, le) as i32))
+            } else if let Some(bits) = bit_width {
+                Ok(DfdlValue::Int(sign_extend_u64(decode_unsigned_binary_bytes(bytes, le), bits) as i32))
+            } else {
+                Ok(DfdlValue::Int(int!(i32)))
+            }
+        }
         UnsignedInt => Ok(DfdlValue::UnsignedInt(int!(u32))),
-        Long => Ok(DfdlValue::Long(int!(i64))),
+        Long => {
+            if bit_width == Some(1) {
+                Ok(DfdlValue::Long(decode_unsigned_binary_bytes(bytes, le) as i64))
+            } else if let Some(bits) = bit_width {
+                Ok(DfdlValue::Long(sign_extend_u64(
+                    decode_unsigned_binary_bytes(bytes, le),
+                    bits,
+                )))
+            } else {
+                Ok(DfdlValue::Long(int!(i64)))
+            }
+        }
         Float => Ok(DfdlValue::Float(f32::from_bits(int!(u32)))),
         Double => Ok(DfdlValue::Double(f64::from_bits(int!(u64)))),
         HexBinary => Ok(DfdlValue::HexBinary(bytes.to_vec())),
@@ -809,13 +1092,13 @@ pub(crate) fn read_text_scalar(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "fixed text missing length".into(),
             })? as usize;
-            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?)?
+            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?, props.bit_order)?
         }
         LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit text missing length".into(),
             })? as usize;
-            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?)?
+            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?, props.bit_order)?
         }
         LengthKind::Delimited => {
             read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)?
@@ -1262,6 +1545,7 @@ pub(crate) fn read_length_span(
     len: usize,
     units: LengthUnits,
     encoding: &str,
+    bit_order: BitOrder,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     match units {
@@ -1272,19 +1556,10 @@ pub(crate) fn read_length_span(
             let mut pos = cursor.pos;
             let bytes = read_character_bytes(cursor.data, &mut pos, len, encoding)?;
             cursor.pos = pos;
+            cursor.bit_count = 0;
             Ok(bytes)
         }
-        LengthUnits::Bits => {
-            if cursor.bit_count != 0 {
-                return Err(VmError::UnsupportedOperation {
-                    op: "unaligned bit-level length span".into(),
-                });
-            }
-            let byte_len = len.div_ceil(8);
-            cursor
-                .read_bytes(byte_len)
-                .ok_or(VmError::UnexpectedEof)
-        }
+        LengthUnits::Bits => cursor.read_stream_bits_as_bytes(len, bit_order),
     }
 }
 
@@ -1394,6 +1669,7 @@ pub(crate) fn read_prefixed_payload(
         span,
         props.length_units,
         encoding_name(props, strings)?,
+        props.bit_order,
     )
 }
 
@@ -1513,6 +1789,7 @@ fn read_prefix_field_payload(
                 len,
                 props.length_units,
                 encoding_name(props, strings)?,
+                props.bit_order,
             )
         }
         LengthKind::Implicit => {
@@ -1520,7 +1797,7 @@ fn read_prefix_field_payload(
                 Ok(read_numeric_token(cursor))
             } else if props.length_units == LengthUnits::Bits {
                 let len = binary_bit_length(cursor, kind, props, strings)?;
-                read_length_span(cursor, len, LengthUnits::Bits, "utf-8")
+                cursor.read_stream_bits_as_bytes(len, props.bit_order)
             } else {
                 let len = binary_byte_length(cursor, kind, props, strings)?;
                 cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)
@@ -1731,6 +2008,18 @@ pub(crate) fn consume_alignment(
     use crate::schema::LengthUnits;
 
     if props.alignment == 0 {
+        return Ok(());
+    }
+    if props.alignment_units == LengthUnits::Bits {
+        let align = props.alignment as usize;
+        if align <= 1 {
+            return Ok(());
+        }
+        let pos = cursor.absolute_bit_index();
+        let skip = (align - (pos % align)) % align;
+        if skip > 0 {
+            cursor.skip_stream_bits(skip, props.bit_order)?;
+        }
         return Ok(());
     }
     if props.alignment_units != LengthUnits::Bytes {

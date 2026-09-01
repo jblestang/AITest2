@@ -988,6 +988,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_trim_kind.is_some() {
         base.text_trim_kind = overlay.text_trim_kind;
     }
+    if overlay.truncate_specified_length_string.is_some() {
+        base.truncate_specified_length_string = overlay.truncate_specified_length_string;
+    }
     if overlay.binary_number_rep.is_some() {
         base.binary_number_rep = overlay.binary_number_rep;
     }
@@ -1102,6 +1105,9 @@ fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>
         return None;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
+    if let Ok(v) = inner.parse::<i64>() {
+        return Some((InputValueCalc::Constant(v), None));
+    }
     let (func, rest) = inner.split_once('(')?;
     let args = rest.strip_suffix(')')?;
     let units = if args.contains("\"bits\"") {
@@ -1186,6 +1192,24 @@ fn parse_sibling_length_ref(value: &str) -> Option<String> {
     Some(local_name_from_qname(path).to_string())
 }
 
+/// Parses constant DFDL length expressions such as `{ 6 }` or `{1}`.
+fn parse_constant_length_expr(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    if inner.is_empty()
+        || inner.contains("..")
+        || inner.contains(':')
+        || inner.contains('(')
+        || inner.contains('/')
+    {
+        return None;
+    }
+    inner.parse().ok()
+}
+
 fn local_name_from_qname(qname: &str) -> &str {
     qname.rsplit(':').next().unwrap_or(qname)
 }
@@ -1231,6 +1255,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "lengthPattern"
             | "encoding"
             | "textTrimKind"
+            | "truncateSpecifiedLengthString"
             | "textNumberPadCharacter"
             | "textStringPadCharacter"
             | "textPadKind"
@@ -1323,6 +1348,8 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             "length" => {
                 if let Ok(v) = value.parse::<u64>() {
                     props.length = Some(v);
+                } else if let Some(v) = parse_constant_length_expr(value) {
+                    props.length = Some(v);
                 } else if let Some(sibling) = parse_sibling_length_ref(value) {
                     props.length_sibling = Some(sibling);
                 } else if value.trim().starts_with('{') {
@@ -1348,6 +1375,20 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 });
             }
             "encoding" => props.encoding = Some(value.clone()),
+            "truncateSpecifiedLengthString" => {
+                props.truncate_specified_length_string = Some(match value.as_str() {
+                    "yes" => true,
+                    "no" => false,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!(
+                                "unknown truncateSpecifiedLengthString `{other}`"
+                            ),
+                        }
+                        .into())
+                    }
+                });
+            }
             "textTrimKind" => {
                 props.text_trim_kind = Some(match value.as_str() {
                     "none" => TextTrimKind::None,
@@ -1771,5 +1812,12 @@ mod tests {
         let doc = parse_schema(SAMPLE).expect("schema should parse");
         assert!(doc.global_elements.contains_key("Record"));
         assert!(doc.types.contains_key(&TypeName::new("RecordType")));
+    }
+
+    #[test]
+    fn parse_constant_length_expression() {
+        assert_eq!(parse_constant_length_expr("{ 6 }"), Some(6));
+        assert_eq!(parse_constant_length_expr("{1}"), Some(1));
+        assert_eq!(parse_constant_length_expr("{ ../len }"), None);
     }
 }

@@ -3,6 +3,7 @@ use super::parser::{
     effective_round_trip, parse_tdml, ParserTestCase, RoundTrip, TdmlSuite, UnparserTestCase,
 };
 use crate::api::DfdlSpec;
+use crate::length_validate::DaffodilTunables;
 use crate::error::Result;
 use crate::vm::RuntimeConfig;
 use alloc::string::{String, ToString};
@@ -62,7 +63,14 @@ pub fn run_parser_test_with_options(
         }
     };
 
-    let spec = match compile_tdml_schema(&schema_xsd, &test.root) {
+    let tunables = test
+        .config
+        .as_ref()
+        .and_then(|name| suite.configs.get(name))
+        .copied()
+        .unwrap_or_default();
+
+    let spec = match compile_tdml_schema(&schema_xsd, &test.root, tunables) {
         Ok(s) => s,
         Err(e) => {
             if let Some(expected) = &test.expected_errors {
@@ -243,7 +251,7 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         }
     };
 
-    let spec = match compile_tdml_schema(&schema_xsd, &test.root) {
+    let spec = match compile_tdml_schema(&schema_xsd, &test.root, DaffodilTunables::default()) {
         Ok(s) => s,
         Err(e) => {
             if let Some(expected) = &test.expected_errors {
@@ -320,8 +328,9 @@ fn error_messages_match(expected: &[String], err: &str) -> bool {
     true
 }
 
-fn compile_tdml_schema(xsd: &str, root: &str) -> Result<DfdlSpec> {
-    DfdlSpec::from_xsd_root(xsd, Some(root))
+fn compile_tdml_schema(xsd: &str, root: &str, tunables: DaffodilTunables) -> Result<DfdlSpec> {
+    let schema = crate::schema::parse_schema(xsd)?;
+    DfdlSpec::from_schema_root_with_tunables(schema, Some(root), tunables)
 }
 
 fn resolve_model_schema(suite: &TdmlSuite, model: &str) -> Result<alloc::string::String> {

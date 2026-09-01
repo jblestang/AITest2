@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use crate::error::Result;
-use crate::ir::{compile, compile_named, IrProgram};
+use crate::ir::{compile, compile_named, compile_named_with_tunables, IrProgram};
 use crate::schema::{parse_schema, SchemaDocument};
 use crate::value::DfdlValue;
 use crate::vm::{Decoder, Encoder, RuntimeConfig};
@@ -28,6 +28,16 @@ impl DfdlSpec {
     /// Build from an already parsed schema document.
     pub fn from_schema(schema: SchemaDocument) -> Result<Self> {
         let program = compile(&schema)?;
+        Ok(Self { schema, program })
+    }
+
+    /// Build from a parsed schema with tunables and optional root element.
+    pub fn from_schema_root_with_tunables(
+        schema: SchemaDocument,
+        root_element: Option<&str>,
+        tunables: crate::length_validate::DaffodilTunables,
+    ) -> Result<Self> {
+        let program = compile_named_with_tunables(&schema, root_element, tunables)?;
         Ok(Self { schema, program })
     }
 

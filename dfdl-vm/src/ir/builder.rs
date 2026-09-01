@@ -1,6 +1,6 @@
 use super::{ChoiceBranch, IrNode, IrProgram, IrPrefixLength, IrProps, StringId, StringPool, ValueKind};
 use crate::error::{Result, SchemaError};
-use crate::length_validate::validate_data_length_schema;
+use crate::length_validate::{validate_data_length_schema, validate_signed_one_bit_length_schema, DaffodilTunables};
 use crate::schema::{
     BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, Particle, Representation,
     SchemaDocument, SimpleBase, TypeDef, TypeName,
@@ -13,10 +13,11 @@ struct IrBuilder<'a> {
     nodes: Vec<IrNode>,
     strings: StringPool,
     defaults: IrProps,
+    tunables: DaffodilTunables,
 }
 
 impl<'a> IrBuilder<'a> {
-    fn new(schema: &'a SchemaDocument) -> Self {
+    fn new(schema: &'a SchemaDocument, tunables: DaffodilTunables) -> Self {
         let mut strings = StringPool::new();
         let defaults = overlay_dfdl_to_ir(IrProps::default(), &schema.format_defaults.props, &mut strings);
         Self {
@@ -24,6 +25,7 @@ impl<'a> IrBuilder<'a> {
             nodes: Vec::new(),
             strings,
             defaults,
+            tunables,
         }
     }
 
@@ -43,6 +45,7 @@ impl<'a> IrBuilder<'a> {
                 kind,
                 self.merge_props_full(&defaults, &DfdlProps::default(), &root_element.props)?,
                 &self.strings,
+                self.tunables,
             )?;
             validate_implicit_text_length(kind, &props)?;
             let name = self.strings.intern(root_name);
@@ -53,31 +56,58 @@ impl<'a> IrBuilder<'a> {
                 child: None,
             })
         } else {
-            let child = self.compile_type(&root_element.type_name, &DfdlProps::default())?;
-            let needs_element_wrapper = root_element.props.length_kind.is_some()
-                || root_element.props.initiator.is_some()
-                || root_element.props.terminator.is_some();
-            if needs_element_wrapper {
+            let type_def = self
+                .schema
+                .resolve_type(&root_element.type_name)
+                .ok_or_else(|| SchemaError::UndefinedType {
+                    name: root_element.type_name.as_str().to_string(),
+                })?;
+
+            if let TypeDef::Simple { base, props, .. } = type_def {
                 let defaults = self.defaults.clone();
-                let mut ir_props = self.merge_props_full(
-                    &defaults,
-                    &DfdlProps::default(),
-                    &root_element.props,
+                let kind = value_kind_from_simple(base);
+                let mut ir_props = finalize_element_props(
+                    kind,
+                    self.merge_props_full(&defaults, props, &root_element.props)?,
+                    &self.strings,
+                    self.tunables,
                 )?;
-                if root_element.props.length_kind.is_none() {
-                    ir_props.length_kind = LengthKind::Implicit;
-                }
-                let ir_props =
-                    finalize_element_props(ValueKind::Complex, ir_props, &self.strings)?;
+                apply_restriction_facets(&mut ir_props, base);
+                validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern(root_name);
                 self.push(IrNode::Element {
                     name,
-                    kind: ValueKind::Complex,
+                    kind,
                     props: ir_props,
-                    child: Some(child),
+                    child: None,
                 })
             } else {
-                child
+                let child = self.compile_type(&root_element.type_name, &root_element.props)?;
+                let needs_element_wrapper = root_element.props.length_kind.is_some()
+                    || root_element.props.initiator.is_some()
+                    || root_element.props.terminator.is_some();
+                if needs_element_wrapper {
+                    let defaults = self.defaults.clone();
+                    let mut ir_props = self.merge_props_full(
+                        &defaults,
+                        &DfdlProps::default(),
+                        &root_element.props,
+                    )?;
+                    if root_element.props.length_kind.is_none() {
+                        ir_props.length_kind = LengthKind::Implicit;
+                    }
+                    let ir_props =
+                        finalize_element_props(ValueKind::Complex, ir_props, &self.strings, self.tunables)?;
+                    let name = self.strings.intern(root_name);
+                    self.push(IrNode::Element {
+                        name,
+                        kind: ValueKind::Complex,
+                        props: ir_props,
+                        child: Some(child),
+                    })
+                } else {
+                    child
+                }
             }
         };
         Ok(IrProgram {
@@ -121,6 +151,7 @@ impl<'a> IrBuilder<'a> {
                     kind,
                     self.merge_props_full(&defaults, props, element_props)?,
                     &self.strings,
+                    self.tunables,
                 )?;
                 apply_restriction_facets(&mut ir_props, base);
                 validate_implicit_text_length(kind, &ir_props)?;
@@ -150,6 +181,7 @@ impl<'a> IrBuilder<'a> {
                         kind,
                         self.merge_props_full(inherited, &element.props, &DfdlProps::default())?,
                         &self.strings,
+                        self.tunables,
                     )?;
                     validate_implicit_text_length(kind, &ir_props)?;
                     Ok(self.push(IrNode::Element {
@@ -179,6 +211,7 @@ impl<'a> IrBuilder<'a> {
                                 kind,
                                 merge_ir_props(&child_props, &overlay),
                                 &self.strings,
+                                self.tunables,
                             )?;
                             if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
                                 if let TypeDef::Simple { base, .. } = type_def {
@@ -199,7 +232,7 @@ impl<'a> IrBuilder<'a> {
                         ir_props.length_kind = LengthKind::Implicit;
                     }
                     let ir_props =
-                        finalize_element_props(ValueKind::Complex, ir_props, &self.strings)?;
+                        finalize_element_props(ValueKind::Complex, ir_props, &self.strings, self.tunables)?;
                     Ok(self.push(IrNode::Element {
                         name,
                         kind: ValueKind::Complex,
@@ -416,13 +449,24 @@ fn finalize_element_props(
     kind: ValueKind,
     mut ir: IrProps,
     strings: &StringPool,
+    tunables: DaffodilTunables,
 ) -> Result<IrProps> {
     validate_binary_delimited(kind, &ir)?;
     validate_prefixed_character_encoding(kind, &ir, strings)?;
     if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
         if let Some(len) = ir.length {
             validate_data_length_schema(kind, len, ir.length_units)?;
+            validate_signed_one_bit_length_schema(kind, len, ir.length_units, &tunables)?;
         }
+    }
+    if matches!(kind, ValueKind::Float | ValueKind::Double)
+        && matches!(ir.length_kind, LengthKind::Explicit)
+        && ir.length_sibling.is_some()
+    {
+        return Err(SchemaError::InvalidProperty {
+            message: "floating point binary numbers may not have runtime-specified lengths".into(),
+        }
+        .into());
     }
     // Binary schemas default to binary representation, but length-delimited string
     // payloads are still textual. HexBinary keeps binary bytes even with a text prefix.
@@ -593,6 +637,9 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.text_trim_kind {
         base.text_trim_kind = v;
     }
+    if let Some(v) = props.truncate_specified_length_string {
+        base.truncate_specified_length_string = v;
+    }
     if props.text_number_pad_character.is_some() {
         base.text_number_pad_character = props
             .text_number_pad_character
@@ -718,7 +765,22 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.representation = overlay.representation;
     out.byte_order = overlay.byte_order;
     out.bit_order = overlay.bit_order;
-    out.length_kind = overlay.length_kind;
+    if matches!(
+        base.length_kind,
+        LengthKind::Explicit
+            | LengthKind::Fixed
+            | LengthKind::Prefixed
+            | LengthKind::Delimited
+            | LengthKind::Pattern
+    ) && overlay.length_kind == LengthKind::Implicit
+        && overlay.length.is_none()
+        && overlay.length_pattern.is_none()
+    {
+        // Keep type-derived lengthKind when overlay only carries inherited implicit defaults
+        // (including when the overlay adds a runtime length expression via length_sibling).
+    } else {
+        out.length_kind = overlay.length_kind;
+    }
     if overlay.length.is_some() {
         out.length = overlay.length;
     }
@@ -773,6 +835,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.output_value_calc_sibling = overlay.output_value_calc_sibling;
     out.text_string_justification = overlay.text_string_justification;
     out.text_number_justification = overlay.text_number_justification;
+    out.truncate_specified_length_string = overlay.truncate_specified_length_string;
     if overlay.min_length.is_some() {
         out.min_length = overlay.min_length;
     }
@@ -790,6 +853,15 @@ pub fn compile(schema: &SchemaDocument) -> Result<IrProgram> {
 
 /// Compile using an explicit root element name, or the sole global element.
 pub fn compile_named(schema: &SchemaDocument, root: Option<&str>) -> Result<IrProgram> {
+    compile_named_with_tunables(schema, root, DaffodilTunables::default())
+}
+
+/// Compile with Daffodil tunables from TDML test configuration.
+pub fn compile_named_with_tunables(
+    schema: &SchemaDocument,
+    root: Option<&str>,
+    tunables: DaffodilTunables,
+) -> Result<IrProgram> {
     let root_name = match root {
         Some(name) => name.to_string(),
         None => {
@@ -808,7 +880,7 @@ pub fn compile_named(schema: &SchemaDocument, root: Option<&str>) -> Result<IrPr
         }
     };
 
-    IrBuilder::new(schema).build(&root_name)
+    IrBuilder::new(schema, tunables).build(&root_name)
 }
 
 #[cfg(test)]

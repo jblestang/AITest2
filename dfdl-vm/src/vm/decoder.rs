@@ -47,7 +47,7 @@ impl<'a> Decoder<'a> {
             None,
         )?;
         self.consume_root_delimited_suffix(&mut cursor)?;
-        if self.ctx.config.strict_eos && !cursor.is_empty() {
+        if self.ctx.config.strict_eos && cursor.bit_count == 0 && cursor.remaining() > 0 {
             return Err(VmError::TrailingData {
                 remaining: cursor.remaining(),
             }
@@ -281,16 +281,51 @@ impl<'a> Decoder<'a> {
                         let len = props.length.ok_or(VmError::InvalidValue {
                             message: "explicit complex missing length".into(),
                         })? as usize;
+                        if props.length_units == LengthUnits::Bits {
+                            let frame_start = cursor.absolute_bit_index();
+                            let prev_limit = cursor
+                                .frame_bit_limit
+                                .replace(frame_start + len);
+                            let inner = self.decode_node(
+                                *child_id,
+                                cursor,
+                                false,
+                                None,
+                                None,
+                                None,
+                            )?;
+                            if props.truncate_specified_length_string
+                                && !cursor.is_frame_consumed()
+                            {
+                                cursor.frame_bit_limit = prev_limit;
+                                return Err(VmError::InvalidValue {
+                                    message:
+                                        "unconsumed bytes in explicit-length complex element"
+                                            .into(),
+                                }
+                                .into());
+                            }
+                            if let Some(limit) = cursor.frame_bit_limit {
+                                cursor.skip_to_bit_index(limit, props.bit_order)?;
+                            }
+                            cursor.frame_bit_limit = prev_limit;
+                            return Ok(wrap_named(
+                                self.ctx.strings().get(*name)?,
+                                inner,
+                                ValueKind::Complex,
+                            ));
+                        }
                         let bytes = read_length_span(
                             cursor,
                             len,
                             props.length_units,
                             encoding_name(&props, self.ctx.strings())?,
+                            props.bit_order,
                         )?;
                         let mut sub = Cursor::new(&bytes);
                         let scope = bytes.len();
                         let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope))?;
-                        if !sub.is_empty() {
+                        if props.truncate_specified_length_string && !sub.is_empty() {
                             return Err(VmError::InvalidValue {
                                 message: "unconsumed bytes in explicit-length complex element".into(),
                             }
@@ -416,6 +451,7 @@ impl<'a> Decoder<'a> {
                 } else if props.input_value_calc.is_some() {
                     eval_input_value_calc(
                         &props,
+                        *kind,
                         cursor,
                         siblings,
                         self.ctx.strings(),
@@ -708,6 +744,7 @@ fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
 
 fn eval_input_value_calc(
     props: &IrProps,
+    kind: ValueKind,
     cursor: &Cursor<'_>,
     siblings: Option<&BTreeMap<String, SiblingState>>,
     strings: &crate::ir::StringPool,
@@ -716,7 +753,11 @@ fn eval_input_value_calc(
     let calc = props.input_value_calc.ok_or_else(|| VmError::InvalidValue {
         message: "missing inputValueCalc".into(),
     })?;
+    if let InputValueCalc::Constant(v) = calc {
+        return constant_input_value(kind, v);
+    }
     let len = match calc {
+        InputValueCalc::Constant(_) => unreachable!("handled above"),
         InputValueCalc::ContentLengthSelf(units) | InputValueCalc::ValueLengthSelf(units) => {
             let byte_len = content_scope_bytes.unwrap_or_else(|| cursor.remaining());
             length_in_units(byte_len, units)?
@@ -736,6 +777,55 @@ fn eval_input_value_calc(
             message: alloc::format!("inputValueCalc result `{len}` out of range for int"),
         })
         .map_err(Into::into)
+}
+
+fn constant_input_value(kind: ValueKind, value: i64) -> Result<DfdlValue> {
+    use ValueKind::*;
+    match kind {
+        Byte => i8::try_from(value)
+            .map(DfdlValue::Byte)
+            .map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("inputValueCalc constant `{value}` out of range for byte"),
+            }),
+        UnsignedByte => u8::try_from(value)
+            .map(DfdlValue::UnsignedByte)
+            .map_err(|_| VmError::InvalidValue {
+                message: alloc::format!(
+                    "inputValueCalc constant `{value}` out of range for unsignedByte"
+                ),
+            }),
+        Short => i16::try_from(value)
+            .map(DfdlValue::Short)
+            .map_err(|_| VmError::InvalidValue {
+                message: alloc::format!(
+                    "inputValueCalc constant `{value}` out of range for short"
+                ),
+            }),
+        UnsignedShort => u16::try_from(value)
+            .map(DfdlValue::UnsignedShort)
+            .map_err(|_| VmError::InvalidValue {
+                message: alloc::format!(
+                    "inputValueCalc constant `{value}` out of range for unsignedShort"
+                ),
+            }),
+        Int => i32::try_from(value)
+            .map(DfdlValue::Int)
+            .map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("inputValueCalc constant `{value}` out of range for int"),
+            }),
+        UnsignedInt => u32::try_from(value)
+            .map(DfdlValue::UnsignedInt)
+            .map_err(|_| VmError::InvalidValue {
+                message: alloc::format!(
+                    "inputValueCalc constant `{value}` out of range for unsignedInt"
+                ),
+            }),
+        Long => Ok(DfdlValue::Long(value)),
+        other => Err(VmError::InvalidValue {
+            message: alloc::format!("inputValueCalc constant unsupported for `{other:?}`"),
+        }),
+    }
+    .map_err(Into::into)
 }
 
 fn sibling_state<'a>(

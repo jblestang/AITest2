@@ -30,6 +30,8 @@ pub struct DfdlProps {
     pub length_units: Option<LengthUnits>,
     pub encoding: Option<String>,
     pub text_trim_kind: Option<TextTrimKind>,
+    /// When false, explicit-length fields may leave unconsumed data in their frame.
+    pub truncate_specified_length_string: Option<bool>,
     /// Expanded pad character for numeric text (`dfdl:textNumberPadCharacter`).
     pub text_number_pad_character: Option<String>,
     /// Expanded pad character for string text (`dfdl:textStringPadCharacter`).
@@ -137,6 +139,7 @@ pub enum TextTrimKind {
 /// Narrow support for `dfdl:inputValueCalc` used in Daffodil prefixed length tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputValueCalc {
+    Constant(i64),
     ContentLengthSelf(LengthUnits),
     ValueLengthSelf(LengthUnits),
     ContentLengthSibling(LengthUnits),

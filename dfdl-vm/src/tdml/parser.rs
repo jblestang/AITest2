@@ -1,4 +1,5 @@
 use crate::error::{ParseError, Result};
+use crate::length_validate::DaffodilTunables;
 use crate::schema::expand_entities;
 use crate::vm::encoding::encode_document_text;
 use crate::xml_util::{attrs_to_map, local_name_str, XmlReader};
@@ -21,6 +22,7 @@ pub enum RoundTrip {
 pub struct TdmlSuite {
     pub name: String,
     pub schemas: BTreeMap<String, TdmlSchema>,
+    pub configs: BTreeMap<String, DaffodilTunables>,
     pub tests: Vec<ParserTestCase>,
     pub unparser_tests: Vec<UnparserTestCase>,
     pub default_round_trip: RoundTrip,
@@ -41,6 +43,7 @@ pub struct ParserTestCase {
     pub expected_infoset: String,
     /// When set, compile/decode/encode must fail and error text must contain each message.
     pub expected_errors: Option<Vec<String>>,
+    pub config: Option<String>,
     pub round_trip: RoundTrip,
 }
 
@@ -64,6 +67,7 @@ pub struct TdmlDocument {
 pub enum DocumentKind {
     Text,
     Hex,
+    Bits,
 }
 
 /// Parse a TDML test suite document.
@@ -77,6 +81,7 @@ pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
     let default_round_trip = parse_round_trip(attrs.get("defaultRoundTrip").map(String::as_str));
 
     let mut schemas = BTreeMap::new();
+    let mut configs = BTreeMap::new();
     let mut tests = Vec::new();
     let mut unparser_tests = Vec::new();
 
@@ -84,6 +89,11 @@ pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
         "defineSchema" => {
             let schema = parse_define_schema(attrs, r)?;
             schemas.insert(schema.name.clone(), schema);
+            Ok(())
+        }
+        "defineConfig" => {
+            let config = parse_define_config(attrs, r)?;
+            configs.insert(config.0.clone(), config.1);
             Ok(())
         }
         "parserTestCase" => {
@@ -100,6 +110,7 @@ pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
     Ok(TdmlSuite {
         name,
         schemas,
+        configs,
         tests,
         unparser_tests,
         default_round_trip,
@@ -137,6 +148,33 @@ fn parse_define_schema(attrs: BTreeMap<String, String>, reader: &mut XmlReader<'
     })
 }
 
+fn parse_define_config(
+    attrs: BTreeMap<String, String>,
+    reader: &mut XmlReader<'_>,
+) -> Result<(String, DaffodilTunables)> {
+    let name = attrs.get("name").cloned().ok_or_else(|| ParseError::MissingAttribute {
+        element: "defineConfig".into(),
+        attribute: "name".into(),
+    })?;
+    let mut tunables = DaffodilTunables::default();
+    reader.for_each_child("defineConfig", |local, _, r| match local {
+        "tunables" => {
+            r.for_each_child("tunables", |local, _, r| {
+                if local == "allowSignedIntegerLength1Bit" {
+                    let text = r.read_text_until_end("allowSignedIntegerLength1Bit")?;
+                    tunables.allow_signed_integer_length1_bit = text.trim() != "false";
+                } else {
+                    r.skip_current_subtree()?;
+                }
+                Ok(())
+            })?;
+            Ok(())
+        }
+        _ => r.skip_current_subtree(),
+    })?;
+    Ok((name, tunables))
+}
+
 fn parse_parser_test_case(
     attrs: BTreeMap<String, String>,
     reader: &mut XmlReader<'_>,
@@ -148,6 +186,7 @@ fn parse_parser_test_case(
         attribute: "model".into(),
     })?;
     let round_trip = parse_round_trip(attrs.get("roundTrip").map(String::as_str));
+    let config = attrs.get("config").cloned();
 
     let mut documents = Vec::new();
     let mut expected_infoset = String::new();
@@ -180,6 +219,7 @@ fn parse_parser_test_case(
         documents,
         expected_infoset,
         expected_errors,
+        config,
         round_trip,
     })
 }
@@ -265,6 +305,7 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
     let attrs = attrs_to_map(&attributes);
     let kind = match attrs.get("type").map(String::as_str) {
         Some("hex") | Some("byte") => DocumentKind::Hex,
+        Some("bits") => DocumentKind::Bits,
         _ => DocumentKind::Text,
     };
     let replace_entities = attrs
@@ -286,6 +327,7 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
             }
         }
         DocumentKind::Hex => parse_hex_document(&text)?,
+        DocumentKind::Bits => parse_bits_document(&text)?,
     };
     Ok(TdmlDocument { kind, data })
 }
@@ -332,6 +374,32 @@ fn parse_hex_document(text: &str) -> Result<Vec<u8>> {
             message: "invalid hex document".into(),
         })?;
         out.push((hi << 4 | lo) as u8);
+    }
+    Ok(out)
+}
+
+/// Pack TDML `type="bits"` document text into bytes (MSB-first within each byte).
+fn parse_bits_document(text: &str) -> Result<Vec<u8>> {
+    let mut bits = Vec::new();
+    for c in text.chars().filter(|c| !c.is_whitespace()) {
+        match c {
+            '0' => bits.push(0),
+            '1' => bits.push(1),
+            other => {
+                return Err(ParseError::InvalidXml {
+                    message: alloc::format!("invalid bits document character `{other}`"),
+                }
+                .into())
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for chunk in bits.chunks(8) {
+        let mut byte = 0u8;
+        for (i, bit) in chunk.iter().enumerate() {
+            byte |= bit << (7 - i);
+        }
+        out.push(byte);
     }
     Ok(out)
 }
