@@ -108,6 +108,7 @@ pub struct IrProps {
     pub output_value_calc: Option<OutputValueCalc>,
     pub output_value_calc_sibling: Option<StringId>,
     pub text_string_justification: TextStringJustification,
+    pub min_length: Option<u64>,
     pub prefix_length: Option<alloc::boxed::Box<IrPrefixLength>>,
     pub prefix_includes_prefix_length: bool,
 }
@@ -150,6 +151,7 @@ impl Default for IrProps {
             output_value_calc: None,
             output_value_calc_sibling: None,
             text_string_justification: TextStringJustification::Left,
+            min_length: None,
             prefix_length: None,
             prefix_includes_prefix_length: false,
         }

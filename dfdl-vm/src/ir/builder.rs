@@ -116,11 +116,12 @@ impl<'a> IrBuilder<'a> {
             TypeDef::Simple { base, props, .. } => {
                 let defaults = self.defaults.clone();
                 let kind = value_kind_from_simple(base);
-                let ir_props = finalize_element_props(
+                let mut ir_props = finalize_element_props(
                     kind,
                     self.merge_props_full(&defaults, props, element_props)?,
                     &self.strings,
                 )?;
+                apply_restriction_facets(&mut ir_props, base);
                 validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern("__value");
                 Ok(self.push(IrNode::Element {
@@ -173,11 +174,16 @@ impl<'a> IrBuilder<'a> {
                     {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
-                            let merged = finalize_element_props(
+                            let mut merged = finalize_element_props(
                                 kind,
                                 merge_ir_props(&child_props, &overlay),
                                 &self.strings,
                             )?;
+                            if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
+                                if let TypeDef::Simple { base, .. } = type_def {
+                                    apply_restriction_facets(&mut merged, base);
+                                }
+                            }
                             validate_implicit_text_length(kind, &merged)?;
                             return Ok(self.push(IrNode::Element {
                                 name,
@@ -477,6 +483,19 @@ fn value_kind_from_simple(base: &SimpleBase) -> ValueKind {
     }
 }
 
+fn restriction_min_length(base: &SimpleBase) -> Option<u64> {
+    match base {
+        SimpleBase::Restriction { min_length, .. } => *min_length,
+        _ => None,
+    }
+}
+
+fn apply_restriction_facets(props: &mut IrProps, base: &SimpleBase) {
+    if let Some(min) = restriction_min_length(base) {
+        props.min_length = Some(min);
+    }
+}
+
 fn value_kind_from_builtin(builtin: BuiltinType) -> ValueKind {
     match builtin {
         BuiltinType::Boolean => ValueKind::Boolean,
@@ -740,6 +759,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.output_value_calc = overlay.output_value_calc;
     out.output_value_calc_sibling = overlay.output_value_calc_sibling;
     out.text_string_justification = overlay.text_string_justification;
+    if overlay.min_length.is_some() {
+        out.min_length = overlay.min_length;
+    }
     if overlay.prefix_length.is_some() {
         out.prefix_length = overlay.prefix_length.clone();
     }

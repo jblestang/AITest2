@@ -1013,6 +1013,8 @@ pub(crate) fn write_text_scalar(
         }
     };
 
+    let text = apply_min_length_pad(&text, props, strings, kind);
+
     if props.length_kind == LengthKind::Prefixed {
         let encoded = encode_document_text(&text, encoding_name(props, strings)?)?;
         return write_prefixed_bytes(out, &encoded, props, strings);
@@ -1027,7 +1029,7 @@ pub(crate) fn write_text_scalar(
             pad_text_field(&text, len, props.length_units, props, strings, kind, encoding)?
         }
         LengthKind::Delimited | LengthKind::Pattern | LengthKind::Implicit | LengthKind::EndOfParent => {
-            text.into_bytes()
+            encode_document_text(&text, encoding)?
         }
         other => {
             return Err(VmError::UnsupportedOperation {
@@ -1037,6 +1039,61 @@ pub(crate) fn write_text_scalar(
     };
     out.extend_from_slice(&payload);
     Ok(())
+}
+
+fn apply_min_length_pad(
+    text: &str,
+    props: &IrProps,
+    strings: &StringPool,
+    kind: crate::ir::ValueKind,
+) -> alloc::string::String {
+    use crate::ir::ValueKind;
+    use crate::schema::TextStringJustification;
+
+    let Some(min_len) = props.min_length else {
+        return text.to_string();
+    };
+    if kind != ValueKind::String {
+        return text.to_string();
+    }
+    let min_len = min_len as usize;
+    let current = text.chars().count();
+    if current >= min_len {
+        return text.to_string();
+    }
+    let pad_char = pad_char_for_kind(props, strings, kind).unwrap_or(" ");
+    let pad_ch = pad_char.chars().next().unwrap_or(' ');
+    let pad_count = min_len - current;
+    match props.text_string_justification {
+        TextStringJustification::Right => {
+            let mut out = alloc::string::String::new();
+            for _ in 0..pad_count {
+                out.push(pad_ch);
+            }
+            out.push_str(text);
+            out
+        }
+        TextStringJustification::Center => {
+            let left = pad_count / 2;
+            let right = pad_count - left;
+            let mut out = alloc::string::String::new();
+            for _ in 0..left {
+                out.push(pad_ch);
+            }
+            out.push_str(text);
+            for _ in 0..right {
+                out.push(pad_ch);
+            }
+            out
+        }
+        TextStringJustification::Left => {
+            let mut out = text.to_string();
+            for _ in 0..pad_count {
+                out.push(pad_ch);
+            }
+            out
+        }
+    }
 }
 
 fn pad_text_field(
@@ -2133,7 +2190,6 @@ fn write_prefix_field(
     prefix: &IrPrefixLength,
     strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
-    use crate::error::VmError;
     use crate::schema::Representation;
     validate_prefix_facets(value, prefix)?;
     if prefix.props.length_kind == LengthKind::Prefixed {

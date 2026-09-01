@@ -639,22 +639,8 @@ fn daffodil_prefixed_complex_roundtrip_suite() {
 fn daffodil_prefixed_onepass_roundtrip_suite() {
     let tdml = daffodil_tdml!("PrefixedTests.tdml");
     let suite = parse_tdml(tdml).expect("parse tdml");
-    let known_encode_gaps = [
-        // Variable-width nByteTextInt prefix text width not preserved in infoset
-        "pl_text_string_pl_txt_bytes",
-        // minLength + center pad + prefixIncludesPrefixLength encode
-        "pl_simpleValueLengthBytes_1",
-        "pl_simpleValueLengthBytes_3",
-        // UTF-16BE character-unit prefix encode (DAFFODIL-2029)
-        "pl_complexContentLengthCharacters_1",
-        // Choice/backtrack encode
-        "pl_text_string_txt_bytes_not_enough_prefix_data_includes_backtrack",
-    ];
     for test in &suite.tests {
         if test.expected_errors.is_some() {
-            continue;
-        }
-        if known_encode_gaps.contains(&test.name.as_str()) {
             continue;
         }
         let rt = effective_round_trip(test.round_trip, suite.default_round_trip);

@@ -53,18 +53,28 @@ impl<'a> Encoder<'a> {
                 Ok(())
             }
             IrNode::Choice { branches, .. } => {
-                let (discriminator, branch_value) = value.as_choice_fields()?;
-                let branch = branches
-                    .iter()
-                    .find(|b| {
-                        self.ctx
-                            .strings()
-                            .get(b.name)
-                            .map(|name| name == discriminator)
-                            .unwrap_or(false)
-                    })
-                    .ok_or(VmError::InvalidChoice)?;
-                self.encode_node(branch.node, branch_value, out)
+                if let DfdlValue::Choice { discriminator, value } = value {
+                    let branch = branches
+                        .iter()
+                        .find(|b| {
+                            self.ctx
+                                .strings()
+                                .get(b.name)
+                                .map(|name| name == discriminator)
+                                .unwrap_or(false)
+                        })
+                        .ok_or(VmError::InvalidChoice)?;
+                    return self.encode_node(branch.node, value, out);
+                }
+                if let DfdlValue::Sequence(map) = value {
+                    for branch in branches {
+                        let key = self.ctx.strings().get(branch.name)?;
+                        if let Some(branch_value) = map.get(key) {
+                            return self.encode_node(branch.node, branch_value, out);
+                        }
+                    }
+                }
+                Err(VmError::InvalidChoice.into())
             }
             IrNode::Element {
                 name,
@@ -416,7 +426,6 @@ fn branches_contain(program: &IrProgram, node_id: u32, name: &str) -> bool {
 
 trait ValueView {
     fn as_sequence_fields(&self) -> Result<&BTreeMap<String, DfdlValue>>;
-    fn as_choice_fields(&self) -> Result<(&str, &DfdlValue)>;
 }
 
 impl ValueView for DfdlValue {
@@ -425,16 +434,6 @@ impl ValueView for DfdlValue {
             DfdlValue::Sequence(map) => Ok(map),
             _ => Err(VmError::TypeMismatch {
                 expected: "sequence".into(),
-            }
-            .into()),
-        }
-    }
-
-    fn as_choice_fields(&self) -> Result<(&str, &DfdlValue)> {
-        match self {
-            DfdlValue::Choice { discriminator, value } => Ok((discriminator, value)),
-            _ => Err(VmError::TypeMismatch {
-                expected: "choice".into(),
             }
             .into()),
         }

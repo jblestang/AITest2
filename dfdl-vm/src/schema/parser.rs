@@ -606,10 +606,11 @@ impl<'a> XsdParser<'a> {
                                 name: base_name.clone(),
                             }
                         })?;
-                        let (max_length, min_inclusive, max_inclusive) =
+                        let (min_length, max_length, min_inclusive, max_inclusive) =
                             self.parse_restriction_body()?;
                         return Ok(SimpleBase::Restriction {
                             base,
+                            min_length,
                             max_length,
                             min_inclusive,
                             max_inclusive,
@@ -633,7 +634,8 @@ impl<'a> XsdParser<'a> {
         }
     }
 
-    fn parse_restriction_body(&mut self) -> Result<(Option<u64>, Option<i64>, Option<i64>)> {
+    fn parse_restriction_body(&mut self) -> Result<(Option<u64>, Option<u64>, Option<i64>, Option<i64>)> {
+        let mut min_length = None;
         let mut max_length = None;
         let mut min_inclusive = None;
         let mut max_inclusive = None;
@@ -649,6 +651,12 @@ impl<'a> XsdParser<'a> {
                     let local = name.local_name.clone();
                     let child_attrs = self.reader.take_start_attributes()?;
                     match local.as_str() {
+                        "minLength" => {
+                            if let Some(v) = child_attrs.get("value") {
+                                min_length = v.parse().ok();
+                            }
+                            self.skip_element_body(&local)?;
+                        }
                         "maxLength" => {
                             if let Some(v) = child_attrs.get("value") {
                                 max_length = v.parse().ok();
@@ -684,7 +692,7 @@ impl<'a> XsdParser<'a> {
                 }
             }
         }
-        Ok((max_length, min_inclusive, max_inclusive))
+        Ok((min_length, max_length, min_inclusive, max_inclusive))
     }
 
     fn parse_inline_content(&mut self, mut props: DfdlProps, allowed: &[&str]) -> Result<DfdlProps> {

@@ -212,6 +212,7 @@ pub enum SimpleBase {
     Builtin(BuiltinType),
     Restriction {
         base: BuiltinType,
+        min_length: Option<u64>,
         max_length: Option<u64>,
         min_inclusive: Option<i64>,
         max_inclusive: Option<i64>,
