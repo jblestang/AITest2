@@ -108,10 +108,6 @@ fn prefixed_roundtrip_probe() {
         "../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/lengthKind/PrefixedTests.tdml"
     );
     let suite = parse_tdml(tdml).expect("parse tdml");
-    let schema = suite
-        .schemas
-        .get("lengthKindPrefixed-text.dfdl.xsd")
-        .expect("schema");
     for name in [
         "pl_text_string_txt_bytes",
         "pl_text_string_txt_bits",
@@ -121,8 +117,16 @@ fn prefixed_roundtrip_probe() {
         "pl_text_int_txt_bits",
         "pl_text_string_bin_bytes",
         "pl_text_int_txt_bytes_plchars",
+        "pl_complex_bin_bytes",
+        "pl_complex_bin_bits",
     ] {
         let test = suite.tests.iter().find(|t| t.name == name).unwrap();
+        let schema = suite.schemas.get(&test.model).unwrap_or_else(|| {
+            suite
+                .schemas
+                .get("lengthKindPrefixed-text.dfdl.xsd")
+                .expect("schema")
+        });
         let spec = DfdlSpec::from_xsd_root(&schema.xsd, Some(&test.root)).expect("spec");
         let input = &test.documents[0].data;
         let decoded = spec.decode(input).expect("decode");

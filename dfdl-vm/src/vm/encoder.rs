@@ -1,5 +1,5 @@
-use super::runtime::{write_simple, RuntimeConfig, VmContext};
-use crate::schema::encode_delimiter;
+use super::runtime::{write_framed_payload, write_simple, RuntimeConfig, VmContext};
+use crate::schema::{encode_delimiter, LengthKind};
 use crate::error::{Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::SeparatorPosition;
@@ -66,13 +66,44 @@ impl<'a> Encoder<'a> {
                 child,
             } => {
                 if let Some(child_id) = child {
-                    let field = value_for_element(value, self.ctx.strings().get(*name)?)?;
-                    self.encode_element_occurrences(*child_id, props, field, out)
+                    let name_str = self.ctx.strings().get(*name)?;
+                    let field = match value.field(name_str) {
+                        Some(inner) => inner,
+                        None => value,
+                    };
+                    if needs_length_frame(props) {
+                        self.encode_framed_element(*child_id, props, field, out)
+                    } else {
+                        self.encode_element_occurrences(*child_id, props, field, out)
+                    }
                 } else {
                     write_simple(out, value, *kind, props, self.ctx.strings()).map_err(Into::into)
                 }
             }
         }
+    }
+
+    fn encode_framed_element(
+        &self,
+        child_id: u32,
+        props: &IrProps,
+        value: &DfdlValue,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        let items = match value {
+            DfdlValue::Array(items) => items.as_slice(),
+            single => core::slice::from_ref(single),
+        };
+        for (idx, item) in items.iter().enumerate() {
+            self.write_separator(props, out, idx, items.len())?;
+            if let Some(id) = props.initiator {
+                out.extend(encode_delimiter(self.ctx.strings().get(id)?));
+            }
+            let mut payload = Vec::new();
+            self.encode_node(child_id, item, &mut payload)?;
+            write_framed_payload(out, &payload, props, self.ctx.strings())?;
+        }
+        Ok(())
     }
 
     fn encode_element_occurrences(
@@ -150,6 +181,13 @@ fn should_emit_separator(position: SeparatorPosition, index: usize, total: usize
     }
 }
 
+fn needs_length_frame(props: &IrProps) -> bool {
+    matches!(
+        props.length_kind,
+        LengthKind::Prefixed | LengthKind::Explicit | LengthKind::Fixed | LengthKind::Delimited
+    )
+}
+
 fn unwrap_root_for_encode<'a>(value: &'a DfdlValue, root_element: &str) -> &'a DfdlValue {
     if let DfdlValue::Sequence(map) = value {
         if map.len() == 1 {
@@ -161,16 +199,6 @@ fn unwrap_root_for_encode<'a>(value: &'a DfdlValue, root_element: &str) -> &'a D
         }
     }
     value
-}
-
-fn value_for_element<'a>(value: &'a DfdlValue, name: &str) -> Result<&'a DfdlValue> {
-    match value {
-        DfdlValue::Sequence(_map) => value
-            .field(name)
-            .ok_or_else(|| VmError::MissingField { name: name.into() })
-            .map_err(Into::into),
-        other => Ok(other),
-    }
 }
 
 fn branches_contain(program: &IrProgram, node_id: u32, name: &str) -> bool {

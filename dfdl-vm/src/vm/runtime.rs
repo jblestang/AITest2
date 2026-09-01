@@ -1865,6 +1865,86 @@ fn write_prefix_field(
     }
 }
 
+pub(crate) fn write_framed_payload(
+    out: &mut alloc::vec::Vec<u8>,
+    payload: &[u8],
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), crate::error::VmError> {
+    match props.length_kind {
+        LengthKind::Prefixed => write_prefixed_bytes(out, payload, props, strings),
+        LengthKind::Explicit | LengthKind::Fixed => {
+            write_explicit_payload(out, payload, props, strings)
+        }
+        LengthKind::Delimited => {
+            out.extend_from_slice(payload);
+            if let Some(id) = props.terminator {
+                out.extend(encode_delimiter(strings.get(id)?));
+            }
+            Ok(())
+        }
+        LengthKind::Implicit | LengthKind::Pattern | LengthKind::EndOfParent => {
+            out.extend_from_slice(payload);
+            Ok(())
+        }
+    }
+}
+
+fn write_explicit_payload(
+    out: &mut alloc::vec::Vec<u8>,
+    payload: &[u8],
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    let len = props.length.ok_or(VmError::InvalidValue {
+        message: "explicit payload missing length".into(),
+    })? as usize;
+    match props.length_units {
+        LengthUnits::Bytes => {
+            let mut bytes = payload.to_vec();
+            if bytes.len() > len {
+                bytes.truncate(len);
+            } else if bytes.len() < len {
+                let pad = if props.representation == Representation::Text {
+                    b' '
+                } else {
+                    0u8
+                };
+                bytes.extend(iter::repeat(pad).take(len - bytes.len()));
+            }
+            out.extend_from_slice(&bytes);
+            Ok(())
+        }
+        LengthUnits::Bits => {
+            let byte_len = len.div_ceil(8);
+            let mut bytes = payload.to_vec();
+            if bytes.len() > byte_len {
+                bytes.truncate(byte_len);
+            } else if bytes.len() < byte_len {
+                bytes.extend(iter::repeat(0u8).take(byte_len - bytes.len()));
+            }
+            out.extend_from_slice(&bytes);
+            Ok(())
+        }
+        LengthUnits::Characters => {
+            let encoding = encoding_name(props, strings)?;
+            let mut bytes = payload.to_vec();
+            while count_characters(&bytes, encoding)? < len {
+                let pad = encode_document_text(" ", encoding)?;
+                bytes.extend_from_slice(&pad);
+            }
+            if count_characters(&bytes, encoding)? > len {
+                return Err(VmError::InvalidValue {
+                    message: "explicit character payload too long".into(),
+                });
+            }
+            out.extend_from_slice(&bytes);
+            Ok(())
+        }
+    }
+}
+
 pub(crate) fn write_simple(
     out: &mut alloc::vec::Vec<u8>,
     value: &crate::value::DfdlValue,

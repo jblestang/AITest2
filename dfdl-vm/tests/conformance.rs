@@ -24,6 +24,24 @@ fn assert_named_unparser_test_passes(tdml: &str, test_name: &str) {
     }
 }
 
+fn assert_decode_encode_roundtrip(tdml: &str, test_name: &str) {
+    let suite = parse_tdml(tdml).expect("parse tdml");
+    let test = suite
+        .tests
+        .iter()
+        .find(|t| t.name == test_name)
+        .unwrap_or_else(|| panic!("test `{test_name}` not found"));
+    let schema = suite
+        .schemas
+        .get(&test.model)
+        .unwrap_or_else(|| panic!("schema `{}` not found", test.model));
+    let spec = dfdl_vm::api::DfdlSpec::from_xsd_root(&schema.xsd, Some(&test.root)).expect("spec");
+    let input = &test.documents[0].data;
+    let decoded = spec.decode(input).expect("decode");
+    let encoded = spec.encode(&decoded).expect("encode");
+    assert_eq!(encoded, *input, "roundtrip mismatch for {test_name}");
+}
+
 fn assert_named_test_passes(tdml: &str, test_name: &str) {
     let suite = parse_tdml(tdml).expect("parse tdml");
     let test = suite
@@ -615,6 +633,14 @@ fn daffodil_prefixed_facet_compile_error_suite() {
         "pl_complexContentLengthCharacters_utf8_1",
     ] {
         assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_prefixed_complex_roundtrip_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in ["pl_complex_bin_bytes", "pl_complex_bin_bits"] {
+        assert_decode_encode_roundtrip(tdml, name);
     }
 }
 
