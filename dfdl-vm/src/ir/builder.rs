@@ -1,9 +1,9 @@
-use super::{ChoiceBranch, IrNode, IrProgram, IrProps, StringPool, ValueKind};
+use super::{ChoiceBranch, IrNode, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::error::{Result, SchemaError};
 use crate::schema::{
     BinaryFloatRep, BinaryNumberRep, BitOrder, BuiltinType, ByteOrder, ComplexContent, DfdlProps,
     FormatDefaults, LengthKind, LengthUnits, Particle, Representation, SchemaDocument, SimpleBase,
-    TextTrimKind, TypeDef, TypeName,
+    SeparatorPosition, SequenceKind, TextTrimKind, TypeDef, TypeName,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -17,11 +17,12 @@ struct IrBuilder<'a> {
 
 impl<'a> IrBuilder<'a> {
     fn new(schema: &'a SchemaDocument) -> Self {
-        let defaults = props_from_format(&schema.format_defaults, &mut StringPool::new());
+        let mut strings = StringPool::new();
+        let defaults = overlay_dfdl_to_ir(IrProps::default(), &schema.format_defaults.props, &mut strings);
         Self {
             schema,
             nodes: Vec::new(),
-            strings: StringPool::new(),
+            strings,
             defaults,
         }
     }
@@ -71,8 +72,8 @@ impl<'a> IrBuilder<'a> {
 
         match type_def {
             TypeDef::Simple { base, props, .. } => {
-                let merged = merge_dfdl_props(&self.defaults, props, element_props);
-                let ir_props = dfdl_to_ir(&merged, &mut self.strings);
+                let merged = merge_dfdl_props(&self.defaults, props, element_props, &mut self.strings);
+                let ir_props = merged;
                 let kind = value_kind_from_simple(base);
                 let name = self.strings.intern("__value");
                 Ok(self.push(IrNode::Element {
@@ -83,7 +84,7 @@ impl<'a> IrBuilder<'a> {
                 }))
             }
             TypeDef::Complex { content, props, .. } => {
-                let merged = merge_dfdl_props(&self.defaults, props, element_props);
+                let merged = merge_dfdl_props(&self.defaults, props, element_props, &mut self.strings);
                 self.compile_complex(content, &merged)
             }
         }
@@ -92,10 +93,10 @@ impl<'a> IrBuilder<'a> {
     fn compile_particle(&mut self, particle: &Particle, inherited: &IrProps) -> Result<u32> {
         match particle {
             Particle::Element(element) => {
-                let props = merge_dfdl_props(inherited, &element.props, &DfdlProps::default());
+                let props = merge_dfdl_props(inherited, &element.props, &DfdlProps::default(), &mut self.strings);
                 let name = self.strings.intern(&element.name);
                 if let Some(builtin) = BuiltinType::from_xsd(element.type_name.as_str()) {
-                    let ir_props = dfdl_to_ir(&props, &mut self.strings);
+                    let ir_props = props;
                     Ok(self.push(IrNode::Element {
                         name,
                         kind: value_kind_from_builtin(builtin),
@@ -112,7 +113,7 @@ impl<'a> IrBuilder<'a> {
                     } = self.nodes[child as usize].clone()
                     {
                         if nested.is_none() && kind != ValueKind::Complex {
-                            let overlay = dfd_to_ir(&props, &mut self.strings);
+                            let overlay = props;
                             return Ok(self.push(IrNode::Element {
                                 name,
                                 kind,
@@ -121,7 +122,7 @@ impl<'a> IrBuilder<'a> {
                             }));
                         }
                     }
-                    let ir_props = dfdl_to_ir(&props, &mut self.strings);
+                    let ir_props = props;
                     Ok(self.push(IrNode::Element {
                         name,
                         kind: ValueKind::Complex,
@@ -131,8 +132,7 @@ impl<'a> IrBuilder<'a> {
                 }
             }
             Particle::Sequence(sequence) => {
-                let merged = merge_dfdl_props(inherited, &sequence.props, &DfdlProps::default());
-                let ir_props = dfdl_to_ir(&merged, &mut self.strings);
+                let ir_props = merge_dfdl_props(inherited, &sequence.props, &DfdlProps::default(), &mut self.strings);
                 let mut children = Vec::new();
                 for particle in &sequence.particles {
                     children.push(self.compile_particle(particle, &ir_props)?);
@@ -143,13 +143,12 @@ impl<'a> IrBuilder<'a> {
                 }))
             }
             Particle::Choice(choice) => {
-                let merged = merge_dfdl_props(inherited, &choice.props, &DfdlProps::default());
-                let ir_props = dfdl_to_ir(&merged, &mut self.strings);
+                let ir_props = merge_dfdl_props(inherited, &choice.props, &DfdlProps::default(), &mut self.strings);
                 let mut branches = Vec::new();
                 for branch in &choice.branches {
                     let node = self.compile_particle(branch, &ir_props)?;
                     let name = branch_name(branch);
-                    let initiator = branch_initiator(branch);
+                    let initiator = branch_initiator(branch, &mut self.strings);
                     branches.push(ChoiceBranch {
                         name: self.strings.intern(&name),
                         initiator,
@@ -164,8 +163,8 @@ impl<'a> IrBuilder<'a> {
         }
     }
 
-    fn compile_complex(&mut self, content: &ComplexContent, props: &DfdlProps) -> Result<u32> {
-        let ir_props = dfdl_to_ir(props, &mut self.strings);
+    fn compile_complex(&mut self, content: &ComplexContent, props: &IrProps) -> Result<u32> {
+        let ir_props = props.clone();
         match content {
             ComplexContent::Sequence(sequence) => {
                 let mut children = Vec::new();
@@ -183,7 +182,7 @@ impl<'a> IrBuilder<'a> {
                     let node = self.compile_particle(branch, &ir_props)?;
                     branches.push(ChoiceBranch {
                         name: self.strings.intern(&branch_name(branch)),
-                        initiator: branch_initiator(branch),
+                        initiator: branch_initiator(branch, &mut self.strings),
                         node,
                     });
                 }
@@ -214,12 +213,13 @@ fn branch_name(particle: &Particle) -> String {
     }
 }
 
-fn branch_initiator(particle: &Particle) -> Option<Vec<u8>> {
-    match particle {
-        Particle::Element(e) => e.props.initiator.clone(),
-        Particle::Sequence(s) => s.props.initiator.clone(),
-        Particle::Choice(c) => c.props.initiator.clone(),
-    }
+fn branch_initiator(particle: &Particle, strings: &mut StringPool) -> Option<StringId> {
+    let raw = match particle {
+        Particle::Element(e) => e.props.initiator.as_deref(),
+        Particle::Sequence(s) => s.props.initiator.as_deref(),
+        Particle::Choice(c) => c.props.initiator.as_deref(),
+    };
+    raw.map(|s| strings.intern(s))
 }
 
 fn value_kind_from_simple(base: &SimpleBase) -> ValueKind {
@@ -247,86 +247,97 @@ fn value_kind_from_builtin(builtin: BuiltinType) -> ValueKind {
 }
 
 fn props_from_format(format: &FormatDefaults, strings: &mut StringPool) -> IrProps {
-    dfdl_to_ir(&format.props, strings)
+    overlay_dfdl_to_ir(IrProps::default(), &format.props, strings)
 }
 
-fn merge_dfdl_props(base: &IrProps, type_props: &DfdlProps, element_props: &DfdlProps) -> DfdlProps {
-    let mut merged = ir_to_dfdl(base);
-    merged = overlay_dfdl(merged, type_props);
-    overlay_dfdl(merged, element_props)
+fn merge_dfdl_props(
+    base: &IrProps,
+    type_props: &DfdlProps,
+    element_props: &DfdlProps,
+    strings: &mut StringPool,
+) -> IrProps {
+    let mut out = base.clone();
+    out = overlay_dfdl_to_ir(out, type_props, strings);
+    overlay_dfdl_to_ir(out, element_props, strings)
 }
 
-fn overlay_dfdl(mut base: DfdlProps, overlay: &DfdlProps) -> DfdlProps {
-    if overlay.representation.is_some() {
-        base.representation = overlay.representation;
+fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut StringPool) -> IrProps {
+    if let Some(v) = props.representation {
+        base.representation = v;
     }
-    if overlay.byte_order.is_some() {
-        base.byte_order = overlay.byte_order;
+    if let Some(v) = props.byte_order {
+        base.byte_order = v;
     }
-    if overlay.bit_order.is_some() {
-        base.bit_order = overlay.bit_order;
+    if let Some(v) = props.bit_order {
+        base.bit_order = v;
     }
-    if overlay.length_kind.is_some() {
-        base.length_kind = overlay.length_kind;
+    if let Some(v) = props.length_kind {
+        base.length_kind = v;
     }
-    if overlay.length.is_some() {
-        base.length = overlay.length;
+    if props.length.is_some() {
+        base.length = props.length;
     }
-    if overlay.length_units.is_some() {
-        base.length_units = overlay.length_units;
+    if let Some(v) = props.length_units {
+        base.length_units = v;
     }
-    if overlay.encoding.is_some() {
-        base.encoding = overlay.encoding.clone();
+    if props.encoding.is_some() {
+        base.encoding = strings.intern(props.encoding.as_deref().unwrap_or("UTF-8"));
     }
-    if overlay.text_trim_kind.is_some() {
-        base.text_trim_kind = overlay.text_trim_kind;
+    if let Some(v) = props.text_trim_kind {
+        base.text_trim_kind = v;
     }
-    if overlay.binary_number_rep.is_some() {
-        base.binary_number_rep = overlay.binary_number_rep;
+    if let Some(v) = props.binary_number_rep {
+        base.binary_number_rep = v;
     }
-    if overlay.binary_float_rep.is_some() {
-        base.binary_float_rep = overlay.binary_float_rep;
+    if let Some(v) = props.binary_float_rep {
+        base.binary_float_rep = v;
     }
-    if overlay.initiator.is_some() {
-        base.initiator = overlay.initiator.clone();
+    if props.initiator.is_some() {
+        base.initiator = props.initiator.as_ref().map(|s| strings.intern(s.clone()));
     }
-    if overlay.terminator.is_some() {
-        base.terminator = overlay.terminator.clone();
+    if props.terminator.is_some() {
+        base.terminator = props.terminator.as_ref().map(|s| strings.intern(s.clone()));
     }
-    if overlay.separator.is_some() {
-        base.separator = overlay.separator.clone();
+    if props.separator.is_some() {
+        base.separator = props.separator.as_ref().map(|s| strings.intern(s.clone()));
     }
-    if overlay.occurs_min.is_some() {
-        base.occurs_min = overlay.occurs_min;
+    if props.occurs_min.is_some() {
+        base.occurs_min = props.occurs_min.unwrap_or(1);
     }
-    if overlay.occurs_max.is_some() {
-        base.occurs_max = overlay.occurs_max;
+    if props.max_occurs_specified {
+        base.occurs_max = props.occurs_max;
     }
-    if overlay.choice_dispatch_key.is_some() {
-        base.choice_dispatch_key = overlay.choice_dispatch_key.clone();
+    if props.length_pattern.is_some() {
+        base.length_pattern = props
+            .length_pattern
+            .as_ref()
+            .map(|p| strings.intern(p.clone()));
+    }
+    if let Some(v) = props.separator_position {
+        base.separator_position = v;
+    }
+    if props.text_boolean_true_rep.is_some() {
+        base.text_boolean_true_rep = props
+            .text_boolean_true_rep
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
+    if props.text_boolean_false_rep.is_some() {
+        base.text_boolean_false_rep = props
+            .text_boolean_false_rep
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
+    if props.default_value.is_some() {
+        base.default_value = props
+            .default_value
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
+    if let Some(v) = props.sequence_kind {
+        base.sequence_kind = v;
     }
     base
-}
-
-fn ir_to_dfdl(props: &IrProps) -> DfdlProps {
-    DfdlProps {
-        representation: Some(props.representation),
-        byte_order: Some(props.byte_order),
-        bit_order: Some(props.bit_order),
-        length_kind: Some(props.length_kind),
-        length: props.length,
-        length_units: Some(props.length_units),
-        encoding: Some(props.encoding.0.to_string()),
-        text_trim_kind: Some(props.text_trim_kind),
-        binary_number_rep: Some(props.binary_number_rep),
-        binary_float_rep: Some(props.binary_float_rep),
-        initiator: props.initiator.clone(),
-        terminator: props.terminator.clone(),
-        separator: props.separator.clone(),
-        occurs_min: Some(props.occurs_min),
-        occurs_max: props.occurs_max,
-        choice_dispatch_key: None,
-    }
 }
 
 fn dfdl_to_ir(props: &DfdlProps, strings: &mut StringPool) -> IrProps {
@@ -345,16 +356,45 @@ fn dfdl_to_ir(props: &DfdlProps, strings: &mut StringPool) -> IrProps {
             .binary_number_rep
             .unwrap_or(BinaryNumberRep::Binary),
         binary_float_rep: props.binary_float_rep.unwrap_or(BinaryFloatRep::Ieee),
-        initiator: props.initiator.clone(),
-        terminator: props.terminator.clone(),
-        separator: props.separator.clone(),
+        initiator: props
+            .initiator
+            .as_ref()
+            .map(|s| strings.intern(s.clone())),
+        terminator: props
+            .terminator
+            .as_ref()
+            .map(|s| strings.intern(s.clone())),
+        separator: props
+            .separator
+            .as_ref()
+            .map(|s| strings.intern(s.clone())),
         occurs_min: props.occurs_min.unwrap_or(1),
-        occurs_max: props.occurs_max.or(Some(1)),
+        occurs_max: if props.max_occurs_specified {
+            props.occurs_max
+        } else {
+            props.occurs_max.or(Some(1))
+        },
+        length_pattern: props
+            .length_pattern
+            .as_ref()
+            .map(|p| strings.intern(p.clone())),
+        separator_position: props
+            .separator_position
+            .unwrap_or(SeparatorPosition::Infix),
+        text_boolean_true_rep: props
+            .text_boolean_true_rep
+            .as_ref()
+            .map(|s| strings.intern(s.clone())),
+        text_boolean_false_rep: props
+            .text_boolean_false_rep
+            .as_ref()
+            .map(|s| strings.intern(s.clone())),
+        default_value: props
+            .default_value
+            .as_ref()
+            .map(|s| strings.intern(s.clone())),
+        sequence_kind: props.sequence_kind.unwrap_or(SequenceKind::Ordered),
     }
-}
-
-fn dfd_to_ir(props: &DfdlProps, strings: &mut StringPool) -> IrProps {
-    dfdl_to_ir(props, strings)
 }
 
 fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
@@ -372,14 +412,28 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.binary_number_rep = overlay.binary_number_rep;
     out.binary_float_rep = overlay.binary_float_rep;
     if overlay.initiator.is_some() {
-        out.initiator = overlay.initiator.clone();
+        out.initiator = overlay.initiator;
     }
     if overlay.terminator.is_some() {
-        out.terminator = overlay.terminator.clone();
+        out.terminator = overlay.terminator;
     }
     if overlay.separator.is_some() {
-        out.separator = overlay.separator.clone();
+        out.separator = overlay.separator;
     }
+    if overlay.length_pattern.is_some() {
+        out.length_pattern = overlay.length_pattern;
+    }
+    out.separator_position = overlay.separator_position;
+    if overlay.text_boolean_true_rep.is_some() {
+        out.text_boolean_true_rep = overlay.text_boolean_true_rep;
+    }
+    if overlay.text_boolean_false_rep.is_some() {
+        out.text_boolean_false_rep = overlay.text_boolean_false_rep;
+    }
+    if overlay.default_value.is_some() {
+        out.default_value = overlay.default_value;
+    }
+    out.sequence_kind = overlay.sequence_kind;
     out.occurs_min = overlay.occurs_min;
     out.occurs_max = overlay.occurs_max;
     out
@@ -420,5 +474,34 @@ mod tests {
         let program = compile(&schema).expect("compile");
         assert_eq!(program.root_element, "Record");
         assert!(!program.nodes.is_empty());
+    }
+
+    #[test]
+    fn text_message_tag_has_fixed_length() {
+        use crate::schema::{LengthKind, Representation};
+        let xsd = include_str!("../../tests/fixtures/text_message.xsd");
+        let schema = parse_schema(xsd).expect("parse");
+        let ty = schema.resolve_type(&crate::schema::TypeName::new("MessageType")).unwrap();
+        if let crate::schema::TypeDef::Complex { content, .. } = ty {
+            if let crate::schema::ComplexContent::Sequence(seq) = content {
+                let tag = &seq.particles[0];
+                if let crate::schema::Particle::Element(el) = tag {
+                    assert_eq!(el.props.length_kind, Some(LengthKind::Fixed));
+                    assert_eq!(el.props.length, Some(3));
+                    assert_eq!(el.props.representation, Some(Representation::Text));
+                }
+            }
+        }
+        let program = compile(&schema).expect("compile");
+        let tag_node = program.nodes.iter().find_map(|n| {
+            if let IrNode::Element { name, props, .. } = n {
+                if program.strings.get(*name) == "tag" {
+                    return Some(props.clone());
+                }
+            }
+            None
+        }).expect("tag node");
+        assert_eq!(tag_node.length_kind, LengthKind::Fixed);
+        assert_eq!(tag_node.length, Some(3));
     }
 }

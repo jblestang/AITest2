@@ -26,6 +26,7 @@ pub mod api;
 pub mod error;
 pub mod ir;
 pub mod schema;
+pub mod tdml;
 pub mod value;
 pub mod vm;
 
@@ -35,3 +36,4 @@ pub use ir::{compile, IrProgram, IrProps};
 pub use schema::{parse_schema, SchemaDocument};
 pub use value::DfdlValue;
 pub use vm::{Decoder, Encoder, RuntimeConfig};
+pub use tdml::{parse_tdml, run_parser_test, run_suite, TestOutcome, TestResult};

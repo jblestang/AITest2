@@ -3,7 +3,7 @@ mod builder;
 pub use builder::{compile, compile_named};
 use crate::schema::{
     BinaryFloatRep, BinaryNumberRep, BitOrder, ByteOrder, LengthKind, LengthUnits, Representation,
-    TextTrimKind,
+    SeparatorPosition, SequenceKind, TextTrimKind,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -38,7 +38,7 @@ pub enum IrNode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChoiceBranch {
     pub name: StringId,
-    pub initiator: Option<Vec<u8>>,
+    pub initiator: Option<StringId>,
     pub node: u32,
 }
 
@@ -71,11 +71,17 @@ pub struct IrProps {
     pub text_trim_kind: TextTrimKind,
     pub binary_number_rep: BinaryNumberRep,
     pub binary_float_rep: BinaryFloatRep,
-    pub initiator: Option<Vec<u8>>,
-    pub terminator: Option<Vec<u8>>,
-    pub separator: Option<Vec<u8>>,
+    pub initiator: Option<StringId>,
+    pub terminator: Option<StringId>,
+    pub separator: Option<StringId>,
     pub occurs_min: u64,
     pub occurs_max: Option<u64>,
+    pub length_pattern: Option<StringId>,
+    pub separator_position: SeparatorPosition,
+    pub text_boolean_true_rep: Option<StringId>,
+    pub text_boolean_false_rep: Option<StringId>,
+    pub default_value: Option<StringId>,
+    pub sequence_kind: SequenceKind,
 }
 
 impl Default for IrProps {
@@ -96,6 +102,12 @@ impl Default for IrProps {
             separator: None,
             occurs_min: 1,
             occurs_max: Some(1),
+            length_pattern: None,
+            separator_position: SeparatorPosition::Infix,
+            text_boolean_true_rep: None,
+            text_boolean_false_rep: None,
+            default_value: None,
+            sequence_kind: SequenceKind::Ordered,
         }
     }
 }

@@ -1,5 +1,9 @@
-use crate::ir::{IrProgram, IrProps, StringPool};
-use crate::schema::{ByteOrder, LengthKind, LengthUnits, Representation, TextTrimKind};
+use crate::ir::{IrProgram, IrProps, StringId, StringPool};
+use crate::schema::{
+    encode_delimiter, match_delimiter, match_length_pattern, ByteOrder, LengthKind, LengthUnits,
+    Representation, TextTrimKind,
+};
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::iter;
 
@@ -62,15 +66,9 @@ impl<'a> Cursor<'a> {
         Some(out)
     }
 
-    pub fn match_prefix(&self, prefix: &[u8]) -> bool {
-        self.slice(prefix.len())
-            .map(|s| s == prefix)
-            .unwrap_or(false)
-    }
-
-    pub fn consume_prefix(&mut self, prefix: &[u8]) -> bool {
-        if self.match_prefix(prefix) {
-            self.advance(prefix.len());
+    pub fn consume_delimiter(&mut self, pattern: &str) -> bool {
+        if let Some(n) = match_delimiter(&self.data[self.pos..], pattern) {
+            self.advance(n);
             true
         } else {
             false
@@ -101,10 +99,15 @@ pub(crate) fn type_size(kind: crate::ir::ValueKind) -> usize {
     }
 }
 
+fn pattern_str<'a>(strings: &'a StringPool, id: StringId) -> &'a str {
+    strings.get(id)
+}
+
 pub(crate) fn read_binary_scalar(
     cursor: &mut Cursor<'_>,
     kind: crate::ir::ValueKind,
     props: &IrProps,
+    strings: &StringPool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -116,27 +119,73 @@ pub(crate) fn read_binary_scalar(
         });
     }
 
-    let size = match props.length_kind {
-        LengthKind::Fixed => props.length.unwrap_or(type_size(kind) as u64) as usize,
-        LengthKind::Implicit => type_size(kind),
-        LengthKind::Explicit | LengthKind::Prefixed | LengthKind::Delimited => {
-            return Err(VmError::UnsupportedOperation {
-                op: alloc::format!("lengthKind `{}` on scalar", length_kind_name(props.length_kind)),
-            });
-        }
-    };
+    let size = binary_byte_length(cursor, kind, props, strings)?;
 
-    if size == 0 {
+    if size == 0 && kind != String && kind != HexBinary {
         return Err(VmError::InvalidValue {
             message: "zero-length scalar".into(),
         });
     }
 
-    let bytes = cursor.read_bytes(size).ok_or(VmError::UnexpectedEof)?;
-    let le = props.byte_order == ByteOrder::LittleEndian;
+    let bytes = if size == 0 {
+        Vec::new()
+    } else {
+        cursor.read_bytes(size).ok_or(VmError::UnexpectedEof)?
+    };
+
+    decode_binary_bytes(kind, &bytes, props.byte_order == ByteOrder::LittleEndian)
+}
+
+fn binary_byte_length(
+    cursor: &Cursor<'_>,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<usize, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::ir::ValueKind::*;
+
+    match props.length_kind {
+        LengthKind::Fixed => Ok(props.length.unwrap_or(type_size(kind) as u64) as usize),
+        LengthKind::Implicit => Ok(type_size(kind)),
+        LengthKind::Explicit => {
+            let len = props.length.ok_or(VmError::InvalidValue {
+                message: "explicit binary missing length".into(),
+            })?;
+            Ok(len as usize)
+        }
+        LengthKind::Pattern => {
+            let pat = props
+                .length_pattern
+                .ok_or(VmError::InvalidValue {
+                    message: "pattern length missing lengthPattern".into(),
+                })
+                .map(|id| pattern_str(strings, id))?;
+            match_length_pattern(&cursor.data[cursor.pos..], pat).ok_or(VmError::InvalidValue {
+                message: alloc::format!("pattern `{pat}` mismatch"),
+            })
+        }
+        LengthKind::EndOfParent => Ok(cursor.remaining()),
+        LengthKind::Delimited | LengthKind::Prefixed => Err(VmError::UnsupportedOperation {
+            op: alloc::format!(
+                "lengthKind `{}` on binary scalar",
+                length_kind_name(props.length_kind)
+            ),
+        }),
+    }
+}
+
+fn decode_binary_bytes(
+    kind: crate::ir::ValueKind,
+    bytes: &[u8],
+    le: bool,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::ir::ValueKind::*;
+    use crate::value::DfdlValue;
 
     macro_rules! int {
-        ($t:ty, $read:ident) => {{
+        ($t:ty) => {{
             let mut buf = [0u8; core::mem::size_of::<$t>()];
             let n = core::mem::size_of::<$t>().min(bytes.len());
             buf[..n].copy_from_slice(&bytes[bytes.len() - n..]);
@@ -148,32 +197,28 @@ pub(crate) fn read_binary_scalar(
         }};
     }
 
-    let value = match kind {
-        Boolean => DfdlValue::Boolean(bytes.last().copied().unwrap_or(0) != 0),
-        Byte => DfdlValue::Byte(int!(i8, read)),
-        UnsignedByte => DfdlValue::UnsignedByte(int!(u8, read)),
-        Short => DfdlValue::Short(int!(i16, read)),
-        UnsignedShort => DfdlValue::UnsignedShort(int!(u16, read)),
-        Int => DfdlValue::Int(int!(i32, read)),
-        UnsignedInt => DfdlValue::UnsignedInt(int!(u32, read)),
-        Long => DfdlValue::Long(int!(i64, read)),
-        Float => {
-            let bits = int!(u32, read);
-            DfdlValue::Float(f32::from_bits(bits))
-        }
-        Double => {
-            let bits = int!(u64, read);
-            DfdlValue::Double(f64::from_bits(bits))
-        }
-        String | HexBinary | Complex => unreachable!("non-scalar in read_binary_scalar"),
-    };
-    Ok(value)
+    match kind {
+        Boolean => Ok(DfdlValue::Boolean(bytes.last().copied().unwrap_or(0) != 0)),
+        Byte => Ok(DfdlValue::Byte(int!(i8))),
+        UnsignedByte => Ok(DfdlValue::UnsignedByte(int!(u8))),
+        Short => Ok(DfdlValue::Short(int!(i16))),
+        UnsignedShort => Ok(DfdlValue::UnsignedShort(int!(u16))),
+        Int => Ok(DfdlValue::Int(int!(i32))),
+        UnsignedInt => Ok(DfdlValue::UnsignedInt(int!(u32))),
+        Long => Ok(DfdlValue::Long(int!(i64))),
+        Float => Ok(DfdlValue::Float(f32::from_bits(int!(u32)))),
+        Double => Ok(DfdlValue::Double(f64::from_bits(int!(u64)))),
+        String | HexBinary | Complex => Err(VmError::TypeMismatch {
+            expected: "binary scalar".into(),
+        }),
+    }
 }
 
 pub(crate) fn read_text_scalar(
     cursor: &mut Cursor<'_>,
     kind: crate::ir::ValueKind,
     props: &IrProps,
+    strings: &StringPool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -184,15 +229,41 @@ pub(crate) fn read_text_scalar(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "fixed text missing length".into(),
             })? as usize;
-            cursor
-                .read_bytes(len)
-                .ok_or(VmError::UnexpectedEof)?
+            cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?
+        }
+        LengthKind::Explicit => {
+            let len = props.length.ok_or(VmError::InvalidValue {
+                message: "explicit text missing length".into(),
+            })? as usize;
+            cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?
         }
         LengthKind::Delimited => {
-            let term = props.terminator.as_deref().ok_or(VmError::InvalidValue {
-                message: "delimited text missing terminator".into(),
-            })?;
+            let term = props
+                .terminator
+                .ok_or(VmError::InvalidValue {
+                    message: "delimited text missing terminator".into(),
+                })
+                .map(|id| pattern_str(strings, id))?;
             read_until_delimiter(cursor, term)?
+        }
+        LengthKind::Pattern => {
+            let pat = props
+                .length_pattern
+                .ok_or(VmError::InvalidValue {
+                    message: "pattern length missing lengthPattern".into(),
+                })
+                .map(|id| pattern_str(strings, id))?;
+            let len = match_length_pattern(&cursor.data[cursor.pos..], pat).ok_or(
+                VmError::InvalidValue {
+                    message: alloc::format!("pattern `{pat}` mismatch"),
+                },
+            )?;
+            cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?
+        }
+        LengthKind::EndOfParent => {
+            let rest = cursor.data[cursor.pos..].to_vec();
+            cursor.pos = cursor.data.len();
+            rest
         }
         LengthKind::Implicit => {
             let rest = cursor.data[cursor.pos..].to_vec();
@@ -212,10 +283,7 @@ pub(crate) fn read_text_scalar(
     let trimmed = trim_text(text, props.text_trim_kind);
 
     match kind {
-        Boolean => {
-            let v = matches!(trimmed, "true" | "1");
-            Ok(DfdlValue::Boolean(v))
-        }
+        Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
         Byte => parse_int(trimmed).map(DfdlValue::Byte),
         UnsignedByte => parse_int(trimmed).map(DfdlValue::UnsignedByte),
         Short => parse_int(trimmed).map(DfdlValue::Short),
@@ -229,6 +297,31 @@ pub(crate) fn read_text_scalar(
         HexBinary => decode_hex(trimmed).map(DfdlValue::HexBinary),
         Complex => Err(VmError::TypeMismatch {
             expected: "complex".into(),
+        }),
+    }
+}
+
+fn parse_text_boolean(
+    trimmed: &str,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    use crate::error::VmError;
+    if let Some(id) = props.text_boolean_true_rep {
+        if trimmed == strings.get(id) {
+            return Ok(true);
+        }
+    }
+    if let Some(id) = props.text_boolean_false_rep {
+        if trimmed == strings.get(id) {
+            return Ok(false);
+        }
+    }
+    match trimmed {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        _ => Err(VmError::InvalidValue {
+            message: alloc::format!("invalid boolean `{trimmed}`"),
         }),
     }
 }
@@ -253,9 +346,13 @@ pub(crate) fn write_binary_scalar(
     let size = match props.length_kind {
         LengthKind::Fixed => props.length.unwrap_or(type_size(kind) as u64) as usize,
         LengthKind::Implicit => type_size(kind),
-        other => {
+        LengthKind::Explicit => props.length.unwrap_or(type_size(kind) as u64) as usize,
+        LengthKind::Pattern | LengthKind::EndOfParent | LengthKind::Delimited | LengthKind::Prefixed => {
             return Err(VmError::UnsupportedOperation {
-                op: alloc::format!("lengthKind `{}` on scalar encode", length_kind_name(other)),
+                op: alloc::format!(
+                    "lengthKind `{}` on binary scalar encode",
+                    length_kind_name(props.length_kind)
+                ),
             });
         }
     };
@@ -302,13 +399,26 @@ pub(crate) fn write_text_scalar(
     value: &crate::value::DfdlValue,
     kind: crate::ir::ValueKind,
     props: &IrProps,
+    strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
     use crate::value::DfdlValue;
 
     let text = match (kind, value) {
-        (Boolean, DfdlValue::Boolean(v)) => alloc::string::String::from(if *v { "true" } else { "false" }),
+        (Boolean, DfdlValue::Boolean(v)) => {
+            if *v {
+                props
+                    .text_boolean_true_rep
+                    .map(|id| strings.get(id).to_string())
+                    .unwrap_or_else(|| alloc::string::String::from("true"))
+            } else {
+                props
+                    .text_boolean_false_rep
+                    .map(|id| strings.get(id).to_string())
+                    .unwrap_or_else(|| alloc::string::String::from("false"))
+            }
+        }
         (Byte, DfdlValue::Byte(v)) => alloc::format!("{v}"),
         (UnsignedByte, DfdlValue::UnsignedByte(v)) => alloc::format!("{v}"),
         (Short, DfdlValue::Short(v)) => alloc::format!("{v}"),
@@ -329,9 +439,9 @@ pub(crate) fn write_text_scalar(
 
     let mut payload = text.into_bytes();
     match props.length_kind {
-        LengthKind::Fixed => {
+        LengthKind::Fixed | LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
-                message: "fixed text missing length".into(),
+                message: "fixed/explicit text missing length".into(),
             })? as usize;
             if payload.len() > len {
                 payload.truncate(len);
@@ -340,10 +450,9 @@ pub(crate) fn write_text_scalar(
             }
             out.extend_from_slice(&payload);
         }
-        LengthKind::Delimited => {
+        LengthKind::Delimited | LengthKind::Pattern | LengthKind::Implicit | LengthKind::EndOfParent => {
             out.extend_from_slice(&payload);
         }
-        LengthKind::Implicit => out.extend_from_slice(&payload),
         other => {
             return Err(VmError::UnsupportedOperation {
                 op: alloc::format!("text lengthKind `{}` encode", length_kind_name(other)),
@@ -353,13 +462,14 @@ pub(crate) fn write_text_scalar(
     Ok(())
 }
 
-fn read_until_delimiter(cursor: &mut Cursor<'_>, delimiter: &[u8]) -> Result<Vec<u8>, crate::error::VmError> {
+fn read_until_delimiter(cursor: &mut Cursor<'_>, delimiter: &str) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let start = cursor.pos;
-    while cursor.remaining() >= delimiter.len() {
-        if cursor.match_prefix(delimiter) {
+    while cursor.remaining() > 0 {
+        if match_delimiter(&cursor.data[cursor.pos..], delimiter).is_some() {
             let end = cursor.pos;
-            cursor.advance(delimiter.len());
+            let consumed = match_delimiter(&cursor.data[cursor.pos..], delimiter).unwrap_or(0);
+            cursor.advance(consumed);
             return Ok(cursor.data[start..end].to_vec());
         }
         cursor.advance(1);
@@ -426,6 +536,8 @@ fn length_kind_name(kind: LengthKind) -> &'static str {
         LengthKind::Fixed => "fixed",
         LengthKind::Delimited => "delimited",
         LengthKind::Prefixed => "prefixed",
+        LengthKind::Pattern => "pattern",
+        LengthKind::EndOfParent => "endOfParent",
     }
 }
 
@@ -433,22 +545,28 @@ pub(crate) fn read_simple(
     cursor: &mut Cursor<'_>,
     kind: crate::ir::ValueKind,
     props: &IrProps,
+    strings: &StringPool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
-    if let Some(init) = &props.initiator {
-        if !cursor.consume_prefix(init) {
-            return Err(crate::error::VmError::InvalidValue {
+    use crate::error::VmError;
+    use crate::value::DfdlValue;
+
+    if let Some(id) = props.initiator {
+        let pat = strings.get(id);
+        if !cursor.consume_delimiter(pat) {
+            return Err(VmError::InvalidValue {
                 message: "initiator mismatch".into(),
             });
         }
     }
     let value = match props.representation {
-        Representation::Binary => read_binary_scalar(cursor, kind, props)?,
-        Representation::Text => read_text_scalar(cursor, kind, props)?,
+        Representation::Binary => read_binary_scalar(cursor, kind, props, strings)?,
+        Representation::Text => read_text_scalar(cursor, kind, props, strings)?,
     };
     if props.length_kind != LengthKind::Delimited {
-        if let Some(term) = &props.terminator {
-            if !cursor.consume_prefix(term) {
-                return Err(crate::error::VmError::InvalidValue {
+        if let Some(id) = props.terminator {
+            let pat = strings.get(id);
+            if !cursor.consume_delimiter(pat) {
+                return Err(VmError::InvalidValue {
                     message: "terminator mismatch".into(),
                 });
             }
@@ -462,16 +580,43 @@ pub(crate) fn write_simple(
     value: &crate::value::DfdlValue,
     kind: crate::ir::ValueKind,
     props: &IrProps,
+    strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
-    if let Some(init) = &props.initiator {
-        out.extend_from_slice(init);
+    if let Some(id) = props.initiator {
+        out.extend(encode_delimiter(strings.get(id)));
     }
     match props.representation {
         Representation::Binary => write_binary_scalar(out, value, kind, props)?,
-        Representation::Text => write_text_scalar(out, value, kind, props)?,
+        Representation::Text => write_text_scalar(out, value, kind, props, strings)?,
     }
-    if let Some(term) = &props.terminator {
-        out.extend_from_slice(term);
+    if let Some(id) = props.terminator {
+        out.extend(encode_delimiter(strings.get(id)));
     }
     Ok(())
+}
+
+pub(crate) fn default_value_for(
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Option<crate::value::DfdlValue> {
+    use crate::ir::ValueKind::*;
+    use crate::value::DfdlValue;
+
+    let raw = props.default_value.map(|id| strings.get(id))?;
+    match kind {
+        Boolean => parse_text_boolean(raw, props, strings).ok().map(DfdlValue::Boolean),
+        Byte => parse_int(raw).ok().map(DfdlValue::Byte),
+        UnsignedByte => parse_int(raw).ok().map(DfdlValue::UnsignedByte),
+        Short => parse_int(raw).ok().map(DfdlValue::Short),
+        UnsignedShort => parse_int(raw).ok().map(DfdlValue::UnsignedShort),
+        Int => parse_int(raw).ok().map(DfdlValue::Int),
+        UnsignedInt => parse_int(raw).ok().map(DfdlValue::UnsignedInt),
+        Long => parse_int(raw).ok().map(DfdlValue::Long),
+        Float => parse_float(raw).ok().map(|v| DfdlValue::Float(v as f32)),
+        Double => parse_float(raw).ok().map(DfdlValue::Double),
+        String => Some(DfdlValue::String(raw.into())),
+        HexBinary => decode_hex(raw).ok().map(DfdlValue::HexBinary),
+        Complex => None,
+    }
 }

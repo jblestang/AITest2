@@ -1,4 +1,5 @@
 use super::ast::*;
+use super::resolver::SchemaResolver;
 use crate::error::{ParseError, Result};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
@@ -6,9 +7,29 @@ use alloc::vec::Vec;
 
 const DFDL_NS: &str = "http://www.ogf.org/dfdl/";
 
+/// Options controlling XSD parsing and include resolution.
+#[derive(Debug, Clone, Default)]
+pub struct ParseOptions {
+    pub base_dir: Option<String>,
+}
+
 /// Parse an XSD document with DFDL annotations into a [`SchemaDocument`].
 pub fn parse_schema(input: &str) -> Result<SchemaDocument> {
-    let mut parser = XsdParser::new(input);
+    parse_schema_with_options(input, &ParseOptions::default())
+}
+
+/// Parse with include resolution via bundled/general format schemas.
+pub fn parse_schema_with_options(input: &str, options: &ParseOptions) -> Result<SchemaDocument> {
+    let mut resolver = SchemaResolver::new();
+    if let Some(base) = &options.base_dir {
+        resolver = resolver.with_base_dir(base.clone());
+    }
+    parse_schema_with_resolver(input, resolver)
+}
+
+/// Parse using a custom [`SchemaResolver`] for `xs:include` / `xs:import`.
+pub fn parse_schema_with_resolver(input: &str, resolver: SchemaResolver) -> Result<SchemaDocument> {
+    let mut parser = XsdParser::new(input, resolver);
     parser.parse_document()
 }
 
@@ -17,16 +38,34 @@ struct XsdParser<'a> {
     pos: usize,
     doc: SchemaDocument,
     pending_props: DfdlProps,
+    resolver: SchemaResolver,
+    included: bool,
 }
 
 impl<'a> XsdParser<'a> {
-    fn new(input: &'a str) -> Self {
+    fn new(input: &'a str, resolver: SchemaResolver) -> Self {
         Self {
             input,
             pos: 0,
             doc: SchemaDocument::default(),
             pending_props: DfdlProps::default(),
+            resolver,
+            included: false,
         }
+    }
+
+    fn merge_included(&mut self, other: SchemaDocument) {
+        for (k, v) in other.types {
+            self.doc.types.insert(k, v);
+        }
+        for (k, v) in other.global_elements {
+            self.doc.global_elements.insert(k, v);
+        }
+        for (k, v) in other.named_formats {
+            self.doc.named_formats.insert(k, v);
+        }
+        self.doc.format_defaults.props =
+            merge_props(self.doc.format_defaults.props.clone(), other.format_defaults.props);
     }
 
     fn parse_document(&mut self) -> Result<SchemaDocument> {
@@ -101,7 +140,23 @@ impl<'a> XsdParser<'a> {
                     "element" => self.parse_global_element()?,
                     "complexType" => self.parse_complex_type(None)?,
                     "simpleType" => self.parse_simple_type(None)?,
-                    "annotation" => self.skip_element(&tag)?,
+                    "include" => self.parse_include()?,
+                    "format" => {
+                        let props = self.parse_dfdl_element(&tag)?;
+                        self.doc.format_defaults.props =
+                            merge_props(self.doc.format_defaults.props.clone(), props);
+                    }
+                    "defineFormat" => {
+                        let props = self.parse_dfdl_element(&tag)?;
+                        self.doc.format_defaults.props =
+                            merge_props(self.doc.format_defaults.props.clone(), props);
+                    }
+                    "annotation" => {
+                        self.pos -= tag.len() + 1;
+                        let props = self.parse_annotation()?;
+                        self.doc.format_defaults.props =
+                            merge_props(self.doc.format_defaults.props.clone(), props);
+                    }
                     _ => self.skip_element(&tag)?,
                 }
             }
@@ -109,24 +164,64 @@ impl<'a> XsdParser<'a> {
         Ok(())
     }
 
+    fn parse_include(&mut self) -> Result<()> {
+        let attrs = self.read_attributes()?;
+        let location = attrs
+            .get("schemaLocation")
+            .ok_or_else(|| ParseError::MissingAttribute {
+                element: "include".into(),
+                attribute: "schemaLocation".into(),
+            })?;
+        if self.try_consume('/') {
+            self.expect('>')?;
+        } else {
+            self.expect('>')?;
+        }
+        let content = self.resolver.resolve(location)?;
+        let included = parse_schema_with_resolver(&content, self.resolver.clone())?;
+        self.merge_included(included);
+        Ok(())
+    }
+
     fn parse_global_element(&mut self) -> Result<()> {
         let attrs = self.read_attributes()?;
-        let name = attrs
+        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
+        let name = xsd_attrs
             .get("name")
             .cloned()
             .ok_or_else(|| ParseError::MissingAttribute {
                 element: "element".into(),
                 attribute: "name".into(),
             })?;
-        let type_name = attrs
-            .get("type")
-            .map(|t| TypeName::new(normalize_qname(t)))
-            .ok_or_else(|| ParseError::MissingAttribute {
+        let mut props = merge_props(core::mem::take(&mut self.pending_props), dfdl_from_attrs);
+        merge_occurs(&mut props, &xsd_attrs);
+
+        let type_name = if let Some(t) = xsd_attrs.get("type") {
+            TypeName::new(normalize_qname(t))
+        } else if self.try_consume('/') {
+            self.expect('>')?;
+            return Err(ParseError::MissingAttribute {
                 element: "element".into(),
                 attribute: "type".into(),
-            })?;
+            }
+            .into());
+        } else {
+            self.expect('>')?;
+            props = self.parse_inline_content(props, &["complexType", "simpleType", "annotation"])?;
+            let inline = self.parse_inline_type()?;
+            props = merge_props(props, inline.1);
+            self.expect_close_tag("element")?;
+            self.doc.global_elements.insert(
+                name.clone(),
+                GlobalElement {
+                    name,
+                    type_name: inline.0,
+                    props,
+                },
+            );
+            return Ok(());
+        };
 
-        let mut props = core::mem::take(&mut self.pending_props);
         if self.try_consume('/') {
             self.expect('>')?;
         } else {
@@ -251,7 +346,8 @@ impl<'a> XsdParser<'a> {
 
     fn parse_sequence(&mut self) -> Result<SequenceDecl> {
         let attrs = self.read_attributes()?;
-        let mut props = core::mem::take(&mut self.pending_props);
+        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
+        let mut props = merge_props(core::mem::take(&mut self.pending_props), dfdl_from_attrs);
         merge_occurs(&mut props, &attrs);
 
         if self.try_consume('/') {
@@ -303,7 +399,8 @@ impl<'a> XsdParser<'a> {
 
     fn parse_choice(&mut self) -> Result<ChoiceDecl> {
         let attrs = self.read_attributes()?;
-        let mut props = core::mem::take(&mut self.pending_props);
+        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
+        let mut props = merge_props(core::mem::take(&mut self.pending_props), dfdl_from_attrs);
         merge_occurs(&mut props, &attrs);
 
         if self.try_consume('/') {
@@ -355,17 +452,19 @@ impl<'a> XsdParser<'a> {
 
     fn parse_element_decl(&mut self) -> Result<ElementDecl> {
         let attrs = self.read_attributes()?;
-        let name = attrs
+        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
+        let name = xsd_attrs
             .get("name")
             .cloned()
             .ok_or_else(|| ParseError::MissingAttribute {
                 element: "element".into(),
                 attribute: "name".into(),
             })?;
-        let mut props = core::mem::take(&mut self.pending_props);
-        merge_occurs(&mut props, &attrs);
+        let default_value = xsd_attrs.get("default").cloned();
+        let mut props = merge_props(core::mem::take(&mut self.pending_props), dfdl_from_attrs);
+        merge_occurs(&mut props, &xsd_attrs);
 
-        let type_name = if let Some(t) = attrs.get("type") {
+        let type_name = if let Some(t) = xsd_attrs.get("type") {
             TypeName::new(normalize_qname(t))
         } else if self.try_consume('/') {
             self.expect('>')?;
@@ -384,6 +483,7 @@ impl<'a> XsdParser<'a> {
                 type_name: inline.0,
                 props: merge_props(props, inline.1),
                 particle: None,
+                default_value,
             });
         };
 
@@ -400,6 +500,7 @@ impl<'a> XsdParser<'a> {
             type_name,
             props,
             particle: None,
+            default_value,
         })
     }
 
@@ -591,9 +692,21 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_dfdl_element(&mut self, tag: &str) -> Result<DfdlProps> {
+        let local = local_tag(tag);
+        if local == "defineFormat" {
+            return self.parse_define_format(tag);
+        }
+
         let attrs = self.read_attributes()?;
-        let props = props_from_attrs(&attrs)?;
-        if local_tag(tag) == "format" {
+        let mut props = props_from_attrs(&attrs)?;
+
+        if local == "format" {
+            if let Some(ref_name) = attrs.get("ref") {
+                let key = normalize_qname(ref_name);
+                if let Some(base) = self.doc.named_formats.get(&key).cloned() {
+                    props = merge_props(base, props);
+                }
+            }
             self.doc.format_defaults.props =
                 merge_props(self.doc.format_defaults.props.clone(), props.clone());
         }
@@ -601,7 +714,47 @@ impl<'a> XsdParser<'a> {
             self.expect('>')?;
         } else {
             self.expect('>')?;
-            self.skip_rest_of_element(local_tag(tag))?;
+            self.skip_rest_of_element(local)?;
+        }
+        Ok(props)
+    }
+
+    fn parse_define_format(&mut self, tag: &str) -> Result<DfdlProps> {
+        let attrs = self.read_attributes()?;
+        let format_name = attrs.get("name").cloned();
+        if self.try_consume('/') {
+            self.expect('>')?;
+            return Ok(DfdlProps::default());
+        }
+        self.expect('>')?;
+
+        let mut props = DfdlProps::default();
+        loop {
+            self.skip_ws_and_comments();
+            if self.try_consume('<') {
+                if self.try_consume('/') {
+                    let end = self.read_name()?;
+                    self.read_attributes()?;
+                    self.expect('>')?;
+                    if local_tag(&end) == "defineFormat" {
+                        break;
+                    }
+                    continue;
+                }
+                let child = self.read_name()?;
+                if child.starts_with("dfdl:") || is_dfdl_local(&child) {
+                    let child_props = self.parse_dfdl_element(&child)?;
+                    props = merge_props(props, child_props);
+                } else {
+                    self.skip_element(&child)?;
+                }
+            } else if self.eof() {
+                return Err(ParseError::UnexpectedEof.into());
+            }
+        }
+
+        if let Some(name) = format_name {
+            self.doc.named_formats.insert(name, props.clone());
         }
         Ok(props)
     }
@@ -793,6 +946,7 @@ fn merge_occurs(props: &mut DfdlProps, attrs: &BTreeMap<String, String>) {
         }
     }
     if let Some(max) = attrs.get("maxOccurs") {
+        props.max_occurs_specified = true;
         if max == "unbounded" {
             props.occurs_max = None;
         } else if let Ok(v) = max.parse() {
@@ -850,13 +1004,89 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.choice_dispatch_key.is_some() {
         base.choice_dispatch_key = overlay.choice_dispatch_key;
     }
+    if overlay.length_pattern.is_some() {
+        base.length_pattern = overlay.length_pattern;
+    }
+    if overlay.separator_position.is_some() {
+        base.separator_position = overlay.separator_position;
+    }
+    if overlay.text_boolean_true_rep.is_some() {
+        base.text_boolean_true_rep = overlay.text_boolean_true_rep;
+    }
+    if overlay.text_boolean_false_rep.is_some() {
+        base.text_boolean_false_rep = overlay.text_boolean_false_rep;
+    }
+    if overlay.default_value.is_some() {
+        base.default_value = overlay.default_value;
+    }
+    if overlay.alignment.is_some() {
+        base.alignment = overlay.alignment;
+    }
+    if overlay.leading_skip.is_some() {
+        base.leading_skip = overlay.leading_skip;
+    }
+    if overlay.trailing_skip.is_some() {
+        base.trailing_skip = overlay.trailing_skip;
+    }
+    if overlay.sequence_kind.is_some() {
+        base.sequence_kind = overlay.sequence_kind;
+    }
+    if overlay.fill_byte.is_some() {
+        base.fill_byte = overlay.fill_byte;
+    }
     base
+}
+
+fn split_dfdl_attrs(attrs: &BTreeMap<String, String>) -> (BTreeMap<String, String>, DfdlProps) {
+    let mut xsd = BTreeMap::new();
+    let mut dfdl_map = BTreeMap::new();
+    for (k, v) in attrs {
+        let local = local_tag(k);
+        if k.starts_with("dfdl:") || is_dfdl_property(local) {
+            dfdl_map.insert(local.to_string(), v.clone());
+        } else {
+            xsd.insert(k.clone(), v.clone());
+        }
+    }
+    let props = props_from_attrs(&dfdl_map).unwrap_or_default();
+    (xsd, props)
+}
+
+fn is_dfdl_property(name: &str) -> bool {
+    matches!(
+        name,
+        "representation"
+            | "byteOrder"
+            | "bitOrder"
+            | "lengthKind"
+            | "length"
+            | "lengthUnits"
+            | "lengthPattern"
+            | "encoding"
+            | "textTrimKind"
+            | "binaryNumberRep"
+            | "binaryFloatRep"
+            | "initiator"
+            | "terminator"
+            | "separator"
+            | "separatorPosition"
+            | "textBooleanTrueRep"
+            | "textBooleanFalseRep"
+            | "alignment"
+            | "leadingSkip"
+            | "trailingSkip"
+            | "sequenceKind"
+            | "fillByte"
+            | "ref"
+            | "format"
+    )
 }
 
 fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
     let mut props = DfdlProps::default();
     for (key, value) in attrs {
-        match key.as_str() {
+        let key = local_tag(key);
+        match key {
             "representation" => {
                 props.representation = Some(match value.as_str() {
                     "binary" => Representation::Binary,
@@ -900,6 +1130,8 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     "fixed" => LengthKind::Fixed,
                     "delimited" => LengthKind::Delimited,
                     "prefixed" => LengthKind::Prefixed,
+                    "pattern" => LengthKind::Pattern,
+                    "endOfParent" => LengthKind::EndOfParent,
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!("unknown lengthKind `{other}`"),
@@ -908,6 +1140,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     }
                 });
             }
+            "lengthPattern" => props.length_pattern = Some(value.clone()),
             "length" => {
                 props.length = Some(value.parse().map_err(|_| ParseError::InvalidXml {
                     message: alloc::format!("invalid length `{value}`"),
@@ -964,14 +1197,62 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     }
                 });
             }
-            "initiator" => props.initiator = Some(parse_byte_literal(value)?),
-            "terminator" => props.terminator = Some(parse_byte_literal(value)?),
-            "separator" => props.separator = Some(parse_byte_literal(value)?),
+            "initiator" => props.initiator = Some(parse_delimiter_literal(value)?),
+            "terminator" => props.terminator = Some(parse_delimiter_literal(value)?),
+            "separator" => props.separator = Some(parse_delimiter_literal(value)?),
+            "separatorPosition" => {
+                props.separator_position = Some(match value.as_str() {
+                    "infix" => SeparatorPosition::Infix,
+                    "prefix" => SeparatorPosition::Prefix,
+                    "postfix" => SeparatorPosition::Postfix,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown separatorPosition `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "textBooleanTrueRep" => props.text_boolean_true_rep = Some(value.clone()),
+            "textBooleanFalseRep" => props.text_boolean_false_rep = Some(value.clone()),
+            "alignment" => {
+                props.alignment = Some(value.parse().map_err(|_| ParseError::InvalidXml {
+                    message: alloc::format!("invalid alignment `{value}`"),
+                })?);
+            }
+            "leadingSkip" => {
+                props.leading_skip = Some(value.parse().map_err(|_| ParseError::InvalidXml {
+                    message: alloc::format!("invalid leadingSkip `{value}`"),
+                })?);
+            }
+            "trailingSkip" => {
+                props.trailing_skip = Some(value.parse().map_err(|_| ParseError::InvalidXml {
+                    message: alloc::format!("invalid trailingSkip `{value}`"),
+                })?);
+            }
+            "sequenceKind" => {
+                props.sequence_kind = Some(match value.as_str() {
+                    "ordered" => SequenceKind::Ordered,
+                    "unordered" => SequenceKind::Unordered,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown sequenceKind `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "fillByte" => props.fill_byte = Some(parse_byte_literal(value)?),
+            "ref" | "format" => {}
             "choiceDispatchKey" => props.choice_dispatch_key = Some(value.clone()),
             _ => {}
         }
     }
     Ok(props)
+}
+
+fn parse_delimiter_literal(raw: &str) -> Result<String> {
+    Ok(raw.to_string())
 }
 
 fn parse_byte_literal(raw: &str) -> Result<Vec<u8>> {

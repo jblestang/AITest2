@@ -1,6 +1,8 @@
 use super::runtime::{write_simple, RuntimeConfig, VmContext};
+use crate::schema::encode_delimiter;
 use crate::error::{Result, VmError};
-use crate::ir::{IrNode, IrProgram};
+use crate::ir::{IrNode, IrProgram, IrProps};
+use crate::schema::SeparatorPosition;
 use crate::value::DfdlValue;
 use alloc::vec::Vec;
 
@@ -22,6 +24,7 @@ impl<'a> Encoder<'a> {
 
     /// Encode `value` and append bytes to `output`.
     pub fn encode(&self, value: &DfdlValue, output: &mut Vec<u8>) -> Result<()> {
+        let value = unwrap_root_for_encode(value, &self.ctx.program.root_element);
         self.encode_node(self.ctx.program.root, value, output)
     }
 
@@ -34,9 +37,12 @@ impl<'a> Encoder<'a> {
 
     fn encode_node(&self, node_id: u32, value: &DfdlValue, out: &mut Vec<u8>) -> Result<()> {
         match self.ctx.program.node(node_id) {
-            IrNode::Sequence { children, .. } => {
+            IrNode::Sequence { children, props } => {
                 let map = value.as_sequence_fields()?;
-                for &child in children {
+                for (idx, &child) in children.iter().enumerate() {
+                    if idx > 0 {
+                        self.write_separator(props, out)?;
+                    }
                     self.encode_sequence_child(child, map, out)?;
                 }
                 Ok(())
@@ -56,17 +62,33 @@ impl<'a> Encoder<'a> {
                 child,
             } => {
                 if let Some(child_id) = child {
-                    let field = value
-                        .field(self.ctx.strings().get(*name))
-                        .ok_or_else(|| VmError::MissingField {
-                            name: self.ctx.strings().get(*name).into(),
-                        })?;
-                    self.encode_node(*child_id, field, out)
+                    let field = value_for_element(value, self.ctx.strings().get(*name))?;
+                    self.encode_element_occurrences(*child_id, props, field, out)
                 } else {
-                    write_simple(out, value, *kind, props).map_err(Into::into)
+                    write_simple(out, value, *kind, props, self.ctx.strings()).map_err(Into::into)
                 }
             }
         }
+    }
+
+    fn encode_element_occurrences(
+        &self,
+        node_id: u32,
+        props: &IrProps,
+        value: &DfdlValue,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        let items = match value {
+            DfdlValue::Array(items) => items.as_slice(),
+            single => core::slice::from_ref(single),
+        };
+        for (idx, item) in items.iter().enumerate() {
+            if idx > 0 {
+                self.write_separator(props, out)?;
+            }
+            self.encode_node(node_id, item, out)?;
+        }
+        Ok(())
     }
 
     fn encode_sequence_child(
@@ -76,12 +98,12 @@ impl<'a> Encoder<'a> {
         out: &mut Vec<u8>,
     ) -> Result<()> {
         match self.ctx.program.node(node_id) {
-            IrNode::Element { name, .. } => {
+            IrNode::Element { name, props, .. } => {
                 let key = self.ctx.strings().get(*name);
                 let value = map
                     .get(key)
                     .ok_or_else(|| VmError::MissingField { name: key.into() })?;
-                self.encode_node(node_id, value, out)
+                self.encode_element_occurrences(node_id, props, value, out)
             }
             IrNode::Sequence { .. } => {
                 self.encode_node(node_id, &DfdlValue::Sequence(map.clone()), out)
@@ -100,6 +122,39 @@ impl<'a> Encoder<'a> {
             }
         }
     }
+
+    fn write_separator(&self, props: &IrProps, out: &mut Vec<u8>) -> Result<()> {
+        if props.separator_position != SeparatorPosition::Infix {
+            return Ok(());
+        }
+        if let Some(id) = props.separator {
+            out.extend(encode_delimiter(self.ctx.strings().get(id)));
+        }
+        Ok(())
+    }
+}
+
+fn unwrap_root_for_encode<'a>(value: &'a DfdlValue, root_element: &str) -> &'a DfdlValue {
+    if let DfdlValue::Sequence(map) = value {
+        if map.len() == 1 {
+            if let Some((name, inner)) = map.iter().next() {
+                if name == root_element {
+                    return inner;
+                }
+            }
+        }
+    }
+    value
+}
+
+fn value_for_element<'a>(value: &'a DfdlValue, name: &str) -> Result<&'a DfdlValue> {
+    match value {
+        DfdlValue::Sequence(_map) => value
+            .field(name)
+            .ok_or_else(|| VmError::MissingField { name: name.into() })
+            .map_err(Into::into),
+        other => Ok(other),
+    }
 }
 
 fn branches_contain(program: &IrProgram, node_id: u32, name: &str) -> bool {
@@ -113,12 +168,16 @@ fn branches_contain(program: &IrProgram, node_id: u32, name: &str) -> bool {
 }
 
 trait ValueView {
-    fn as_sequence_fields(&self) -> Result<&alloc::collections::BTreeMap<alloc::string::String, DfdlValue>>;
+    fn as_sequence_fields(
+        &self,
+    ) -> Result<&alloc::collections::BTreeMap<alloc::string::String, DfdlValue>>;
     fn as_choice_fields(&self) -> Result<(&str, &DfdlValue)>;
 }
 
 impl ValueView for DfdlValue {
-    fn as_sequence_fields(&self) -> Result<&alloc::collections::BTreeMap<alloc::string::String, DfdlValue>> {
+    fn as_sequence_fields(
+        &self,
+    ) -> Result<&alloc::collections::BTreeMap<alloc::string::String, DfdlValue>> {
         match self {
             DfdlValue::Sequence(map) => Ok(map),
             _ => Err(VmError::TypeMismatch {

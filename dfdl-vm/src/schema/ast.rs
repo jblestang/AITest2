@@ -30,12 +30,24 @@ pub struct DfdlProps {
     pub text_trim_kind: Option<TextTrimKind>,
     pub binary_number_rep: Option<BinaryNumberRep>,
     pub binary_float_rep: Option<BinaryFloatRep>,
-    pub initiator: Option<Vec<u8>>,
-    pub terminator: Option<Vec<u8>>,
-    pub separator: Option<Vec<u8>>,
+    pub initiator: Option<String>,
+    pub terminator: Option<String>,
+    pub separator: Option<String>,
     pub occurs_min: Option<u64>,
     pub occurs_max: Option<u64>,
+    /// True when `maxOccurs` was present in XSD (distinguishes unset vs unbounded).
+    pub max_occurs_specified: bool,
     pub choice_dispatch_key: Option<String>,
+    pub length_pattern: Option<String>,
+    pub separator_position: Option<SeparatorPosition>,
+    pub text_boolean_true_rep: Option<String>,
+    pub text_boolean_false_rep: Option<String>,
+    pub default_value: Option<String>,
+    pub alignment: Option<u64>,
+    pub leading_skip: Option<u64>,
+    pub trailing_skip: Option<u64>,
+    pub sequence_kind: Option<SequenceKind>,
+    pub fill_byte: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +75,21 @@ pub enum LengthKind {
     Fixed,
     Delimited,
     Prefixed,
+    Pattern,
+    EndOfParent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeparatorPosition {
+    Infix,
+    Prefix,
+    Postfix,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequenceKind {
+    Ordered,
+    Unordered,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +131,7 @@ pub struct ElementDecl {
     pub type_name: TypeName,
     pub props: DfdlProps,
     pub particle: Option<Box<Particle>>,
+    pub default_value: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -215,6 +243,8 @@ pub struct FormatDefaults {
 pub struct SchemaDocument {
     pub target_namespace: Option<String>,
     pub format_defaults: FormatDefaults,
+    /// Named DFDL formats from `dfdl:defineFormat`.
+    pub named_formats: BTreeMap<String, DfdlProps>,
     pub types: BTreeMap<TypeName, TypeDef>,
     pub global_elements: BTreeMap<String, GlobalElement>,
 }

@@ -19,6 +19,8 @@ pub enum DfdlValue {
     Double(f64),
     String(String),
     HexBinary(Vec<u8>),
+    /// Repeated occurrences of an element or group.
+    Array(Vec<DfdlValue>),
     Sequence(BTreeMap<String, DfdlValue>),
     Choice {
         /// Name of the selected element in the choice group.
@@ -74,7 +76,18 @@ impl DfdlValue {
 
     pub fn field(&self, name: &str) -> Option<&DfdlValue> {
         match self {
-            DfdlValue::Sequence(map) => map.get(name),
+            DfdlValue::Sequence(map) => {
+                if let Some(v) = map.get(name) {
+                    return Some(v);
+                }
+                // Transparently search through a single root-element wrapper.
+                if map.len() == 1 {
+                    if let Some(inner) = map.values().next() {
+                        return inner.field(name);
+                    }
+                }
+                None
+            }
             _ => None,
         }
     }
