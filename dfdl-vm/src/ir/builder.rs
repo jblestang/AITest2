@@ -83,31 +83,28 @@ impl<'a> IrBuilder<'a> {
                 })
             } else {
                 let child = self.compile_type(&root_element.type_name, &root_element.props)?;
-                let needs_element_wrapper = root_element.props.length_kind.is_some()
-                    || root_element.props.initiator.is_some()
-                    || root_element.props.terminator.is_some();
-                if needs_element_wrapper {
-                    let defaults = self.defaults.clone();
-                    let mut ir_props = self.merge_props_full(
-                        &defaults,
-                        &DfdlProps::default(),
-                        &root_element.props,
-                    )?;
-                    if root_element.props.length_kind.is_none() {
-                        ir_props.length_kind = LengthKind::Implicit;
-                    }
-                    let ir_props =
-                        finalize_element_props(ValueKind::Complex, ir_props, &self.strings, self.tunables)?;
-                    let name = self.strings.intern(root_name);
-                    self.push(IrNode::Element {
-                        name,
-                        kind: ValueKind::Complex,
-                        props: ir_props,
-                        child: Some(child),
-                    })
-                } else {
-                    child
+                let defaults = self.defaults.clone();
+                let mut ir_props = self.merge_props_full(
+                    &defaults,
+                    &DfdlProps::default(),
+                    &root_element.props,
+                )?;
+                if root_element.props.length_kind.is_none() {
+                    ir_props.length_kind = LengthKind::Implicit;
                 }
+                let ir_props = finalize_element_props(
+                    ValueKind::Complex,
+                    ir_props,
+                    &self.strings,
+                    self.tunables,
+                )?;
+                let name = self.strings.intern(root_name);
+                self.push(IrNode::Element {
+                    name,
+                    kind: ValueKind::Complex,
+                    props: ir_props,
+                    child: Some(child),
+                })
             }
         };
         Ok(IrProgram {
@@ -115,6 +112,7 @@ impl<'a> IrBuilder<'a> {
             root,
             nodes: self.nodes,
             strings: self.strings,
+            tunables: self.tunables,
         })
     }
 

@@ -791,6 +791,31 @@ fn daffodil_prefixed_twopass_roundtrip_suite() {
 }
 
 #[test]
+fn daffodil_explicit_length_unparser_suite() {
+    let tdml = daffodil_tdml!("ExplicitTests.tdml");
+    for name in [
+        "unparseInvalidIntBitLengthExpr",
+        "outOfRangeLengthBinaryInteger3",
+        "outOfRangeLengthBinaryInteger4",
+        "outOfRangeLengthBinaryInteger5",
+        "outOfRangeLengthBinaryInteger6",
+        "outOfRangeLengthBinaryInteger7",
+        "inRangeLengthBinaryInteger3",
+        "inRangeLengthBinaryInteger4",
+        "inRangeLengthBinaryInteger5",
+        "inRangeLengthBinaryInteger8",
+        "inRangeLengthBinaryInteger9",
+        "outOfRangeLengthBinaryDecimal3",
+        "outOfRangeLengthBinaryDecimal4",
+        "outOfRangeLengthBinaryDecimal6",
+        "outOfRangeLengthBinaryDecimal8",
+        "outOfRangeLengthBinaryDecimal10",
+    ] {
+        assert_named_unparser_test_passes(tdml, name);
+    }
+}
+
+#[test]
 fn daffodil_prefixed_facet_unparser_suite() {
     let tdml = daffodil_tdml!("PrefixedTests.tdml");
     for name in [

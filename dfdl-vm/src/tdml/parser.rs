@@ -55,6 +55,7 @@ pub struct UnparserTestCase {
     pub infoset: String,
     /// When set, encode must fail and error text must contain each message.
     pub expected_errors: Option<Vec<String>>,
+    pub config: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -237,6 +238,7 @@ fn parse_unparser_test_case(
         element: "unparserTestCase".into(),
         attribute: "model".into(),
     })?;
+    let config = attrs.get("config").cloned();
 
     let mut infoset = String::new();
     let mut expected_errors = None;
@@ -259,6 +261,7 @@ fn parse_unparser_test_case(
         model,
         infoset,
         expected_errors,
+        config,
     })
 }
 

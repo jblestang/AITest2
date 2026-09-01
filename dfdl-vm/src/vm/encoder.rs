@@ -28,7 +28,8 @@ impl<'a> Encoder<'a> {
     /// Encode `value` and append bytes to `output`.
     pub fn encode(&self, value: &DfdlValue, output: &mut Vec<u8>) -> Result<()> {
         let value = unwrap_root_for_encode(value, &self.ctx.program.root_element);
-        self.encode_node(self.ctx.program.root, value, output)
+        let mut bit_count = 0u8;
+        self.encode_node(self.ctx.program.root, value, output, &mut bit_count)
     }
 
     /// Encode into a freshly allocated buffer.
@@ -38,7 +39,13 @@ impl<'a> Encoder<'a> {
         Ok(out)
     }
 
-    fn encode_node(&self, node_id: u32, value: &DfdlValue, out: &mut Vec<u8>) -> Result<()> {
+    fn encode_node(
+        &self,
+        node_id: u32,
+        value: &DfdlValue,
+        out: &mut Vec<u8>,
+        bit_count: &mut u8,
+    ) -> Result<()> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
                 let map = value.as_sequence_fields()?;
@@ -47,8 +54,8 @@ impl<'a> Encoder<'a> {
                     if child_skips_encode(self, child)? {
                         continue;
                     }
-                    self.write_separator(props, out, idx, children.len())?;
-                    self.encode_sequence_particle(child, &effective, out)?;
+                    self.write_separator(props, out, bit_count, idx, children.len())?;
+                    self.encode_sequence_particle(child, &effective, out, bit_count)?;
                 }
                 Ok(())
             }
@@ -64,13 +71,13 @@ impl<'a> Encoder<'a> {
                                 .unwrap_or(false)
                         })
                         .ok_or(VmError::InvalidChoice)?;
-                    return self.encode_node(branch.node, value, out);
+                    return self.encode_node(branch.node, value, out, bit_count);
                 }
                 if let DfdlValue::Sequence(map) = value {
                     for branch in branches {
                         let key = self.ctx.strings().get(branch.name)?;
                         if let Some(branch_value) = map.get(key) {
-                            return self.encode_node(branch.node, branch_value, out);
+                            return self.encode_node(branch.node, branch_value, out, bit_count);
                         }
                     }
                 }
@@ -89,13 +96,22 @@ impl<'a> Encoder<'a> {
                         None => value,
                     };
                     if needs_length_frame(props) {
-                        self.encode_framed_element(*child_id, props, field, out)
+                        self.encode_framed_element(*child_id, props, field, out, bit_count)
                     } else {
-                        self.encode_element_occurrences(*child_id, props, field, out)
+                        self.encode_element_occurrences(*child_id, props, field, out, bit_count)
                     }
                 } else {
-                    write_alignment(out, props)?;
-                    write_simple(out, value, *kind, props, self.ctx.strings()).map_err(Into::into)
+                    write_alignment(out, bit_count, props)?;
+                    write_simple(
+                        out,
+                        bit_count,
+                        value,
+                        *kind,
+                        props,
+                        self.ctx.strings(),
+                        &self.ctx.program.tunables,
+                    )
+                    .map_err(Into::into)
                 }
             }
         }
@@ -107,20 +123,29 @@ impl<'a> Encoder<'a> {
         props: &IrProps,
         value: &DfdlValue,
         out: &mut Vec<u8>,
+        bit_count: &mut u8,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
             single => core::slice::from_ref(single),
         };
         for (idx, item) in items.iter().enumerate() {
-            self.write_separator(props, out, idx, items.len())?;
-            write_alignment(out, props)?;
+            self.write_separator(props, out, bit_count, idx, items.len())?;
+            write_alignment(out, bit_count, props)?;
             if let Some(id) = props.initiator {
                 out.extend(encode_delimiter(self.ctx.strings().get(id)?));
             }
             let mut payload = Vec::new();
-            self.encode_node(child_id, item, &mut payload)?;
-            write_framed_payload(out, &payload, props, self.ctx.strings())?;
+            let mut payload_bit_count = 0u8;
+            self.encode_node(child_id, item, &mut payload, &mut payload_bit_count)?;
+            write_framed_payload(
+                out,
+                bit_count,
+                &payload,
+                payload_bit_count,
+                props,
+                self.ctx.strings(),
+            )?;
         }
         Ok(())
     }
@@ -131,15 +156,16 @@ impl<'a> Encoder<'a> {
         props: &IrProps,
         value: &DfdlValue,
         out: &mut Vec<u8>,
+        bit_count: &mut u8,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
             single => core::slice::from_ref(single),
         };
         for (idx, item) in items.iter().enumerate() {
-            self.write_separator(props, out, idx, items.len())?;
-            write_alignment(out, props)?;
-            self.encode_node(node_id, item, out)?;
+            self.write_separator(props, out, bit_count, idx, items.len())?;
+            write_alignment(out, bit_count, props)?;
+            self.encode_node(node_id, item, out, bit_count)?;
         }
         Ok(())
     }
@@ -149,6 +175,7 @@ impl<'a> Encoder<'a> {
         node_id: u32,
         map: &BTreeMap<String, DfdlValue>,
         out: &mut Vec<u8>,
+        bit_count: &mut u8,
     ) -> Result<()> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element {
@@ -166,17 +193,20 @@ impl<'a> Encoder<'a> {
                         None => &value,
                     };
                     if needs_length_frame(&resolved) {
-                        self.encode_framed_element(*child_id, &resolved, field, out)
+                        self.encode_framed_element(*child_id, &resolved, field, out, bit_count)
                     } else {
-                        self.encode_element_occurrences(*child_id, &resolved, field, out)
+                        self.encode_element_occurrences(*child_id, &resolved, field, out, bit_count)
                     }
                 } else {
-                    self.encode_simple_occurrences(*kind, &resolved, &value, out)
+                    self.encode_simple_occurrences(*kind, &resolved, &value, out, bit_count)
                 }
             }
-            IrNode::Sequence { .. } => {
-                self.encode_node(node_id, &DfdlValue::Sequence(map.clone()), out)
-            }
+            IrNode::Sequence { .. } => self.encode_node(
+                node_id,
+                &DfdlValue::Sequence(map.clone()),
+                out,
+                bit_count,
+            ),
             IrNode::Choice { .. } => {
                 for (discriminator, value) in map {
                     if branches_contain(self.ctx.program, node_id, discriminator) {
@@ -184,6 +214,7 @@ impl<'a> Encoder<'a> {
                             node_id,
                             &DfdlValue::choice(discriminator.clone(), value.clone()),
                             out,
+                            bit_count,
                         );
                     }
                 }
@@ -198,15 +229,25 @@ impl<'a> Encoder<'a> {
         props: &IrProps,
         value: &DfdlValue,
         out: &mut Vec<u8>,
+        bit_count: &mut u8,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
             single => core::slice::from_ref(single),
         };
         for (idx, item) in items.iter().enumerate() {
-            self.write_separator(props, out, idx, items.len())?;
-            write_alignment(out, props)?;
-            write_simple(out, item, kind, props, self.ctx.strings()).map_err(Error::from)?;
+            self.write_separator(props, out, bit_count, idx, items.len())?;
+            write_alignment(out, bit_count, props)?;
+            write_simple(
+                out,
+                bit_count,
+                item,
+                kind,
+                props,
+                self.ctx.strings(),
+                &self.ctx.program.tunables,
+            )
+            .map_err(Error::from)?;
         }
         Ok(())
     }
@@ -230,6 +271,7 @@ impl<'a> Encoder<'a> {
         &self,
         props: &IrProps,
         out: &mut Vec<u8>,
+        bit_count: &mut u8,
         index: usize,
         total: usize,
     ) -> Result<()> {
@@ -237,6 +279,7 @@ impl<'a> Encoder<'a> {
             return Ok(());
         }
         if let Some(id) = props.separator {
+            let _ = bit_count;
             out.extend(encode_delimiter(self.ctx.strings().get(id)?));
         }
         Ok(())

@@ -2,7 +2,7 @@ use super::encoding::{
     character_span_byte_length, count_characters, decode_text_bytes, encode_document_text,
     read_character_bytes,
 };
-use crate::length_validate::validate_data_length_vm;
+use crate::length_validate::{validate_data_length_vm, validate_signed_one_bit_length_vm, DaffodilTunables};
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool};
 use crate::schema::{
     encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, BitOrder, ByteOrder,
@@ -217,6 +217,92 @@ impl<'a> Cursor<'a> {
             None => false,
         }
     }
+}
+
+pub(crate) fn encode_absolute_bit_index(out: &[u8], bit_count: u8) -> usize {
+    out.len() * 8 + bit_count as usize
+}
+
+pub(crate) fn write_stream_bit(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    bit: u8,
+    bit_order: BitOrder,
+) {
+    match bit_order {
+        BitOrder::LeastSignificantBitFirst => {
+            if *bit_count == 0 {
+                out.push(0);
+            }
+            let idx = out.len() - 1;
+            out[idx] |= (bit & 1) << *bit_count;
+            *bit_count += 1;
+            if *bit_count == 8 {
+                *bit_count = 0;
+            }
+        }
+        BitOrder::MostSignificantBitFirst => {
+            if *bit_count == 0 {
+                out.push(0);
+            }
+            let idx = out.len() - 1;
+            out[idx] |= (bit & 1) << (7 - *bit_count);
+            *bit_count += 1;
+            if *bit_count == 8 {
+                *bit_count = 0;
+            }
+        }
+    }
+}
+
+pub(crate) fn write_stream_bits(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    value: u64,
+    n: usize,
+    bit_order: BitOrder,
+) {
+    for i in 0..n {
+        let bit = match bit_order {
+            BitOrder::MostSignificantBitFirst => ((value >> (n - 1 - i)) & 1) as u8,
+            BitOrder::LeastSignificantBitFirst => ((value >> i) & 1) as u8,
+        };
+        write_stream_bit(out, bit_count, bit, bit_order);
+    }
+}
+
+pub(crate) fn write_byte_aligned(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    bytes: &[u8],
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    if *bit_count != 0 {
+        return Err(VmError::InvalidValue {
+            message: "unaligned byte write".into(),
+        });
+    }
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn write_bits_from_stream(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    src: &[u8],
+    n: usize,
+    bit_order: BitOrder,
+) -> Result<(), crate::error::VmError> {
+    let mut cursor = Cursor::new(src);
+    for _ in 0..n {
+        let bit = cursor.read_stream_bit(bit_order)?;
+        write_stream_bit(out, bit_count, bit as u8, bit_order);
+    }
+    Ok(())
+}
+
+fn payload_bit_length(payload: &[u8], payload_bit_count: u8) -> usize {
+    encode_absolute_bit_index(payload, payload_bit_count)
 }
 
 pub(crate) fn encoding_name<'a>(
@@ -1181,10 +1267,12 @@ fn parse_text_boolean(
 
 pub(crate) fn write_binary_scalar(
     out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
     value: &crate::value::DfdlValue,
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
+    tunables: &DaffodilTunables,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -1192,20 +1280,38 @@ pub(crate) fn write_binary_scalar(
 
     if props.length_kind == LengthKind::Prefixed {
         let payload = encode_binary_payload_bytes(value, kind, props, strings)?;
-        return write_prefixed_bytes(out, &payload, props, strings);
+        return write_prefixed_bytes(out, bit_count, &payload, props, strings);
     }
 
     if props.length_units == LengthUnits::Bits {
-        return Err(VmError::UnsupportedOperation {
-            op: "bit-level encode".into(),
-        });
+        let n = binary_encode_bit_length(kind, props, tunables)?;
+        if n == 0 && kind != String && kind != HexBinary {
+            return Err(VmError::InvalidValue {
+                message: "zero-length scalar encode".into(),
+            });
+        }
+        let raw = scalar_to_raw_bits(value, kind, props, n)?;
+        write_stream_bits(out, bit_count, raw, n, props.bit_order);
+        return Ok(());
     }
 
     let le = props.byte_order == ByteOrder::LittleEndian;
     let size = match props.length_kind {
-        LengthKind::Fixed => props.length.unwrap_or(type_size(kind) as u64) as usize,
+        LengthKind::Fixed => {
+            let len = props.length.unwrap_or(type_size(kind) as u64);
+            validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
+            validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
+            len as usize
+        }
         LengthKind::Implicit => type_size(kind),
-        LengthKind::Explicit => props.length.unwrap_or(type_size(kind) as u64) as usize,
+        LengthKind::Explicit => {
+            let len = props.length.ok_or(VmError::InvalidValue {
+                message: "explicit binary missing length".into(),
+            })?;
+            validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
+            validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
+            len as usize
+        }
         LengthKind::Pattern | LengthKind::EndOfParent | LengthKind::Delimited => {
             return Err(VmError::UnsupportedOperation {
                 op: alloc::format!(
@@ -1229,6 +1335,10 @@ pub(crate) fn write_binary_scalar(
         (Long, DfdlValue::Long(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
         (Float, DfdlValue::Float(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
         (Double, DfdlValue::Double(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
+        (Decimal, DfdlValue::Decimal(v)) => {
+            let raw = parse_virtual_decimal(v, props.binary_decimal_virtual_point)?;
+            bytes = stream_bits_to_bytes(raw, size.saturating_mul(8), props.byte_order);
+        }
         (expected, _) => {
             return Err(VmError::TypeMismatch {
                 expected: alloc::format!("{expected:?}"),
@@ -1236,7 +1346,7 @@ pub(crate) fn write_binary_scalar(
         }
     }
 
-    if le {
+    if le && kind != Decimal {
         bytes.reverse();
     }
     if bytes.len() < size {
@@ -1250,12 +1360,77 @@ pub(crate) fn write_binary_scalar(
     } else if bytes.len() > size {
         bytes = bytes[bytes.len() - size..].to_vec();
     }
-    out.extend_from_slice(&bytes);
+    write_byte_aligned(out, bit_count, &bytes)?;
     Ok(())
+}
+
+fn binary_encode_bit_length(
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    tunables: &DaffodilTunables,
+) -> Result<usize, crate::error::VmError> {
+    use crate::error::VmError;
+    match props.length_kind {
+        LengthKind::Fixed => Ok(props.length.unwrap_or((type_size(kind) * 8) as u64) as usize),
+        LengthKind::Implicit => Ok(type_size(kind) * 8),
+        LengthKind::Explicit => {
+            let len = props.length.ok_or(VmError::InvalidValue {
+                message: "explicit binary missing length".into(),
+            })?;
+            validate_data_length_vm(kind, len, LengthUnits::Bits)?;
+            validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bits, tunables)?;
+            Ok(len as usize)
+        }
+        other => Err(VmError::UnsupportedOperation {
+            op: alloc::format!("lengthKind `{}` on bit encode", length_kind_name(other)),
+        }),
+    }
+}
+
+fn scalar_to_raw_bits(
+    value: &crate::value::DfdlValue,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    bit_width: usize,
+) -> Result<u64, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::ir::ValueKind::*;
+    use crate::value::DfdlValue;
+
+    fn signed_raw(value: i64, bit_width: usize) -> u64 {
+        if bit_width == 0 {
+            return 0;
+        }
+        if bit_width >= 64 {
+            return value as u64;
+        }
+        let mask = (1u64 << bit_width) - 1;
+        (value as u64) & mask
+    }
+
+    match (kind, value) {
+        (Boolean, DfdlValue::Boolean(v)) => Ok(u64::from(*v)),
+        (Byte, DfdlValue::Byte(v)) => Ok(signed_raw(*v as i64, bit_width)),
+        (UnsignedByte, DfdlValue::UnsignedByte(v)) => Ok(*v as u64),
+        (Short, DfdlValue::Short(v)) => Ok(signed_raw(*v as i64, bit_width)),
+        (UnsignedShort, DfdlValue::UnsignedShort(v)) => Ok(*v as u64),
+        (Int, DfdlValue::Int(v)) => Ok(signed_raw(*v as i64, bit_width)),
+        (UnsignedInt, DfdlValue::UnsignedInt(v)) => Ok(*v as u64),
+        (Long, DfdlValue::Long(v)) => Ok(signed_raw(*v, bit_width)),
+        (Float, DfdlValue::Float(v)) => Ok(v.to_bits() as u64),
+        (Double, DfdlValue::Double(v)) => Ok(v.to_bits()),
+        (Decimal, DfdlValue::Decimal(v)) => {
+            parse_virtual_decimal(v, props.binary_decimal_virtual_point)
+        }
+        (expected, _) => Err(VmError::TypeMismatch {
+            expected: alloc::format!("{expected:?}"),
+        }),
+    }
 }
 
 pub(crate) fn write_text_scalar(
     out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
     value: &crate::value::DfdlValue,
     kind: crate::ir::ValueKind,
     props: &IrProps,
@@ -1303,7 +1478,7 @@ pub(crate) fn write_text_scalar(
 
     if props.length_kind == LengthKind::Prefixed {
         let encoded = encode_document_text(&text, encoding_name(props, strings)?)?;
-        return write_prefixed_bytes(out, &encoded, props, strings);
+        return write_prefixed_bytes(out, bit_count, &encoded, props, strings);
     }
 
     let encoding = encoding_name(props, strings)?;
@@ -1323,7 +1498,7 @@ pub(crate) fn write_text_scalar(
             });
         }
     };
-    out.extend_from_slice(&payload);
+    write_byte_aligned(out, bit_count, &payload)?;
     Ok(())
 }
 
@@ -1976,6 +2151,7 @@ fn length_kind_name(kind: LengthKind) -> &'static str {
 
 pub(crate) fn write_alignment(
     out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
     props: &IrProps,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
@@ -1984,11 +2160,24 @@ pub(crate) fn write_alignment(
     if props.alignment == 0 {
         return Ok(());
     }
+    if props.alignment_units == LengthUnits::Bits {
+        let align = props.alignment as usize;
+        if align <= 1 {
+            return Ok(());
+        }
+        let pos = encode_absolute_bit_index(out, *bit_count);
+        let skip = (align - (pos % align)) % align;
+        for _ in 0..skip {
+            write_stream_bit(out, bit_count, props.fill_byte & 1, props.bit_order);
+        }
+        return Ok(());
+    }
     if props.alignment_units != LengthUnits::Bytes {
         return Err(VmError::UnsupportedOperation {
             op: "non-byte alignment encode".into(),
         });
     }
+    write_byte_aligned(out, bit_count, &[])?;
     let align = props.alignment as usize;
     if align <= 1 {
         return Ok(());
@@ -2316,6 +2505,7 @@ fn int_bytes(value: i64, size: usize, le: bool) -> alloc::vec::Vec<u8> {
 
 fn write_prefixed_bytes(
     out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
     payload: &[u8],
     props: &IrProps,
     strings: &StringPool,
@@ -2340,8 +2530,8 @@ fn write_prefixed_bytes(
             encoding,
         )?;
     }
-    write_prefix_field(out, prefix_value, prefix, props.length_units, strings)?;
-    out.extend_from_slice(payload);
+    write_prefix_field(out, bit_count, prefix_value, prefix, props.length_units, strings)?;
+    write_byte_aligned(out, bit_count, payload)?;
     Ok(())
 }
 
@@ -2357,7 +2547,15 @@ fn adjust_prefix_value_for_includes(
     if prefix.props.length_kind == LengthKind::Prefixed {
         for _ in 0..4 {
             let mut tmp = alloc::vec::Vec::new();
-            write_prefix_field(&mut tmp, prefix_value, prefix, props.length_units, strings)?;
+            let mut tmp_bit_count = 0u8;
+            write_prefix_field(
+                &mut tmp,
+                &mut tmp_bit_count,
+                prefix_value,
+                prefix,
+                props.length_units,
+                strings,
+            )?;
             let field_units = payload_length_units(&tmp, props.length_units, encoding)?;
             let adjusted = (payload_units as u64)
                 .checked_add(field_units as u64)
@@ -2485,6 +2683,7 @@ fn prefix_is_numeric(kind: crate::ir::ValueKind) -> bool {
 
 fn write_prefix_field(
     out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
     value: u64,
     prefix: &IrPrefixLength,
     element_length_units: LengthUnits,
@@ -2494,13 +2693,13 @@ fn write_prefix_field(
     validate_prefix_facets(value, prefix)?;
     if prefix.props.length_kind == LengthKind::Prefixed {
         let payload = prefix_scalar_payload(value, prefix, strings)?;
-        return write_prefixed_bytes(out, &payload, &prefix.props, strings);
+        return write_prefixed_bytes(out, bit_count, &payload, &prefix.props, strings);
     }
     match prefix.props.representation {
         Representation::Text => {
-            write_text_prefix_field(out, value, prefix, element_length_units, strings)
+            write_text_prefix_field(out, bit_count, value, prefix, element_length_units, strings)
         }
-        Representation::Binary => write_binary_prefix_field(out, value, prefix, strings),
+        Representation::Binary => write_binary_prefix_field(out, bit_count, value, prefix, strings),
     }
 }
 
@@ -2562,6 +2761,7 @@ fn number_pad_char_for_compact_prefix(
 
 fn write_text_prefix_field(
     out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
     value: u64,
     prefix: &IrPrefixLength,
     element_length_units: LengthUnits,
@@ -2571,7 +2771,7 @@ fn write_text_prefix_field(
     let text = alloc::format!("{value}");
     match prefix.props.length_kind {
         LengthKind::Implicit | LengthKind::Delimited => {
-            out.extend_from_slice(text.as_bytes());
+            write_byte_aligned(out, bit_count, text.as_bytes())?;
             Ok(())
         }
         LengthKind::Explicit | LengthKind::Fixed => {
@@ -2609,7 +2809,7 @@ fn write_text_prefix_field(
                             padded.extend(iter::repeat(pad).take(pad_count));
                         }
                     }
-                    out.extend_from_slice(padded.as_bytes());
+                    write_byte_aligned(out, bit_count, padded.as_bytes())?;
                 }
                 LengthUnits::Characters => {
                     let encoding = encoding_name(&prefix.props, strings)?;
@@ -2628,9 +2828,11 @@ fn write_text_prefix_field(
                             message: "prefix value too long".into(),
                         });
                     }
-                    out.extend_from_slice(
+                    write_byte_aligned(
+                        out,
+                        bit_count,
                         encode_document_text(&padded, encoding)?.as_slice(),
-                    );
+                    )?;
                 }
                 LengthUnits::Bits => {
                     let byte_len = len.div_ceil(8);
@@ -2643,7 +2845,7 @@ fn write_text_prefix_field(
                             message: "prefix value too long".into(),
                         });
                     }
-                    out.extend_from_slice(bytes);
+                    write_byte_aligned(out, bit_count, bytes)?;
                 }
             }
             Ok(())
@@ -2659,6 +2861,7 @@ fn write_text_prefix_field(
 
 fn write_binary_prefix_field(
     out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
     value: u64,
     prefix: &IrPrefixLength,
     strings: &StringPool,
@@ -2685,38 +2888,53 @@ fn write_binary_prefix_field(
     if le && prefix.props.binary_number_rep == BinaryNumberRep::Binary {
         bytes.reverse();
     }
-    out.extend_from_slice(&bytes);
+    write_byte_aligned(out, bit_count, &bytes)?;
     Ok(())
 }
 
 pub(crate) fn write_framed_payload(
     out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
     payload: &[u8],
+    payload_bit_count: u8,
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
     match props.length_kind {
-        LengthKind::Prefixed => write_prefixed_bytes(out, payload, props, strings),
+        LengthKind::Prefixed => write_prefixed_bytes(out, bit_count, payload, props, strings),
         LengthKind::Explicit | LengthKind::Fixed => {
-            write_explicit_payload(out, payload, props, strings)
+            write_explicit_payload(out, bit_count, payload, payload_bit_count, props, strings)
         }
         LengthKind::Delimited => {
-            out.extend_from_slice(payload);
+            write_bits_from_stream(
+                out,
+                bit_count,
+                payload,
+                payload_bit_length(payload, payload_bit_count),
+                props.bit_order,
+            )?;
             if let Some(id) = props.terminator {
-                out.extend(encode_delimiter(strings.get(id)?));
+                write_byte_aligned(out, bit_count, &encode_delimiter(strings.get(id)?))?;
             }
             Ok(())
         }
         LengthKind::Implicit | LengthKind::Pattern | LengthKind::EndOfParent => {
-            out.extend_from_slice(payload);
-            Ok(())
+            write_bits_from_stream(
+                out,
+                bit_count,
+                payload,
+                payload_bit_length(payload, payload_bit_count),
+                props.bit_order,
+            )
         }
     }
 }
 
 fn write_explicit_payload(
     out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
     payload: &[u8],
+    payload_bit_count: u8,
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
@@ -2737,18 +2955,15 @@ fn write_explicit_payload(
                 };
                 bytes.extend(iter::repeat(pad).take(len - bytes.len()));
             }
-            out.extend_from_slice(&bytes);
+            write_byte_aligned(out, bit_count, &bytes)?;
             Ok(())
         }
         LengthUnits::Bits => {
-            let byte_len = len.div_ceil(8);
-            let mut bytes = payload.to_vec();
-            if bytes.len() > byte_len {
-                bytes.truncate(byte_len);
-            } else if bytes.len() < byte_len {
-                bytes.extend(iter::repeat(0u8).take(byte_len - bytes.len()));
+            let available = payload_bit_length(payload, payload_bit_count);
+            write_bits_from_stream(out, bit_count, payload, available.min(len), props.bit_order)?;
+            for _ in available..len {
+                write_stream_bit(out, bit_count, 0, props.bit_order);
             }
-            out.extend_from_slice(&bytes);
             Ok(())
         }
         LengthUnits::Characters => {
@@ -2763,28 +2978,74 @@ fn write_explicit_payload(
                     message: "explicit character payload too long".into(),
                 });
             }
-            out.extend_from_slice(&bytes);
+            write_byte_aligned(out, bit_count, &bytes)?;
             Ok(())
         }
     }
 }
 
+pub(crate) fn coerce_value_for_kind(
+    value: &crate::value::DfdlValue,
+    kind: crate::ir::ValueKind,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::ir::ValueKind::*;
+    use crate::value::DfdlValue;
+
+    Ok(match (kind, value) {
+        (Boolean, v @ DfdlValue::Boolean(_)) => v.clone(),
+        (Byte, DfdlValue::Int(v)) => DfdlValue::Byte(i8::try_from(*v).map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("value `{v}` out of range for byte"),
+        })?),
+        (Byte, v @ DfdlValue::Byte(_)) => v.clone(),
+        (UnsignedByte, DfdlValue::Int(v)) => DfdlValue::UnsignedByte(u8::try_from(*v).map_err(
+            |_| VmError::InvalidValue {
+                message: alloc::format!("value `{v}` out of range for unsignedByte"),
+            },
+        )?),
+        (UnsignedByte, v @ DfdlValue::UnsignedByte(_)) => v.clone(),
+        (Short, DfdlValue::Int(v)) => DfdlValue::Short(*v as i16),
+        (Short, v @ DfdlValue::Short(_)) => v.clone(),
+        (UnsignedShort, DfdlValue::Int(v)) => {
+            DfdlValue::UnsignedShort(u16::try_from(*v).map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("value `{v}` out of range for unsignedShort"),
+            })?)
+        }
+        (UnsignedShort, v @ DfdlValue::UnsignedShort(_)) => v.clone(),
+        (Int, v @ DfdlValue::Int(_)) => v.clone(),
+        (UnsignedInt, DfdlValue::Int(v)) => {
+            DfdlValue::UnsignedInt(u32::try_from(*v).map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("value `{v}` out of range for unsignedInt"),
+            })?)
+        }
+        (UnsignedInt, v @ DfdlValue::UnsignedInt(_)) => v.clone(),
+        (Long, DfdlValue::Int(v)) => DfdlValue::Long(*v as i64),
+        (Long, v @ DfdlValue::Long(_)) => v.clone(),
+        (_, v) => v.clone(),
+    })
+}
+
 pub(crate) fn write_simple(
     out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
     value: &crate::value::DfdlValue,
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
+    tunables: &DaffodilTunables,
 ) -> Result<(), crate::error::VmError> {
+    let value = coerce_value_for_kind(value, kind)?;
     if let Some(id) = props.initiator {
-        out.extend(encode_delimiter(strings.get(id)?));
+        write_byte_aligned(out, bit_count, &encode_delimiter(strings.get(id)?))?;
     }
     match props.representation {
-        Representation::Binary => write_binary_scalar(out, value, kind, props, strings)?,
-        Representation::Text => write_text_scalar(out, value, kind, props, strings)?,
+        Representation::Binary => {
+            write_binary_scalar(out, bit_count, &value, kind, props, strings, tunables)?
+        }
+        Representation::Text => write_text_scalar(out, bit_count, &value, kind, props, strings)?,
     }
     if let Some(id) = props.terminator {
-        out.extend(encode_delimiter(strings.get(id)?));
+        write_byte_aligned(out, bit_count, &encode_delimiter(strings.get(id)?))?;
     }
     Ok(())
 }

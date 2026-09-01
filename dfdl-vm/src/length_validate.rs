@@ -101,13 +101,36 @@ pub fn validate_signed_one_bit_length_schema(
     units: LengthUnits,
     tunables: &DaffodilTunables,
 ) -> Result<(), SchemaError> {
+    validate_signed_one_bit_length_inner(kind, length, units, tunables).map_err(|msg| {
+        SchemaError::InvalidProperty {
+            message: msg,
+        }
+    })
+}
+
+/// Runtime encode/decode variant of [`validate_signed_one_bit_length_schema`].
+pub fn validate_signed_one_bit_length_vm(
+    kind: ValueKind,
+    length: u64,
+    units: LengthUnits,
+    tunables: &DaffodilTunables,
+) -> Result<(), VmError> {
+    validate_signed_one_bit_length_inner(kind, length, units, tunables).map_err(|msg| {
+        VmError::InvalidValue { message: msg }
+    })
+}
+
+fn validate_signed_one_bit_length_inner(
+    kind: ValueKind,
+    length: u64,
+    units: LengthUnits,
+    tunables: &DaffodilTunables,
+) -> Result<(), alloc::string::String> {
     if tunables.allow_signed_integer_length1_bit || !is_signed_kind(kind) {
         return Ok(());
     }
     if bit_length(length, units) == Some(1) {
-        return Err(SchemaError::InvalidProperty {
-            message: "signed binary integer length 1 bit(s) out of range".into(),
-        });
+        return Err("signed binary integer length 1 bit(s) out of range".into());
     }
     Ok(())
 }

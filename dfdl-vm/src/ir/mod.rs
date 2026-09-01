@@ -18,6 +18,7 @@ pub struct IrProgram {
     pub root: u32,
     pub nodes: Vec<IrNode>,
     pub strings: StringPool,
+    pub tunables: crate::length_validate::DaffodilTunables,
 }
 
 #[derive(Debug, Clone, PartialEq)]

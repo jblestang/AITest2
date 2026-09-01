@@ -33,44 +33,115 @@ pub fn infoset_xml_to_root_value(
         .iter()
         .find(|n| local_name_str(&n.name) == root)
         .ok_or_else(|| alloc::format!("infoset missing root element `{root}`"))?;
-    let root_node = program.node(program.root).map_err(|e| e.to_string())?;
-    let IrNode::Element { kind, .. } = root_node else {
-        return Err("compiled root is not an element".into());
-    };
-    let inner = infoset_node_to_value(node, *kind)?;
+    let inner = infoset_node_to_ir_value(program, program.root, node)?;
     let mut map = BTreeMap::new();
     map.insert(root.to_string(), inner);
     Ok(DfdlValue::Sequence(map))
 }
 
-fn infoset_node_to_value(node: &InfosetNode, kind: ValueKind) -> Result<DfdlValue, String> {
-    if node.children.is_empty() {
-        return parse_scalar_for_kind(node.text.as_deref().unwrap_or(""), kind);
+fn infoset_node_to_ir_value(
+    program: &IrProgram,
+    node_id: u32,
+    node: &InfosetNode,
+) -> Result<DfdlValue, String> {
+    match program.node(node_id).map_err(|e| e.to_string())? {
+        IrNode::Element { kind, child, .. } => {
+            if *kind != ValueKind::Complex {
+                return parse_scalar_for_kind(node.text.as_deref().unwrap_or(""), *kind);
+            }
+            let Some(child_id) = child else {
+                return Ok(DfdlValue::Sequence(BTreeMap::new()));
+            };
+            infoset_particle_to_value(program, *child_id, node)
+        }
+        IrNode::Sequence { children, .. } => {
+            infoset_sequence_children_to_value(program, children, node)
+        }
+        IrNode::Choice { branches, .. } => {
+            for branch in branches {
+                let branch_name = program
+                    .strings
+                    .get(branch.name)
+                    .map_err(|e| e.to_string())?;
+                if !find_infoset_children(node, branch_name).is_empty() {
+                    return infoset_particle_to_value(program, branch.node, node);
+                }
+            }
+            Err(alloc::format!(
+                "infoset does not match any choice branch under `{}`",
+                node.name
+            ))
+        }
     }
-    if kind != ValueKind::Complex {
-        return Err(alloc::format!(
-            "element `{}` has children but type is not complex",
-            node.name
-        ));
+}
+
+fn infoset_particle_to_value(
+    program: &IrProgram,
+    node_id: u32,
+    node: &InfosetNode,
+) -> Result<DfdlValue, String> {
+    match program.node(node_id).map_err(|e| e.to_string())? {
+        IrNode::Sequence { children, .. } => {
+            infoset_sequence_children_to_value(program, children, node)
+        }
+        _ => infoset_node_to_ir_value(program, node_id, node),
     }
+}
+
+fn infoset_sequence_children_to_value(
+    program: &IrProgram,
+    children: &[u32],
+    node: &InfosetNode,
+) -> Result<DfdlValue, String> {
     let mut map = BTreeMap::new();
-    for (name, children) in &node.children {
-        let key = local_name_str(name).to_string();
-        if children.len() == 1 {
-            map.insert(key, infoset_node_to_value(&children[0], ValueKind::String)?);
-        } else {
-            map.insert(
-                key.clone(),
-                DfdlValue::Array(
-                    children
-                        .iter()
-                        .map(|c| infoset_node_to_value(c, ValueKind::String))
-                        .collect::<Result<_, _>>()?,
-                ),
-            );
+    for &child_id in children {
+        match program.node(child_id).map_err(|e| e.to_string())? {
+            IrNode::Element { name, .. } => {
+                let elem_name = program.strings.get(*name).map_err(|e| e.to_string())?;
+                let local = local_name_str(elem_name);
+                let infoset_children = find_infoset_children(node, local);
+                if infoset_children.is_empty() {
+                    continue;
+                }
+                if infoset_children.len() == 1
+                    && infoset_children[0].children.is_empty()
+                    && infoset_children[0]
+                        .text
+                        .as_ref()
+                        .map(|t| t.is_empty())
+                        .unwrap_or(true)
+                {
+                    continue;
+                }
+                let value = if infoset_children.len() == 1 {
+                    infoset_node_to_ir_value(program, child_id, infoset_children[0])?
+                } else {
+                    DfdlValue::Array(
+                        infoset_children
+                            .iter()
+                            .map(|c| infoset_node_to_ir_value(program, child_id, c))
+                            .collect::<Result<_, _>>()?,
+                    )
+                };
+                map.insert(elem_name.to_string(), value);
+            }
+            IrNode::Sequence { .. } | IrNode::Choice { .. } => {
+                let nested = infoset_particle_to_value(program, child_id, node)?;
+                if let DfdlValue::Sequence(nested_map) = nested {
+                    map.extend(nested_map);
+                }
+            }
         }
     }
     Ok(DfdlValue::Sequence(map))
+}
+
+fn find_infoset_children<'a>(node: &'a InfosetNode, local_name: &str) -> Vec<&'a InfosetNode> {
+    node.children
+        .iter()
+        .filter(|(k, _)| local_name_str(k) == local_name)
+        .flat_map(|(_, v)| v.iter())
+        .collect()
 }
 
 fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, String> {

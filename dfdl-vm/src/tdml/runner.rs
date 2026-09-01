@@ -251,7 +251,14 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         }
     };
 
-    let spec = match compile_tdml_schema(&schema_xsd, &test.root, DaffodilTunables::default()) {
+    let tunables = test
+        .config
+        .as_ref()
+        .and_then(|name| suite.configs.get(name))
+        .copied()
+        .unwrap_or_default();
+
+    let spec = match compile_tdml_schema(&schema_xsd, &test.root, tunables) {
         Ok(s) => s,
         Err(e) => {
             if let Some(expected) = &test.expected_errors {
