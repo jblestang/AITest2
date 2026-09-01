@@ -34,7 +34,23 @@ impl<'a> IrBuilder<'a> {
                 name: root_name.to_string(),
             })?;
 
-        let root = self.compile_type(&root_element.type_name, &root_element.props)?;
+        let root = if let Some(builtin) = BuiltinType::from_xsd(root_element.type_name.as_str()) {
+            let props = merge_dfdl_props(
+                &self.defaults,
+                &DfdlProps::default(),
+                &root_element.props,
+                &mut self.strings,
+            );
+            let name = self.strings.intern(root_name);
+            self.push(IrNode::Element {
+                name,
+                kind: value_kind_from_builtin(builtin),
+                props,
+                child: None,
+            })
+        } else {
+            self.compile_type(&root_element.type_name, &root_element.props)?
+        };
         Ok(IrProgram {
             root_element: root_name.to_string(),
             root,

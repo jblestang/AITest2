@@ -63,6 +63,22 @@ pub fn run_parser_test(suite: &TdmlSuite, test: &ParserTestCase) -> Result<TestR
     let config = RuntimeConfig {
         strict_eos: true,
     };
+
+    if let Some(expected_errors) = test.expected_errors {
+        return match spec.decoder_with_config(config).decode(&doc.data) {
+            Ok(_) => Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!(
+                    "expected decode error ({expected_errors} error(s))"
+                )),
+            }),
+            Err(_) => Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Pass,
+            }),
+        };
+    }
+
     let decoded = match spec.decoder_with_config(config).decode(&doc.data) {
         Ok(v) => v,
         Err(e) => {

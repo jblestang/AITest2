@@ -26,6 +26,8 @@ pub struct ParserTestCase {
     pub model: String,
     pub documents: Vec<TdmlDocument>,
     pub expected_infoset: String,
+    /// When set, the test expects decode to fail with at least this many errors.
+    pub expected_errors: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +102,7 @@ fn parse_parser_test_case(
 
     let mut documents = Vec::new();
     let mut expected_infoset = String::new();
+    let mut expected_errors = None;
 
     reader.for_each_child("parserTestCase", |local, _, r| match local {
         "document" => {
@@ -108,6 +111,10 @@ fn parse_parser_test_case(
         }
         "infoset" => {
             expected_infoset = r.read_inner_xml()?;
+            Ok(())
+        }
+        "errors" => {
+            expected_errors = Some(parse_errors(r)?);
             Ok(())
         }
         _ => r.skip_current_subtree(),
@@ -119,6 +126,7 @@ fn parse_parser_test_case(
         model,
         documents,
         expected_infoset,
+        expected_errors,
     })
 }
 
@@ -173,6 +181,17 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
         DocumentKind::Hex => parse_hex_document(&text)?,
     };
     Ok(TdmlDocument { kind, data })
+}
+
+fn parse_errors(reader: &mut XmlReader<'_>) -> Result<usize> {
+    let mut count = 0;
+    reader.for_each_child("errors", |local, _, r| {
+        if local == "error" {
+            count += 1;
+        }
+        r.skip_current_subtree()
+    })?;
+    Ok(count)
 }
 
 fn wrap_schema(inner: &str) -> String {
@@ -252,5 +271,25 @@ mod tests {
             .expect("test");
         assert_eq!(test.documents.len(), 1);
         assert!(test.documents[0].data.starts_with(b"000118"));
+    }
+
+    #[test]
+    fn parse_negative_test_errors() {
+        let tdml = include_str!(
+            "../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/lengthKind/PatternTests.tdml"
+        );
+        let suite = parse_tdml(tdml).expect("parse pattern tdml");
+        let fail = suite
+            .tests
+            .iter()
+            .find(|t| t.name == "lengthKindPatternFail")
+            .expect("negative test");
+        assert_eq!(fail.expected_errors, Some(2));
+        let no_match = suite
+            .tests
+            .iter()
+            .find(|t| t.name == "lengthKindPattern_02")
+            .expect("no-match test");
+        assert_eq!(no_match.expected_errors, Some(1));
     }
 }

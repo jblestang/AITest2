@@ -11,6 +11,7 @@ default = []
 std = []
 
 [dependencies]
+regex-automata = { version = "0.4.18", default-features = false, features = ["alloc", "syntax", "unicode", "nfa-thompson", "meta"] }
 xml-no-std = "0.8.26"
 
 [dev-dependencies]

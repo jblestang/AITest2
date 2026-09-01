@@ -38,3 +38,27 @@ fn daffodil_section12_pattern_suite() {
     );
     assert_named_test_passes(tdml, "AI000_rev");
 }
+
+#[test]
+fn daffodil_length_kind_pattern_alternation() {
+    let tdml = include_str!(
+        "../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/lengthKind/PatternTests.tdml"
+    );
+    assert_named_test_passes(tdml, "lengthKindPattern_01");
+}
+
+#[test]
+fn daffodil_length_kind_pattern_no_match() {
+    let tdml = include_str!(
+        "../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/lengthKind/PatternTests.tdml"
+    );
+    assert_named_test_passes(tdml, "lengthKindPattern_02");
+}
+
+#[test]
+fn daffodil_length_kind_pattern_unicode_fail() {
+    let tdml = include_str!(
+        "../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/lengthKind/PatternTests.tdml"
+    );
+    assert_named_test_passes(tdml, "lengthKindPatternFail");
+}

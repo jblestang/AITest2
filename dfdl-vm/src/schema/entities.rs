@@ -1,6 +1,7 @@
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use regex_automata::{meta::Regex, Anchored, Input};
 
 /// Expand DFDL entity references in property values.
 ///
@@ -270,9 +271,36 @@ fn match_wsp_entity(input: &[u8], pattern: &str) -> Option<usize> {
     }
 }
 
-/// Match value bytes against a DFDL length pattern like `[a-zA-Z]+`.
+/// Match value bytes against a DFDL length pattern (full ECMAScript-style regex).
+///
+/// Uses [`regex-automata`](https://docs.rs/regex-automata) (`no_std` + `alloc`) for
+/// alternation, negated classes, Unicode property classes (`\p{L}`), counted
+/// closures, and other constructs beyond simple `[char-class]+` patterns.
 pub fn match_length_pattern(input: &[u8], pattern: &str) -> Option<usize> {
-    match_char_class(input, pattern)
+    let pat = pattern.trim();
+    if pat.is_empty() {
+        return Some(0);
+    }
+
+    // Fast path for simple char-class patterns without regex metacharacters.
+    if pat.starts_with('[')
+        && !pat.contains('\\')
+        && !pat.contains('(')
+        && !pat.contains('|')
+    {
+        if let Some(len) = match_char_class(input, pat) {
+            return Some(len);
+        }
+    }
+
+    let re = Regex::new(pat).ok()?;
+    let hay = Input::new(input).anchored(Anchored::Yes);
+    let m = re.find(hay)?;
+    if m.start() == 0 {
+        Some(m.end())
+    } else {
+        None
+    }
 }
 
 fn match_char_class(input: &[u8], pattern: &str) -> Option<usize> {
@@ -353,5 +381,29 @@ mod tests {
     fn match_alpha_pattern() {
         assert_eq!(match_length_pattern(b"aSingleToken123", "[a-zA-Z]+"), Some(12));
         assert_eq!(match_length_pattern(b"123456789", "[0-9]+"), Some(9));
+    }
+
+    #[test]
+    fn match_alternation_pattern() {
+        assert_eq!(match_length_pattern(b"batcz", "(b|c|h)at"), Some(3));
+        assert_eq!(match_length_pattern(b"catx", "(b|c|h)at"), Some(3));
+        assert_eq!(match_length_pattern(b"dat", "(b|c|h)at"), None);
+    }
+
+    #[test]
+    fn match_negated_class_pattern() {
+        assert_eq!(match_length_pattern(b"cz", "[^ab]z"), Some(2));
+        assert_eq!(match_length_pattern(b"az", "[^ab]z"), None);
+    }
+
+    #[test]
+    fn match_unicode_property_pattern() {
+        assert_eq!(match_length_pattern(b"abcDEFG", r"\p{L}{2,5}"), Some(5));
+        assert_eq!(match_length_pattern(b"a1", r"\p{L}{2,5}"), None);
+    }
+
+    #[test]
+    fn match_literal_with_space_pattern() {
+        assert_eq!(match_length_pattern(b"3 4x", "3 4"), Some(3));
     }
 }
