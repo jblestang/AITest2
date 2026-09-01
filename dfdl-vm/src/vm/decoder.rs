@@ -1,6 +1,6 @@
 use super::runtime::{
-    consume_enclosing_delimiter, default_value_for, read_delimited_bytes, read_simple, Cursor,
-    RuntimeConfig, VmContext,
+    consume_enclosing_delimiter, default_value_for, read_delimited_bytes, read_simple,
+    read_until_separator, Cursor, RuntimeConfig, VmContext,
 };
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
@@ -140,7 +140,7 @@ impl<'a> Decoder<'a> {
             }
             let require_delimiter = has_following_sibling;
             let saved = cursor.clone();
-            match self.decode_single_element(node_id, cursor, require_delimiter) {
+            match self.decode_single_element(node_id, cursor, require_delimiter, parent_sequence) {
                 Ok(v) => items.push(v),
                 Err(e) => {
                     if (items.len() as u64) >= min {
@@ -187,6 +187,7 @@ impl<'a> Decoder<'a> {
         node_id: u32,
         cursor: &mut Cursor<'_>,
         require_delimiter: bool,
+        parent_sequence: Option<&IrProps>,
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element {
@@ -217,6 +218,35 @@ impl<'a> Decoder<'a> {
                             inner,
                             ValueKind::Complex,
                         ));
+                    }
+                    if props.length_kind == LengthKind::Implicit {
+                        if let Some(parent) = parent_sequence {
+                            if let Some(sep_id) = parent.separator {
+                                let sep = self.ctx.strings().get(sep_id)?;
+                                if self.inner_sequence_separator(*child_id)?.as_deref() != Some(sep)
+                                {
+                                    let bytes = read_until_separator(cursor, sep, false)?;
+                                    if match_delimiter(&cursor.data[cursor.pos..], sep).is_some() {
+                                        let _ = cursor.consume_delimiter(sep);
+                                    }
+                                    let mut sub = Cursor::new(&bytes);
+                                    let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                                    if !sub.is_empty() {
+                                        return Err(VmError::InvalidValue {
+                                            message:
+                                                "unconsumed bytes in separator-bounded complex element"
+                                                    .into(),
+                                        }
+                                        .into());
+                                    }
+                                    return Ok(wrap_named(
+                                        self.ctx.strings().get(*name)?,
+                                        inner,
+                                        ValueKind::Complex,
+                                    ));
+                                }
+                            }
+                        }
                     }
                     let inner = self.decode_node(*child_id, cursor, false, None)?;
                     Ok(wrap_named(
@@ -307,6 +337,20 @@ impl<'a> Decoder<'a> {
             }
         }
         Ok(())
+    }
+
+    fn inner_sequence_separator(&self, child_id: u32) -> Result<Option<String>> {
+        let node_id = match self.ctx.program.node(child_id)? {
+            IrNode::Element { child: Some(id), .. } => *id,
+            _ => child_id,
+        };
+        match self.ctx.program.node(node_id)? {
+            IrNode::Sequence { props, .. } => Ok(props
+                .separator
+                .map(|id| self.ctx.strings().get(id).map(|s| s.to_string()))
+                .transpose()?),
+            _ => Ok(None),
+        }
     }
 }
 

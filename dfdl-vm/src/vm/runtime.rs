@@ -505,11 +505,24 @@ fn read_until_delimiters(
     use crate::error::VmError;
     let patterns = non_empty_delimiter_patterns(props, strings)?;
     if patterns.is_empty() {
-        return Err(VmError::InvalidValue {
-            message: "delimited field missing enclosing delimiter".into(),
-        });
+        if require_delimiter {
+            return Err(VmError::InvalidValue {
+                message: "delimited field missing enclosing delimiter".into(),
+            });
+        }
+        let rest = cursor.data[cursor.pos..].to_vec();
+        cursor.pos = cursor.data.len();
+        return Ok(rest);
     }
     read_until_any_delimiter(cursor, &patterns, require_delimiter)
+}
+
+pub(crate) fn read_until_separator(
+    cursor: &mut Cursor<'_>,
+    separator: &str,
+    require_delimiter: bool,
+) -> Result<Vec<u8>, crate::error::VmError> {
+    read_until_any_delimiter(cursor, &[separator.to_string()], require_delimiter)
 }
 
 pub(crate) fn read_delimited_bytes(

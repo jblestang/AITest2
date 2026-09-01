@@ -374,6 +374,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn match_double_newline_delimiter() {
+        assert_eq!(match_delimiter(b"\n\nbody", "%NL;%NL;"), Some(2));
+        assert_eq!(match_delimiter(b"\n\n", "%NL;%NL;"), Some(2));
+    }
+
+    #[test]
     fn match_newline_delimiter() {
         assert_eq!(match_delimiter(b"\n", "\n"), Some(1));
         assert_eq!(match_delimiter(b"\nrest", "\n"), Some(1));

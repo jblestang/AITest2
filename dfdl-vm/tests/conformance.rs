@@ -131,3 +131,76 @@ fn daffodil_end_of_parent_nyi_simple() {
         "TestEndOfParentNYISimpleTypes",
     );
 }
+
+// --- AB implicit CSV matrix (Section 12) ---
+
+#[test]
+fn daffodil_ab_implicit_csv_matrix() {
+    assert_named_test_passes(daffodil_tdml!("AB.tdml"), "AB000");
+}
+
+#[test]
+fn daffodil_ab_implicit_csv_postfix_separator() {
+    assert_named_test_passes(daffodil_tdml!("AB.tdml"), "AB001");
+}
+
+#[test]
+fn daffodil_ab_implicit_csv_nillable() {
+    assert_named_test_passes(daffodil_tdml!("AB.tdml"), "AB002");
+}
+
+// --- Delimited: compound newline, eof, mixed sequences (Section 12) ---
+
+#[test]
+fn daffodil_delimited_double_newline_terminator() {
+    assert_named_test_passes(
+        daffodil_tdml!("DelimitedTests.tdml"),
+        "TestDoubleNewLineTerminator",
+    );
+}
+
+#[test]
+fn daffodil_delimited_double_newline_separator() {
+    assert_named_test_passes(
+        daffodil_tdml!("DelimitedTests.tdml"),
+        "TestDoubleNewLineSeparator",
+    );
+}
+
+#[test]
+fn daffodil_delimited_double_newline_separator_basic() {
+    assert_named_test_passes(
+        daffodil_tdml!("DelimitedTests.tdml"),
+        "TestDoubleNewLineSeparatorBasic",
+    );
+}
+
+#[test]
+fn daffodil_delimited_eof_no_enclosing_patterns() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "eofTest1");
+}
+
+#[test]
+fn daffodil_delimited_fixed_length_suspends_scanning() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "delimited_construct");
+}
+
+#[test]
+fn daffodil_delimited_mixed_type_sequence() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "NumSeq_05");
+}
+
+#[test]
+fn daffodil_delimited_nested_mixed_sequence() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "NumSeq_06");
+}
+
+#[test]
+fn daffodil_delimited_initiator_on_element_ref() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "refInitiator");
+}
+
+#[test]
+fn daffodil_delimited_initiator_on_element_decl() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "refInitiator2");
+}

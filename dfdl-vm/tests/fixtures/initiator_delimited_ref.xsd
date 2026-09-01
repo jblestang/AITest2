@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
+  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"
+    separator="," separatorPosition="infix" initiator="" terminator=""/>
+
+  <xs:element name="price" type="xs:float" dfdl:initiator="$"/>
+
+  <xs:element name="Row">
+    <xs:complexType>
+      <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
+        <xs:element name="qty" type="xs:int"/>
+        <xs:element ref="price"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

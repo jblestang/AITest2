@@ -98,7 +98,16 @@ impl<'a> IrBuilder<'a> {
                 }))
             }
             TypeDef::Complex { content, props, .. } => {
-                let merged = merge_dfdl_props(&self.defaults, props, element_props, &mut self.strings);
+                let mut content_element_props = element_props.clone();
+                content_element_props.occurs_min = None;
+                content_element_props.max_occurs_specified = false;
+                content_element_props.occurs_max = None;
+                let merged = merge_dfdl_props(
+                    &self.defaults,
+                    props,
+                    &content_element_props,
+                    &mut self.strings,
+                );
                 self.compile_complex(content, &merged)
             }
         }
@@ -152,9 +161,11 @@ impl<'a> IrBuilder<'a> {
             }
             Particle::Sequence(sequence) => {
                 let ir_props = merge_dfdl_props(inherited, &sequence.props, &DfdlProps::default(), &mut self.strings);
+                let child_inherited =
+                    particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
                 for particle in &sequence.particles {
-                    children.push(self.compile_particle(particle, &ir_props)?);
+                    children.push(self.compile_particle(particle, &child_inherited)?);
                 }
                 Ok(self.push(IrNode::Sequence {
                     children,
@@ -163,9 +174,11 @@ impl<'a> IrBuilder<'a> {
             }
             Particle::Choice(choice) => {
                 let ir_props = merge_dfdl_props(inherited, &choice.props, &DfdlProps::default(), &mut self.strings);
+                let child_inherited =
+                    particle_inherited_for_children(&ir_props, &choice.props, &self.defaults);
                 let mut branches = Vec::new();
                 for branch in &choice.branches {
-                    let node = self.compile_particle(branch, &ir_props)?;
+                    let node = self.compile_particle(branch, &child_inherited)?;
                     let name = branch_name(branch);
                     let initiator = branch_initiator(branch, &mut self.strings);
                     branches.push(ChoiceBranch {
@@ -186,9 +199,11 @@ impl<'a> IrBuilder<'a> {
         match content {
             ComplexContent::Sequence(sequence) => {
                 let ir_props = merge_dfdl_props(props, &sequence.props, &DfdlProps::default(), &mut self.strings);
+                let child_inherited =
+                    particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
                 for particle in &sequence.particles {
-                    children.push(self.compile_particle(particle, &ir_props)?);
+                    children.push(self.compile_particle(particle, &child_inherited)?);
                 }
                 Ok(self.push(IrNode::Sequence {
                     children,
@@ -197,9 +212,11 @@ impl<'a> IrBuilder<'a> {
             }
             ComplexContent::Choice(choice) => {
                 let ir_props = merge_dfdl_props(props, &choice.props, &DfdlProps::default(), &mut self.strings);
+                let child_inherited =
+                    particle_inherited_for_children(&ir_props, &choice.props, &self.defaults);
                 let mut branches = Vec::new();
                 for branch in &choice.branches {
-                    let node = self.compile_particle(branch, &ir_props)?;
+                    let node = self.compile_particle(branch, &child_inherited)?;
                     branches.push(ChoiceBranch {
                         name: self.strings.intern(branch_name(branch)),
                         initiator: branch_initiator(branch, &mut self.strings),
@@ -264,6 +281,29 @@ fn value_kind_from_builtin(builtin: BuiltinType) -> ValueKind {
         BuiltinType::String => ValueKind::String,
         BuiltinType::HexBinary => ValueKind::HexBinary,
     }
+}
+
+/// Inherited props for particles inside a sequence/choice group.
+///
+/// `lengthKind` on a complex element applies to that element's span in its parent,
+/// not to descendants — reset to schema format defaults unless the group sets it.
+fn particle_inherited_for_children(
+    merged: &IrProps,
+    group_props: &DfdlProps,
+    defaults: &IrProps,
+) -> IrProps {
+    let mut inherited = merged.clone();
+    if group_props.length_kind.is_none() {
+        inherited.length_kind = defaults.length_kind;
+    }
+    // Element occurrence limits apply to the particle, not descendants.
+    if group_props.occurs_min.is_none() {
+        inherited.occurs_min = defaults.occurs_min;
+    }
+    if !group_props.max_occurs_specified {
+        inherited.occurs_max = defaults.occurs_max;
+    }
+    inherited
 }
 
 fn merge_dfdl_props(
