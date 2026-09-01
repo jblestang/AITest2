@@ -44,6 +44,9 @@ impl<'a> Encoder<'a> {
                 let map = value.as_sequence_fields()?;
                 let effective = precompute_output_values(self, children, map)?;
                 for (idx, &child) in children.iter().enumerate() {
+                    if child_skips_encode(self, child)? {
+                        continue;
+                    }
                     self.write_separator(props, out, idx, children.len())?;
                     self.encode_sequence_particle(child, &effective, out)?;
                 }
@@ -227,6 +230,13 @@ impl<'a> Encoder<'a> {
             out.extend(encode_delimiter(self.ctx.strings().get(id)?));
         }
         Ok(())
+    }
+}
+
+fn child_skips_encode(enc: &Encoder<'_>, node_id: u32) -> Result<bool> {
+    match enc.ctx.program.node(node_id)? {
+        IrNode::Element { props, .. } => Ok(props.input_value_calc.is_some()),
+        _ => Ok(false),
     }
 }
 

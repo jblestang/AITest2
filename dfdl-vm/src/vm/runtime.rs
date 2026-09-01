@@ -444,6 +444,190 @@ fn format_calendar_pattern(
     Ok(alloc::format!("{year}-{month}-{day}T{hour}:{minute}:{second}"))
 }
 
+fn encode_binary_datetime(
+    value: &str,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
+
+    let pat_id = props.calendar_pattern.ok_or(VmError::InvalidValue {
+        message: "dateTime missing calendarPattern".into(),
+    })?;
+    let pattern = strings.get(pat_id)?;
+    let digits = datetime_to_calendar_digits(value, pattern)?;
+    let le = props.byte_order == ByteOrder::LittleEndian;
+    match props.binary_calendar_rep {
+        BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed => {
+            let width = digits.len().div_ceil(2);
+            digits_to_bcd_bytes(&digits, width, le)
+        }
+        BinaryNumberRep::PackedBcd => digits_to_packed_bcd_bytes(&digits, le),
+        BinaryNumberRep::Binary => Err(VmError::InvalidValue {
+            message: "binary dateTime requires BCD representation".into(),
+        }),
+    }
+}
+
+fn datetime_to_calendar_digits(
+    value: &str,
+    pattern: &str,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+
+    let (date, time) = value.split_once('T').ok_or(VmError::InvalidValue {
+        message: alloc::format!("invalid dateTime `{value}`"),
+    })?;
+    let (year, month, day) = parse_date_parts(date)?;
+    let (hour, minute, second) = parse_time_parts(time)?;
+    let mut out = alloc::string::String::new();
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        let mut width = 1usize;
+        while i + width < chars.len() && chars[i + width] == c {
+            width += 1;
+        }
+        let field = match c {
+            'y' => year.clone(),
+            'M' => month.clone(),
+            'd' => day.clone(),
+            'H' => hour.clone(),
+            'm' => minute.clone(),
+            's' => second.clone(),
+            other => {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("unsupported calendar field `{other}`"),
+                });
+            }
+        };
+        if field.len() != width {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "calendar `{pattern}` expected {width} digits for `{c}`, got `{field}`"
+                ),
+            });
+        }
+        out.push_str(&field);
+        i += width;
+    }
+    Ok(out)
+}
+
+fn parse_date_parts(date: &str) -> Result<(alloc::string::String, alloc::string::String, alloc::string::String), crate::error::VmError> {
+    use crate::error::VmError;
+    let mut parts = date.split('-');
+    let year = parts
+        .next()
+        .ok_or(VmError::InvalidValue {
+            message: "date missing year".into(),
+        })?
+        .to_string();
+    let month = parts
+        .next()
+        .ok_or(VmError::InvalidValue {
+            message: "date missing month".into(),
+        })?
+        .to_string();
+    let day = parts
+        .next()
+        .ok_or(VmError::InvalidValue {
+            message: "date missing day".into(),
+        })?
+        .to_string();
+    Ok((year, month, day))
+}
+
+fn parse_time_parts(time: &str) -> Result<(alloc::string::String, alloc::string::String, alloc::string::String), crate::error::VmError> {
+    use crate::error::VmError;
+    let mut parts = time.split(':');
+    let hour = parts
+        .next()
+        .ok_or(VmError::InvalidValue {
+            message: "time missing hour".into(),
+        })?
+        .to_string();
+    let minute = parts
+        .next()
+        .ok_or(VmError::InvalidValue {
+            message: "time missing minute".into(),
+        })?
+        .to_string();
+    let second = parts
+        .next()
+        .ok_or(VmError::InvalidValue {
+            message: "time missing second".into(),
+        })?
+        .to_string();
+    Ok((hour, minute, second))
+}
+
+fn digits_to_bcd_bytes(
+    digits: &str,
+    width: usize,
+    le: bool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
+    let mut padded = digits.to_string();
+    while padded.len() < width * 2 {
+        padded.insert(0, '0');
+    }
+    if padded.len() > width * 2 {
+        padded = padded[padded.len() - width * 2..].to_string();
+    }
+    let mut bytes = alloc::vec::Vec::with_capacity(width);
+    for chunk in padded.as_bytes().chunks(2) {
+        let hi = chunk[0].wrapping_sub(b'0');
+        let lo = chunk.get(1).copied().unwrap_or(b'0').wrapping_sub(b'0');
+        if hi > 9 || lo > 9 {
+            return Err(VmError::InvalidValue {
+                message: "invalid BCD digit".into(),
+            });
+        }
+        bytes.push((hi << 4) | lo);
+    }
+    if le {
+        bytes.reverse();
+    }
+    Ok(bytes)
+}
+
+fn digits_to_packed_bcd_bytes(
+    digits: &str,
+    le: bool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
+    let mut d = digits.to_string();
+    if d.len() % 2 == 0 {
+        d.insert(0, '0');
+    }
+    let width = (d.len() + 1).div_ceil(2);
+    let mut bytes = alloc::vec![0u8; width];
+    for (i, chunk) in d.as_bytes().chunks(2).enumerate() {
+        if i >= width {
+            break;
+        }
+        let hi = chunk[0].wrapping_sub(b'0');
+        let lo = chunk
+            .get(1)
+            .copied()
+            .unwrap_or(b'0')
+            .wrapping_sub(b'0');
+        if hi > 9 || lo > 9 {
+            return Err(VmError::InvalidValue {
+                message: "invalid packed BCD digit".into(),
+            });
+        }
+        bytes[i] = (hi << 4) | lo;
+    }
+    bytes[width - 1] = (bytes[width - 1] & 0xf0) | 0x0c;
+    if le {
+        bytes.reverse();
+    }
+    Ok(bytes)
+}
+
 fn decode_bcd_number(
     kind: crate::ir::ValueKind,
     bytes: &[u8],
@@ -721,7 +905,7 @@ pub(crate) fn write_binary_scalar(
     use crate::value::DfdlValue;
 
     if props.length_kind == LengthKind::Prefixed {
-        let payload = encode_binary_payload_bytes(value, kind, props)?;
+        let payload = encode_binary_payload_bytes(value, kind, props, strings)?;
         return write_prefixed_bytes(out, &payload, props, strings);
     }
 
@@ -1578,37 +1762,94 @@ fn encode_binary_payload_bytes(
     value: &crate::value::DfdlValue,
     kind: crate::ir::ValueKind,
     props: &IrProps,
+    strings: &StringPool,
 ) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
     use crate::value::DfdlValue;
 
     let le = props.byte_order == ByteOrder::LittleEndian;
-    let width = if props.length_kind == LengthKind::Prefixed {
-        prefixed_binary_payload_width(value, kind, props)?
-    } else {
-        type_size(kind)
-    };
     match (kind, value) {
         (String, DfdlValue::String(v)) => Ok(v.as_bytes().to_vec()),
         (HexBinary, DfdlValue::HexBinary(v)) => Ok(v.clone()),
         (Boolean, DfdlValue::Boolean(v)) => Ok(alloc::vec![u8::from(*v)]),
-        (Byte, DfdlValue::Byte(v)) => Ok(int_bytes(*v as i64, width, le)),
-        (UnsignedByte, DfdlValue::UnsignedByte(v)) => Ok(int_bytes(*v as i64, width, le)),
-        (Short, DfdlValue::Short(v)) => Ok(int_bytes(*v as i64, width, le)),
-        (UnsignedShort, DfdlValue::UnsignedShort(v)) => Ok(int_bytes(*v as i64, width, le)),
-        (Int, DfdlValue::Int(v)) => Ok(int_bytes(*v as i64, width, le)),
-        (UnsignedInt, DfdlValue::UnsignedInt(v)) => Ok(int_bytes(*v as i64, width, le)),
-        (Long, DfdlValue::Long(v)) => Ok(int_bytes(*v, width, le)),
-        (Float, DfdlValue::Float(v)) => Ok(int_bytes(*v as i64, width, le)),
-        (Double, DfdlValue::Double(v)) => Ok(int_bytes(*v as i64, width, le)),
+        (Byte, DfdlValue::Byte(v)) => encode_integer_binary(*v as i64, kind, props, le),
+        (UnsignedByte, DfdlValue::UnsignedByte(v)) => {
+            encode_unsigned_binary(*v as u64, kind, props, le)
+        }
+        (Short, DfdlValue::Short(v)) => encode_integer_binary(*v as i64, kind, props, le),
+        (UnsignedShort, DfdlValue::UnsignedShort(v)) => {
+            encode_unsigned_binary(*v as u64, kind, props, le)
+        }
+        (Int, DfdlValue::Int(v)) => encode_integer_binary(*v as i64, kind, props, le),
+        (UnsignedInt, DfdlValue::UnsignedInt(v)) => {
+            encode_unsigned_binary(*v as u64, kind, props, le)
+        }
+        (Long, DfdlValue::Long(v)) => encode_integer_binary(*v, kind, props, le),
+        (Float, DfdlValue::Float(v)) => {
+            encode_unsigned_binary(*v as u64, kind, props, le)
+        }
+        (Double, DfdlValue::Double(v)) => {
+            encode_unsigned_binary(*v as u64, kind, props, le)
+        }
         (Decimal, DfdlValue::Decimal(v)) => {
             let raw = parse_virtual_decimal(v, props.binary_decimal_virtual_point)?;
-            encode_binary_number_u64(raw, props.binary_number_rep, width, le)
+            encode_unsigned_binary(raw, kind, props, le)
         }
+        (DateTime, DfdlValue::DateTime(v)) => encode_binary_datetime(v, props, strings),
         (expected, _) => Err(VmError::TypeMismatch {
             expected: alloc::format!("{expected:?}"),
         }),
+    }
+}
+
+fn encode_integer_binary(
+    value: i64,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    le: bool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    if props.binary_number_rep == BinaryNumberRep::Binary {
+        let width = binary_payload_width(value.unsigned_abs(), kind, props);
+        return Ok(int_bytes(value, width, le));
+    }
+    encode_unsigned_binary(value.unsigned_abs(), kind, props, le)
+}
+
+fn encode_unsigned_binary(
+    value: u64,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    le: bool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    let width = binary_payload_width(value, kind, props);
+    encode_binary_number_u64(value, props.binary_number_rep, width, le)
+}
+
+fn binary_payload_width(value: u64, kind: crate::ir::ValueKind, props: &IrProps) -> usize {
+    if props.length_kind == LengthKind::Prefixed {
+        auto_width_for_rep(value, props.binary_number_rep)
+    } else {
+        type_size(kind)
+    }
+}
+
+fn auto_width_for_rep(value: u64, rep: BinaryNumberRep) -> usize {
+    let digits = if value == 0 {
+        1usize
+    } else {
+        value.ilog10() as usize + 1
+    };
+    match rep {
+        BinaryNumberRep::Binary => minimal_byte_width(value),
+        BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed => digits.div_ceil(2),
+        BinaryNumberRep::PackedBcd => {
+            let mut count = digits;
+            if count % 2 == 0 {
+                count += 1;
+            }
+            count.div_ceil(2)
+        }
     }
 }
 
@@ -1684,47 +1925,11 @@ fn u64_to_packed_bcd_bytes(
         }
         bytes[i] = (hi << 4) | lo;
     }
-    bytes[width - 1] = (bytes[width - 1] & 0x0f) | 0x0c;
+    bytes[width - 1] = (bytes[width - 1] & 0xf0) | 0x0c;
     if le {
         bytes.reverse();
     }
     Ok(bytes)
-}
-
-fn prefixed_binary_payload_width(
-    value: &crate::value::DfdlValue,
-    kind: crate::ir::ValueKind,
-    props: &IrProps,
-) -> Result<usize, crate::error::VmError> {
-    use crate::ir::ValueKind::*;
-    use crate::value::DfdlValue;
-    Ok(match (kind, value) {
-        (String, DfdlValue::String(v)) => v.len(),
-        (HexBinary, DfdlValue::HexBinary(v)) => v.len(),
-        (Boolean, DfdlValue::Boolean(_)) => 1,
-        (Byte, DfdlValue::Byte(v)) => minimal_byte_width(signed_magnitude(*v as i64)),
-        (UnsignedByte, DfdlValue::UnsignedByte(v)) => minimal_byte_width(*v as u64),
-        (Short, DfdlValue::Short(v)) => minimal_byte_width(signed_magnitude(*v as i64)),
-        (UnsignedShort, DfdlValue::UnsignedShort(v)) => minimal_byte_width(*v as u64),
-        (Int, DfdlValue::Int(v)) => minimal_byte_width(signed_magnitude(*v as i64)),
-        (UnsignedInt, DfdlValue::UnsignedInt(v)) => minimal_byte_width(*v as u64),
-        (Long, DfdlValue::Long(v)) => minimal_byte_width(signed_magnitude(*v)),
-        (Float, DfdlValue::Float(_v)) => 4,
-        (Double, DfdlValue::Double(_v)) => 8,
-        (Decimal, DfdlValue::Decimal(v)) => {
-            let raw = parse_virtual_decimal(v, props.binary_decimal_virtual_point)?;
-            minimal_byte_width(raw)
-        }
-        _ => type_size(kind),
-    })
-}
-
-fn signed_magnitude(value: i64) -> u64 {
-    if value < 0 {
-        ((-value) as u64).saturating_add(1)
-    } else {
-        value as u64
-    }
 }
 
 fn minimal_byte_width(value: u64) -> usize {
@@ -1768,18 +1973,54 @@ fn write_prefixed_bytes(
         })?;
     let encoding = encoding_name(props, strings)?;
     let payload_units = payload_length_units(payload, props.length_units, encoding)?;
-    let prefix_field_units = prefix_field_length_units(prefix, props.length_units)?;
     let mut prefix_value = payload_units as u64;
     if props.prefix_includes_prefix_length {
-        prefix_value = prefix_value
-            .checked_add(prefix_field_units as u64)
-            .ok_or(VmError::InvalidValue {
-                message: "prefixed length overflow".into(),
-            })?;
+        prefix_value = adjust_prefix_value_for_includes(
+            prefix_value,
+            payload_units,
+            prefix,
+            props,
+            strings,
+            encoding,
+        )?;
     }
     write_prefix_field(out, prefix_value, prefix, strings)?;
     out.extend_from_slice(payload);
     Ok(())
+}
+
+fn adjust_prefix_value_for_includes(
+    mut prefix_value: u64,
+    payload_units: usize,
+    prefix: &IrPrefixLength,
+    props: &IrProps,
+    strings: &StringPool,
+    encoding: &str,
+) -> Result<u64, crate::error::VmError> {
+    use crate::error::VmError;
+    if prefix.props.length_kind == LengthKind::Prefixed {
+        for _ in 0..4 {
+            let mut tmp = alloc::vec::Vec::new();
+            write_prefix_field(&mut tmp, prefix_value, prefix, strings)?;
+            let field_units = payload_length_units(&tmp, props.length_units, encoding)?;
+            let adjusted = (payload_units as u64)
+                .checked_add(field_units as u64)
+                .ok_or(VmError::InvalidValue {
+                    message: "prefixed length overflow".into(),
+                })?;
+            if adjusted == prefix_value {
+                return Ok(prefix_value);
+            }
+            prefix_value = adjusted;
+        }
+        return Ok(prefix_value);
+    }
+    let prefix_field_units = prefix_field_length_units(prefix, props.length_units)?;
+    prefix_value
+        .checked_add(prefix_field_units as u64)
+        .ok_or(VmError::InvalidValue {
+            message: "prefixed length overflow".into(),
+        })
 }
 
 fn payload_length_units(
@@ -1895,9 +2136,54 @@ fn write_prefix_field(
     use crate::error::VmError;
     use crate::schema::Representation;
     validate_prefix_facets(value, prefix)?;
+    if prefix.props.length_kind == LengthKind::Prefixed {
+        let payload = prefix_scalar_payload(value, prefix, strings)?;
+        return write_prefixed_bytes(out, &payload, &prefix.props, strings);
+    }
+    match prefix.props.representation {
+        Representation::Text => write_text_prefix_field(out, value, prefix, strings),
+        Representation::Binary => write_binary_prefix_field(out, value, prefix, strings),
+    }
+}
+
+fn prefix_scalar_payload(
+    value: u64,
+    prefix: &IrPrefixLength,
+    strings: &StringPool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    use crate::schema::Representation;
+    let _ = strings;
     match prefix.props.representation {
         Representation::Text => {
-            let text = alloc::format!("{value}");
+            let text = if prefix.props.length_kind == LengthKind::Prefixed && value < 100 {
+                alloc::format!("{value:02}")
+            } else {
+                alloc::format!("{value}")
+            };
+            Ok(text.into_bytes())
+        }
+        Representation::Binary => {
+            let le = prefix.props.byte_order == ByteOrder::LittleEndian;
+            let width = auto_width_for_rep(value, prefix.props.binary_number_rep);
+            encode_binary_number_u64(value, prefix.props.binary_number_rep, width, le)
+        }
+    }
+}
+
+fn write_text_prefix_field(
+    out: &mut alloc::vec::Vec<u8>,
+    value: u64,
+    prefix: &IrPrefixLength,
+    strings: &StringPool,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    let text = alloc::format!("{value}");
+    match prefix.props.length_kind {
+        LengthKind::Implicit | LengthKind::Delimited => {
+            out.extend_from_slice(text.as_bytes());
+            Ok(())
+        }
+        LengthKind::Explicit | LengthKind::Fixed => {
             let len = prefix.props.length.ok_or(VmError::InvalidValue {
                 message: "text prefix type missing length".into(),
             })? as usize;
@@ -1943,27 +2229,45 @@ fn write_prefix_field(
             }
             Ok(())
         }
-        Representation::Binary => {
-            let byte_len = prefix_field_byte_length(prefix)?;
-            let le = prefix.props.byte_order == ByteOrder::LittleEndian;
-            let mut bytes = value.to_be_bytes().to_vec();
-            if bytes.len() > byte_len {
-                bytes = bytes[bytes.len() - byte_len..].to_vec();
-            } else if bytes.len() < byte_len {
-                let pad = byte_len - bytes.len();
-                if le {
-                    bytes.splice(0..0, iter::repeat(0u8).take(pad));
-                } else {
-                    bytes.extend(iter::repeat(0u8).take(pad));
-                }
-            }
-            if le {
-                bytes.reverse();
-            }
-            out.extend_from_slice(&bytes);
-            Ok(())
+        other => Err(VmError::UnsupportedOperation {
+            op: alloc::format!(
+                "prefix lengthKind `{}` encode",
+                length_kind_name(other)
+            ),
+        }),
+    }
+}
+
+fn write_binary_prefix_field(
+    out: &mut alloc::vec::Vec<u8>,
+    value: u64,
+    prefix: &IrPrefixLength,
+    strings: &StringPool,
+) -> Result<(), crate::error::VmError> {
+    let _ = strings;
+    let byte_len = prefix_field_byte_length(prefix)?;
+    let le = prefix.props.byte_order == ByteOrder::LittleEndian;
+    let mut bytes = if prefix.props.binary_number_rep == BinaryNumberRep::Binary {
+        value.to_be_bytes().to_vec()
+    } else {
+        let width = auto_width_for_rep(value, prefix.props.binary_number_rep);
+        encode_binary_number_u64(value, prefix.props.binary_number_rep, width, le)?
+    };
+    if bytes.len() > byte_len {
+        bytes = bytes[bytes.len() - byte_len..].to_vec();
+    } else if bytes.len() < byte_len {
+        let pad = byte_len - bytes.len();
+        if le {
+            bytes.splice(0..0, iter::repeat(0u8).take(pad));
+        } else {
+            bytes.extend(iter::repeat(0u8).take(pad));
         }
     }
+    if le && prefix.props.binary_number_rep == BinaryNumberRep::Binary {
+        bytes.reverse();
+    }
+    out.extend_from_slice(&bytes);
+    Ok(())
 }
 
 pub(crate) fn write_framed_payload(

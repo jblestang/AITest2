@@ -1,4 +1,4 @@
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_parser_test_with_options, run_unparser_test, RoundTrip, TestOutcome};
+use dfdl_vm::tdml::{effective_round_trip, parse_tdml, run_parser_test, run_parser_test_with_options, run_unparser_test, RoundTrip, TestOutcome};
 
 macro_rules! daffodil_tdml {
     ($file:literal) => {
@@ -632,6 +632,41 @@ fn daffodil_prefixed_complex_roundtrip_suite() {
         "plSlash1_data",
     ] {
         assert_decode_encode_roundtrip(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_prefixed_onepass_roundtrip_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    let suite = parse_tdml(tdml).expect("parse tdml");
+    let known_encode_gaps = [
+        // Variable-width nByteTextInt prefix text width not preserved in infoset
+        "pl_text_string_pl_txt_bytes",
+        // minLength + center pad + prefixIncludesPrefixLength encode
+        "pl_simpleValueLengthBytes_1",
+        "pl_simpleValueLengthBytes_3",
+        // UTF-16BE character-unit prefix encode (DAFFODIL-2029)
+        "pl_complexContentLengthCharacters_1",
+        // Choice/backtrack encode
+        "pl_text_string_txt_bytes_not_enough_prefix_data_includes_backtrack",
+    ];
+    for test in &suite.tests {
+        if test.expected_errors.is_some() {
+            continue;
+        }
+        if known_encode_gaps.contains(&test.name.as_str()) {
+            continue;
+        }
+        let rt = effective_round_trip(test.round_trip, suite.default_round_trip);
+        if rt != RoundTrip::OnePass {
+            continue;
+        }
+        let result = run_parser_test_with_options(&suite, test, true).expect("run test");
+        match result.outcome {
+            TestOutcome::Pass => {}
+            TestOutcome::Fail(msg) => panic!("onePass test `{}` failed: {msg}", test.name),
+            TestOutcome::Skip(msg) => panic!("onePass test `{}` skipped: {msg}", test.name),
+        }
     }
 }
 

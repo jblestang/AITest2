@@ -108,14 +108,43 @@ pub fn run_parser_test_with_options(
 
     match compare_infoset(&decoded, &test.expected_infoset) {
         Ok(()) => {
-            if verify_round_trip
-                && effective_round_trip(test.round_trip, suite.default_round_trip) == RoundTrip::TwoPass
-            {
+            let rt = effective_round_trip(test.round_trip, suite.default_round_trip);
+            let should_verify = verify_round_trip
+                && matches!(rt, RoundTrip::TwoPass | RoundTrip::OnePass);
+            if should_verify {
                 match spec.encode(&decoded) {
-                    Ok(encoded) if encoded == doc.data => Ok(TestResult {
-                        name: test.name.clone(),
-                        outcome: TestOutcome::Pass,
-                    }),
+                    Ok(encoded) if encoded == doc.data => {
+                        if rt == RoundTrip::TwoPass {
+                            match spec.decode(&encoded) {
+                                Ok(redecoded) => {
+                                    if compare_infoset(&redecoded, &test.expected_infoset).is_ok() {
+                                        Ok(TestResult {
+                                            name: test.name.clone(),
+                                            outcome: TestOutcome::Pass,
+                                        })
+                                    } else {
+                                        Ok(TestResult {
+                                            name: test.name.clone(),
+                                            outcome: TestOutcome::Fail(
+                                                "twoPass infoset mismatch after re-parse".into(),
+                                            ),
+                                        })
+                                    }
+                                }
+                                Err(e) => Ok(TestResult {
+                                    name: test.name.clone(),
+                                    outcome: TestOutcome::Fail(alloc::format!(
+                                        "twoPass re-parse error: {e}"
+                                    )),
+                                }),
+                            }
+                        } else {
+                            Ok(TestResult {
+                                name: test.name.clone(),
+                                outcome: TestOutcome::Pass,
+                            })
+                        }
+                    }
                     Ok(encoded) => Ok(TestResult {
                         name: test.name.clone(),
                         outcome: TestOutcome::Fail(alloc::format!(

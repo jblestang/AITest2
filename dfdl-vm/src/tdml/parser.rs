@@ -115,7 +115,7 @@ fn parse_round_trip(value: Option<&str>) -> RoundTrip {
     }
 }
 
-pub(crate) fn effective_round_trip(test: RoundTrip, suite_default: RoundTrip) -> RoundTrip {
+pub fn effective_round_trip(test: RoundTrip, suite_default: RoundTrip) -> RoundTrip {
     if test != RoundTrip::Inherit {
         return test;
     }
