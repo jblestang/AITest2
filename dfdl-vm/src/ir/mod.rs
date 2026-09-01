@@ -61,6 +61,12 @@ pub enum ValueKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IrPrefixLength {
+    pub kind: ValueKind,
+    pub props: IrProps,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrProps {
     pub representation: Representation,
     pub byte_order: ByteOrder,
@@ -70,6 +76,7 @@ pub struct IrProps {
     pub length_units: LengthUnits,
     pub encoding: StringId,
     pub text_trim_kind: TextTrimKind,
+    pub text_number_pad_character: Option<StringId>,
     pub binary_number_rep: BinaryNumberRep,
     pub binary_float_rep: BinaryFloatRep,
     pub initiator: Option<StringId>,
@@ -83,6 +90,8 @@ pub struct IrProps {
     pub text_boolean_false_rep: Option<StringId>,
     pub default_value: Option<StringId>,
     pub sequence_kind: SequenceKind,
+    pub prefix_length: Option<alloc::boxed::Box<IrPrefixLength>>,
+    pub prefix_includes_prefix_length: bool,
 }
 
 impl Default for IrProps {
@@ -96,6 +105,7 @@ impl Default for IrProps {
             length_units: LengthUnits::Bytes,
             encoding: StringId(0),
             text_trim_kind: TextTrimKind::None,
+            text_number_pad_character: None,
             binary_number_rep: BinaryNumberRep::Binary,
             binary_float_rep: BinaryFloatRep::Ieee,
             initiator: None,
@@ -109,6 +119,8 @@ impl Default for IrProps {
             text_boolean_false_rep: None,
             default_value: None,
             sequence_kind: SequenceKind::Ordered,
+            prefix_length: None,
+            prefix_includes_prefix_length: false,
         }
     }
 }

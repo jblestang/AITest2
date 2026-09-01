@@ -1,4 +1,4 @@
-use super::{ChoiceBranch, IrNode, IrProgram, IrProps, StringId, StringPool, ValueKind};
+use super::{ChoiceBranch, IrNode, IrProgram, IrPrefixLength, IrProps, StringId, StringPool, ValueKind};
 use crate::error::{Result, SchemaError};
 use crate::schema::{
     BuiltinType, ComplexContent, DfdlProps, LengthKind, Particle, SchemaDocument, SimpleBase,
@@ -36,12 +36,12 @@ impl<'a> IrBuilder<'a> {
             })?;
 
         let root = if let Some(builtin) = BuiltinType::from_xsd(root_element.type_name.as_str()) {
-            let props = merge_dfdl_props(
-                &self.defaults,
+            let defaults = self.defaults.clone();
+            let props = self.merge_props_full(
+                &defaults,
                 &DfdlProps::default(),
                 &root_element.props,
-                &mut self.strings,
-            );
+            )?;
             let name = self.strings.intern(root_name);
             self.push(IrNode::Element {
                 name,
@@ -55,12 +55,12 @@ impl<'a> IrBuilder<'a> {
                 || root_element.props.initiator.is_some()
                 || root_element.props.terminator.is_some();
             if needs_element_wrapper {
-                let mut ir_props = merge_dfdl_props(
-                    &self.defaults,
+                let defaults = self.defaults.clone();
+                let mut ir_props = self.merge_props_full(
+                    &defaults,
                     &DfdlProps::default(),
                     &root_element.props,
-                    &mut self.strings,
-                );
+                )?;
                 if root_element.props.length_kind.is_none() {
                     ir_props.length_kind = LengthKind::Implicit;
                 }
@@ -110,7 +110,8 @@ impl<'a> IrBuilder<'a> {
 
         match type_def {
             TypeDef::Simple { base, props, .. } => {
-                let merged = merge_dfdl_props(&self.defaults, props, element_props, &mut self.strings);
+                let defaults = self.defaults.clone();
+                let merged = self.merge_props_full(&defaults, props, element_props)?;
                 let ir_props = merged;
                 let kind = value_kind_from_simple(base);
                 let name = self.strings.intern("__value");
@@ -122,7 +123,8 @@ impl<'a> IrBuilder<'a> {
                 }))
             }
             TypeDef::Complex { content, props, .. } => {
-                let type_base = merge_dfdl_props(&self.defaults, props, &DfdlProps::default(), &mut self.strings);
+                let defaults = self.defaults.clone();
+                let type_base = self.merge_props_full(&defaults, props, &DfdlProps::default())?;
                 self.compile_complex(content, &type_base)
             }
         }
@@ -131,7 +133,7 @@ impl<'a> IrBuilder<'a> {
     fn compile_particle(&mut self, particle: &Particle, inherited: &IrProps) -> Result<u32> {
         match particle {
             Particle::Element(element) => {
-                let props = merge_dfdl_props(inherited, &element.props, &DfdlProps::default(), &mut self.strings);
+                let props = self.merge_props_full(inherited, &element.props, &DfdlProps::default())?;
                 let name = self.strings.intern(&element.name);
                 if let Some(builtin) = BuiltinType::from_xsd(element.type_name.as_str()) {
                     let ir_props = props;
@@ -178,7 +180,7 @@ impl<'a> IrBuilder<'a> {
                 }
             }
             Particle::Sequence(sequence) => {
-                let ir_props = merge_dfdl_props(inherited, &sequence.props, &DfdlProps::default(), &mut self.strings);
+                let ir_props = self.merge_props_full(inherited, &sequence.props, &DfdlProps::default())?;
                 let child_inherited =
                     particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
@@ -191,7 +193,7 @@ impl<'a> IrBuilder<'a> {
                 }))
             }
             Particle::Choice(choice) => {
-                let ir_props = merge_dfdl_props(inherited, &choice.props, &DfdlProps::default(), &mut self.strings);
+                let ir_props = self.merge_props_full(inherited, &choice.props, &DfdlProps::default())?;
                 let child_inherited =
                     particle_inherited_for_children(&ir_props, &choice.props, &self.defaults);
                 let mut branches = Vec::new();
@@ -216,12 +218,11 @@ impl<'a> IrBuilder<'a> {
     fn compile_complex(&mut self, content: &ComplexContent, type_base: &IrProps) -> Result<u32> {
         match content {
             ComplexContent::Sequence(sequence) => {
-                let ir_props = merge_dfdl_props(
+                let ir_props = self.merge_props_full(
                     type_base,
                     &sequence.props,
                     &DfdlProps::default(),
-                    &mut self.strings,
-                );
+                )?;
                 let child_inherited =
                     particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
@@ -234,12 +235,11 @@ impl<'a> IrBuilder<'a> {
                 }))
             }
             ComplexContent::Choice(choice) => {
-                let ir_props = merge_dfdl_props(
+                let ir_props = self.merge_props_full(
                     type_base,
                     &choice.props,
                     &DfdlProps::default(),
-                    &mut self.strings,
-                );
+                )?;
                 let child_inherited =
                     particle_inherited_for_children(&ir_props, &choice.props, &self.defaults);
                 let mut branches = Vec::new();
@@ -267,6 +267,68 @@ impl<'a> IrBuilder<'a> {
         let id = self.nodes.len() as u32;
         self.nodes.push(node);
         id
+    }
+
+    fn merge_props_full(
+        &mut self,
+        base: &IrProps,
+        type_props: &DfdlProps,
+        element_props: &DfdlProps,
+    ) -> Result<IrProps> {
+        let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings);
+        self.attach_prefix_length(type_props, element_props, &mut ir)?;
+        Ok(ir)
+    }
+
+    fn attach_prefix_length(
+        &mut self,
+        type_props: &DfdlProps,
+        element_props: &DfdlProps,
+        ir: &mut IrProps,
+    ) -> Result<()> {
+        if ir.length_kind != LengthKind::Prefixed {
+            return Ok(());
+        }
+        let prefix_type = element_props
+            .prefix_length_type
+            .as_ref()
+            .or(type_props.prefix_length_type.as_ref());
+        let Some(type_name) = prefix_type else {
+            return Err(SchemaError::InvalidProperty {
+                message: "lengthKind=prefixed requires prefixLengthType".into(),
+            }
+            .into());
+        };
+        ir.prefix_length = Some(alloc::boxed::Box::new(self.resolve_prefix_length_type(type_name)?));
+        ir.prefix_includes_prefix_length = element_props
+            .prefix_includes_prefix_length
+            .or(type_props.prefix_includes_prefix_length)
+            .unwrap_or(false);
+        Ok(())
+    }
+
+    fn resolve_prefix_length_type(&mut self, type_name: &TypeName) -> Result<IrPrefixLength> {
+        let type_def = self.schema.resolve_type(type_name).ok_or_else(|| {
+            SchemaError::UndefinedType {
+                name: type_name.as_str().to_string(),
+            }
+        })?;
+        let TypeDef::Simple { base, props, .. } = type_def else {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "prefixLengthType `{}` must be a simple type",
+                    type_name.as_str()
+                ),
+            }
+            .into());
+        };
+        let mut prefix_props =
+            merge_dfdl_props(&self.defaults.clone(), props, &DfdlProps::default(), &mut self.strings);
+        self.attach_prefix_length(props, &DfdlProps::default(), &mut prefix_props)?;
+        Ok(IrPrefixLength {
+            kind: value_kind_from_simple(base),
+            props: prefix_props,
+        })
     }
 }
 
@@ -373,6 +435,12 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.text_trim_kind {
         base.text_trim_kind = v;
     }
+    if props.text_number_pad_character.is_some() {
+        base.text_number_pad_character = props
+            .text_number_pad_character
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
     if let Some(v) = props.binary_number_rep {
         base.binary_number_rep = v;
     }
@@ -445,6 +513,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.length_units = overlay.length_units;
     out.encoding = overlay.encoding;
     out.text_trim_kind = overlay.text_trim_kind;
+    out.text_number_pad_character = overlay.text_number_pad_character;
     out.binary_number_rep = overlay.binary_number_rep;
     out.binary_float_rep = overlay.binary_float_rep;
     if overlay.initiator.is_some() {
@@ -472,6 +541,10 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.sequence_kind = overlay.sequence_kind;
     out.occurs_min = overlay.occurs_min;
     out.occurs_max = overlay.occurs_max;
+    if overlay.prefix_length.is_some() {
+        out.prefix_length = overlay.prefix_length.clone();
+    }
+    out.prefix_includes_prefix_length = overlay.prefix_includes_prefix_length;
     out
 }
 

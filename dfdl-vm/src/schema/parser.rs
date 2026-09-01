@@ -315,8 +315,10 @@ impl<'a> XsdParser<'a> {
         inline_name: Option<String>,
         attrs: BTreeMap<String, String>,
     ) -> Result<()> {
+        let (_xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("simpleType", &attrs);
         let name = inline_name.or_else(|| attrs.get("name").cloned());
-        let props = core::mem::take(&mut self.pending_props);
+        let pending = core::mem::take(&mut self.pending_props);
+        let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
 
         self.reader.skip_insignificant_ws()?;
         if self.reader.peek_is_end("simpleType")? {
@@ -324,7 +326,7 @@ impl<'a> XsdParser<'a> {
             return Ok(());
         }
 
-        let props = self.parse_inline_content(props, &["restriction", "annotation"])?;
+        props = self.parse_inline_content(props, &["restriction", "annotation"])?;
         let base = self.parse_restriction()?;
         self.expect_end_local("simpleType")?;
 
@@ -972,6 +974,18 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.fill_byte.is_some() {
         base.fill_byte = overlay.fill_byte;
     }
+    if overlay.format_ref.is_some() {
+        base.format_ref = overlay.format_ref;
+    }
+    if overlay.text_number_pad_character.is_some() {
+        base.text_number_pad_character = overlay.text_number_pad_character;
+    }
+    if overlay.prefix_length_type.is_some() {
+        base.prefix_length_type = overlay.prefix_length_type;
+    }
+    if overlay.prefix_includes_prefix_length.is_some() {
+        base.prefix_includes_prefix_length = overlay.prefix_includes_prefix_length;
+    }
     base
 }
 
@@ -1016,6 +1030,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "lengthPattern"
             | "encoding"
             | "textTrimKind"
+            | "textNumberPadCharacter"
             | "binaryNumberRep"
             | "binaryFloatRep"
             | "initiator"
@@ -1031,6 +1046,8 @@ fn is_dfdl_property(name: &str) -> bool {
             | "fillByte"
             | "ref"
             | "format"
+            | "prefixLengthType"
+            | "prefixIncludesPrefixLength"
     )
 }
 
@@ -1127,6 +1144,10 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     }
                 });
             }
+            "textNumberPadCharacter" => {
+                props.text_number_pad_character =
+                    Some(crate::schema::expand_entities_str(value));
+            }
             "binaryNumberRep" => {
                 props.binary_number_rep = Some(match value.as_str() {
                     "binary" => BinaryNumberRep::Binary,
@@ -1198,6 +1219,23 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             }
             "fillByte" => props.fill_byte = Some(parse_byte_literal(value)?),
             "ref" => props.format_ref = Some(format_ref_key(value)),
+            "prefixLengthType" => {
+                props.prefix_length_type = Some(TypeName::new(normalize_qname(value)));
+            }
+            "prefixIncludesPrefixLength" => {
+                props.prefix_includes_prefix_length = Some(match value.as_str() {
+                    "yes" => true,
+                    "no" => false,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!(
+                                "unknown prefixIncludesPrefixLength `{other}`"
+                            ),
+                        }
+                        .into())
+                    }
+                });
+            }
             "format" => {}
             "choiceDispatchKey" => props.choice_dispatch_key = Some(value.clone()),
             _ => {}

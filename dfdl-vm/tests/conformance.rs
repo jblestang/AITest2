@@ -266,3 +266,83 @@ fn daffodil_implicit_complex_element_terminator() {
 fn daffodil_implicit_complex_element_terminator_max_one() {
     assert_named_test_passes(daffodil_tdml!("implicit.tdml"), "nested_seq_01");
 }
+
+// --- Prefixed lengthKind (Section 12) ---
+
+#[test]
+fn daffodil_prefixed_text_string_bytes() {
+    assert_named_test_passes(daffodil_tdml!("PrefixedTests.tdml"), "pl_text_string_txt_bytes");
+}
+
+#[test]
+fn daffodil_prefixed_text_string_bytes_includes() {
+    assert_named_test_passes(
+        daffodil_tdml!("PrefixedTests.tdml"),
+        "pl_text_string_txt_bytes_includes",
+    );
+}
+
+#[test]
+fn daffodil_prefixed_text_string_bits() {
+    assert_named_test_passes(daffodil_tdml!("PrefixedTests.tdml"), "pl_text_string_txt_bits");
+}
+
+#[test]
+fn daffodil_prefixed_text_string_bits_includes() {
+    assert_named_test_passes(
+        daffodil_tdml!("PrefixedTests.tdml"),
+        "pl_text_string_txt_bits_includes",
+    );
+}
+
+#[test]
+fn daffodil_prefixed_text_string_binary_prefix() {
+    assert_named_test_passes(daffodil_tdml!("PrefixedTests.tdml"), "pl_text_string_bin_bytes");
+}
+
+#[test]
+fn daffodil_prefixed_text_int_bytes() {
+    assert_named_test_passes(daffodil_tdml!("PrefixedTests.tdml"), "pl_text_int_txt_bytes");
+}
+
+#[test]
+fn daffodil_prefixed_text_int_bits() {
+    assert_named_test_passes(daffodil_tdml!("PrefixedTests.tdml"), "pl_text_int_txt_bits");
+}
+
+#[test]
+fn daffodil_prefixed_nested_prefix_length_type() {
+    assert_named_test_passes(daffodil_tdml!("PrefixedTests.tdml"), "pl_text_string_pl_txt_bytes");
+}
+
+#[test]
+fn daffodil_prefixed_extended_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_text_string_txt_chars",
+        "pl_text_string_txt_chars_includes",
+        "pl_text_string_txt_chars_padding",
+        "pl_text_string_bin_bits",
+        "pl_text_int_bin_bytes",
+        "pl_text_int_bin_bits",
+        "pl_text_int_txt_bytes_includes",
+        "pl_text_int_txt_bits_includes",
+        "pl_text_int_txt_bytes_plbits",
+        "pl_text_int_txt_bytes_plchars",
+        "pl_text_int_txt_bits_plbytes",
+        "pl_text_int_txt_bits_plchars",
+        "pl_text_int_txt_chars_plbits",
+        "pl_text_int_txt_chars_plbytes",
+        "pl_text_int_bin_bytes_plbits",
+        "pl_text_int_bin_bytes_plchars",
+        "pl_text_int_bin_bits_plbytes",
+        "pl_text_int_bin_bits_plchars",
+        "pl_text_string_txt_bytes_nil",
+        "pl_text_string_txt_bytes_neg_len",
+        "pl_text_string_txt_bytes_not_enough_data",
+        "pl_text_string_txt_bytes_not_enough_prefix_data",
+        "pl_text_bool_txt_bytes",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}

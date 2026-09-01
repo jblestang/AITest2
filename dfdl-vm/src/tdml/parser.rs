@@ -92,10 +92,10 @@ fn parse_parser_test_case(
     reader: &mut XmlReader<'_>,
 ) -> Result<ParserTestCase> {
     let name = attrs.get("name").cloned().unwrap_or_default();
-    let root = attrs.get("root").cloned().ok_or_else(|| ParseError::MissingAttribute {
-        element: "parserTestCase".into(),
-        attribute: "root".into(),
-    })?;
+    let root = attrs
+        .get("root")
+        .cloned()
+        .unwrap_or_else(|| name.clone());
     let model = attrs.get("model").cloned().ok_or_else(|| ParseError::MissingAttribute {
         element: "parserTestCase".into(),
         attribute: "model".into(),

@@ -28,6 +28,8 @@ pub struct DfdlProps {
     pub length_units: Option<LengthUnits>,
     pub encoding: Option<String>,
     pub text_trim_kind: Option<TextTrimKind>,
+    /// Expanded pad character for numeric text (`dfdl:textNumberPadCharacter`).
+    pub text_number_pad_character: Option<String>,
     pub binary_number_rep: Option<BinaryNumberRep>,
     pub binary_float_rep: Option<BinaryFloatRep>,
     pub initiator: Option<String>,
@@ -50,6 +52,9 @@ pub struct DfdlProps {
     pub fill_byte: Option<Vec<u8>>,
     /// Named format reference from `dfdl:ref` (resolved during parse).
     pub format_ref: Option<String>,
+    /// Type name for prefixed length fields (`dfdl:prefixLengthType`).
+    pub prefix_length_type: Option<TypeName>,
+    pub prefix_includes_prefix_length: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +188,7 @@ pub enum BuiltinType {
 impl BuiltinType {
     pub fn from_xsd(name: &str) -> Option<Self> {
         match name {
+            "xs:integer" | "integer" => Some(BuiltinType::Long),
             "xs:string" | "string" => Some(BuiltinType::String),
             "xs:int" | "int" => Some(BuiltinType::Int),
             "xs:long" | "long" => Some(BuiltinType::Long),

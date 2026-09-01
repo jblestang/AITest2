@@ -1,4 +1,4 @@
-use crate::ir::{IrProgram, IrProps, StringId, StringPool};
+use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool};
 use crate::schema::{
     encode_delimiter, match_delimiter, match_length_pattern, ByteOrder, LengthKind, LengthUnits,
     Representation, TextTrimKind,
@@ -132,6 +132,11 @@ pub(crate) fn read_binary_scalar(
         return decode_binary_bytes(kind, &bytes, props.byte_order == ByteOrder::LittleEndian);
     }
 
+    if props.length_kind == LengthKind::Prefixed {
+        let bytes = read_prefixed_payload(cursor, props, strings)?;
+        return decode_binary_bytes(kind, &bytes, props.byte_order == ByteOrder::LittleEndian);
+    }
+
     let size = binary_byte_length(cursor, kind, props, strings)?;
 
     if size == 0 && kind != ValueKind::String && kind != ValueKind::HexBinary {
@@ -177,10 +182,7 @@ fn binary_byte_length(
         }
         LengthKind::EndOfParent => Ok(cursor.remaining()),
         LengthKind::Prefixed => Err(VmError::UnsupportedOperation {
-            op: alloc::format!(
-                "lengthKind `{}` on binary scalar",
-                length_kind_name(props.length_kind)
-            ),
+            op: "prefixed binary scalar handled in read_binary_scalar".into(),
         }),
         LengthKind::Delimited => Err(VmError::InvalidValue {
             message: "delimited binary handled before byte length".into(),
@@ -267,11 +269,6 @@ pub(crate) fn read_text_scalar(
             )?;
             cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?
         }
-        LengthKind::EndOfParent => {
-            let rest = cursor.data[cursor.pos..].to_vec();
-            cursor.pos = cursor.data.len();
-            rest
-        }
         LengthKind::Implicit => {
             if is_numeric_text_kind(kind) {
                 read_numeric_token(cursor)
@@ -279,17 +276,18 @@ pub(crate) fn read_text_scalar(
                 read_until_delimiters(cursor, props, strings, false, parent_terminator)?
             }
         }
-        other => {
-            return Err(VmError::UnsupportedOperation {
-                op: alloc::format!("text lengthKind `{}`", length_kind_name(other)),
-            });
+        LengthKind::Prefixed => read_prefixed_payload(cursor, props, strings)?,
+        LengthKind::EndOfParent => {
+            let rest = cursor.data[cursor.pos..].to_vec();
+            cursor.pos = cursor.data.len();
+            rest
         }
     };
 
     let text = core::str::from_utf8(&raw).map_err(|_| VmError::InvalidValue {
         message: "invalid UTF-8".into(),
     })?;
-    let trimmed = trim_text(text, props.text_trim_kind);
+    let trimmed = trim_numeric_text(text, props.text_trim_kind, pad_char_from_props(props, strings));
 
     match kind {
         Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
@@ -560,9 +558,17 @@ pub(crate) fn read_length_span(
             .read_bytes(len)
             .ok_or(VmError::UnexpectedEof),
         LengthUnits::Characters => read_character_bytes(cursor, len).ok_or(VmError::UnexpectedEof),
-        LengthUnits::Bits => Err(VmError::UnsupportedOperation {
-            op: "bit-level length span".into(),
-        }),
+        LengthUnits::Bits => {
+            if cursor.bit_count != 0 {
+                return Err(VmError::UnsupportedOperation {
+                    op: "unaligned bit-level length span".into(),
+                });
+            }
+            let byte_len = len.div_ceil(8);
+            cursor
+                .read_bytes(byte_len)
+                .ok_or(VmError::UnexpectedEof)
+        }
     }
 }
 
@@ -666,6 +672,151 @@ pub(crate) fn consume_enclosing_delimiter(
     })
 }
 
+fn read_prefixed_payload(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<Vec<u8>, crate::error::VmError> {
+    let span = read_prefixed_span(cursor, props, strings)?;
+    read_length_span(cursor, span, props.length_units)
+}
+
+fn read_prefixed_span(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<usize, crate::error::VmError> {
+    use crate::error::VmError;
+    let prefix = props
+        .prefix_length
+        .as_deref()
+        .ok_or(VmError::InvalidValue {
+            message: "prefixed field missing prefixLengthType".into(),
+        })?;
+    let prefix_start = cursor.pos;
+    let value = read_prefix_integer_value(cursor, prefix, strings)?;
+    let prefix_units = consumed_length_units(cursor, prefix_start, props.length_units)?;
+    let mut span = usize_from_u64(value)?;
+    if props.prefix_includes_prefix_length {
+        span = span.checked_sub(prefix_units).ok_or(VmError::InvalidValue {
+            message: "prefixed length smaller than prefix field".into(),
+        })?;
+    }
+    Ok(span)
+}
+
+fn consumed_length_units(
+    cursor: &Cursor<'_>,
+    start: usize,
+    units: LengthUnits,
+) -> Result<usize, crate::error::VmError> {
+    use crate::error::VmError;
+    let bytes = cursor.pos.saturating_sub(start);
+    match units {
+        LengthUnits::Bytes => Ok(bytes),
+        LengthUnits::Characters => count_utf8_characters(&cursor.data[start..cursor.pos])
+            .ok_or(VmError::InvalidValue {
+                message: "invalid UTF-8 while measuring character prefix".into(),
+            }),
+        LengthUnits::Bits => {
+            if cursor.bit_count != 0 {
+                return Err(VmError::UnsupportedOperation {
+                    op: "unaligned bit prefix measurement".into(),
+                });
+            }
+            Ok(bytes.saturating_mul(8))
+        }
+    }
+}
+
+fn count_utf8_characters(bytes: &[u8]) -> Option<usize> {
+    let mut count = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        let width = utf8_char_width(b)?;
+        if i + width > bytes.len() {
+            return None;
+        }
+        i += width;
+        count += 1;
+    }
+    Some(count)
+}
+
+fn read_prefix_integer_value(
+    cursor: &mut Cursor<'_>,
+    prefix: &IrPrefixLength,
+    strings: &StringPool,
+) -> Result<u64, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::schema::Representation;
+    let raw = read_prefix_field_payload(cursor, &prefix.props, strings)?;
+    match prefix.props.representation {
+        Representation::Text => {
+            let text = core::str::from_utf8(&raw).map_err(|_| VmError::InvalidValue {
+                message: "invalid UTF-8 in prefix".into(),
+            })?;
+            let trimmed = trim_numeric_text(
+                text,
+                prefix.props.text_trim_kind,
+                pad_char_from_props(&prefix.props, strings),
+            );
+            parse_u64(trimmed)
+        }
+        Representation::Binary => Ok(decode_unsigned_bytes(
+            &raw,
+            prefix.props.byte_order == ByteOrder::LittleEndian,
+        )),
+    }
+}
+
+fn read_prefix_field_payload(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
+    match props.length_kind {
+        LengthKind::Explicit | LengthKind::Fixed => {
+            let len = props.length.ok_or(VmError::InvalidValue {
+                message: "prefix type missing length".into(),
+            })? as usize;
+            read_length_span(cursor, len, props.length_units)
+        }
+        LengthKind::Prefixed => read_prefixed_payload(cursor, props, strings),
+        other => Err(VmError::UnsupportedOperation {
+            op: alloc::format!("prefix lengthKind `{}`", length_kind_name(other)),
+        }),
+    }
+}
+
+fn decode_unsigned_bytes(bytes: &[u8], le: bool) -> u64 {
+    let mut value = 0u64;
+    if le {
+        for (i, byte) in bytes.iter().enumerate() {
+            value |= (*byte as u64) << (i * 8);
+        }
+    } else {
+        for byte in bytes {
+            value = (value << 8) | (*byte as u64);
+        }
+    }
+    value
+}
+
+fn parse_u64(s: &str) -> Result<u64, crate::error::VmError> {
+    s.parse().map_err(|_| crate::error::VmError::InvalidValue {
+        message: alloc::format!("invalid non-negative integer `{s}`"),
+    })
+}
+
+fn usize_from_u64(v: u64) -> Result<usize, crate::error::VmError> {
+    usize::try_from(v).map_err(|_| crate::error::VmError::InvalidValue {
+        message: alloc::format!("length value `{v}` out of range"),
+    })
+}
+
 fn is_numeric_text_kind(kind: crate::ir::ValueKind) -> bool {
     use crate::ir::ValueKind::*;
     matches!(
@@ -688,14 +839,35 @@ fn read_numeric_token(cursor: &mut Cursor<'_>) -> Vec<u8> {
     cursor.data[start..cursor.pos].to_vec()
 }
 
-fn trim_text(input: &str, kind: TextTrimKind) -> &str {
-    use crate::schema::TextTrimKind;
+fn pad_char_from_props<'a>(props: &IrProps, strings: &'a StringPool) -> Option<&'a str> {
+    props
+        .text_number_pad_character
+        .and_then(|id| strings.get(id).ok())
+}
+
+fn trim_numeric_text<'a>(input: &'a str, kind: TextTrimKind, pad: Option<&str>) -> &'a str {
     match kind {
         TextTrimKind::None => input,
-        TextTrimKind::Trim | TextTrimKind::PadChar => input.trim(),
+        TextTrimKind::Trim => input.trim(),
         TextTrimKind::Left => input.trim_start(),
         TextTrimKind::Right => input.trim_end(),
+        TextTrimKind::PadChar => trim_pad_char(input, pad.unwrap_or(" ")),
     }
+}
+
+fn trim_pad_char<'a>(input: &'a str, pad: &str) -> &'a str {
+    if pad.is_empty() {
+        return input;
+    }
+    let mut start = 0usize;
+    let mut end = input.len();
+    while start < end && input[start..].starts_with(pad) {
+        start += pad.len();
+    }
+    while end > start && input[..end].ends_with(pad) {
+        end -= pad.len();
+    }
+    &input[start..end]
 }
 
 fn parse_int<T: core::str::FromStr>(s: &str) -> Result<T, crate::error::VmError> {
