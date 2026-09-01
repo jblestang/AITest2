@@ -40,9 +40,7 @@ impl<'a> Encoder<'a> {
             IrNode::Sequence { children, props } => {
                 let map = value.as_sequence_fields()?;
                 for (idx, &child) in children.iter().enumerate() {
-                    if idx > 0 {
-                        self.write_separator(props, out)?;
-                    }
+                    self.write_separator(props, out, idx, children.len())?;
                     self.encode_sequence_child(child, map, out)?;
                 }
                 Ok(())
@@ -83,9 +81,7 @@ impl<'a> Encoder<'a> {
             single => core::slice::from_ref(single),
         };
         for (idx, item) in items.iter().enumerate() {
-            if idx > 0 {
-                self.write_separator(props, out)?;
-            }
+            self.write_separator(props, out, idx, items.len())?;
             self.encode_node(node_id, item, out)?;
         }
         Ok(())
@@ -123,14 +119,28 @@ impl<'a> Encoder<'a> {
         }
     }
 
-    fn write_separator(&self, props: &IrProps, out: &mut Vec<u8>) -> Result<()> {
-        if props.separator_position != SeparatorPosition::Infix {
+    fn write_separator(
+        &self,
+        props: &IrProps,
+        out: &mut Vec<u8>,
+        index: usize,
+        total: usize,
+    ) -> Result<()> {
+        if !should_emit_separator(props.separator_position, index, total) {
             return Ok(());
         }
         if let Some(id) = props.separator {
             out.extend(encode_delimiter(self.ctx.strings().get(id)));
         }
         Ok(())
+    }
+}
+
+fn should_emit_separator(position: SeparatorPosition, index: usize, total: usize) -> bool {
+    match position {
+        SeparatorPosition::Prefix => index < total,
+        SeparatorPosition::Infix => index > 0,
+        SeparatorPosition::Postfix => index + 1 < total,
     }
 }
 

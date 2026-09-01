@@ -48,6 +48,8 @@ pub struct DfdlProps {
     pub trailing_skip: Option<u64>,
     pub sequence_kind: Option<SequenceKind>,
     pub fill_byte: Option<Vec<u8>>,
+    /// Named format reference from `dfdl:ref` (resolved during parse).
+    pub format_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +106,8 @@ pub enum TextTrimKind {
     Trim,
     Left,
     Right,
+    /// Trim pad characters (typically `%SP;`) from both ends.
+    PadChar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -11,5 +11,6 @@ default = []
 std = []
 
 [dependencies]
+xml-no-std = "0.8.26"
 
 [dev-dependencies]

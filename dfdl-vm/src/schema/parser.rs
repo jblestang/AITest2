@@ -210,7 +210,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_global_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
-        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
+        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("element", &attrs);
         let name = xsd_attrs
             .get("name")
             .cloned()
@@ -384,7 +384,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_sequence(&mut self, attrs: BTreeMap<String, String>) -> Result<SequenceDecl> {
-        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
+        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("sequence", &attrs);
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);
@@ -445,7 +445,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_choice(&mut self, attrs: BTreeMap<String, String>) -> Result<ChoiceDecl> {
-        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
+        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("choice", &attrs);
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);
@@ -506,10 +506,12 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_element_decl(&mut self, attrs: BTreeMap<String, String>) -> Result<ElementDecl> {
-        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs(&attrs);
+        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("element", &attrs);
+        let is_ref = xsd_attrs.contains_key("ref");
         let name = xsd_attrs
             .get("name")
             .cloned()
+            .or_else(|| xsd_attrs.get("ref").cloned().map(|r| normalize_qname(&r)))
             .ok_or_else(|| ParseError::MissingAttribute {
                 element: "element".into(),
                 attribute: "name".into(),
@@ -521,6 +523,14 @@ impl<'a> XsdParser<'a> {
 
         let type_name = if let Some(t) = xsd_attrs.get("type") {
             TypeName::new(normalize_qname(t))
+        } else if is_ref {
+            self.doc
+                .global_elements
+                .get(&name)
+                .map(|g| g.type_name.clone())
+                .ok_or_else(|| ParseError::UnknownElement {
+                    name: name.clone(),
+                })?
         } else {
             self.reader.skip_insignificant_ws()?;
             if self.reader.peek_is_end("element")? {
@@ -993,12 +1003,17 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     base
 }
 
-fn split_dfdl_attrs(attrs: &BTreeMap<String, String>) -> (BTreeMap<String, String>, DfdlProps) {
+fn split_dfdl_attrs(
+    element_local: &str,
+    attrs: &BTreeMap<String, String>,
+) -> (BTreeMap<String, String>, DfdlProps) {
     let mut xsd = BTreeMap::new();
     let mut dfdl_map = BTreeMap::new();
     for (k, v) in attrs {
         let local = local_tag(k);
-        if k.starts_with("dfdl:") || is_dfdl_property(local) {
+        if k.starts_with("dfdl:")
+            || (is_dfdl_property(local) && !is_xsd_local_attr(element_local, local))
+        {
             dfdl_map.insert(local.to_string(), v.clone());
         } else {
             xsd.insert(k.clone(), v.clone());
@@ -1006,6 +1021,15 @@ fn split_dfdl_attrs(attrs: &BTreeMap<String, String>) -> (BTreeMap<String, Strin
     }
     let props = props_from_attrs(&dfdl_map).unwrap_or_default();
     (xsd, props)
+}
+
+fn is_xsd_local_attr(element: &str, attr: &str) -> bool {
+    matches!(element, "element" | "attribute" | "group" | "attributeGroup")
+        && matches!(
+            attr,
+            "ref" | "name" | "type" | "minOccurs" | "maxOccurs" | "default" | "fixed" | "form"
+                | "substitutionGroup"
+        )
 }
 
 fn is_dfdl_property(name: &str) -> bool {

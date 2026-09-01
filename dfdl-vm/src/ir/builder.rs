@@ -1,9 +1,7 @@
 use super::{ChoiceBranch, IrNode, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::error::{Result, SchemaError};
 use crate::schema::{
-    BinaryFloatRep, BinaryNumberRep, BitOrder, BuiltinType, ByteOrder, ComplexContent, DfdlProps,
-    FormatDefaults, LengthKind, LengthUnits, Particle, Representation, SchemaDocument, SimpleBase,
-    SeparatorPosition, SequenceKind, TextTrimKind, TypeDef, TypeName,
+    BuiltinType, ComplexContent, DfdlProps, Particle, SchemaDocument, SimpleBase, TypeDef, TypeName,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -246,10 +244,6 @@ fn value_kind_from_builtin(builtin: BuiltinType) -> ValueKind {
     }
 }
 
-fn props_from_format(format: &FormatDefaults, strings: &mut StringPool) -> IrProps {
-    overlay_dfdl_to_ir(IrProps::default(), &format.props, strings)
-}
-
 fn merge_dfdl_props(
     base: &IrProps,
     type_props: &DfdlProps,
@@ -338,63 +332,6 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
         base.sequence_kind = v;
     }
     base
-}
-
-fn dfdl_to_ir(props: &DfdlProps, strings: &mut StringPool) -> IrProps {
-    IrProps {
-        representation: props.representation.unwrap_or(Representation::Binary),
-        byte_order: props.byte_order.unwrap_or(ByteOrder::BigEndian),
-        bit_order: props
-            .bit_order
-            .unwrap_or(BitOrder::MostSignificantBitFirst),
-        length_kind: props.length_kind.unwrap_or(LengthKind::Implicit),
-        length: props.length,
-        length_units: props.length_units.unwrap_or(LengthUnits::Bytes),
-        encoding: strings.intern(props.encoding.as_deref().unwrap_or("UTF-8")),
-        text_trim_kind: props.text_trim_kind.unwrap_or(TextTrimKind::None),
-        binary_number_rep: props
-            .binary_number_rep
-            .unwrap_or(BinaryNumberRep::Binary),
-        binary_float_rep: props.binary_float_rep.unwrap_or(BinaryFloatRep::Ieee),
-        initiator: props
-            .initiator
-            .as_ref()
-            .map(|s| strings.intern(s.clone())),
-        terminator: props
-            .terminator
-            .as_ref()
-            .map(|s| strings.intern(s.clone())),
-        separator: props
-            .separator
-            .as_ref()
-            .map(|s| strings.intern(s.clone())),
-        occurs_min: props.occurs_min.unwrap_or(1),
-        occurs_max: if props.max_occurs_specified {
-            props.occurs_max
-        } else {
-            props.occurs_max.or(Some(1))
-        },
-        length_pattern: props
-            .length_pattern
-            .as_ref()
-            .map(|p| strings.intern(p.clone())),
-        separator_position: props
-            .separator_position
-            .unwrap_or(SeparatorPosition::Infix),
-        text_boolean_true_rep: props
-            .text_boolean_true_rep
-            .as_ref()
-            .map(|s| strings.intern(s.clone())),
-        text_boolean_false_rep: props
-            .text_boolean_false_rep
-            .as_ref()
-            .map(|s| strings.intern(s.clone())),
-        default_value: props
-            .default_value
-            .as_ref()
-            .map(|s| strings.intern(s.clone())),
-        sequence_kind: props.sequence_kind.unwrap_or(SequenceKind::Ordered),
-    }
 }
 
 fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {

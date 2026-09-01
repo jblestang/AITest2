@@ -45,9 +45,7 @@ impl<'a> Decoder<'a> {
             IrNode::Sequence { children, props } => {
                 let mut map = BTreeMap::new();
                 for (idx, &child) in children.iter().enumerate() {
-                    if idx > 0 {
-                        self.consume_separator(props, cursor)?;
-                    }
+                    self.consume_separator(props, cursor, idx, children.len())?;
                     let child_value = self.decode_particle(child, cursor)?;
                     insert_child(&mut map, child, child_value, self.ctx.program)?;
                 }
@@ -55,13 +53,14 @@ impl<'a> Decoder<'a> {
             }
             IrNode::Choice { branches, .. } => {
                 for branch in branches {
+                    let saved = cursor.clone();
                     if let Some(init_id) = branch.initiator {
                         let pat = self.ctx.strings().get(init_id);
-                        if match_delimiter(&cursor.data[cursor.pos..], pat).is_none() {
-                            continue;
+                        match match_delimiter(&cursor.data[cursor.pos..], pat) {
+                            Some(n) => cursor.advance(n),
+                            None => continue,
                         }
                     }
-                    let saved = cursor.clone();
                     if let Ok(value) = self.decode_node(branch.node, cursor) {
                         let name = self.ctx.strings().get(branch.name).to_string();
                         return Ok(DfdlValue::choice(name, value));
@@ -108,8 +107,9 @@ impl<'a> Decoder<'a> {
                         props,
                         self.ctx.strings(),
                     ) {
+                        // Default applies to absent element; do not consume input.
                         items.push(default);
-                        continue;
+                        break;
                     }
                     return Err(e);
                 }
@@ -153,8 +153,14 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    fn consume_separator(&self, props: &IrProps, cursor: &mut Cursor<'_>) -> Result<()> {
-        if props.separator_position != SeparatorPosition::Infix {
+    fn consume_separator(
+        &self,
+        props: &IrProps,
+        cursor: &mut Cursor<'_>,
+        index: usize,
+        total: usize,
+    ) -> Result<()> {
+        if !should_write_separator(props.separator_position, index, total) {
             return Ok(());
         }
         if let Some(id) = props.separator {
@@ -185,7 +191,8 @@ fn insert_child(
 ) -> Result<()> {
     match program.node(node_id) {
         IrNode::Element { name, .. } => {
-            map.insert(program.strings.get(*name).to_string(), value);
+            let key = program.strings.get(*name).to_string();
+            insert_field(map, key, value);
             Ok(())
         }
         IrNode::Sequence { .. } => {
@@ -212,6 +219,32 @@ fn insert_child(
                 .into())
             }
         }
+    }
+}
+
+fn should_write_separator(position: SeparatorPosition, index: usize, total: usize) -> bool {
+    match position {
+        SeparatorPosition::Prefix => index < total,
+        SeparatorPosition::Infix => index > 0,
+        SeparatorPosition::Postfix => index + 1 < total,
+    }
+}
+
+fn insert_field(map: &mut BTreeMap<String, DfdlValue>, key: String, value: DfdlValue) {
+    if let Some(existing) = map.remove(&key) {
+        map.insert(key, append_value(existing, value));
+    } else {
+        map.insert(key, value);
+    }
+}
+
+fn append_value(existing: DfdlValue, value: DfdlValue) -> DfdlValue {
+    match existing {
+        DfdlValue::Array(mut items) => {
+            items.push(value);
+            DfdlValue::Array(items)
+        }
+        other => DfdlValue::Array(alloc::vec![other, value]),
     }
 }
 

@@ -3,7 +3,7 @@ use super::parser::{parse_tdml, ParserTestCase, TdmlSuite};
 use crate::api::DfdlSpec;
 use crate::error::Result;
 use crate::vm::RuntimeConfig;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Outcome of running one TDML parser test case.

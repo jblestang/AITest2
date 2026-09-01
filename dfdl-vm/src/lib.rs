@@ -29,6 +29,7 @@ pub mod schema;
 pub mod tdml;
 pub mod value;
 pub mod vm;
+pub mod xml_util;
 
 pub use api::{DfdlCodec, DfdlSchema, DfdlSpec};
 pub use error::{Error, ParseError, Result, SchemaError, VmError};

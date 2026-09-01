@@ -1,8 +1,10 @@
 use crate::value::DfdlValue;
+use crate::xml_util::{attrs_to_map, local_name_str, owned_local_name, XmlReader};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
+use xml_no_std::reader::XmlEvent;
 
 /// Normalized infoset node for comparison.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,131 +22,95 @@ pub fn compare_infoset(actual: &DfdlValue, expected_xml: &str) -> Result<(), Str
 }
 
 fn parse_expected_infoset(xml: &str) -> Result<Vec<InfosetNode>, String> {
-    let inner = extract_dfdl_infoset(xml);
+    let inner = extract_dfdl_infoset_xml(xml);
+    parse_infoset_elements(&inner)
+}
+
+fn extract_dfdl_infoset_xml(xml: &str) -> String {
+    let xml = xml.trim();
+    if xml.is_empty() {
+        return String::new();
+    }
+    let wrapped = alloc::format!("<wrapper>{xml}</wrapper>");
+    let mut reader = XmlReader::new(&wrapped);
+    let _ = reader.expect_start("wrapper");
+    reader.skip_insignificant_ws().ok();
+    if reader.peek_start_local().ok().flatten().as_deref() == Some("dfdlInfoset") {
+        let _ = reader.next();
+        return reader.read_inner_xml().unwrap_or_default();
+    }
+    xml.to_string()
+}
+
+fn parse_infoset_elements(xml: &str) -> Result<Vec<InfosetNode>, String> {
+    let wrapped = alloc::format!("<infosetRoot>{xml}</infosetRoot>");
+    let mut reader = XmlReader::new(&wrapped);
+    reader.expect_start("infosetRoot").map_err(|e| e.to_string())?;
+
     let mut nodes = Vec::new();
-    let mut pos = 0;
-    while pos < inner.len() {
-        skip_ws(&inner, &mut pos);
-        if pos >= inner.len() || inner.as_bytes()[pos] != b'<' {
+    loop {
+        reader.skip_insignificant_ws().map_err(|e| e.to_string())?;
+        if reader.peek_is_end("infosetRoot").map_err(|e| e.to_string())? {
+            reader.expect_end("infosetRoot").map_err(|e| e.to_string())?;
             break;
         }
-        if inner[pos..].starts_with("</") {
-            break;
-        }
-        pos += 1;
-        let tag_end = inner[pos..]
-            .find(|c: char| c == ' ' || c == '>' || c == '/')
-            .ok_or_else(|| "invalid infoset".to_string())?;
-        let raw_name = &inner[pos..pos + tag_end];
-        let name = local_name(raw_name);
-        pos += tag_end;
-        while pos < inner.len() && inner.as_bytes()[pos] != b'>' {
-            pos += 1;
-        }
-        if pos < inner.len() {
-            pos += 1;
-        }
-        if inner.as_bytes().get(pos.saturating_sub(2)) == Some(&b'/') {
-            nodes.push(InfosetNode {
-                name: name.to_string(),
-                text: None,
-                children: BTreeMap::new(),
-            });
-            continue;
-        }
-        let content_end = find_matching_end(&inner, pos, raw_name).ok_or_else(|| {
-            alloc::format!("unclosed element `{name}`")
-        })?;
-        let content = &inner[pos..content_end];
-        let (text, children) = parse_mixed_content(content)?;
-        nodes.push(InfosetNode {
-            name: name.to_string(),
-            text,
-            children,
-        });
-        pos = content_end;
-        if let Some(close_end) = inner[pos..].find('>') {
-            pos += close_end + 1;
+        match reader.peek_start_local().map_err(|e| e.to_string())? {
+            Some(_) => nodes.push(parse_infoset_element(&mut reader)?),
+            None => break,
         }
     }
     Ok(nodes)
 }
 
-fn extract_dfdl_infoset(xml: &str) -> &str {
-    let xml = xml.trim();
-    if let Some(start) = xml.find("dfdlInfoset") {
-        if let Some(tag_start) = xml[..start].rfind('<') {
-            if let Some(gt) = xml[tag_start..].find('>') {
-                let content_start = tag_start + gt + 1;
-                if let Some(end) = find_matching_end(xml, content_start, &xml[tag_start + 1..start + "dfdlInfoset".len()]) {
-                    return xml[content_start..end].trim();
-                }
-            }
-        }
-    }
-    xml
-}
+fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, String> {
+    let XmlEvent::StartElement { name, attributes, .. } = reader.next().map_err(|e| e.to_string())?
+    else {
+        return Err("expected infoset element".into());
+    };
+    let element_name = owned_local_name(&name).to_string();
+    let _ = attrs_to_map(&attributes);
 
-fn parse_mixed_content(content: &str) -> Result<(Option<String>, BTreeMap<String, Vec<InfosetNode>>), String> {
-    let mut pos = 0;
-    skip_ws(content, &mut pos);
-    if pos >= content.len() || content.as_bytes()[pos] != b'<' {
-        let text = content.trim();
-        return Ok((
-            if text.is_empty() { None } else { Some(text.to_string()) },
-            BTreeMap::<String, Vec<InfosetNode>>::new(),
-        ));
+    if reader.peek_is_end(&element_name).map_err(|e| e.to_string())? {
+        reader.expect_end(&element_name).map_err(|e| e.to_string())?;
+        return Ok(InfosetNode {
+            name: element_name,
+            text: None,
+            children: BTreeMap::new(),
+        });
     }
-    let children = parse_expected_infoset(content)?;
-    let mut map: BTreeMap<String, Vec<InfosetNode>> = BTreeMap::new();
-    for child in children {
-        map.entry(child.name.clone()).or_default().push(child);
-    }
-    Ok((None, map))
-}
 
-fn find_matching_end(xml: &str, start: usize, raw_name: &str) -> Option<usize> {
-    let local = local_name(raw_name);
-    let mut pos = start;
-    let mut depth = 1;
-    while pos < xml.len() {
-        if xml.as_bytes()[pos] != b'<' {
-            pos += 1;
-            continue;
-        }
-        if xml[pos..].starts_with("</") {
-            let tag_start = pos + 2;
-            let tag_end = xml[tag_start..]
-                .find(|c: char| c == ' ' || c == '>')
-                .map(|i| tag_start + i)
-                .unwrap_or(xml.len());
-            let close_name = local_name(&xml[tag_start..tag_end]);
-            if close_name == local {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(pos);
-                }
-            }
-            pos = tag_end;
-            continue;
-        }
-        if xml[pos..].starts_with("<") && !xml[pos..].starts_with("<?") && !xml[pos..].starts_with("<!") {
-            let tag_start = pos + 1;
-            let tag_end = xml[tag_start..]
-                .find(|c: char| c == ' ' || c == '>' || c == '/')
-                .map(|i| tag_start + i)
-                .unwrap_or(xml.len());
-            let open_name = local_name(&xml[tag_start..tag_end]);
-            if open_name == local && !xml[tag_start..].starts_with("/") {
-                let rest = &xml[tag_end..];
-                if !rest.trim_start().starts_with("/>") {
-                    depth += 1;
-                }
-            }
-        }
-        pos += 1;
+    reader.skip_insignificant_ws().map_err(|e| e.to_string())?;
+    if reader.peek_is_end(&element_name).map_err(|e| e.to_string())? {
+        reader.expect_end(&element_name).map_err(|e| e.to_string())?;
+        return Ok(InfosetNode {
+            name: element_name,
+            text: None,
+            children: BTreeMap::new(),
+        });
     }
-    None
+
+    match reader.peek_start_local().map_err(|e| e.to_string())? {
+        Some(_) => {
+            let children = parse_infoset_elements(&reader.read_inner_xml().map_err(|e| e.to_string())?)?;
+            let mut map: BTreeMap<String, Vec<InfosetNode>> = BTreeMap::new();
+            for child in children {
+                map.entry(child.name.clone()).or_default().push(child);
+            }
+            Ok(InfosetNode {
+                name: element_name,
+                text: None,
+                children: map,
+            })
+        }
+        None => {
+            let text = reader.read_text_until_end(&element_name).map_err(|e| e.to_string())?;
+            Ok(InfosetNode {
+                name: element_name,
+                text: Some(text.trim().to_string()),
+                children: BTreeMap::new(),
+            })
+        }
+    }
 }
 
 fn value_to_infoset(value: &DfdlValue) -> Vec<InfosetNode> {
@@ -225,7 +191,7 @@ fn compare_nodes(expected: &[InfosetNode], actual: &[InfosetNode]) -> Result<(),
 }
 
 fn compare_node(expected: &InfosetNode, actual: &InfosetNode) -> Result<(), String> {
-    if local_name(&expected.name) != local_name(&actual.name) {
+    if local_name_str(&expected.name) != local_name_str(&actual.name) {
         return Err(alloc::format!(
             "element name mismatch: expected `{}`, got `{}`",
             expected.name, actual.name
@@ -241,11 +207,11 @@ fn compare_node(expected: &InfosetNode, actual: &InfosetNode) -> Result<(), Stri
         }
     }
     for (name, exp_children) in &expected.children {
-        let key = local_name(name);
+        let key = local_name_str(name);
         let act_children = actual
             .children
             .iter()
-            .find(|(k, _)| local_name(k) == key)
+            .find(|(k, _)| local_name_str(k) == key)
             .map(|(_, v)| v.as_slice())
             .unwrap_or(&[]);
         if exp_children.len() != act_children.len() {
@@ -260,18 +226,4 @@ fn compare_node(expected: &InfosetNode, actual: &InfosetNode) -> Result<(), Stri
         }
     }
     Ok(())
-}
-
-fn local_name(name: &str) -> &str {
-    name.rsplit(':').next().unwrap_or(name)
-}
-
-fn skip_ws(s: &str, pos: &mut usize) {
-    while *pos < s.len() {
-        if s.as_bytes()[*pos].is_ascii_whitespace() {
-            *pos += 1;
-        } else {
-            break;
-        }
-    }
 }

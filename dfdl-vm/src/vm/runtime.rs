@@ -110,8 +110,7 @@ pub(crate) fn read_binary_scalar(
     strings: &StringPool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
-    use crate::ir::ValueKind::*;
-    use crate::value::DfdlValue;
+    use crate::ir::ValueKind;
 
     if props.length_units == LengthUnits::Bits {
         return Err(VmError::UnsupportedOperation {
@@ -121,7 +120,7 @@ pub(crate) fn read_binary_scalar(
 
     let size = binary_byte_length(cursor, kind, props, strings)?;
 
-    if size == 0 && kind != String && kind != HexBinary {
+    if size == 0 && kind != ValueKind::String && kind != ValueKind::HexBinary {
         return Err(VmError::InvalidValue {
             message: "zero-length scalar".into(),
         });
@@ -143,7 +142,6 @@ fn binary_byte_length(
     strings: &StringPool,
 ) -> Result<usize, crate::error::VmError> {
     use crate::error::VmError;
-    use crate::ir::ValueKind::*;
 
     match props.length_kind {
         LengthKind::Fixed => Ok(props.length.unwrap_or(type_size(kind) as u64) as usize),
@@ -481,7 +479,7 @@ fn trim_text(input: &str, kind: TextTrimKind) -> &str {
     use crate::schema::TextTrimKind;
     match kind {
         TextTrimKind::None => input,
-        TextTrimKind::Trim => input.trim(),
+        TextTrimKind::Trim | TextTrimKind::PadChar => input.trim(),
         TextTrimKind::Left => input.trim_start(),
         TextTrimKind::Right => input.trim_end(),
     }
@@ -548,7 +546,6 @@ pub(crate) fn read_simple(
     strings: &StringPool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
-    use crate::value::DfdlValue;
 
     if let Some(id) = props.initiator {
         let pat = strings.get(id);
