@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
+  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"/>
+
+  <xs:complexType name="FieldPayloadType">
+    <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
+      <xs:element name="field" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="StandardSentenceType">
+    <xs:sequence>
+      <xs:element name="address" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="5"/>
+      <xs:element name="payload" type="FieldPayloadType"
+        dfdl:initiator="," dfdl:terminator="*" dfdl:lengthKind="implicit"/>
+      <xs:element name="checksum" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="2"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="EncapsulatedSentenceType">
+    <xs:sequence>
+      <xs:element name="address" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="5"/>
+      <xs:element name="payload" type="FieldPayloadType"
+        dfdl:initiator="," dfdl:terminator="*" dfdl:lengthKind="implicit"/>
+      <xs:element name="checksum" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="2"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="NmeaSentence" dfdl:terminator="%CR;%LF;">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="Standard" type="StandardSentenceType" dfdl:initiator="$"/>
+        <xs:element name="Encapsulated" type="EncapsulatedSentenceType" dfdl:initiator="!"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

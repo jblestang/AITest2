@@ -149,12 +149,11 @@ pub fn match_delimiter(input: &[u8], pattern: &str) -> Option<usize> {
 
 /// Minimal bytes to emit for a delimiter on encode (one WSP for `+`, none for `*`/`?`).
 pub fn encode_delimiter(pattern: &str) -> Vec<u8> {
-    let pat = pattern.trim();
-    if pat.is_empty() {
+    if pattern.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
-    for segment in split_delimiter_segments(pat) {
+    for segment in split_delimiter_segments(pattern) {
         out.extend(minimal_encode_segment(segment));
     }
     out
@@ -205,10 +204,10 @@ fn split_delimiter_segments(pattern: &str) -> Vec<&str> {
 }
 
 fn minimal_encode_segment(segment: &str) -> Vec<u8> {
-    let seg = segment.trim();
-    if seg.is_empty() {
+    if segment.is_empty() {
         return Vec::new();
     }
+    let seg = segment;
     if seg.starts_with("%WSP") || seg.starts_with("%WS") {
         let q = seg.as_bytes().last().copied();
         return match q {
@@ -225,13 +224,13 @@ fn minimal_encode_segment(segment: &str) -> Vec<u8> {
     }
     let q = seg.as_bytes().last().copied();
     let base = match q {
-        Some(b'+') | Some(b'*') | Some(b'?') => &seg[..seg.len() - 1],
+        Some(b'+') | Some(b'*') | Some(b'?') if seg.len() > 1 => &seg[..seg.len() - 1],
         _ => seg,
     };
     let expanded = expand_entities(base);
     match q {
-        Some(b'*') | Some(b'?') => Vec::new(),
-        Some(b'+') => expanded.into_iter().take(1).collect(),
+        Some(b'*') | Some(b'?') if seg.len() > 1 => Vec::new(),
+        Some(b'+') if seg.len() > 1 => expanded.into_iter().take(1).collect(),
         _ => expanded,
     }
 }
@@ -450,6 +449,17 @@ mod tests {
         assert_eq!(pos, sep.len());
         assert_eq!(match_delimiter(sep, pat), Some(sep.len()));
         assert_eq!(match_delimiter(&b"abcd  +\n\t\t  efg"[4..], pat), Some(sep.len()));
+    }
+
+    #[test]
+    fn encode_crlf_delimiter() {
+        assert_eq!(super::encode_delimiter("%CR;%LF;"), b"\r\n");
+        assert_eq!(super::encode_delimiter("\r\n"), b"\r\n");
+    }
+
+    #[test]
+    fn encode_literal_star_delimiter() {
+        assert_eq!(super::encode_delimiter("*"), b"*");
     }
 
     #[test]

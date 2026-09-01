@@ -66,8 +66,21 @@ impl<'a> Encoder<'a> {
                 child,
             } => {
                 if let Some(child_id) = child {
-                    let field = value_for_element(value, self.ctx.strings().get(*name)?)?;
-                    self.encode_element_occurrences(*child_id, props, field, out)
+                    let field = value_for_element_or_content(
+                        value,
+                        self.ctx.strings().get(*name)?,
+                    )?;
+                    let items = match field {
+                        DfdlValue::Array(items) => items.as_slice(),
+                        single => core::slice::from_ref(single),
+                    };
+                    for (idx, item) in items.iter().enumerate() {
+                        self.write_separator(props, out, idx, items.len())?;
+                        self.write_initiator(props, out)?;
+                        self.encode_node(*child_id, item, out)?;
+                        self.write_terminator(props, out)?;
+                    }
+                    Ok(())
                 } else {
                     write_simple(out, value, *kind, props, self.ctx.strings()).map_err(Into::into)
                 }
@@ -102,9 +115,13 @@ impl<'a> Encoder<'a> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element { name, props, .. } => {
                 let key = self.ctx.strings().get(*name)?;
-                let value = map
-                    .get(key)
-                    .ok_or_else(|| VmError::MissingField { name: key.into() })?;
+                let value = match map.get(key) {
+                    Some(v) => v,
+                    None if props.occurs_min == 0 => return Ok(()),
+                    None => {
+                        return Err(VmError::MissingField { name: key.into() }.into());
+                    }
+                };
                 self.encode_element_occurrences(node_id, props, value, out)
             }
             IrNode::Sequence { .. } => {
@@ -123,6 +140,26 @@ impl<'a> Encoder<'a> {
                 Err(VmError::InvalidChoice.into())
             }
         }
+    }
+
+    fn write_initiator(&self, props: &IrProps, out: &mut Vec<u8>) -> Result<()> {
+        if let Some(id) = props.initiator {
+            let pat = self.ctx.strings().get(id)?;
+            if !pat.is_empty() {
+                out.extend(encode_delimiter(pat));
+            }
+        }
+        Ok(())
+    }
+
+    fn write_terminator(&self, props: &IrProps, out: &mut Vec<u8>) -> Result<()> {
+        if let Some(id) = props.terminator {
+            let pat = self.ctx.strings().get(id)?;
+            if !pat.is_empty() {
+                out.extend(encode_delimiter(pat));
+            }
+        }
+        Ok(())
     }
 
     fn write_separator(
@@ -163,12 +200,18 @@ fn unwrap_root_for_encode<'a>(value: &'a DfdlValue, root_element: &str) -> &'a D
     value
 }
 
-fn value_for_element<'a>(value: &'a DfdlValue, name: &str) -> Result<&'a DfdlValue> {
+fn value_for_element_or_content<'a>(value: &'a DfdlValue, name: &str) -> Result<&'a DfdlValue> {
     match value {
-        DfdlValue::Sequence(_map) => value
-            .field(name)
-            .ok_or_else(|| VmError::MissingField { name: name.into() })
-            .map_err(Into::into),
+        DfdlValue::Sequence(map) => {
+            if let Some(v) = map.get(name) {
+                Ok(v)
+            } else if !map.is_empty() {
+                Ok(value)
+            } else {
+                Err(VmError::MissingField { name: name.into() }.into())
+            }
+        }
+        DfdlValue::Choice { .. } => Ok(value),
         other => Ok(other),
     }
 }
@@ -191,6 +234,23 @@ trait ValueView {
         &self,
     ) -> Result<&alloc::collections::BTreeMap<alloc::string::String, DfdlValue>>;
     fn as_choice_fields(&self) -> Result<(&str, &DfdlValue)>;
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::DfdlSpec;
+
+    #[test]
+    fn encodes_nmea_root_line_ending() {
+        let input = b"$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A\r\n";
+        let spec = DfdlSpec::from_xsd(include_str!(
+            "../../tests/fixtures/nmea_sentence.xsd"
+        ))
+        .expect("spec");
+        let decoded = spec.decode(input).expect("decode");
+        let encoded = spec.encode(&decoded).expect("encode");
+        assert_eq!(encoded, input);
+    }
 }
 
 impl ValueView for DfdlValue {

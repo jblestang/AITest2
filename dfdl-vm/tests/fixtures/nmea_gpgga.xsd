@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
+  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"/>
+
+  <xs:element name="GPGGA" dfdl:terminator="%CR;%LF;">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="body" dfdl:initiator="$GPGGA," dfdl:terminator="*" dfdl:lengthKind="implicit">
+          <xs:complexType>
+            <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
+              <xs:element name="utcTime" type="xs:string"/>
+              <xs:element name="latitude" type="xs:string"/>
+              <xs:element name="latHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="longitude" type="xs:string"/>
+              <xs:element name="lonHemisphere" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="fixQuality" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="numSatellites" type="xs:string"/>
+              <xs:element name="hdop" type="xs:string"/>
+              <xs:element name="altitude" type="xs:string"/>
+              <xs:element name="altitudeUnits" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="geoidSeparation" type="xs:string"/>
+              <xs:element name="geoidUnits" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="1"/>
+              <xs:element name="dgpsAge" type="xs:string" minOccurs="0"/>
+              <xs:element name="dgpsStationId" type="xs:string" minOccurs="0"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="checksum" type="xs:string" dfdl:lengthKind="fixed" dfdl:length="2"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

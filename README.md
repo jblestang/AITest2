@@ -78,6 +78,8 @@ dfdl-vm = "0.1"
 See `tests/fixtures/` for sample XSD schemas:
 
 - `record.xsd` — binary struct (u32 + u8)
+- `nmea_sentence.xsd` — generic NMEA 0183 sentence parser (`$`/`!`, comma fields, `*checksum`)
+- `nmea_gpgga.xsd` — typed GPGGA fix sentence
 - `text_message.xsd` — text format with fixed and delimited fields
 
 Run tests:
