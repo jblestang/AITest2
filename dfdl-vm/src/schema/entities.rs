@@ -246,8 +246,20 @@ pub fn encode_delimiter(pattern: &str) -> Vec<u8> {
         return Vec::new();
     }
     let pat = pattern;
+    if delimiter_has_top_level_comma(pat) {
+        let alts = split_delimiter_alternatives(pat);
+        if alts.iter().any(|alt| alt == ",") {
+            return vec![b','];
+        }
+        for alt in alts {
+            let bytes = encode_delimiter(&alt);
+            if !bytes.is_empty() {
+                return bytes;
+            }
+        }
+        return Vec::new();
+    }
     if pat.starts_with('%')
-        && !delimiter_has_top_level_comma(pat)
         && !pat.starts_with('[')
     {
         let bytes = expand_entities(pat);
@@ -1033,5 +1045,11 @@ mod tests {
         assert_eq!(expand_entities("%NL;"), vec![10u8]);
         assert_eq!(encode_delimiter("\n"), vec![10u8]);
         assert_eq!(encode_delimiter("%NL;"), vec![10u8]);
+    }
+
+    #[test]
+    fn encode_delimiter_alternatives_prefers_comma() {
+        assert_eq!(encode_delimiter("%NL;, ,"), vec![b',']);
+        assert_eq!(encode_delimiter("\n, ,"), vec![b',']);
     }
 }

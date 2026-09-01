@@ -1,4 +1,4 @@
-use super::runtime::{write_alignment, write_byte_aligned, write_framed_payload, write_simple, validate_explicit_decimal_before_encode, trailing_suppressed_count, RuntimeConfig, VmContext};
+use super::runtime::{write_alignment, write_byte_aligned, write_framed_payload, write_simple, validate_explicit_decimal_before_encode, trailing_suppressed_count, should_suppress_occurrence_separator, RuntimeConfig, VmContext};
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
@@ -61,6 +61,7 @@ impl<'a> Encoder<'a> {
             IrNode::Sequence { children, props } => {
                 let map = value.as_sequence_fields()?;
                 let effective = precompute_output_values(self, children, map)?;
+                self.write_initiator(props, out, bit_count)?;
                 for (idx, &child) in children.iter().enumerate() {
                     if child_skips_encode(self, child)? {
                         continue;
@@ -68,6 +69,7 @@ impl<'a> Encoder<'a> {
                     self.write_separator(props, out, bit_count, idx, children.len())?;
                     self.encode_sequence_particle(child, &effective, props, out, bit_count)?;
                 }
+                self.write_terminator(props, out, bit_count)?;
                 Ok(())
             }
             IrNode::Choice { branches, .. } => {
@@ -195,12 +197,30 @@ impl<'a> Encoder<'a> {
         let encode_len = items.len().saturating_sub(suppressed);
         for (idx, item) in items.iter().take(encode_len).enumerate() {
             if sep_props.separator_position != SeparatorPosition::Postfix {
-                self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
+                if !should_suppress_occurrence_separator(
+                    sep_props,
+                    props,
+                    items,
+                    idx,
+                    true,
+                    self.ctx.strings(),
+                )? {
+                    self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
+                }
             }
             write_alignment(out, bit_count, props)?;
             self.encode_node(node_id, item, out, bit_count)?;
             if sep_props.separator_position == SeparatorPosition::Postfix {
-                self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
+                if !should_suppress_occurrence_separator(
+                    sep_props,
+                    props,
+                    items,
+                    idx,
+                    false,
+                    self.ctx.strings(),
+                )? {
+                    self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
+                }
             }
         }
         Ok(())
@@ -295,7 +315,16 @@ impl<'a> Encoder<'a> {
         let suppressed = trailing_suppressed_count(items, props, self.ctx.strings())?;
         let encode_len = items.len().saturating_sub(suppressed);
         for (idx, item) in items.iter().take(encode_len).enumerate() {
-            self.write_occurrence_separator(props, out, bit_count, idx, encode_len)?;
+            if !should_suppress_occurrence_separator(
+                props,
+                props,
+                items,
+                idx,
+                true,
+                self.ctx.strings(),
+            )? {
+                self.write_occurrence_separator(props, out, bit_count, idx, encode_len)?;
+            }
             write_alignment(out, bit_count, props)?;
             write_simple(
                 out,
@@ -325,6 +354,36 @@ impl<'a> Encoder<'a> {
                 .cloned()
                 .ok_or_else(|| VmError::MissingField { name: key.into() }.into())
         }
+    }
+
+    fn write_initiator(
+        &self,
+        props: &IrProps,
+        out: &mut Vec<u8>,
+        bit_count: &mut u8,
+    ) -> Result<()> {
+        if let Some(id) = props.initiator {
+            let pat = self.ctx.strings().get(id)?;
+            if !pat.is_empty() {
+                write_byte_aligned(out, bit_count, &encode_delimiter(pat)).map_err(Error::from)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_terminator(
+        &self,
+        props: &IrProps,
+        out: &mut Vec<u8>,
+        bit_count: &mut u8,
+    ) -> Result<()> {
+        if let Some(id) = props.terminator {
+            let pat = self.ctx.strings().get(id)?;
+            if !pat.is_empty() {
+                write_byte_aligned(out, bit_count, &encode_delimiter(pat)).map_err(Error::from)?;
+            }
+        }
+        Ok(())
     }
 
     fn write_separator(

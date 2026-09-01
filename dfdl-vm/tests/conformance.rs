@@ -27,6 +27,15 @@ fn assert_named_unparser_test_passes(tdml: &str, test_name: &str) {
     }
 }
 
+fn resolve_tdml_xsd(suite: &dfdl_vm::tdml::TdmlSuite, model: &str) -> String {
+    if let Some(def) = suite.schemas.get(model) {
+        return def.xsd.clone();
+    }
+    dfdl_vm::schema::SchemaResolver::new()
+        .resolve(model)
+        .unwrap_or_else(|e| panic!("schema `{model}` not found: {e}"))
+}
+
 fn assert_decode_encode_roundtrip(tdml: &str, test_name: &str) {
     let suite = parse_tdml(tdml).expect("parse tdml");
     let test = suite
@@ -34,11 +43,8 @@ fn assert_decode_encode_roundtrip(tdml: &str, test_name: &str) {
         .iter()
         .find(|t| t.name == test_name)
         .unwrap_or_else(|| panic!("test `{test_name}` not found"));
-    let schema = suite
-        .schemas
-        .get(&test.model)
-        .unwrap_or_else(|| panic!("schema `{}` not found", test.model));
-    let spec = dfdl_vm::api::DfdlSpec::from_xsd_root(&schema.xsd, Some(&test.root)).expect("spec");
+    let xsd = resolve_tdml_xsd(&suite, &test.model);
+    let spec = dfdl_vm::api::DfdlSpec::from_xsd_root(&xsd, Some(&test.root)).expect("spec");
     let input = &test.documents[0].data;
     let decoded = spec.decode(input).expect("decode");
     let encoded = spec.encode(&decoded).expect("encode");
@@ -342,6 +348,11 @@ fn daffodil_ab_implicit_csv_infix_short_row() {
 }
 
 #[test]
+fn daffodil_ab_implicit_csv_nil_middle_field_roundtrip() {
+    assert_decode_encode_roundtrip(daffodil_tdml!("AB.tdml"), "AB004");
+}
+
+#[test]
 fn daffodil_ab_implicit_csv_nil_middle_field() {
     assert_named_test_passes(daffodil_tdml!("AB.tdml"), "AB004");
 }
@@ -354,6 +365,40 @@ fn daffodil_ab_implicit_csv_nil_trailing_parse() {
 #[test]
 fn daffodil_ab_implicit_csv_nil_trailing_unparse() {
     assert_named_unparser_test_passes(daffodil_tdml!("AB.tdml"), "AB005_unparse");
+}
+
+#[test]
+fn daffodil_section12_pattern_twopass_roundtrip_suite() {
+    let tdml = daffodil_tdml!("PatternTests.tdml");
+    let suite = parse_tdml(tdml).expect("parse tdml");
+    for test in &suite.tests {
+        if test.round_trip != RoundTrip::TwoPass {
+            continue;
+        }
+        // Lossy UTF-8 replacement or outputNewLine-dependent separator choice.
+        if matches!(
+            test.name.as_str(),
+            "LengthPatternIllegalBits_02_EncodingErrorPolicy_Replace"
+                | "nested_patterns_01"
+                | "lengthPatternEncodingErrorReplace"
+        ) {
+            continue;
+        }
+        let result = run_parser_test_with_options(
+            &suite,
+            test,
+            ParserTestRunOptions {
+                verify_round_trip: true,
+                ..ParserTestRunOptions::default()
+            },
+        )
+        .expect("run test");
+        match result.outcome {
+            TestOutcome::Pass => {}
+            TestOutcome::Fail(msg) => panic!("twoPass test `{}` failed: {msg}", test.name),
+            TestOutcome::Skip(msg) => panic!("twoPass test `{}` skipped: {msg}", test.name),
+        }
+    }
 }
 
 // --- Delimited: compound newline, eof, mixed sequences (Section 12) ---

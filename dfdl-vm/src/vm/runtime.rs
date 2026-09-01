@@ -10,8 +10,8 @@ use crate::length_validate::{
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
     encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, BitOrder, ByteOrder,
-    EncodingErrorPolicy, LengthKind, LengthUnits, NilKind, Representation, SeparatorSuppressionPolicy,
-    TextNumberJustification, TextTrimKind,
+    EncodingErrorPolicy, LengthKind, LengthUnits, NilKind, Representation, SeparatorPosition,
+    SeparatorSuppressionPolicy, TextNumberJustification, TextTrimKind,
 };
 use alloc::string::ToString;
 use alloc::vec;
@@ -2151,6 +2151,36 @@ pub(crate) fn trailing_suppressed_count(
     Ok(count)
 }
 
+pub(crate) fn should_suppress_occurrence_separator(
+    sep_props: &IrProps,
+    item_props: &IrProps,
+    items: &[crate::value::DfdlValue],
+    index: usize,
+    before_item: bool,
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    let policy = sep_props
+        .separator_suppression_policy
+        .or(item_props.separator_suppression_policy);
+    if policy != Some(SeparatorSuppressionPolicy::AnyEmpty) {
+        return Ok(false);
+    }
+    let current_empty =
+        is_suppressible_empty_representation(&items[index], item_props, strings)?;
+    if before_item {
+        match sep_props.separator_position {
+            SeparatorPosition::Prefix | SeparatorPosition::Postfix => Ok(current_empty),
+            SeparatorPosition::Infix => {
+                let previous_empty = index > 0
+                    && is_suppressible_empty_representation(&items[index - 1], item_props, strings)?;
+                Ok(current_empty || previous_empty)
+            }
+        }
+    } else {
+        Ok(matches!(sep_props.separator_position, SeparatorPosition::Postfix) && current_empty)
+    }
+}
+
 pub(crate) fn prefixed_payload_byte_length(
     data: &[u8],
     props: &IrProps,
@@ -3612,5 +3642,32 @@ mod delimited_stop_tests {
         let mut cursor = Cursor::new(b"\n");
         let raw = read_until_delimiters(&mut cursor, &cell, &strings, false, &stops).unwrap();
         assert!(raw.is_empty(), "expected empty before newline, got {raw:?}");
+    }
+
+    #[test]
+    fn any_empty_suppresses_infix_separator_for_empty_item() {
+        use crate::ir::{IrProps, StringPool};
+        use crate::schema::{SeparatorPosition, SeparatorSuppressionPolicy};
+        use crate::value::DfdlValue;
+        use alloc::string::String;
+
+        let mut sep = IrProps::default();
+        sep.separator_suppression_policy = Some(SeparatorSuppressionPolicy::AnyEmpty);
+        sep.separator_position = SeparatorPosition::Infix;
+        let item = IrProps::default();
+        let items = [
+            DfdlValue::Int(1),
+            DfdlValue::String(String::new()),
+            DfdlValue::Int(3),
+        ];
+        let strings = StringPool::new();
+        assert!(should_suppress_occurrence_separator(
+            &sep, &item, &items, 1, true, &strings
+        )
+        .unwrap());
+        assert!(should_suppress_occurrence_separator(
+            &sep, &item, &items, 2, true, &strings
+        )
+        .unwrap());
     }
 }
