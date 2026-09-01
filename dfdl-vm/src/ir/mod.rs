@@ -66,6 +66,8 @@ pub enum ValueKind {
 pub struct IrPrefixLength {
     pub kind: ValueKind,
     pub props: IrProps,
+    pub min_inclusive: Option<i64>,
+    pub max_inclusive: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

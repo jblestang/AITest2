@@ -606,10 +606,13 @@ impl<'a> XsdParser<'a> {
                                 name: base_name.clone(),
                             }
                         })?;
-                        self.skip_element_body("restriction")?;
+                        let (max_length, min_inclusive, max_inclusive) =
+                            self.parse_restriction_body()?;
                         return Ok(SimpleBase::Restriction {
                             base,
-                            max_length: None,
+                            max_length,
+                            min_inclusive,
+                            max_inclusive,
                         });
                     }
                     self.skip_element_body(&local)?;
@@ -628,6 +631,60 @@ impl<'a> XsdParser<'a> {
                 }
             }
         }
+    }
+
+    fn parse_restriction_body(&mut self) -> Result<(Option<u64>, Option<i64>, Option<i64>)> {
+        let mut max_length = None;
+        let mut min_inclusive = None;
+        let mut max_inclusive = None;
+        loop {
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { name } if name.local_name == "restriction" => {
+                    let _ = self.reader.next_event()?;
+                    break;
+                }
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    let child_attrs = self.reader.take_start_attributes()?;
+                    match local.as_str() {
+                        "maxLength" => {
+                            if let Some(v) = child_attrs.get("value") {
+                                max_length = v.parse().ok();
+                            }
+                            self.skip_element_body(&local)?;
+                        }
+                        "minInclusive" => {
+                            if let Some(v) = child_attrs.get("value") {
+                                min_inclusive = v.parse().ok();
+                            }
+                            self.skip_element_body(&local)?;
+                        }
+                        "maxInclusive" => {
+                            if let Some(v) = child_attrs.get("value") {
+                                max_inclusive = v.parse().ok();
+                            }
+                            self.skip_element_body(&local)?;
+                        }
+                        _ => self.skip_element_body(&local)?,
+                    }
+                }
+                XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                    let _ = self.reader.next_event()?;
+                }
+                other => {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "expected restriction child, found {:?}",
+                            event_kind(other)
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+        Ok((max_length, min_inclusive, max_inclusive))
     }
 
     fn parse_inline_content(&mut self, mut props: DfdlProps, allowed: &[&str]) -> Result<DfdlProps> {
@@ -781,6 +838,9 @@ impl<'a> XsdParser<'a> {
         }
 
         let mut props = props_from_attrs(&attrs)?;
+        if local == "assert" {
+            props.has_statement_annotation = true;
+        }
 
         if local == "format" {
             if let Some(ref_name) = attrs.get("ref") {
@@ -1009,6 +1069,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     }
     if overlay.input_value_calc_sibling.is_some() {
         base.input_value_calc_sibling = overlay.input_value_calc_sibling;
+    }
+    if overlay.has_statement_annotation {
+        base.has_statement_annotation = true;
     }
     base
 }

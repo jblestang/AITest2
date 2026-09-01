@@ -1,8 +1,8 @@
 use super::{ChoiceBranch, IrNode, IrProgram, IrPrefixLength, IrProps, StringId, StringPool, ValueKind};
 use crate::error::{Result, SchemaError};
 use crate::schema::{
-    BuiltinType, ComplexContent, DfdlProps, LengthKind, Particle, Representation, SchemaDocument,
-    SimpleBase, TypeDef, TypeName,
+    BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, Particle, Representation,
+    SchemaDocument, SimpleBase, TypeDef, TypeName,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -41,6 +41,7 @@ impl<'a> IrBuilder<'a> {
             let props = finalize_element_props(
                 kind,
                 self.merge_props_full(&defaults, &DfdlProps::default(), &root_element.props)?,
+                &self.strings,
             )?;
             validate_implicit_text_length(kind, &props)?;
             let name = self.strings.intern(root_name);
@@ -65,6 +66,8 @@ impl<'a> IrBuilder<'a> {
                 if root_element.props.length_kind.is_none() {
                     ir_props.length_kind = LengthKind::Implicit;
                 }
+                let ir_props =
+                    finalize_element_props(ValueKind::Complex, ir_props, &self.strings)?;
                 let name = self.strings.intern(root_name);
                 self.push(IrNode::Element {
                     name,
@@ -116,6 +119,7 @@ impl<'a> IrBuilder<'a> {
                 let ir_props = finalize_element_props(
                     kind,
                     self.merge_props_full(&defaults, props, element_props)?,
+                    &self.strings,
                 )?;
                 validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern("__value");
@@ -143,6 +147,7 @@ impl<'a> IrBuilder<'a> {
                     let ir_props = finalize_element_props(
                         kind,
                         self.merge_props_full(inherited, &element.props, &DfdlProps::default())?,
+                        &self.strings,
                     )?;
                     validate_implicit_text_length(kind, &ir_props)?;
                     Ok(self.push(IrNode::Element {
@@ -171,6 +176,7 @@ impl<'a> IrBuilder<'a> {
                             let merged = finalize_element_props(
                                 kind,
                                 merge_ir_props(&child_props, &overlay),
+                                &self.strings,
                             )?;
                             validate_implicit_text_length(kind, &merged)?;
                             return Ok(self.push(IrNode::Element {
@@ -185,6 +191,8 @@ impl<'a> IrBuilder<'a> {
                     if element.props.length_kind.is_none() {
                         ir_props.length_kind = LengthKind::Implicit;
                     }
+                    let ir_props =
+                        finalize_element_props(ValueKind::Complex, ir_props, &self.strings)?;
                     Ok(self.push(IrNode::Element {
                         name,
                         kind: ValueKind::Complex,
@@ -336,18 +344,70 @@ impl<'a> IrBuilder<'a> {
             }
             .into());
         };
+        if props.has_statement_annotation {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "prefixLengthType `{}` specifies one or more statement annotations such as dfdl:assert",
+                    type_name.as_str()
+                ),
+            }
+            .into());
+        }
+        let (min_inclusive, max_inclusive) = match base {
+            SimpleBase::Restriction {
+                min_inclusive,
+                max_inclusive,
+                ..
+            } => (*min_inclusive, *max_inclusive),
+            SimpleBase::Builtin(_) => (None, None),
+        };
         let mut prefix_props =
             merge_dfdl_props(&self.defaults.clone(), props, &DfdlProps::default(), &mut self.strings);
         self.attach_prefix_length(props, &DfdlProps::default(), &mut prefix_props)?;
         Ok(IrPrefixLength {
             kind: value_kind_from_simple(base),
             props: prefix_props,
+            min_inclusive,
+            max_inclusive,
         })
     }
 }
 
-fn finalize_element_props(kind: ValueKind, mut ir: IrProps) -> Result<IrProps> {
+fn validate_prefixed_character_encoding(
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<()> {
+    if kind != ValueKind::Complex {
+        return Ok(());
+    }
+    if props.length_kind != LengthKind::Prefixed {
+        return Ok(());
+    }
+    if props.length_units != LengthUnits::Characters {
+        return Ok(());
+    }
+    let encoding = strings
+        .get(props.encoding)
+        .map_err(|e| SchemaError::InvalidProperty {
+            message: alloc::format!("invalid encoding reference: {e}"),
+        })?;
+    if encoding.eq_ignore_ascii_case("utf-8") {
+        return Err(SchemaError::InvalidProperty {
+            message: "dfdl:lengthKind='prefixed' with dfdl:lengthUnits='characters' cannot be used with variable-width encoding".into(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn finalize_element_props(
+    kind: ValueKind,
+    mut ir: IrProps,
+    strings: &StringPool,
+) -> Result<IrProps> {
     validate_binary_delimited(kind, &ir)?;
+    validate_prefixed_character_encoding(kind, &ir, strings)?;
     // Binary schemas default to binary representation, but length-delimited string
     // payloads are still textual. HexBinary keeps binary bytes even with a text prefix.
     if kind == ValueKind::String

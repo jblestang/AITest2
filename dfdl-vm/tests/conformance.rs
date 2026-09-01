@@ -547,3 +547,43 @@ fn daffodil_prefixed_bits_nonnegative_integer() {
         "lengthUnitsBitsForNonNegativeInteger_prefixed",
     );
 }
+
+#[test]
+fn daffodil_prefixed_signed_invalid_bit_length_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "invalidLongBitLength",
+        "invalidIntBitLength",
+        "invalidShortBitLength",
+        "invalidByteBitLength",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_prefixed_facet_validation_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_check_prefix_facets_before_use1",
+        "pl_check_prefix_facets_before_use2",
+        "pl_check_prefix_facets_before_use5",
+        "pl_check_prefix_facets_before_use6",
+        "pl_check_prefix_facets_before_use7",
+        "pl_check_prefix_facets_before_use8",
+        "pl_check_prefix_facets_before_use9",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_prefixed_facet_compile_error_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_check_prefix_for_annotations",
+        "pl_complexContentLengthCharacters_utf8_1",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}

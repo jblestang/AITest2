@@ -1095,7 +1095,7 @@ fn read_prefix_integer_value(
     use crate::error::VmError;
     use crate::schema::Representation;
     let raw = read_prefix_field_payload(cursor, prefix.kind, &prefix.props, strings)?;
-    match prefix.props.representation {
+    let value = match prefix.props.representation {
         Representation::Text => {
             let text = core::str::from_utf8(&raw).map_err(|_| VmError::InvalidValue {
                 message: "invalid UTF-8 in prefix".into(),
@@ -1111,7 +1111,22 @@ fn read_prefix_integer_value(
             &raw,
             prefix.props.byte_order == ByteOrder::LittleEndian,
         )),
+    }?;
+    if let Some(min) = prefix.min_inclusive {
+        if (value as i64) < min {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("failed check: facet minInclusive ({min})"),
+            });
+        }
     }
+    if let Some(max) = prefix.max_inclusive {
+        if (value as i64) > max {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("failed check: facet maxInclusive ({max})"),
+            });
+        }
+    }
+    Ok(value)
 }
 
 fn read_prefix_field_payload(
@@ -1469,8 +1484,8 @@ fn prefixed_binary_payload_width(
         (Int, DfdlValue::Int(v)) => minimal_byte_width(signed_magnitude(*v as i64)),
         (UnsignedInt, DfdlValue::UnsignedInt(v)) => minimal_byte_width(*v as u64),
         (Long, DfdlValue::Long(v)) => minimal_byte_width(signed_magnitude(*v)),
-        (Float, DfdlValue::Float(v)) => 4,
-        (Double, DfdlValue::Double(v)) => 8,
+        (Float, DfdlValue::Float(_v)) => 4,
+        (Double, DfdlValue::Double(_v)) => 8,
         _ => type_size(kind),
     })
 }

@@ -66,6 +66,8 @@ pub struct DfdlProps {
     pub input_value_calc: Option<InputValueCalc>,
     /// Local name of sibling referenced by `../name` in inputValueCalc.
     pub input_value_calc_sibling: Option<String>,
+    /// True when a DFDL statement annotation (e.g. `dfdl:assert`) appears on this construct.
+    pub has_statement_annotation: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,7 +189,12 @@ pub enum ComplexContent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SimpleBase {
     Builtin(BuiltinType),
-    Restriction { base: BuiltinType, max_length: Option<u64> },
+    Restriction {
+        base: BuiltinType,
+        max_length: Option<u64>,
+        min_inclusive: Option<i64>,
+        max_inclusive: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
