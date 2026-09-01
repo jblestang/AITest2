@@ -620,7 +620,7 @@ pub(crate) fn read_text_scalar(
     let text = core::str::from_utf8(&raw).map_err(|_| VmError::InvalidValue {
         message: "invalid UTF-8".into(),
     })?;
-    let trimmed = trim_numeric_text(text, props.text_trim_kind, pad_char_from_props(props, strings));
+    let trimmed = trim_text_value(text, kind, props.text_trim_kind, props, strings);
 
     match kind {
         Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
@@ -1181,6 +1181,36 @@ fn pad_char_from_props<'a>(props: &IrProps, strings: &'a StringPool) -> Option<&
         .and_then(|id| strings.get(id).ok())
 }
 
+fn pad_char_for_kind<'a>(
+    props: &IrProps,
+    strings: &'a StringPool,
+    kind: crate::ir::ValueKind,
+) -> Option<&'a str> {
+    use crate::ir::ValueKind::*;
+    if matches!(kind, String) {
+        if let Some(id) = props.text_string_pad_character {
+            if let Ok(ch) = strings.get(id) {
+                return Some(ch);
+            }
+        }
+    }
+    pad_char_from_props(props, strings)
+}
+
+fn trim_text_value<'a>(
+    input: &'a str,
+    kind: crate::ir::ValueKind,
+    trim_kind: crate::schema::TextTrimKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> &'a str {
+    trim_numeric_text(
+        input,
+        trim_kind,
+        pad_char_for_kind(props, strings, kind),
+    )
+}
+
 fn trim_numeric_text<'a>(input: &'a str, kind: TextTrimKind, pad: Option<&str>) -> &'a str {
     match kind {
         TextTrimKind::None => input,
@@ -1260,6 +1290,49 @@ fn length_kind_name(kind: LengthKind) -> &'static str {
     }
 }
 
+pub(crate) fn consume_alignment(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::schema::LengthUnits;
+
+    if props.alignment == 0 {
+        return Ok(());
+    }
+    if props.alignment_units != LengthUnits::Bytes {
+        return Err(VmError::UnsupportedOperation {
+            op: "non-byte alignment".into(),
+        });
+    }
+    let align = props.alignment as usize;
+    if align <= 1 {
+        return Ok(());
+    }
+    let skip = (align - (cursor.pos % align)) % align;
+    if skip == 0 {
+        return Ok(());
+    }
+    if cursor.pos + skip > cursor.data.len() {
+        return Err(VmError::UnexpectedEof);
+    }
+    if props.fill_byte != 0 {
+        for byte in &cursor.data[cursor.pos..cursor.pos + skip] {
+            if *byte != props.fill_byte {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "alignment fill expected 0x{:02X}, got 0x{:02X}",
+                        props.fill_byte,
+                        byte
+                    ),
+                });
+            }
+        }
+    }
+    cursor.advance(skip);
+    Ok(())
+}
+
 pub(crate) fn read_simple(
     cursor: &mut Cursor<'_>,
     kind: crate::ir::ValueKind,
@@ -1279,13 +1352,28 @@ pub(crate) fn read_simple(
         }
     }
     let require_enclosing = require_delimiter || props.terminator.is_some();
-    let value = match props.representation {
-        Representation::Binary => {
-            read_binary_scalar(cursor, kind, props, strings, require_enclosing, parent_terminator)?
-        }
-        Representation::Text => {
-            read_text_scalar(cursor, kind, props, strings, require_enclosing, parent_terminator)?
-        }
+    use crate::ir::ValueKind;
+    use crate::schema::Representation;
+    let use_text =
+        props.representation == Representation::Text || matches!(kind, ValueKind::String);
+    let value = if use_text {
+        read_text_scalar(
+            cursor,
+            kind,
+            props,
+            strings,
+            require_enclosing,
+            parent_terminator,
+        )?
+    } else {
+        read_binary_scalar(
+            cursor,
+            kind,
+            props,
+            strings,
+            require_enclosing,
+            parent_terminator,
+        )?
     };
     if props.length_kind == LengthKind::Delimited {
         consume_enclosing_delimiter(cursor, props, strings, parent_terminator)?;

@@ -39,6 +39,7 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
         let name = &rest[..end];
         let consumed = 1 + end + 1;
         let value = match name {
+            "NUL" => vec![0],
             "NL" => vec![b'\n'],
             "CR" => vec![b'\r'],
             "LF" => vec![b'\n'],
@@ -398,6 +399,7 @@ mod tests {
     #[test]
     fn expand_nl() {
         assert_eq!(expand_entities("%NL;"), b"\n");
+        assert_eq!(expand_entities("%NUL;"), b"\0");
         assert_eq!(expand_entities("%#r3b;"), b";");
     }
 

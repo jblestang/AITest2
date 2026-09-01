@@ -1,6 +1,7 @@
 use super::runtime::{
-    consume_enclosing_delimiter, default_value_for, read_delimited_bytes, read_length_span,
-    read_prefixed_payload, read_simple, read_until_separator, Cursor, RuntimeConfig, VmContext,
+    consume_alignment, consume_enclosing_delimiter, default_value_for, read_delimited_bytes,
+    read_length_span, read_prefixed_payload, read_simple, read_until_separator, Cursor,
+    RuntimeConfig, VmContext,
 };
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
@@ -30,7 +31,7 @@ impl<'a> Decoder<'a> {
     /// Decode one logical value from `input`.
     pub fn decode(&self, input: &[u8]) -> Result<DfdlValue> {
         let mut cursor = Cursor::new(input);
-        let value = self.decode_node(self.ctx.program.root, &mut cursor, false, None)?;
+        let value = self.decode_node(self.ctx.program.root, &mut cursor, false, None, None)?;
         self.consume_root_delimited_suffix(&mut cursor)?;
         if self.ctx.config.strict_eos && !cursor.is_empty() {
             return Err(VmError::TrailingData {
@@ -50,17 +51,29 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         has_following_sibling: bool,
         parent_sequence: Option<&IrProps>,
+        siblings: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
                 self.consume_initiator(props, cursor)?;
                 let mut map = BTreeMap::new();
+                let mut seq_siblings = BTreeMap::new();
                 for (idx, &child) in children.iter().enumerate() {
                     let child_has_following = idx + 1 < children.len();
                     self.consume_separator(props, cursor, idx, children.len())?;
                     let saved = cursor.clone();
-                    match self.decode_particle(child, cursor, child_has_following, Some(props)) {
+                    match self.decode_particle(
+                        child,
+                        cursor,
+                        child_has_following,
+                        Some(props),
+                        Some(&seq_siblings),
+                    ) {
                         Ok(child_value) => {
+                            if let IrNode::Element { name, .. } = self.ctx.program.node(child)? {
+                                let key = self.ctx.strings().get(*name)?.to_string();
+                                seq_siblings.insert(key, child_value.clone());
+                            }
                             insert_child(&mut map, child, child_value, self.ctx.program)?;
                         }
                         Err(e) if is_element_absent(&e) => {
@@ -81,9 +94,13 @@ impl<'a> Decoder<'a> {
                             continue;
                         }
                     }
-                    if let Ok(value) =
-                        self.decode_node(branch.node, cursor, has_following_sibling, parent_sequence)
-                    {
+                    if let Ok(value) = self.decode_node(
+                        branch.node,
+                        cursor,
+                        has_following_sibling,
+                        parent_sequence,
+                        siblings,
+                    ) {
                         let name = self.ctx.strings().get(branch.name)?.to_string();
                         return Ok(DfdlValue::choice(name, value));
                     }
@@ -97,6 +114,7 @@ impl<'a> Decoder<'a> {
                 cursor,
                 has_following_sibling,
                 parent_sequence,
+                siblings,
             ),
         }
     }
@@ -107,6 +125,7 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         has_following_sibling: bool,
         parent_sequence: Option<&IrProps>,
+        siblings: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element { props, .. } => self.decode_element_occurrences(
@@ -115,8 +134,15 @@ impl<'a> Decoder<'a> {
                 cursor,
                 has_following_sibling,
                 parent_sequence,
+                siblings,
             ),
-            _ => self.decode_node(node_id, cursor, has_following_sibling, parent_sequence),
+            _ => self.decode_node(
+                node_id,
+                cursor,
+                has_following_sibling,
+                parent_sequence,
+                siblings,
+            ),
         }
     }
 
@@ -127,6 +153,7 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         has_following_sibling: bool,
         parent_sequence: Option<&IrProps>,
+        siblings: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<DfdlValue> {
         let min = props.occurs_min;
         let max = props.occurs_max.unwrap_or(u64::MAX);
@@ -141,7 +168,13 @@ impl<'a> Decoder<'a> {
             }
             let require_delimiter = has_following_sibling;
             let saved = cursor.clone();
-            match self.decode_single_element(node_id, cursor, require_delimiter, parent_sequence) {
+            match self.decode_single_element(
+                node_id,
+                cursor,
+                require_delimiter,
+                parent_sequence,
+                siblings,
+            ) {
                 Ok(v) => items.push(v),
                 Err(e) => {
                     if (items.len() as u64) >= min {
@@ -189,6 +222,7 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         require_delimiter: bool,
         parent_sequence: Option<&IrProps>,
+        siblings: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<DfdlValue> {
         let parent_term = parent_terminator_str(parent_sequence, self.ctx.strings())?;
         match self.ctx.program.node(node_id)? {
@@ -198,15 +232,17 @@ impl<'a> Decoder<'a> {
                 props,
                 child,
             } => {
+                let props = resolve_length_props(props, siblings, self.ctx.strings())?;
+                consume_alignment(cursor, &props)?;
                 if let Some(child_id) = child {
-                    self.consume_initiator(props, cursor)?;
+                    self.consume_initiator(&props, cursor)?;
                     if props.length_kind == LengthKind::Explicit {
                         let len = props.length.ok_or(VmError::InvalidValue {
                             message: "explicit complex missing length".into(),
                         })? as usize;
                         let bytes = read_length_span(cursor, len, props.length_units)?;
                         let mut sub = Cursor::new(&bytes);
-                        let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                        let inner = self.decode_node(*child_id, &mut sub, false, None, None)?;
                         if !sub.is_empty() {
                             return Err(VmError::InvalidValue {
                                 message: "unconsumed bytes in explicit-length complex element".into(),
@@ -222,14 +258,14 @@ impl<'a> Decoder<'a> {
                     if props.length_kind == LengthKind::Delimited {
                         let bytes = read_delimited_bytes(
                             cursor,
-                            props,
+                            &props,
                             self.ctx.strings(),
                             require_delimiter,
                             parent_term,
                         )?;
-                        consume_enclosing_delimiter(cursor, props, self.ctx.strings(), parent_term)?;
+                        consume_enclosing_delimiter(cursor, &props, self.ctx.strings(), parent_term)?;
                         let mut sub = Cursor::new(&bytes);
-                        let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                        let inner = self.decode_node(*child_id, &mut sub, false, None, None)?;
                         if !sub.is_empty() {
                             return Err(VmError::InvalidValue {
                                 message: "unconsumed bytes in delimited complex element".into(),
@@ -244,9 +280,9 @@ impl<'a> Decoder<'a> {
                     }
                     if props.length_kind == LengthKind::Prefixed {
                         let bytes =
-                            read_prefixed_payload(cursor, props, self.ctx.strings())?;
+                            read_prefixed_payload(cursor, &props, self.ctx.strings())?;
                         let mut sub = Cursor::new(&bytes);
-                        let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                        let inner = self.decode_node(*child_id, &mut sub, false, None, None)?;
                         if !sub.is_empty() {
                             return Err(VmError::InvalidValue {
                                 message: "unconsumed bytes in prefixed complex element".into(),
@@ -268,7 +304,7 @@ impl<'a> Decoder<'a> {
                                     let _ = cursor.consume_delimiter(term);
                                 }
                                 let mut sub = Cursor::new(&bytes);
-                                let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                                let inner = self.decode_node(*child_id, &mut sub, false, None, None)?;
                                 if !sub.is_empty() {
                                     return Err(VmError::InvalidValue {
                                         message:
@@ -294,7 +330,7 @@ impl<'a> Decoder<'a> {
                                         let _ = cursor.consume_delimiter(sep);
                                     }
                                     let mut sub = Cursor::new(&bytes);
-                                    let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                                    let inner = self.decode_node(*child_id, &mut sub, false, None, None)?;
                                     if !sub.is_empty() {
                                         return Err(VmError::InvalidValue {
                                             message:
@@ -312,8 +348,8 @@ impl<'a> Decoder<'a> {
                             }
                         }
                     }
-                    let inner = self.decode_node(*child_id, cursor, false, parent_sequence)?;
-                    self.consume_terminator(props, cursor)?;
+                    let inner = self.decode_node(*child_id, cursor, false, parent_sequence, None)?;
+                    self.consume_terminator(&props, cursor)?;
                     Ok(wrap_named(
                         self.ctx.strings().get(*name)?,
                         inner,
@@ -323,7 +359,7 @@ impl<'a> Decoder<'a> {
                     read_simple(
                         cursor,
                         *kind,
-                        props,
+                        &props,
                         self.ctx.strings(),
                         require_delimiter,
                         parent_term,
@@ -331,7 +367,7 @@ impl<'a> Decoder<'a> {
                     .map_err(Into::into)
                 }
             }
-            _ => self.decode_node(node_id, cursor, false, None),
+            _ => self.decode_node(node_id, cursor, false, None, None),
         }
     }
 
@@ -569,5 +605,55 @@ fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
         }
     } else {
         inner
+    }
+}
+
+fn resolve_length_props(
+    props: &IrProps,
+    siblings: Option<&BTreeMap<String, DfdlValue>>,
+    strings: &crate::ir::StringPool,
+) -> Result<IrProps> {
+    if props.length_kind != LengthKind::Explicit || props.length.is_some() {
+        return Ok(props.clone());
+    }
+    let Some(sib_id) = props.length_sibling else {
+        return Ok(props.clone());
+    };
+    let sib_name = strings.get(sib_id)?;
+    let sib_val = siblings
+        .and_then(|m| m.get(sib_name))
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("length sibling `{sib_name}` not available"),
+        })?;
+    let mut resolved = props.clone();
+    resolved.length = Some(length_from_value(sib_val)?);
+    Ok(resolved)
+}
+
+fn length_from_value(value: &DfdlValue) -> Result<u64> {
+    let err = |msg: alloc::string::String| -> Result<u64> {
+        Err(VmError::InvalidValue { message: msg }.into())
+    };
+    match value {
+        DfdlValue::Byte(v) => Ok(*v as u64),
+        DfdlValue::UnsignedByte(v) => Ok(*v as u64),
+        DfdlValue::Short(v) => u64::try_from(*v)
+            .map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("negative length `{v}`"),
+            })
+            .map_err(Into::into),
+        DfdlValue::UnsignedShort(v) => Ok(*v as u64),
+        DfdlValue::Int(v) => u64::try_from(*v)
+            .map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("negative length `{v}`"),
+            })
+            .map_err(Into::into),
+        DfdlValue::UnsignedInt(v) => Ok(*v as u64),
+        DfdlValue::Long(v) => u64::try_from(*v)
+            .map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("negative length `{v}`"),
+            })
+            .map_err(Into::into),
+        other => err(alloc::format!("length sibling has unsupported type: {other:?}")),
     }
 }

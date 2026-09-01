@@ -463,6 +463,12 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if props.length.is_some() {
         base.length = props.length;
     }
+    if props.length_sibling.is_some() {
+        base.length_sibling = props
+            .length_sibling
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
     if let Some(v) = props.length_units {
         base.length_units = v;
     }
@@ -475,6 +481,12 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if props.text_number_pad_character.is_some() {
         base.text_number_pad_character = props
             .text_number_pad_character
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
+    if props.text_string_pad_character.is_some() {
+        base.text_string_pad_character = props
+            .text_string_pad_character
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
@@ -547,6 +559,15 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.sequence_kind {
         base.sequence_kind = v;
     }
+    if props.alignment.is_some() {
+        base.alignment = props.alignment.unwrap_or(0);
+    }
+    if let Some(v) = props.alignment_units {
+        base.alignment_units = v;
+    }
+    if let Some(ref bytes) = props.fill_byte {
+        base.fill_byte = bytes.first().copied().unwrap_or(0);
+    }
     base
 }
 
@@ -559,10 +580,14 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.length.is_some() {
         out.length = overlay.length;
     }
+    if overlay.length_sibling.is_some() {
+        out.length_sibling = overlay.length_sibling;
+    }
     out.length_units = overlay.length_units;
     out.encoding = overlay.encoding;
     out.text_trim_kind = overlay.text_trim_kind;
     out.text_number_pad_character = overlay.text_number_pad_character;
+    out.text_string_pad_character = overlay.text_string_pad_character;
     out.binary_number_rep = overlay.binary_number_rep;
     out.binary_calendar_rep = overlay.binary_calendar_rep;
     out.binary_float_rep = overlay.binary_float_rep;
@@ -593,6 +618,13 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.sequence_kind = overlay.sequence_kind;
     out.occurs_min = overlay.occurs_min;
     out.occurs_max = overlay.occurs_max;
+    if overlay.alignment != 0 {
+        out.alignment = overlay.alignment;
+    }
+    out.alignment_units = overlay.alignment_units;
+    if overlay.fill_byte != 0 {
+        out.fill_byte = overlay.fill_byte;
+    }
     if overlay.prefix_length.is_some() {
         out.prefix_length = overlay.prefix_length.clone();
     }

@@ -908,6 +908,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.length.is_some() {
         base.length = overlay.length;
     }
+    if overlay.length_sibling.is_some() {
+        base.length_sibling = overlay.length_sibling;
+    }
     if overlay.length_units.is_some() {
         base.length_units = overlay.length_units;
     }
@@ -971,6 +974,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.alignment.is_some() {
         base.alignment = overlay.alignment;
     }
+    if overlay.alignment_units.is_some() {
+        base.alignment_units = overlay.alignment_units;
+    }
     if overlay.leading_skip.is_some() {
         base.leading_skip = overlay.leading_skip;
     }
@@ -989,6 +995,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_number_pad_character.is_some() {
         base.text_number_pad_character = overlay.text_number_pad_character;
     }
+    if overlay.text_string_pad_character.is_some() {
+        base.text_string_pad_character = overlay.text_string_pad_character;
+    }
     if overlay.prefix_length_type.is_some() {
         base.prefix_length_type = overlay.prefix_length_type;
     }
@@ -996,6 +1005,20 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
         base.prefix_includes_prefix_length = overlay.prefix_includes_prefix_length;
     }
     base
+}
+
+fn parse_sibling_length_ref(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let path = inner.strip_prefix("../")?;
+    Some(local_name_from_qname(path).to_string())
+}
+
+fn local_name_from_qname(qname: &str) -> &str {
+    qname.rsplit(':').next().unwrap_or(qname)
 }
 
 fn split_dfdl_attrs(
@@ -1040,6 +1063,9 @@ fn is_dfdl_property(name: &str) -> bool {
             | "encoding"
             | "textTrimKind"
             | "textNumberPadCharacter"
+            | "textStringPadCharacter"
+            | "textPadKind"
+            | "textStringJustification"
             | "binaryNumberRep"
             | "binaryCalendarRep"
             | "binaryFloatRep"
@@ -1053,6 +1079,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "textBooleanTrueRep"
             | "textBooleanFalseRep"
             | "alignment"
+            | "alignmentUnits"
             | "leadingSkip"
             | "trailingSkip"
             | "sequenceKind"
@@ -1124,9 +1151,18 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             }
             "lengthPattern" => props.length_pattern = Some(value.clone()),
             "length" => {
-                props.length = Some(value.parse().map_err(|_| ParseError::InvalidXml {
-                    message: alloc::format!("invalid length `{value}`"),
-                })?);
+                if let Ok(v) = value.parse::<u64>() {
+                    props.length = Some(v);
+                } else if let Some(sibling) = parse_sibling_length_ref(value) {
+                    props.length_sibling = Some(sibling);
+                } else if value.trim().starts_with('{') {
+                    // Defer unsupported expressions; do not fail the whole property set.
+                } else {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!("invalid length `{value}`"),
+                    }
+                    .into());
+                }
             }
             "lengthUnits" => {
                 props.length_units = Some(match value.as_str() {
@@ -1161,6 +1197,11 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.text_number_pad_character =
                     Some(crate::schema::expand_entities_str(value));
             }
+            "textStringPadCharacter" => {
+                props.text_string_pad_character =
+                    Some(crate::schema::expand_entities_str(value));
+            }
+            "textPadKind" | "textStringJustification" | "outputValueCalc" | "inputValueCalc" => {}
             "binaryNumberRep" | "binaryCalendarRep" => {
                 let rep = match value.as_str() {
                     "binary" => BinaryNumberRep::Binary,
@@ -1223,6 +1264,18 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     message: alloc::format!("invalid alignment `{value}`"),
                 })?);
             }
+            "alignmentUnits" => {
+                props.alignment_units = Some(match value.as_str() {
+                    "bytes" => LengthUnits::Bytes,
+                    "bits" => LengthUnits::Bits,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown alignmentUnits `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
             "leadingSkip" => {
                 props.leading_skip = Some(value.parse().map_err(|_| ParseError::InvalidXml {
                     message: alloc::format!("invalid leadingSkip `{value}`"),
@@ -1245,7 +1298,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     }
                 });
             }
-            "fillByte" => props.fill_byte = Some(parse_byte_literal(value)?),
+            "fillByte" => props.fill_byte = Some(crate::schema::expand_entities(value)),
             "ref" => props.format_ref = Some(format_ref_key(value)),
             "prefixLengthType" => {
                 props.prefix_length_type = Some(TypeName::new(normalize_qname(value)));

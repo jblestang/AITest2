@@ -25,11 +25,15 @@ pub struct DfdlProps {
     pub bit_order: Option<BitOrder>,
     pub length_kind: Option<LengthKind>,
     pub length: Option<u64>,
+    /// Parsed sibling element name from `{ ../ex:name }` length expressions.
+    pub length_sibling: Option<String>,
     pub length_units: Option<LengthUnits>,
     pub encoding: Option<String>,
     pub text_trim_kind: Option<TextTrimKind>,
     /// Expanded pad character for numeric text (`dfdl:textNumberPadCharacter`).
     pub text_number_pad_character: Option<String>,
+    /// Expanded pad character for string text (`dfdl:textStringPadCharacter`).
+    pub text_string_pad_character: Option<String>,
     pub binary_number_rep: Option<BinaryNumberRep>,
     pub binary_calendar_rep: Option<BinaryNumberRep>,
     pub binary_float_rep: Option<BinaryFloatRep>,
@@ -49,6 +53,7 @@ pub struct DfdlProps {
     pub text_boolean_false_rep: Option<String>,
     pub default_value: Option<String>,
     pub alignment: Option<u64>,
+    pub alignment_units: Option<LengthUnits>,
     pub leading_skip: Option<u64>,
     pub trailing_skip: Option<u64>,
     pub sequence_kind: Option<SequenceKind>,

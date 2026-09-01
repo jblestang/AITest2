@@ -396,6 +396,8 @@ fn daffodil_prefixed_decimal_and_datetime_suite() {
         "pl_text_dec_txt_bits",
         "pl_text_date_txt_bytes",
         "pl_text_date_txt_bits",
+        "pl_text_dec_txt_chars",
+        "pl_text_bool_txt_chars",
         "pl_bin_dec_txt_bytes",
         "pl_bin_dec_txt_bits",
         "pl_bin_dec_bin_bytes",
@@ -420,7 +422,13 @@ fn daffodil_prefixed_decimal_and_datetime_suite() {
 #[test]
 fn daffodil_prefixed_complex_content_suite() {
     let tdml = daffodil_tdml!("PrefixedTests.tdml");
-    for name in ["pl_complex_bin_bytes", "pl_complex_bin_bits"] {
+    for name in [
+        "pl_complex_bin_bytes",
+        "pl_complex_bin_bits",
+        "pl_complex_bin_bytes_suspension",
+        "pl_complex_bin_bytes_suspension_includes",
+        "plSlash1_data",
+    ] {
         assert_named_test_passes(tdml, name);
     }
 }
