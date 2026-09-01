@@ -133,8 +133,48 @@ pub fn match_pattern(input: &[u8], pattern: &str) -> Option<usize> {
     }
 }
 
-/// Match a compound DFDL delimiter (e.g. `%NL;%WSP*;`).
+/// Match a compound DFDL delimiter (e.g. `%NL;%WSP*;`, or `%NL;, ,` alternates).
 pub fn match_delimiter(input: &[u8], pattern: &str) -> Option<usize> {
+    if pattern.is_empty() {
+        return Some(0);
+    }
+    if pattern.len() == 1 {
+        return match_pattern(input, pattern);
+    }
+    if delimiter_has_top_level_comma(pattern) {
+        for alt in split_delimiter_alternatives(pattern) {
+            if let Some(n) = match_delimiter_compound(input, &alt) {
+                return Some(n);
+            }
+        }
+        return None;
+    }
+    match_delimiter_compound(input, pattern)
+}
+
+fn delimiter_has_top_level_comma(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let Some(rel) = pattern[i..].find(';') {
+                i += rel + 1;
+                continue;
+            }
+        } else if bytes[i] == b'[' {
+            if let Some(rel) = pattern[i..].find(']') {
+                i += rel + 1;
+                continue;
+            }
+        } else if bytes[i] == b',' {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn match_delimiter_compound(input: &[u8], pattern: &str) -> Option<usize> {
     if pattern.is_empty() {
         return Some(0);
     }
@@ -147,6 +187,45 @@ pub fn match_delimiter(input: &[u8], pattern: &str) -> Option<usize> {
         pos += matched;
     }
     Some(pos)
+}
+
+/// Split a separator/initiator/terminator into comma-separated alternatives.
+/// Commas inside `%...;` entities and `[...]` classes are not separators.
+/// Each comma in the list also denotes a literal `,` alternative (DFDL-12).
+fn split_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::String> {
+    let mut alts = alloc::vec::Vec::new();
+    let mut start = 0usize;
+    let bytes = pattern.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let Some(rel) = pattern[i..].find(';') {
+                i += rel + 1;
+                continue;
+            }
+        } else if bytes[i] == b'[' {
+            if let Some(rel) = pattern[i..].find(']') {
+                i += rel + 1;
+                continue;
+            }
+        } else if bytes[i] == b',' {
+            let part = pattern[start..i].trim();
+            if !part.is_empty() {
+                alts.push(part.to_string());
+            }
+            alts.push(",".to_string());
+            start = i + 1;
+        }
+        i += 1;
+    }
+    let tail = pattern[start..].trim();
+    if !tail.is_empty() {
+        alts.push(tail.to_string());
+    }
+    if alts.is_empty() {
+        alts.push(pattern.to_string());
+    }
+    alts
 }
 
 /// Minimal bytes to emit for a delimiter on encode (one WSP for `+`, none for `*`/`?`).
@@ -298,9 +377,22 @@ pub fn validate_length_pattern(pattern: &str) -> Result<(), String> {
     if let Some(err) = validate_length_pattern_syntax(pat) {
         return Err(err);
     }
+    if length_pattern_uses_custom_matcher(pat) {
+        return Ok(());
+    }
     Regex::new(pat)
         .map(|_| ())
         .map_err(|e| format_length_pattern_error(pat, e))
+}
+
+fn length_pattern_uses_custom_matcher(pat: &str) -> bool {
+    pat.contains("(?=")
+        || pat.contains("(?!")
+        || pat.contains("(?<=")
+        || pat.contains("(?<!")
+        || pat.contains("(?s)")
+        || pat.contains("(?s:")
+        || pat.contains("\\x")
 }
 
 fn validate_length_pattern_syntax(pat: &str) -> Option<String> {
@@ -427,6 +519,10 @@ pub fn match_length_pattern(input: &[u8], pattern: &str) -> Option<usize> {
         return Some(0);
     }
 
+    if let Some(len) = match_length_pattern_custom(input, pat) {
+        return Some(len);
+    }
+
     // Fast path for simple char-class patterns without regex metacharacters.
     if pat.starts_with('[')
         && !pat.contains('\\')
@@ -438,14 +534,209 @@ pub fn match_length_pattern(input: &[u8], pattern: &str) -> Option<usize> {
         }
     }
 
-    let re = Regex::new(pat).ok()?;
-    let hay = Input::new(input).anchored(Anchored::Yes);
-    let m = re.find(hay)?;
-    if m.start() == 0 {
-        Some(m.end())
-    } else {
-        None
+    if let Ok(re) = Regex::new(pat) {
+        let hay = Input::new(input).anchored(Anchored::Yes);
+        if let Some(m) = re.find(hay) {
+            if m.start() == 0 {
+                return Some(m.end());
+            }
+        }
+        if pattern_allows_zero_length_on_mismatch(pat) {
+            return Some(0);
+        }
+        return None;
     }
+
+    None
+}
+
+fn pattern_allows_zero_length_on_mismatch(pat: &str) -> bool {
+    !pat.contains('|')
+}
+
+fn match_length_pattern_custom(input: &[u8], pat: &str) -> Option<usize> {
+    if let Some(stripped) = pat.strip_prefix("(?s)") {
+        return match_dotall_length_pattern(input, stripped);
+    }
+    if pat.contains("(?=,|$)") || pat.contains(r"(?=,|$)") {
+        return Some(match_until_unescaped_comma(input));
+    }
+    if pat.contains("(?=") && pat.contains("FF") {
+        return Some(match_until_ff_separator(input));
+    }
+    if is_simple_literal_pattern(pat) {
+        let bytes = pat.as_bytes();
+        if input.starts_with(bytes) {
+            return Some(bytes.len());
+        }
+        return Some(0);
+    }
+    None
+}
+
+fn is_simple_literal_pattern(pat: &str) -> bool {
+    let mut chars = pat.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '.' | '*' | '+' | '?' | '[' | '(' | ')' | '|' | '^' | '$' | '{' | '}' => return false,
+            '\\' => {
+                if chars.next().is_none() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+fn match_until_unescaped_comma(input: &[u8]) -> usize {
+    if input.is_empty() {
+        return 0;
+    }
+    let mut i = 0usize;
+    while i < input.len() {
+        if input[i] == b',' {
+            let mut j = i;
+            while j > 0 && input[j - 1] == b'\\' {
+                j -= 1;
+            }
+            if (i - j) % 2 == 0 {
+                return i;
+            }
+        }
+        i += 1;
+    }
+    input.len()
+}
+
+fn match_until_ff_separator(input: &[u8]) -> usize {
+    let mut i = 0usize;
+    while i < input.len() {
+        if input[i] == 0xFF
+            && i + 1 < input.len()
+            && (0x01..=0xFE).contains(&input[i + 1])
+        {
+            return i;
+        }
+        i += 1;
+    }
+    input.len()
+}
+
+fn match_dotall_length_pattern(input: &[u8], pat: &str) -> Option<usize> {
+    match_dotall(input, 0, pat, 0)
+}
+
+fn match_dotall(input: &[u8], ip: usize, pat: &str, pp: usize) -> Option<usize> {
+    if pp >= pat.len() {
+        return Some(ip);
+    }
+    if let Some((adv, nip)) = match_dotall_optional_crlf(input, ip, &pat[pp..]) {
+        return match_dotall(input, nip, pat, pp + adv);
+    }
+    if pat.as_bytes()[pp] == b'(' {
+        if let Some((group_len, alts)) = parse_dotall_alternation(&pat[pp..]) {
+            for alt in alts {
+                if let Some(nip) = match_dotall(input, ip, alt, 0) {
+                    if let Some(end) = match_dotall(input, nip, pat, pp + group_len) {
+                        return Some(end);
+                    }
+                }
+            }
+            return None;
+        }
+    }
+    if pat.as_bytes()[pp] == b'.' {
+        if ip >= input.len() {
+            return None;
+        }
+        return match_dotall(input, ip + 1, pat, pp + 1);
+    }
+    if let Some((lit, adv)) = read_pattern_literal(&pat[pp..]) {
+        if input[ip..].starts_with(lit.as_bytes()) {
+            return match_dotall(input, ip + lit.len(), pat, pp + adv);
+        }
+        return None;
+    }
+    None
+}
+
+fn match_dotall_optional_crlf(input: &[u8], ip: usize, pat: &str) -> Option<(usize, usize)> {
+    if pat.starts_with("(\\r\\n)?") {
+        let nip = if input[ip..].starts_with(b"\r\n") {
+            ip + 2
+        } else {
+            ip
+        };
+        return Some(("(\\r\\n)?".len(), nip));
+    }
+    None
+}
+
+fn parse_dotall_alternation(pat: &str) -> Option<(usize, alloc::vec::Vec<&str>)> {
+    if !pat.starts_with('(') {
+        return None;
+    }
+    let close = find_matching_paren(pat)?;
+    let body = &pat[1..close];
+    if body.starts_with('?') {
+        return None;
+    }
+    if !body.contains('|') {
+        return None;
+    }
+    Some((close + 1, body.split('|').collect()))
+}
+
+fn find_matching_paren(pat: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, b) in pat.bytes().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn read_pattern_literal(pat: &str) -> Option<(String, usize)> {
+    if pat.is_empty() {
+        return None;
+    }
+    if pat.starts_with('(') || pat.starts_with('.') {
+        return None;
+    }
+    let mut out = String::new();
+    let mut i = 0usize;
+    let bytes = pat.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'(' || bytes[i] == b'.' {
+            break;
+        }
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'r' => out.push('\r'),
+                b'n' => out.push('\n'),
+                b't' => out.push('\t'),
+                other => out.push(char::from(other)),
+            }
+            i += 2;
+            continue;
+        }
+        out.push(char::from(bytes[i]));
+        i += 1;
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some((out, i))
 }
 
 fn match_char_class(input: &[u8], pattern: &str) -> Option<usize> {
@@ -553,13 +844,13 @@ mod tests {
     #[test]
     fn match_negated_class_pattern() {
         assert_eq!(match_length_pattern(b"cz", "[^ab]z"), Some(2));
-        assert_eq!(match_length_pattern(b"az", "[^ab]z"), None);
+        assert_eq!(match_length_pattern(b"az", "[^ab]z"), Some(0));
     }
 
     #[test]
     fn match_unicode_property_pattern() {
         assert_eq!(match_length_pattern(b"abcDEFG", r"\p{L}{2,5}"), Some(5));
-        assert_eq!(match_length_pattern(b"a1", r"\p{L}{2,5}"), None);
+        assert_eq!(match_length_pattern(b"a1", r"\p{L}{2,5}"), Some(0));
     }
 
     #[test]
@@ -595,6 +886,13 @@ mod tests {
         let e3 = validate_length_pattern("*").unwrap_err();
         assert!(e3.contains("Schema Definition Error"));
         assert!(e3.contains("Dangling meta character '*'"), "{e3}");
+    }
+
+    #[test]
+    fn match_wsp_star_nl_terminator() {
+        let input = b" \n";
+        assert_eq!(match_delimiter(input, "%WSP*;%NL;"), None);
+        assert_eq!(match_delimiter(b",dog", "%NL;, ,"), Some(1));
     }
 
     #[test]

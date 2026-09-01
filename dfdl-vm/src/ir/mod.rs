@@ -60,6 +60,7 @@ pub enum ValueKind {
     Double,
     Decimal,
     DateTime,
+    Time,
     String,
     HexBinary,
     Complex,

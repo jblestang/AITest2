@@ -410,7 +410,7 @@ pub(crate) fn type_size(kind: crate::ir::ValueKind) -> usize {
         Short | UnsignedShort => 2,
         Int | UnsignedInt | Float => 4,
         Long | Double => 8,
-        String | HexBinary | Decimal | DateTime | Complex => 0,
+        String | HexBinary | Decimal | DateTime | Time | Complex => 0,
     }
 }
 
@@ -1137,7 +1137,7 @@ fn decode_binary_from_raw_bits(
         }
         Float => Ok(DfdlValue::Float(f32::from_bits(raw as u32))),
         Double => Ok(DfdlValue::Double(f64::from_bits(raw))),
-        Decimal | DateTime => unreachable!("handled above"),
+        Decimal | DateTime | Time => unreachable!("handled above"),
         String | HexBinary | Complex => Err(VmError::TypeMismatch {
             expected: "binary scalar".into(),
         }),
@@ -1254,7 +1254,7 @@ fn decode_binary_bytes(
         Float => Ok(DfdlValue::Float(f32::from_bits(int!(u32)))),
         Double => Ok(DfdlValue::Double(f64::from_bits(int!(u64)))),
         HexBinary => Ok(DfdlValue::HexBinary(bytes.to_vec())),
-        Decimal | DateTime | String | Complex => Err(VmError::TypeMismatch {
+        Decimal | DateTime | Time | String | Complex => Err(VmError::TypeMismatch {
             expected: "binary scalar".into(),
         }),
     }
@@ -1294,11 +1294,10 @@ pub(crate) fn read_text_scalar(
                 message: "pattern length missing lengthPattern".into(),
             })?;
             let pat = pattern_str(strings, id)?;
-            let len = match_length_pattern(&cursor.data[cursor.pos..], pat).ok_or(
-                VmError::InvalidValue {
+            let len = match_length_pattern(&cursor.data[cursor.pos..], pat)
+                .ok_or(VmError::InvalidValue {
                     message: alloc::format!("pattern `{pat}` mismatch"),
-                },
-            )?;
+                })?;
             cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?
         }
         LengthKind::Implicit => {
@@ -1331,7 +1330,7 @@ pub(crate) fn read_text_scalar(
         Float => parse_float(trimmed).map(|v| DfdlValue::Float(v as f32)),
         Double => parse_float(trimmed).map(DfdlValue::Double),
         Decimal => Ok(DfdlValue::Decimal(trimmed.into())),
-        DateTime => Ok(DfdlValue::DateTime(trimmed.into())),
+        DateTime | Time => Ok(DfdlValue::DateTime(trimmed.into())),
         String => Ok(DfdlValue::String(trimmed.into())),
         HexBinary => decode_hex(trimmed).map(DfdlValue::HexBinary),
         Complex => Err(VmError::TypeMismatch {
@@ -2500,8 +2499,11 @@ pub(crate) fn read_simple(
     let require_enclosing = require_delimiter || props.terminator.is_some();
     use crate::ir::ValueKind;
     use crate::schema::Representation;
-    let use_text =
-        props.representation == Representation::Text || matches!(kind, ValueKind::String);
+    let use_text = match kind {
+        ValueKind::String => true,
+        ValueKind::HexBinary => false,
+        _ => props.representation == Representation::Text,
+    };
     let value = if use_text {
         read_text_scalar(
             cursor,
@@ -3336,7 +3338,7 @@ pub(crate) fn default_value_for(
         Float => parse_float(raw).ok().map(|v| DfdlValue::Float(v as f32)),
         Double => parse_float(raw).ok().map(DfdlValue::Double),
         Decimal => Some(DfdlValue::Decimal(raw.into())),
-        DateTime => Some(DfdlValue::DateTime(raw.into())),
+        DateTime | Time => Some(DfdlValue::DateTime(raw.into())),
         String => Some(DfdlValue::String(raw.into())),
         HexBinary => decode_hex(raw).ok().map(DfdlValue::HexBinary),
         Complex => None,

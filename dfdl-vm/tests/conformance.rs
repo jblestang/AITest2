@@ -237,6 +237,8 @@ fn daffodil_length_kind_delimited_infix_separator_fail() {
 fn daffodil_section12_pattern_extended_suite() {
     let tdml = daffodil_tdml!("PatternTests.tdml");
     for name in [
+        "LengthKindPattern",
+        "LengthKindPatternCompound",
         "LengthKindPatternCompound2",
         "LengthPatternIllegalBits_01",
         "LengthPatternLegalBits_01",
@@ -245,6 +247,9 @@ fn daffodil_section12_pattern_extended_suite() {
         "LengthPatternNil_NoNil",
         "LengthPatternNil_EmptyStringAllowed",
         "lengthPatternBinaryPatternLimit",
+        "hexBinaryLengthKindPattern01",
+        "nested_patterns",
+        "unmatchedPattern01",
         "ComplexWithBinaryChild",
         "invalid_pattern",
         "invalid_pattern2",
@@ -252,6 +257,16 @@ fn daffodil_section12_pattern_extended_suite() {
     ] {
         assert_named_test_passes(tdml, name);
     }
+}
+
+#[test]
+fn daffodil_delimited_binary_int_seq_sep_sde() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "delimited_binary_int_seqSep");
+}
+
+#[test]
+fn daffodil_implicit_len_time_sde() {
+    assert_named_test_passes(daffodil_tdml!("implicit.tdml"), "implicitLenTime");
 }
 
 #[test]

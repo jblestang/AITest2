@@ -249,6 +249,7 @@ pub enum BuiltinType {
     Double,
     Decimal,
     DateTime,
+    Time,
     Boolean,
     HexBinary,
 }
@@ -271,6 +272,7 @@ impl BuiltinType {
             "xs:double" | "double" => Some(BuiltinType::Double),
             "xs:decimal" | "decimal" => Some(BuiltinType::Decimal),
             "xs:dateTime" | "dateTime" => Some(BuiltinType::DateTime),
+            "xs:time" | "time" => Some(BuiltinType::Time),
             "xs:boolean" | "boolean" => Some(BuiltinType::Boolean),
             "xs:hexBinary" | "hexBinary" => Some(BuiltinType::HexBinary),
             _ => None,
@@ -292,6 +294,7 @@ impl BuiltinType {
             BuiltinType::Double => "xs:double",
             BuiltinType::Decimal => "xs:decimal",
             BuiltinType::DateTime => "xs:dateTime",
+            BuiltinType::Time => "xs:time",
             BuiltinType::Boolean => "xs:boolean",
             BuiltinType::HexBinary => "xs:hexBinary",
         }

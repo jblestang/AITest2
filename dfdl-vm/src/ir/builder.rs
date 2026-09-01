@@ -554,10 +554,20 @@ fn finalize_element_props(
 fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
     if props.representation == Representation::Binary
         && props.length_kind == LengthKind::Delimited
-        && !matches!(kind, ValueKind::String | ValueKind::HexBinary)
     {
+        if matches!(kind, ValueKind::String | ValueKind::HexBinary) {
+            return Ok(());
+        }
+        if matches!(
+            props.binary_number_rep,
+            crate::schema::BinaryNumberRep::PackedBcd
+                | crate::schema::BinaryNumberRep::Bcd
+                | crate::schema::BinaryNumberRep::Ibm4690Packed
+        ) {
+            return Ok(());
+        }
         return Err(SchemaError::InvalidProperty {
-            message: "binary data elements cannot have lengthKind=delimited".into(),
+            message: "Schema Definition Error. lengthKind='delimited' only supported for packed binary formats.".into(),
         }
         .into());
     }
@@ -573,6 +583,15 @@ fn validate_implicit_text_length(kind: ValueKind, props: &IrProps) -> Result<()>
     }
     if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {
         return Ok(());
+    }
+    if kind == ValueKind::Time {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. type {} lengthKind='implicit' representation='text' is not allowed",
+                value_kind_type_name(kind)
+            ),
+        }
+        .into());
     }
     Err(SchemaError::InvalidProperty {
         message: alloc::format!(
@@ -613,6 +632,7 @@ fn value_kind_type_name(kind: ValueKind) -> &'static str {
         ValueKind::Double => "xs:double",
         ValueKind::Decimal => "xs:decimal",
         ValueKind::DateTime => "xs:dateTime",
+        ValueKind::Time => "xs:time",
         ValueKind::String => "xs:string",
         ValueKind::HexBinary => "xs:hexBinary",
         ValueKind::Complex => "complex",
@@ -768,6 +788,7 @@ fn value_kind_from_builtin(builtin: BuiltinType) -> ValueKind {
         BuiltinType::Double => ValueKind::Double,
         BuiltinType::Decimal => ValueKind::Decimal,
         BuiltinType::DateTime => ValueKind::DateTime,
+        BuiltinType::Time => ValueKind::Time,
         BuiltinType::String => ValueKind::String,
         BuiltinType::HexBinary => ValueKind::HexBinary,
     }

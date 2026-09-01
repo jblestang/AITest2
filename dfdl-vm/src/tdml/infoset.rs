@@ -194,7 +194,7 @@ fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, Strin
             .map(DfdlValue::Double)
             .map_err(|e| e.to_string()),
         ValueKind::Decimal => Ok(DfdlValue::Decimal(trimmed.to_string())),
-        ValueKind::DateTime => Ok(DfdlValue::DateTime(trimmed.to_string())),
+        ValueKind::DateTime | ValueKind::Time => Ok(DfdlValue::DateTime(trimmed.to_string())),
         ValueKind::HexBinary => decode_hex(trimmed).map(DfdlValue::HexBinary),
         ValueKind::Complex => {
             if trimmed.is_empty() {
