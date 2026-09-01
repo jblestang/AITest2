@@ -56,12 +56,15 @@ pub struct UnparserTestCase {
     /// When set, encode must fail and error text must contain each message.
     pub expected_errors: Option<Vec<String>>,
     pub config: Option<String>,
+    pub documents: Vec<TdmlDocument>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TdmlDocument {
     pub kind: DocumentKind,
     pub data: Vec<u8>,
+    /// Significant bits in the last byte when the document ends mid-byte.
+    pub last_byte_bit_count: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,10 +245,15 @@ fn parse_unparser_test_case(
 
     let mut infoset = String::new();
     let mut expected_errors = None;
+    let mut documents = Vec::new();
 
     reader.for_each_child("unparserTestCase", |local, _, r| match local {
         "infoset" => {
             infoset = r.read_inner_xml()?;
+            Ok(())
+        }
+        "document" => {
+            documents.push(parse_document(r)?);
             Ok(())
         }
         "errors" => {
@@ -262,6 +270,7 @@ fn parse_unparser_test_case(
         infoset,
         expected_errors,
         config,
+        documents,
     })
 }
 
@@ -273,28 +282,36 @@ fn parse_document(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
         return Ok(TdmlDocument {
             kind: DocumentKind::Text,
             data: Vec::new(),
+            last_byte_bit_count: None,
         });
     }
 
     if reader.peek_start_local()? == Some("documentPart".to_string()) {
         let mut kind = DocumentKind::Text;
         let mut data = Vec::new();
+        let mut last_byte_bit_count = None;
         while reader.peek_start_local()? == Some("documentPart".to_string()) {
             let part = parse_document_part(reader)?;
             if data.is_empty() {
                 kind = part.kind;
             }
             data.extend(part.data);
+            last_byte_bit_count = part.last_byte_bit_count;
             reader.skip_insignificant_ws()?;
         }
         reader.expect_end("document")?;
-        return Ok(TdmlDocument { kind, data });
+        return Ok(TdmlDocument {
+            kind,
+            data,
+            last_byte_bit_count,
+        });
     }
 
     let text = reader.read_text_until_end("document")?;
     Ok(TdmlDocument {
         kind: DocumentKind::Text,
         data: text.into_bytes(),
+        last_byte_bit_count: None,
     })
 }
 
@@ -317,9 +334,9 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
         .unwrap_or(false);
     let encoding = attrs.get("encoding").map(String::as_str);
     let text = reader.read_text_until_end("documentPart")?;
-    let data = match kind {
+    let (data, last_byte_bit_count) = match kind {
         DocumentKind::Text => {
-            if replace_entities {
+            let data = if replace_entities {
                 expand_entities(&text)
             } else if let Some(enc) = encoding {
                 encode_document_text(&text, enc).map_err(|e| ParseError::InvalidXml {
@@ -327,12 +344,20 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
                 })?
             } else {
                 text.into_bytes()
-            }
+            };
+            (data, None)
         }
-        DocumentKind::Hex => parse_hex_document(&text)?,
-        DocumentKind::Bits => parse_bits_document(&text)?,
+        DocumentKind::Hex => (parse_hex_document(&text)?, None),
+        DocumentKind::Bits => {
+            let (data, bit_count) = parse_bits_document_with_count(&text)?;
+            (data, Some(bit_count))
+        }
     };
-    Ok(TdmlDocument { kind, data })
+    Ok(TdmlDocument {
+        kind,
+        data,
+        last_byte_bit_count,
+    })
 }
 
 fn parse_errors(reader: &mut XmlReader<'_>) -> Result<Vec<String>> {
@@ -381,8 +406,7 @@ fn parse_hex_document(text: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Pack TDML `type="bits"` document text into bytes (MSB-first within each byte).
-fn parse_bits_document(text: &str) -> Result<Vec<u8>> {
+fn parse_bits_document_with_count(text: &str) -> Result<(Vec<u8>, u8)> {
     let mut bits = Vec::new();
     for c in text.chars().filter(|c| !c.is_whitespace()) {
         match c {
@@ -396,6 +420,7 @@ fn parse_bits_document(text: &str) -> Result<Vec<u8>> {
             }
         }
     }
+    let trailing = (bits.len() % 8) as u8;
     let mut out = Vec::new();
     for chunk in bits.chunks(8) {
         let mut byte = 0u8;
@@ -404,7 +429,7 @@ fn parse_bits_document(text: &str) -> Result<Vec<u8>> {
         }
         out.push(byte);
     }
-    Ok(out)
+    Ok((out, trailing as u8))
 }
 
 #[allow(dead_code)]

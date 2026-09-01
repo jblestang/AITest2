@@ -1,6 +1,7 @@
 use super::infoset::{compare_infoset, infoset_xml_to_root_value};
 use super::parser::{
-    effective_round_trip, parse_tdml, ParserTestCase, RoundTrip, TdmlSuite, UnparserTestCase,
+    effective_round_trip, parse_tdml, ParserTestCase, RoundTrip, TdmlDocument, TdmlSuite,
+    UnparserTestCase,
 };
 use crate::api::DfdlSpec;
 use crate::length_validate::DaffodilTunables;
@@ -317,16 +318,73 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         };
     }
 
-    match spec.encode(&value) {
-        Ok(_) => Ok(TestResult {
-            name: test.name.clone(),
-            outcome: TestOutcome::Pass,
-        }),
+    match spec.encode_with_bit_count(&value) {
+        Ok((encoded, bit_count)) => {
+            if let Some(doc) = test.documents.first() {
+                if !encoded_matches_document(&encoded, bit_count, doc) {
+                    return Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Fail(alloc::format!(
+                            "encoded document mismatch: got {encoded:02x?} ({} trailing bits), expected {:02x?} ({:?} trailing bits)",
+                            bit_count,
+                            doc.data,
+                            doc.last_byte_bit_count,
+                        )),
+                    });
+                }
+            }
+            Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Pass,
+            })
+        }
         Err(e) => Ok(TestResult {
             name: test.name.clone(),
             outcome: TestOutcome::Fail(alloc::format!("encode error: {e}")),
         }),
     }
+}
+
+fn encoded_matches_document(encoded: &[u8], encoded_bit_count: u8, doc: &TdmlDocument) -> bool {
+    let expected_bit_count = doc.last_byte_bit_count.unwrap_or(0);
+
+    // Hex/byte TDML documents often store bit-stream data in full bytes; infer trailing
+    // significant bits from the encoded output when the expected doc is byte-aligned.
+    if expected_bit_count == 0 && encoded_bit_count > 0 {
+        if encoded.len() != doc.data.len() {
+            return false;
+        }
+        if encoded.len() > 1 && encoded[..encoded.len() - 1] != doc.data[..doc.data.len() - 1] {
+            return false;
+        }
+        let mask = 0xFF_u8 << (8 - encoded_bit_count);
+        return encoded.last().map(|b| b & mask) == doc.data.last().map(|b| b & mask);
+    }
+
+    if absolute_bit_index(encoded, encoded_bit_count)
+        != absolute_bit_index(&doc.data, expected_bit_count)
+    {
+        return false;
+    }
+    if encoded_bit_count == 0 && expected_bit_count == 0 {
+        return encoded == doc.data.as_slice();
+    }
+    if encoded.len() != doc.data.len() {
+        return false;
+    }
+    if encoded.len() > 1 && encoded[..encoded.len() - 1] != doc.data[..doc.data.len() - 1] {
+        return false;
+    }
+    let mask = if encoded_bit_count == 0 {
+        0xFF
+    } else {
+        0xFF_u8 << (8 - encoded_bit_count)
+    };
+    encoded.last().map(|b| b & mask) == doc.data.last().map(|b| b & mask)
+}
+
+fn absolute_bit_index(data: &[u8], bit_count: u8) -> usize {
+    data.len() * 8 + bit_count as usize
 }
 
 fn error_messages_match(expected: &[String], err: &str) -> bool {

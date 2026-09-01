@@ -137,6 +137,9 @@ fn daffodil_explicit_length_suite() {
         "test_lengthRuntimeDoubleNegative_SDE",
         "test_lengthRuntimeIntNaN_PE",
         "test_lengthRuntimeIntNegative_SDE",
+        "invalidIntBitLengthExpr",
+        "invalidShortBitLengthExpr",
+        "invalidByteBitLengthExpr",
     ] {
         assert_named_test_passes(tdml, name);
     }

@@ -80,6 +80,13 @@ impl DfdlSpec {
     pub fn encode(&self, value: &DfdlValue) -> Result<Vec<u8>> {
         self.encoder().encode_to_vec(value)
     }
+
+    /// Encode a value and return trailing bit count in the last byte (0 if byte-aligned).
+    pub fn encode_with_bit_count(&self, value: &DfdlValue) -> Result<(Vec<u8>, u8)> {
+        let mut out = Vec::new();
+        let bit_count = self.encoder().encode_with_bit_count(value, &mut out)?;
+        Ok((out, bit_count))
+    }
 }
 
 /// Alias for the primary entry type.

@@ -1,4 +1,4 @@
-use super::runtime::{write_alignment, write_framed_payload, write_simple, RuntimeConfig, VmContext};
+use super::runtime::{write_alignment, write_byte_aligned, write_framed_payload, write_simple, RuntimeConfig, VmContext};
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
@@ -25,11 +25,22 @@ impl<'a> Encoder<'a> {
         }
     }
 
-    /// Encode `value` and append bytes to `output`.
+    /// Encode `value` and append bytes to `output`. Returns trailing bit count in the last byte.
     pub fn encode(&self, value: &DfdlValue, output: &mut Vec<u8>) -> Result<()> {
+        let _ = self.encode_with_bit_count(value, output)?;
+        Ok(())
+    }
+
+    /// Encode `value` and return the number of significant bits in the last output byte (0 if byte-aligned).
+    pub fn encode_with_bit_count(
+        &self,
+        value: &DfdlValue,
+        output: &mut Vec<u8>,
+    ) -> Result<u8> {
         let value = unwrap_root_for_encode(value, &self.ctx.program.root_element);
         let mut bit_count = 0u8;
-        self.encode_node(self.ctx.program.root, value, output, &mut bit_count)
+        self.encode_node(self.ctx.program.root, value, output, &mut bit_count)?;
+        Ok(bit_count)
     }
 
     /// Encode into a freshly allocated buffer.
@@ -133,7 +144,12 @@ impl<'a> Encoder<'a> {
             self.write_separator(props, out, bit_count, idx, items.len())?;
             write_alignment(out, bit_count, props)?;
             if let Some(id) = props.initiator {
-                out.extend(encode_delimiter(self.ctx.strings().get(id)?));
+                write_byte_aligned(
+                    out,
+                    bit_count,
+                    &encode_delimiter(self.ctx.strings().get(id)?),
+                )
+                .map_err(Error::from)?;
             }
             let mut payload = Vec::new();
             let mut payload_bit_count = 0u8;
@@ -279,8 +295,8 @@ impl<'a> Encoder<'a> {
             return Ok(());
         }
         if let Some(id) = props.separator {
-            let _ = bit_count;
-            out.extend(encode_delimiter(self.ctx.strings().get(id)?));
+            write_byte_aligned(out, bit_count, &encode_delimiter(self.ctx.strings().get(id)?))
+                .map_err(Error::from)?;
         }
         Ok(())
     }
