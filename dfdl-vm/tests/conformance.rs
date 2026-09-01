@@ -504,6 +504,17 @@ fn daffodil_prefixed_character_units_suite() {
 }
 
 #[test]
+fn daffodil_prefixed_character_unit_prefix_roundtrip_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        // Canonical left/X padding for character-unit prefixed fields.
+        "pl_text_string_txt_chars_padding",
+    ] {
+        assert_decode_encode_roundtrip(tdml, name);
+    }
+}
+
+#[test]
 fn daffodil_prefixed_remaining_types_suite() {
     let tdml = daffodil_tdml!("PrefixedTests.tdml");
     for name in [

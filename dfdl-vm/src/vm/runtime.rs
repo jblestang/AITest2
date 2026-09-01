@@ -5,7 +5,7 @@ use super::encoding::{
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool};
 use crate::schema::{
     encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, ByteOrder, LengthKind,
-    LengthUnits, Representation, TextTrimKind,
+    LengthUnits, Representation, TextNumberJustification, TextTrimKind,
 };
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -2041,7 +2041,7 @@ fn write_prefixed_bytes(
             encoding,
         )?;
     }
-    write_prefix_field(out, prefix_value, prefix, strings)?;
+    write_prefix_field(out, prefix_value, prefix, props.length_units, strings)?;
     out.extend_from_slice(payload);
     Ok(())
 }
@@ -2058,7 +2058,7 @@ fn adjust_prefix_value_for_includes(
     if prefix.props.length_kind == LengthKind::Prefixed {
         for _ in 0..4 {
             let mut tmp = alloc::vec::Vec::new();
-            write_prefix_field(&mut tmp, prefix_value, prefix, strings)?;
+            write_prefix_field(&mut tmp, prefix_value, prefix, props.length_units, strings)?;
             let field_units = payload_length_units(&tmp, props.length_units, encoding)?;
             let adjusted = (payload_units as u64)
                 .checked_add(field_units as u64)
@@ -2188,6 +2188,7 @@ fn write_prefix_field(
     out: &mut alloc::vec::Vec<u8>,
     value: u64,
     prefix: &IrPrefixLength,
+    element_length_units: LengthUnits,
     strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
     use crate::schema::Representation;
@@ -2197,7 +2198,9 @@ fn write_prefix_field(
         return write_prefixed_bytes(out, &payload, &prefix.props, strings);
     }
     match prefix.props.representation {
-        Representation::Text => write_text_prefix_field(out, value, prefix, strings),
+        Representation::Text => {
+            write_text_prefix_field(out, value, prefix, element_length_units, strings)
+        }
         Representation::Binary => write_binary_prefix_field(out, value, prefix, strings),
     }
 }
@@ -2226,10 +2229,43 @@ fn prefix_scalar_payload(
     }
 }
 
+fn number_pad_char(
+    props: &IrProps,
+    strings: &StringPool,
+    kind: crate::ir::ValueKind,
+) -> char {
+    if let Some(pad) = pad_char_from_props(props, strings) {
+        let ch = pad.chars().next().unwrap_or(' ');
+        if ch != ' ' || !prefix_is_numeric(kind) {
+            return ch;
+        }
+    }
+    if prefix_is_numeric(kind) {
+        '0'
+    } else {
+        ' '
+    }
+}
+
+fn number_pad_char_for_compact_prefix(
+    props: &IrProps,
+    strings: &StringPool,
+    kind: crate::ir::ValueKind,
+) -> char {
+    let _ = props;
+    let _ = strings;
+    if prefix_is_numeric(kind) {
+        '0'
+    } else {
+        ' '
+    }
+}
+
 fn write_text_prefix_field(
     out: &mut alloc::vec::Vec<u8>,
     value: u64,
     prefix: &IrPrefixLength,
+    element_length_units: LengthUnits,
     strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
@@ -2243,10 +2279,18 @@ fn write_text_prefix_field(
             let len = prefix.props.length.ok_or(VmError::InvalidValue {
                 message: "text prefix type missing length".into(),
             })? as usize;
-            let mut pad = pad_char_from_props(&prefix.props, strings).unwrap_or("0");
-            if pad == " " || prefix_is_numeric(prefix.kind) {
-                pad = "0";
-            }
+            let use_schema_pad = prefix.props.length_units == LengthUnits::Characters
+                && element_length_units == LengthUnits::Characters;
+            let pad = if use_schema_pad {
+                number_pad_char(&prefix.props, strings, prefix.kind)
+            } else {
+                number_pad_char_for_compact_prefix(&prefix.props, strings, prefix.kind)
+            };
+            let justification = if use_schema_pad {
+                prefix.props.text_number_justification
+            } else {
+                TextNumberJustification::Right
+            };
             let mut padded = text;
             match prefix.props.length_units {
                 LengthUnits::Bytes => {
@@ -2255,24 +2299,44 @@ fn write_text_prefix_field(
                             message: "prefix value too long".into(),
                         });
                     }
-                    while padded.len() < len {
-                        padded.insert(0, pad.chars().next().unwrap_or(' '));
+                    let pad_count = len - padded.len();
+                    match justification {
+                        TextNumberJustification::Right => {
+                            for _ in 0..pad_count {
+                                padded.insert(0, pad);
+                            }
+                        }
+                        TextNumberJustification::Left => {
+                            padded.extend(iter::repeat(pad).take(pad_count));
+                        }
                     }
                     out.extend_from_slice(padded.as_bytes());
                 }
                 LengthUnits::Characters => {
-                    while padded.chars().count() < len {
-                        padded.insert(0, pad.chars().next().unwrap_or(' '));
+                    let encoding = encoding_name(&prefix.props, strings)?;
+                    while count_characters(padded.as_bytes(), encoding)? < len {
+                        match justification {
+                            TextNumberJustification::Right => {
+                                padded.insert(0, pad);
+                            }
+                            TextNumberJustification::Left => {
+                                padded.push(pad);
+                            }
+                        }
+                    }
+                    if count_characters(padded.as_bytes(), encoding)? > len {
+                        return Err(VmError::InvalidValue {
+                            message: "prefix value too long".into(),
+                        });
                     }
                     out.extend_from_slice(
-                        encode_document_text(&padded, encoding_name(&prefix.props, strings)?)?
-                            .as_slice(),
+                        encode_document_text(&padded, encoding)?.as_slice(),
                     );
                 }
                 LengthUnits::Bits => {
                     let byte_len = len.div_ceil(8);
                     while padded.as_bytes().len() < byte_len {
-                        padded.insert(0, pad.chars().next().unwrap_or('0'));
+                        padded.insert(0, pad);
                     }
                     let bytes = padded.as_bytes();
                     if bytes.len() > byte_len {

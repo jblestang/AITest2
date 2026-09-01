@@ -685,6 +685,9 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.text_string_justification {
         base.text_string_justification = v;
     }
+    if let Some(v) = props.text_number_justification {
+        base.text_number_justification = v;
+    }
     if props.alignment.is_some() {
         base.alignment = props.alignment.unwrap_or(0);
     }
@@ -759,6 +762,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.output_value_calc = overlay.output_value_calc;
     out.output_value_calc_sibling = overlay.output_value_calc_sibling;
     out.text_string_justification = overlay.text_string_justification;
+    out.text_number_justification = overlay.text_number_justification;
     if overlay.min_length.is_some() {
         out.min_length = overlay.min_length;
     }

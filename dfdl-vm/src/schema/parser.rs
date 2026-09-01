@@ -1087,6 +1087,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_string_justification.is_some() {
         base.text_string_justification = overlay.text_string_justification;
     }
+    if overlay.text_number_justification.is_some() {
+        base.text_number_justification = overlay.text_number_justification;
+    }
     if overlay.has_statement_annotation {
         base.has_statement_annotation = true;
     }
@@ -1232,6 +1235,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "textStringPadCharacter"
             | "textPadKind"
             | "textStringJustification"
+            | "textNumberJustification"
             | "binaryNumberRep"
             | "binaryCalendarRep"
             | "binaryFloatRep"
@@ -1376,6 +1380,18 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!("unknown textStringJustification `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "textNumberJustification" => {
+                props.text_number_justification = Some(match value.as_str() {
+                    "left" => TextNumberJustification::Left,
+                    "right" => TextNumberJustification::Right,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown textNumberJustification `{other}`"),
                         }
                         .into())
                     }

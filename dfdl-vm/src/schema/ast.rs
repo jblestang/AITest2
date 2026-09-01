@@ -70,6 +70,7 @@ pub struct DfdlProps {
     /// Local name of sibling referenced by `../name` in outputValueCalc.
     pub output_value_calc_sibling: Option<String>,
     pub text_string_justification: Option<TextStringJustification>,
+    pub text_number_justification: Option<TextNumberJustification>,
     /// True when a DFDL statement annotation (e.g. `dfdl:assert`) appears on this construct.
     pub has_statement_annotation: bool,
 }
@@ -157,6 +158,12 @@ pub enum TextStringJustification {
     Left,
     Right,
     Center,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextNumberJustification {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
