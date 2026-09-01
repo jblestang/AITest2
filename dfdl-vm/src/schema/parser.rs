@@ -991,6 +991,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.encoding.is_some() {
         base.encoding = overlay.encoding;
     }
+    if overlay.encoding_error_policy.is_some() {
+        base.encoding_error_policy = overlay.encoding_error_policy;
+    }
     if overlay.text_trim_kind.is_some() {
         base.text_trim_kind = overlay.text_trim_kind;
     }
@@ -1272,6 +1275,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "lengthUnits"
             | "lengthPattern"
             | "encoding"
+            | "encodingErrorPolicy"
             | "textTrimKind"
             | "truncateSpecifiedLengthString"
             | "textNumberPadCharacter"
@@ -1396,6 +1400,18 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 });
             }
             "encoding" => props.encoding = Some(value.clone()),
+            "encodingErrorPolicy" => {
+                props.encoding_error_policy = Some(match value.as_str() {
+                    "error" => EncodingErrorPolicy::Error,
+                    "replace" => EncodingErrorPolicy::Replace,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown encodingErrorPolicy `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
             "truncateSpecifiedLengthString" => {
                 props.truncate_specified_length_string = Some(match value.as_str() {
                     "yes" => true,

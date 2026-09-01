@@ -166,7 +166,8 @@ impl<'a> IrBuilder<'a> {
             }
             TypeDef::Complex { content, props, .. } => {
                 let defaults = self.defaults.clone();
-                let type_base = self.merge_props_full(&defaults, props, &DfdlProps::default())?;
+                let inherited = element_props_for_complex_content(element_props);
+                let type_base = self.merge_props_full(&defaults, props, &inherited)?;
                 self.compile_complex(content, &type_base)
             }
         }
@@ -798,6 +799,18 @@ fn value_kind_from_builtin(builtin: BuiltinType) -> ValueKind {
 ///
 /// `lengthKind` on a complex element applies to that element's span in its parent,
 /// not to descendants — reset to schema format defaults unless the group sets it.
+/// Properties on an element wrapper that apply to its complex-type children.
+fn element_props_for_complex_content(element_props: &DfdlProps) -> DfdlProps {
+    DfdlProps {
+        representation: element_props.representation,
+        byte_order: element_props.byte_order,
+        bit_order: element_props.bit_order,
+        encoding: element_props.encoding.clone(),
+        encoding_error_policy: element_props.encoding_error_policy,
+        ..DfdlProps::default()
+    }
+}
+
 fn particle_inherited_for_children(
     merged: &IrProps,
     group_props: &DfdlProps,
@@ -864,6 +877,9 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     }
     if props.encoding.is_some() {
         base.encoding = strings.intern(props.encoding.as_deref().unwrap_or("UTF-8"));
+    }
+    if let Some(v) = props.encoding_error_policy {
+        base.encoding_error_policy = v;
     }
     if let Some(v) = props.text_trim_kind {
         base.text_trim_kind = v;
@@ -1029,6 +1045,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     out.length_units = overlay.length_units;
     out.encoding = overlay.encoding;
+    out.encoding_error_policy = overlay.encoding_error_policy;
     out.text_trim_kind = overlay.text_trim_kind;
     out.text_number_pad_character = overlay.text_number_pad_character;
     out.text_string_pad_character = overlay.text_string_pad_character;

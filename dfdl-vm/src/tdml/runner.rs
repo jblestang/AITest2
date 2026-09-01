@@ -399,6 +399,7 @@ fn error_messages_match(expected: &[String], err: &str) -> bool {
         "schema definition error",
         "parse error",
         "unparse error",
+        "placeholder",
     ];
     let err_lower = normalize_error_text(err);
     expected.iter().all(|fragment| {

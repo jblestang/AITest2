@@ -1,4 +1,5 @@
 use crate::error::VmError;
+use crate::schema::EncodingErrorPolicy;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -31,13 +32,13 @@ pub(crate) fn encode_document_text(text: &str, encoding: &str) -> Result<Vec<u8>
     }
 }
 
-pub(crate) fn decode_text_bytes(bytes: &[u8], encoding: &str) -> Result<String, VmError> {
+pub(crate) fn decode_text_bytes(
+    bytes: &[u8],
+    encoding: &str,
+    policy: EncodingErrorPolicy,
+) -> Result<String, VmError> {
     match normalize_encoding_name(encoding) {
-        Some("utf-8") => core::str::from_utf8(bytes)
-            .map(str::to_string)
-            .map_err(|_| VmError::InvalidValue {
-                message: "invalid UTF-8".into(),
-            }),
+        Some("utf-8") => decode_utf8_text(bytes, policy),
         Some("ascii") => {
             if bytes.iter().any(|b| *b > 0x7f) {
                 return Err(VmError::InvalidValue {
@@ -70,11 +71,13 @@ pub(crate) fn character_span_byte_length(
     }
 }
 
-pub(crate) fn count_characters(bytes: &[u8], encoding: &str) -> Result<usize, VmError> {
+pub(crate) fn count_characters(
+    bytes: &[u8],
+    encoding: &str,
+    policy: EncodingErrorPolicy,
+) -> Result<usize, VmError> {
     match normalize_encoding_name(encoding) {
-        Some("utf-8") => count_utf8_characters(bytes).ok_or(VmError::InvalidValue {
-            message: "invalid UTF-8 while counting characters".into(),
-        }),
+        Some("utf-8") => count_utf8_characters(bytes, policy),
         Some("ascii") => Ok(bytes.len()),
         Some("utf-16be") => {
             if bytes.len() % 2 != 0 {
@@ -95,18 +98,14 @@ pub(crate) fn read_character_bytes(
     pos: &mut usize,
     n: usize,
     encoding: &str,
+    policy: EncodingErrorPolicy,
 ) -> Result<Vec<u8>, VmError> {
     let start = *pos;
     match normalize_encoding_name(encoding) {
         Some("utf-8") => {
             let mut count = 0usize;
             while count < n && *pos < data.len() {
-                let width = utf8_char_width(data[*pos]).ok_or(VmError::InvalidValue {
-                    message: "invalid UTF-8".into(),
-                })?;
-                if *pos + width > data.len() {
-                    return Err(VmError::UnexpectedEof);
-                }
+                let width = read_one_utf8_char(data, *pos, policy)?.1;
                 *pos += width;
                 count += 1;
             }
@@ -138,6 +137,137 @@ pub(crate) fn read_character_bytes(
     Ok(data[start..*pos].to_vec())
 }
 
+/// Read one encoded character and return `(decoded_char, byte_width)`.
+pub(crate) fn read_one_utf8_char(
+    data: &[u8],
+    pos: usize,
+    policy: EncodingErrorPolicy,
+) -> Result<(char, usize), VmError> {
+    if pos >= data.len() {
+        return Err(VmError::UnexpectedEof);
+    }
+    let b0 = data[pos];
+    if b0 < 0x80 {
+        return Ok((b0 as char, 1));
+    }
+
+    let (width, code_point) = match b0 {
+        0xC0..=0xDF => {
+            if pos + 1 >= data.len() {
+                return malformed_utf8(1, policy);
+            }
+            let b1 = data[pos + 1];
+            if b1 & 0xC0 != 0x80 {
+                return malformed_utf8(1, policy);
+            }
+            (
+                2,
+                ((b0 & 0x1F) as u32) << 6 | ((b1 & 0x3F) as u32),
+            )
+        }
+        0xE0..=0xEF => {
+            if pos + 2 >= data.len() {
+                return malformed_utf8(1, policy);
+            }
+            let b1 = data[pos + 1];
+            let b2 = data[pos + 2];
+            if b1 & 0xC0 != 0x80 || b2 & 0xC0 != 0x80 {
+                return malformed_utf8(1, policy);
+            }
+            (
+                3,
+                ((b0 & 0x0F) as u32) << 12
+                    | ((b1 & 0x3F) as u32) << 6
+                    | ((b2 & 0x3F) as u32),
+            )
+        }
+        0xF0..=0xF4 => {
+            if pos + 3 >= data.len() {
+                return malformed_utf8(1, policy);
+            }
+            let b1 = data[pos + 1];
+            let b2 = data[pos + 2];
+            let b3 = data[pos + 3];
+            if b1 & 0xC0 != 0x80 || b2 & 0xC0 != 0x80 || b3 & 0xC0 != 0x80 {
+                return malformed_utf8(1, policy);
+            }
+            (
+                4,
+                ((b0 & 0x07) as u32) << 18
+                    | ((b1 & 0x3F) as u32) << 12
+                    | ((b2 & 0x3F) as u32) << 6
+                    | ((b3 & 0x3F) as u32),
+            )
+        }
+        _ => return malformed_utf8(1, policy),
+    };
+
+    if code_point > 0x10FFFF
+        || (0xD800..=0xDFFF).contains(&code_point)
+        || is_overlong(code_point, width)
+    {
+        return malformed_utf8(width, policy);
+    }
+
+    Ok((char::from_u32(code_point).unwrap(), width))
+}
+
+fn decode_utf8_text(bytes: &[u8], policy: EncodingErrorPolicy) -> Result<String, VmError> {
+    match policy {
+        EncodingErrorPolicy::Error => core::str::from_utf8(bytes)
+            .map(str::to_string)
+            .map_err(|_| VmError::InvalidValue {
+                message: "invalid UTF-8".into(),
+            }),
+        EncodingErrorPolicy::Replace => {
+            let mut out = String::new();
+            let mut pos = 0usize;
+            while pos < bytes.len() {
+                let (ch, width) = read_one_utf8_char(bytes, pos, policy)?;
+                out.push(ch);
+                pos += width;
+            }
+            Ok(out)
+        }
+    }
+}
+
+fn count_utf8_characters(bytes: &[u8], policy: EncodingErrorPolicy) -> Result<usize, VmError> {
+    let mut count = 0usize;
+    let mut pos = 0usize;
+    while pos < bytes.len() {
+        let width = read_one_utf8_char(bytes, pos, policy)?.1;
+        pos += width;
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn malformed_utf8(width: usize, policy: EncodingErrorPolicy) -> Result<(char, usize), VmError> {
+    match policy {
+        EncodingErrorPolicy::Replace => Ok(('\u{FFFD}', width)),
+        EncodingErrorPolicy::Error => Err(VmError::InvalidValue {
+            message: "Malformed UTF-8 data".into(),
+        }),
+    }
+}
+
+fn is_overlong(code_point: u32, width: usize) -> bool {
+    width > min_utf8_width(code_point)
+}
+
+fn min_utf8_width(code_point: u32) -> usize {
+    if code_point < 0x80 {
+        1
+    } else if code_point < 0x800 {
+        2
+    } else if code_point < 0x1_0000 {
+        3
+    } else {
+        4
+    }
+}
+
 fn encode_utf16be(text: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len() * 2);
     for ch in text.chars() {
@@ -163,32 +293,4 @@ fn decode_utf16be(bytes: &[u8]) -> Result<String, VmError> {
         out.push(ch);
     }
     Ok(out)
-}
-
-fn count_utf8_characters(bytes: &[u8]) -> Option<usize> {
-    let mut count = 0usize;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let width = utf8_char_width(bytes[i])?;
-        if i + width > bytes.len() {
-            return None;
-        }
-        i += width;
-        count += 1;
-    }
-    Some(count)
-}
-
-fn utf8_char_width(b: u8) -> Option<usize> {
-    if b < 0x80 {
-        Some(1)
-    } else if b & 0xE0 == 0xC0 {
-        Some(2)
-    } else if b & 0xF0 == 0xE0 {
-        Some(3)
-    } else if b & 0xF8 == 0xF0 {
-        Some(4)
-    } else {
-        None
-    }
 }

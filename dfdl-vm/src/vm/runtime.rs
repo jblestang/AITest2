@@ -1,6 +1,6 @@
 use super::encoding::{
     character_span_byte_length, count_characters, decode_text_bytes, encode_document_text,
-    read_character_bytes,
+    normalize_encoding_name, read_character_bytes, read_one_utf8_char,
 };
 use crate::length_validate::{
     validate_data_length_vm, validate_decimal_data_length_vm,
@@ -10,7 +10,8 @@ use crate::length_validate::{
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
     encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, BitOrder, ByteOrder,
-    LengthKind, LengthUnits, Representation, TextNumberJustification, TextTrimKind,
+    EncodingErrorPolicy, LengthKind, LengthUnits, Representation, TextNumberJustification,
+    TextTrimKind,
 };
 use alloc::string::ToString;
 use alloc::vec;
@@ -1278,13 +1279,29 @@ pub(crate) fn read_text_scalar(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "fixed text missing length".into(),
             })? as usize;
-            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?, props.bit_order, false)?
+            read_length_span(
+                cursor,
+                len,
+                props.length_units,
+                encoding_name(props, strings)?,
+                props.bit_order,
+                props.encoding_error_policy,
+                false,
+            )?
         }
         LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit text missing length".into(),
             })? as usize;
-            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?, props.bit_order, false)?
+            read_length_span(
+                cursor,
+                len,
+                props.length_units,
+                encoding_name(props, strings)?,
+                props.bit_order,
+                props.encoding_error_policy,
+                false,
+            )?
         }
         LengthKind::Delimited => {
             read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)?
@@ -1294,10 +1311,15 @@ pub(crate) fn read_text_scalar(
                 message: "pattern length missing lengthPattern".into(),
             })?;
             let pat = pattern_str(strings, id)?;
-            let len = match_length_pattern(&cursor.data[cursor.pos..], pat)
-                .ok_or(VmError::InvalidValue {
+            let encoding = encoding_name(props, strings)?;
+            let policy = props.encoding_error_policy;
+            let len = if pat == "." && normalize_encoding_name(encoding) == Some("utf-8") {
+                read_one_utf8_char(&cursor.data, cursor.pos, policy)?.1
+            } else {
+                match_length_pattern(&cursor.data[cursor.pos..], pat).ok_or(VmError::InvalidValue {
                     message: alloc::format!("pattern `{pat}` mismatch"),
-                })?;
+                })?
+            };
             cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?
         }
         LengthKind::Implicit => {
@@ -1315,7 +1337,11 @@ pub(crate) fn read_text_scalar(
         }
     };
 
-    let text = decode_text_bytes(&raw, encoding_name(props, strings)?)?;
+    let text = decode_text_bytes(
+        &raw,
+        encoding_name(props, strings)?,
+        props.encoding_error_policy,
+    )?;
     let trimmed = trim_text_value(&text, kind, props.text_trim_kind, props, strings);
 
     match kind {
@@ -1710,7 +1736,7 @@ fn pad_text_field(
             Ok(bytes)
         }
         LengthUnits::Characters => {
-            let current = count_characters(text.as_bytes(), encoding)?;
+            let current = count_characters(text.as_bytes(), encoding, EncodingErrorPolicy::Error)?;
             if current > len {
                 return Err(VmError::InvalidValue {
                     message: "text value too long for explicit character length".into(),
@@ -1843,6 +1869,7 @@ pub(crate) fn read_length_span(
     units: LengthUnits,
     encoding: &str,
     bit_order: BitOrder,
+    encoding_error_policy: EncodingErrorPolicy,
     allow_short_read: bool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
@@ -1875,7 +1902,13 @@ pub(crate) fn read_length_span(
                     if pos >= cursor.data.len() {
                         break;
                     }
-                    match read_character_bytes(cursor.data, &mut pos, 1, encoding) {
+                    match read_character_bytes(
+                        cursor.data,
+                        &mut pos,
+                        1,
+                        encoding,
+                        encoding_error_policy,
+                    ) {
                         Ok(chunk) => out.extend_from_slice(&chunk),
                         Err(_) => break,
                     }
@@ -1884,13 +1917,28 @@ pub(crate) fn read_length_span(
                 cursor.bit_count = 0;
                 return Ok(out);
             }
-            let bytes = read_character_bytes(cursor.data, &mut pos, len, encoding).map_err(|_| {
-                insufficient_data_bits_error(
-                    len.saturating_mul(8),
-                    count_characters(&cursor.data[cursor.pos..], encoding)
-                        .unwrap_or(0)
-                        .saturating_mul(8),
-                )
+            let bytes = read_character_bytes(
+                cursor.data,
+                &mut pos,
+                len,
+                encoding,
+                encoding_error_policy,
+            )
+            .map_err(|e| {
+                if matches!(
+                    &e,
+                    VmError::InvalidValue { message }
+                        if message.contains("Malformed UTF-8")
+                ) {
+                    e
+                } else {
+                    insufficient_data_bits_error(
+                        len.saturating_mul(8),
+                        count_characters(&cursor.data[cursor.pos..], encoding, encoding_error_policy)
+                            .unwrap_or(0)
+                            .saturating_mul(8),
+                    )
+                }
             })?;
             cursor.pos = pos;
             cursor.bit_count = 0;
@@ -2008,6 +2056,7 @@ pub(crate) fn read_prefixed_payload(
         props.length_units,
         encoding_name(props, strings)?,
         props.bit_order,
+        props.encoding_error_policy,
         false,
     )
     .map_err(|e| {
@@ -2071,7 +2120,11 @@ fn consumed_length_units(
     match units {
         LengthUnits::Bytes => Ok(bytes),
         LengthUnits::Characters => {
-            count_characters(&cursor.data[start..cursor.pos], encoding_name(props, strings)?)
+            count_characters(
+                &cursor.data[start..cursor.pos],
+                encoding_name(props, strings)?,
+                props.encoding_error_policy,
+            )
         }
         LengthUnits::Bits => {
             if cursor.bit_count != 0 {
@@ -2167,6 +2220,7 @@ fn read_prefix_field_payload(
                 props.length_units,
                 encoding_name(props, strings)?,
                 props.bit_order,
+                props.encoding_error_policy,
                 false,
             )
             .map_err(|e| {
@@ -2844,7 +2898,7 @@ fn payload_length_units(
             .ok_or(VmError::InvalidValue {
                 message: "bit length overflow".into(),
             }),
-        LengthUnits::Characters => count_characters(payload, encoding),
+        LengthUnits::Characters => count_characters(payload, encoding, EncodingErrorPolicy::Error),
     }
 }
 
@@ -3067,7 +3121,7 @@ fn write_text_prefix_field(
                 }
                 LengthUnits::Characters => {
                     let encoding = encoding_name(&prefix.props, strings)?;
-                    while count_characters(padded.as_bytes(), encoding)? < len {
+                    while count_characters(padded.as_bytes(), encoding, EncodingErrorPolicy::Error)? < len {
                         match justification {
                             TextNumberJustification::Right => {
                                 padded.insert(0, pad);
@@ -3077,7 +3131,7 @@ fn write_text_prefix_field(
                             }
                         }
                     }
-                    if count_characters(padded.as_bytes(), encoding)? > len {
+                    if count_characters(padded.as_bytes(), encoding, EncodingErrorPolicy::Error)? > len {
                         return Err(VmError::InvalidValue {
                             message: "prefix value too long".into(),
                         });
@@ -3226,11 +3280,11 @@ fn write_explicit_payload(
         LengthUnits::Characters => {
             let encoding = encoding_name(props, strings)?;
             let mut bytes = payload.to_vec();
-            while count_characters(&bytes, encoding)? < len {
+            while count_characters(&bytes, encoding, EncodingErrorPolicy::Error)? < len {
                 let pad = encode_document_text(" ", encoding)?;
                 bytes.extend_from_slice(&pad);
             }
-            if count_characters(&bytes, encoding)? > len {
+            if count_characters(&bytes, encoding, EncodingErrorPolicy::Error)? > len {
                 return Err(VmError::InvalidValue {
                     message: "explicit character payload too long".into(),
                 });

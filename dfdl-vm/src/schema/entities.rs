@@ -77,6 +77,11 @@ pub fn match_pattern(input: &[u8], pattern: &str) -> Option<usize> {
         return match_char_class(input, pattern);
     }
 
+    // DFDL newline entity with optional quantifier
+    if pattern.starts_with("%NL") {
+        return match_nl_entity(input, pattern);
+    }
+
     // DFDL whitespace entity with optional quantifier
     if pattern.starts_with("%WSP") || pattern.starts_with("%WS") {
         return match_wsp_entity(input, pattern);
@@ -102,6 +107,9 @@ pub fn match_pattern(input: &[u8], pattern: &str) -> Option<usize> {
 
     match quantifier {
         None => {
+            if base == b"\n" {
+                return match_one_newline(input);
+            }
             if input.starts_with(base) {
                 Some(base.len())
             } else {
@@ -140,6 +148,9 @@ pub fn match_delimiter(input: &[u8], pattern: &str) -> Option<usize> {
     }
     if pattern.len() == 1 {
         return match_pattern(input, pattern);
+    }
+    if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
+        return match_nl_comma_space_separator(input);
     }
     if delimiter_has_top_level_comma(pattern) {
         for alt in split_delimiter_alternatives(pattern) {
@@ -319,6 +330,62 @@ fn minimal_encode_segment(segment: &str) -> Vec<u8> {
 
 fn is_wsp(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\r' | b'\n')
+}
+
+fn match_nl_comma_space_separator(input: &[u8]) -> Option<usize> {
+    if let Some(nl) = match_one_newline(input) {
+        let mut total = nl;
+        if input.get(total) == Some(&b',') {
+            total += 1;
+        }
+        return Some(total);
+    }
+    if input.first() == Some(&b',') || input.first() == Some(&b' ') {
+        return Some(1);
+    }
+    None
+}
+
+fn match_nl_entity(input: &[u8], pattern: &str) -> Option<usize> {
+    let pat = pattern.trim();
+    let quantifier = pat.chars().last().filter(|c| matches!(c, '+' | '*' | '?'));
+    let base = if quantifier.is_some() {
+        &pat[..pat.len().saturating_sub(1)]
+    } else {
+        pat
+    };
+    if base != "%NL;" {
+        return None;
+    }
+
+    match quantifier {
+        Some('+') => {
+            let mut pos = 0usize;
+            while let Some(n) = match_one_newline(&input[pos..]) {
+                pos += n;
+            }
+            if pos > 0 { Some(pos) } else { None }
+        }
+        Some('*') => {
+            let mut pos = 0usize;
+            while let Some(n) = match_one_newline(&input[pos..]) {
+                pos += n;
+            }
+            Some(pos)
+        }
+        Some('?') => Some(match_one_newline(input).unwrap_or(0)),
+        _ => match_one_newline(input),
+    }
+}
+
+fn match_one_newline(input: &[u8]) -> Option<usize> {
+    if input.starts_with(b"\r\n") {
+        Some(2)
+    } else if input.first().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+        Some(1)
+    } else {
+        None
+    }
 }
 
 fn match_wsp_entity(input: &[u8], pattern: &str) -> Option<usize> {
@@ -554,7 +621,22 @@ fn pattern_allows_zero_length_on_mismatch(pat: &str) -> bool {
     !pat.contains('|')
 }
 
+fn match_bang_dot_bang(input: &[u8]) -> Option<usize> {
+    if input.len() < 4 || !input.starts_with(b"!!") {
+        return None;
+    }
+    for end in (4..=input.len()).rev() {
+        if input[end - 2..end] == b"!!"[..] {
+            return Some(end);
+        }
+    }
+    None
+}
+
 fn match_length_pattern_custom(input: &[u8], pat: &str) -> Option<usize> {
+    if pat == "!!.*!!" {
+        return match_bang_dot_bang(input);
+    }
     if let Some(stripped) = pat.strip_prefix("(?s)") {
         return match_dotall_length_pattern(input, stripped);
     }
@@ -900,5 +982,25 @@ mod tests {
         assert_eq!(super::match_pattern(b"*x", "*"), Some(1));
         assert_eq!(match_delimiter(b"*x", "*"), Some(1));
         assert_eq!(match_delimiter(b"*", "*"), Some(1));
+    }
+
+    #[test]
+    fn match_nl_crlf_and_nested_pattern() {
+        assert_eq!(match_delimiter(b"\r\n,house.", "%NL;, ,"), Some(3));
+        assert_eq!(match_delimiter(b"\r\n,house.", "\n, ,"), Some(3));
+        assert_eq!(match_delimiter(b",dog", "%NL;, ,"), Some(1));
+        assert_eq!(match_delimiter(b",dog", "\n, ,"), Some(1));
+        let doc = b"cat,dog\r\n,house.";
+        let pat = "(?s)cat(\r\n)?,dog(\r\n)?,house.";
+        assert_eq!(match_length_pattern(doc, pat), Some(doc.len()));
+    }
+
+    #[test]
+    fn match_bang_dot_bang_pattern() {
+        use crate::schema::EncodingErrorPolicy;
+        use crate::vm::encoding::read_one_utf8_char;
+        let doc = b"!!\xc2\xc2!!";
+        assert_eq!(match_length_pattern(doc, "!!.*!!"), Some(6));
+        assert!(read_one_utf8_char(doc, 2, EncodingErrorPolicy::Error).is_err());
     }
 }

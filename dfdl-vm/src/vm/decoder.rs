@@ -356,6 +356,7 @@ impl<'a> Decoder<'a> {
                                 props.length_units,
                                 encoding_name(&props, self.ctx.strings())?,
                                 props.bit_order,
+                                props.encoding_error_policy,
                                 true,
                             )?;
                             let mut sub = Cursor::new(&bytes);

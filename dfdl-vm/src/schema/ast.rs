@@ -33,6 +33,7 @@ pub struct DfdlProps {
     pub length_expr_unparsed: bool,
     pub length_units: Option<LengthUnits>,
     pub encoding: Option<String>,
+    pub encoding_error_policy: Option<EncodingErrorPolicy>,
     pub text_trim_kind: Option<TextTrimKind>,
     /// When false, explicit-length fields may leave unconsumed data in their frame.
     pub truncate_specified_length_string: Option<bool>,
@@ -129,6 +130,13 @@ pub enum LengthUnits {
     Bytes,
     Bits,
     Characters,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EncodingErrorPolicy {
+    #[default]
+    Error,
+    Replace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

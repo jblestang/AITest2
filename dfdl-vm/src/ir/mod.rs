@@ -3,10 +3,9 @@ mod builder;
 pub use builder::{compile, compile_named, compile_named_with_tunables};
 use crate::error::VmError;
 use crate::schema::{
-    BinaryFloatRep, BinaryNumberRep, BitOrder, ByteOrder, InputValueCalc, LengthKind, LengthUnits,
-    OutputValueCalc, Representation, SeparatorPosition, SequenceKind, TextNumberJustification,
-    TextStringJustification,
-    TextTrimKind,
+    BinaryFloatRep, BinaryNumberRep, BitOrder, ByteOrder, EncodingErrorPolicy, InputValueCalc,
+    LengthKind, LengthUnits, OutputValueCalc, Representation, SeparatorPosition, SequenceKind,
+    TextNumberJustification, TextStringJustification, TextTrimKind,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -86,6 +85,7 @@ pub struct IrProps {
     pub length_expr_unparsed: bool,
     pub length_units: LengthUnits,
     pub encoding: StringId,
+    pub encoding_error_policy: EncodingErrorPolicy,
     pub text_trim_kind: TextTrimKind,
     pub truncate_specified_length_string: bool,
     pub text_number_pad_character: Option<StringId>,
@@ -134,6 +134,7 @@ impl Default for IrProps {
             length_expr_unparsed: false,
             length_units: LengthUnits::Bytes,
             encoding: StringId(0),
+            encoding_error_policy: EncodingErrorPolicy::Error,
             text_trim_kind: TextTrimKind::None,
             truncate_specified_length_string: false,
             text_number_pad_character: None,
