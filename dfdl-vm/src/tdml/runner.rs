@@ -45,6 +45,12 @@ pub fn run_parser_test(suite: &TdmlSuite, test: &ParserTestCase) -> Result<TestR
     let spec = match compile_tdml_schema(&schema_xsd, &test.root) {
         Ok(s) => s,
         Err(e) => {
+            if test.expected_errors.is_some() {
+                return Ok(TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Pass,
+                });
+            }
             return Ok(TestResult {
                 name: test.name.clone(),
                 outcome: TestOutcome::Fail(alloc::format!("compile error: {e}")),

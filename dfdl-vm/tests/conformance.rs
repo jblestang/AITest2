@@ -122,6 +122,11 @@ fn daffodil_implicit_binary_ignored_length() {
     assert_named_test_passes(daffodil_tdml!("implicit.tdml"), "implicit_ignored_len");
 }
 
+#[test]
+fn daffodil_implicit_with_len_sde() {
+    assert_named_test_passes(daffodil_tdml!("implicit.tdml"), "implicit_with_len");
+}
+
 // --- endOfParent NYI negative (Section 12) ---
 
 #[test]
@@ -265,6 +270,16 @@ fn daffodil_implicit_complex_element_terminator() {
 #[test]
 fn daffodil_implicit_complex_element_terminator_max_one() {
     assert_named_test_passes(daffodil_tdml!("implicit.tdml"), "nested_seq_01");
+}
+
+#[test]
+fn daffodil_delimited_binary_fail() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "binary_delimited_fail");
+}
+
+#[test]
+fn daffodil_delimited_terminator_check() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "delimsCheck");
 }
 
 // --- Prefixed lengthKind (Section 12) ---

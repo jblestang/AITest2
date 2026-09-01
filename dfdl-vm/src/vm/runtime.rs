@@ -942,12 +942,13 @@ pub(crate) fn read_simple(
             });
         }
     }
+    let require_enclosing = require_delimiter || props.terminator.is_some();
     let value = match props.representation {
         Representation::Binary => {
-            read_binary_scalar(cursor, kind, props, strings, require_delimiter, parent_terminator)?
+            read_binary_scalar(cursor, kind, props, strings, require_enclosing, parent_terminator)?
         }
         Representation::Text => {
-            read_text_scalar(cursor, kind, props, strings, require_delimiter, parent_terminator)?
+            read_text_scalar(cursor, kind, props, strings, require_enclosing, parent_terminator)?
         }
     };
     if props.length_kind == LengthKind::Delimited {
@@ -956,7 +957,11 @@ pub(crate) fn read_simple(
         let pat = strings.get(id)?;
         if !pat.is_empty() && !cursor.consume_delimiter(pat) {
             return Err(VmError::InvalidValue {
-                message: "terminator mismatch".into(),
+                message: if cursor.is_empty() {
+                    alloc::format!("terminator `{pat}` not found")
+                } else {
+                    alloc::format!("terminator mismatch: expected `{pat}`").into()
+                },
             });
         }
     }

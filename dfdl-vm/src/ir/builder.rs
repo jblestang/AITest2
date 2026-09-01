@@ -1,8 +1,8 @@
 use super::{ChoiceBranch, IrNode, IrProgram, IrPrefixLength, IrProps, StringId, StringPool, ValueKind};
 use crate::error::{Result, SchemaError};
 use crate::schema::{
-    BuiltinType, ComplexContent, DfdlProps, LengthKind, Particle, SchemaDocument, SimpleBase,
-    TypeDef, TypeName,
+    BuiltinType, ComplexContent, DfdlProps, LengthKind, Particle, Representation, SchemaDocument,
+    SimpleBase, TypeDef, TypeName,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -42,6 +42,7 @@ impl<'a> IrBuilder<'a> {
                 &DfdlProps::default(),
                 &root_element.props,
             )?;
+            validate_implicit_text_length(value_kind_from_builtin(builtin), &props)?;
             let name = self.strings.intern(root_name);
             self.push(IrNode::Element {
                 name,
@@ -114,6 +115,7 @@ impl<'a> IrBuilder<'a> {
                 let merged = self.merge_props_full(&defaults, props, element_props)?;
                 let ir_props = merged;
                 let kind = value_kind_from_simple(base);
+                validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern("__value");
                 Ok(self.push(IrNode::Element {
                     name,
@@ -136,10 +138,12 @@ impl<'a> IrBuilder<'a> {
                 let props = self.merge_props_full(inherited, &element.props, &DfdlProps::default())?;
                 let name = self.strings.intern(&element.name);
                 if let Some(builtin) = BuiltinType::from_xsd(element.type_name.as_str()) {
+                    let kind = value_kind_from_builtin(builtin);
+                    validate_implicit_text_length(kind, &props)?;
                     let ir_props = props;
                     Ok(self.push(IrNode::Element {
                         name,
-                        kind: value_kind_from_builtin(builtin),
+                        kind,
                         props: ir_props,
                         child: None,
                     }))
@@ -159,10 +163,12 @@ impl<'a> IrBuilder<'a> {
                     {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
+                            let merged = merge_ir_props(&child_props, &overlay);
+                            validate_implicit_text_length(kind, &merged)?;
                             return Ok(self.push(IrNode::Element {
                                 name,
                                 kind,
-                                props: merge_ir_props(&child_props, &overlay),
+                                props: merged,
                                 child: None,
                             }));
                         }
@@ -277,6 +283,7 @@ impl<'a> IrBuilder<'a> {
     ) -> Result<IrProps> {
         let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings);
         self.attach_prefix_length(type_props, element_props, &mut ir)?;
+        validate_binary_delimited(&ir)?;
         Ok(ir)
     }
 
@@ -330,6 +337,34 @@ impl<'a> IrBuilder<'a> {
             props: prefix_props,
         })
     }
+}
+
+fn validate_binary_delimited(props: &IrProps) -> Result<()> {
+    if props.representation == Representation::Binary && props.length_kind == LengthKind::Delimited {
+        return Err(SchemaError::InvalidProperty {
+            message: "binary data elements cannot have lengthKind=delimited".into(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_implicit_text_length(kind: ValueKind, props: &IrProps) -> Result<()> {
+    if props.length_kind != LengthKind::Implicit {
+        return Ok(());
+    }
+    if props.representation != Representation::Text {
+        return Ok(());
+    }
+    if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {
+        return Ok(());
+    }
+    Err(SchemaError::InvalidProperty {
+        message: alloc::format!(
+            "lengthKind=implicit with text representation requires string or hexBinary type"
+        ),
+    }
+    .into())
 }
 
 fn branch_name(particle: &Particle) -> String {
