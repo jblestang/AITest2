@@ -294,3 +294,23 @@ fn decode_utf16be(bytes: &[u8]) -> Result<String, VmError> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::EncodingErrorPolicy;
+
+    #[test]
+    fn replace_policy_decodes_malformed_utf8_to_replacement_char() {
+        let bytes = [0xC2, 0xC2];
+        let text = decode_utf8_text(&bytes, EncodingErrorPolicy::Replace).unwrap();
+        assert_eq!(text, "\u{FFFD}\u{FFFD}");
+    }
+
+    #[test]
+    fn replace_policy_counts_malformed_bytes_as_characters() {
+        let bytes = [0xC0, 0xA0];
+        let count = count_utf8_characters(&bytes, EncodingErrorPolicy::Replace).unwrap();
+        assert_eq!(count, 1);
+    }
+}

@@ -957,3 +957,62 @@ fn daffodil_prefixed_facet_unparser_suite() {
         assert_named_unparser_test_passes(tdml, name);
     }
 }
+
+/// Full regression over every parser/unparser case in the vendored Section 12 lengthKind suite.
+#[test]
+fn daffodil_section12_length_kind_full_regression_suite() {
+    use dfdl_vm::tdml::run_unparser_test;
+
+    let files = [
+        "AB.tdml",
+        "AI.tdml",
+        "AN.tdml",
+        "DelimitedTests.tdml",
+        "EndOfParentTests.tdml",
+        "ExplicitTests.tdml",
+        "PatternTests.tdml",
+        "PrefixedTests.tdml",
+        "implicit.tdml",
+    ];
+    for file in files {
+        let tdml = match file {
+            "AB.tdml" => daffodil_tdml!("AB.tdml"),
+            "AI.tdml" => daffodil_tdml!("AI.tdml"),
+            "AN.tdml" => daffodil_tdml!("AN.tdml"),
+            "DelimitedTests.tdml" => daffodil_tdml!("DelimitedTests.tdml"),
+            "EndOfParentTests.tdml" => daffodil_tdml!("EndOfParentTests.tdml"),
+            "ExplicitTests.tdml" => daffodil_tdml!("ExplicitTests.tdml"),
+            "PatternTests.tdml" => daffodil_tdml!("PatternTests.tdml"),
+            "PrefixedTests.tdml" => daffodil_tdml!("PrefixedTests.tdml"),
+            "implicit.tdml" => daffodil_tdml!("implicit.tdml"),
+            _ => unreachable!(),
+        };
+        let suite = parse_tdml(tdml).unwrap_or_else(|e| panic!("parse {file}: {e}"));
+        for test in &suite.tests {
+            let result = run_parser_test(&suite, test)
+                .unwrap_or_else(|e| panic!("run parser `{file}`/`{}`: {e}", test.name));
+            match result.outcome {
+                TestOutcome::Pass => {}
+                TestOutcome::Fail(msg) => {
+                    panic!("parser `{file}`/`{}` failed: {msg}", test.name)
+                }
+                TestOutcome::Skip(msg) => {
+                    panic!("parser `{file}`/`{}` skipped: {msg}", test.name)
+                }
+            }
+        }
+        for test in &suite.unparser_tests {
+            let result = run_unparser_test(&suite, test)
+                .unwrap_or_else(|e| panic!("run unparser `{file}`/`{}`: {e}", test.name));
+            match result.outcome {
+                TestOutcome::Pass => {}
+                TestOutcome::Fail(msg) => {
+                    panic!("unparser `{file}`/`{}` failed: {msg}", test.name)
+                }
+                TestOutcome::Skip(msg) => {
+                    panic!("unparser `{file}`/`{}` skipped: {msg}", test.name)
+                }
+            }
+        }
+    }
+}

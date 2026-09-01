@@ -57,12 +57,13 @@ let v2 = dec.decode(input_b)?;
 |---------|--------|
 | `representation` binary / text | ✅ |
 | `byteOrder` bigEndian / littleEndian | ✅ |
-| `lengthKind` implicit, fixed, delimited | ✅ |
+| `lengthKind` implicit, fixed, explicit, delimited, pattern, prefixed, endOfParent | ✅ |
 | `xs:sequence`, `xs:choice` | ✅ |
 | Initiator / terminator / separator | ✅ |
-| Numeric, float, boolean, string, hexBinary | ✅ |
-| `dfdl:format` defaults | ✅ |
-| Bit-level, BCD, prefixed lengths | ❌ planned |
+| Numeric, float, boolean, string, hexBinary, decimal, dateTime | ✅ |
+| Bit-level fields, BCD / packed decimal | ✅ |
+| `dfdl:format` defaults, nil handling, separator suppression | ✅ |
+| Daffodil Section 12 lengthKind conformance (305 TDML cases) | ✅ |
 
 ## `no_std`
 

@@ -1422,13 +1422,14 @@ pub(crate) fn read_text_scalar(
         Decimal => Ok(DfdlValue::Decimal(trimmed.into())),
         DateTime | Time => Ok(DfdlValue::DateTime(trimmed.into())),
         String => {
-            let mut meta = crate::value::StringMeta::default();
-            if props.encoding_error_policy == crate::schema::EncodingErrorPolicy::Replace
+            let sv = if props.encoding_error_policy == crate::schema::EncodingErrorPolicy::Replace
                 && trimmed == text
             {
-                meta.source_bytes = Some(raw);
-            }
-            Ok(DfdlValue::String(crate::value::StringValue { text: trimmed.into(), meta }))
+                crate::value::StringValue::with_source_bytes(trimmed, raw)
+            } else {
+                crate::value::StringValue::new(trimmed)
+            };
+            Ok(DfdlValue::String(sv))
         }
         HexBinary => decode_hex(trimmed).map(DfdlValue::HexBinary),
         Complex => Err(VmError::TypeMismatch {
