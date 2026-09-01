@@ -1,4 +1,4 @@
-use super::runtime::{write_alignment, write_byte_aligned, write_framed_payload, write_simple, validate_explicit_decimal_before_encode, RuntimeConfig, VmContext};
+use super::runtime::{write_alignment, write_byte_aligned, write_framed_payload, write_simple, validate_explicit_decimal_before_encode, trailing_suppressed_count, RuntimeConfig, VmContext};
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
@@ -66,7 +66,7 @@ impl<'a> Encoder<'a> {
                         continue;
                     }
                     self.write_separator(props, out, bit_count, idx, children.len())?;
-                    self.encode_sequence_particle(child, &effective, out, bit_count)?;
+                    self.encode_sequence_particle(child, &effective, props, out, bit_count)?;
                 }
                 Ok(())
             }
@@ -116,7 +116,7 @@ impl<'a> Encoder<'a> {
                             Some(name_str),
                         )
                     } else {
-                        self.encode_element_occurrences(*child_id, props, field, out, bit_count)
+                        self.encode_element_occurrences(*child_id, props, field, out, bit_count, props)
                     }
                 } else {
                     write_alignment(out, bit_count, props)?;
@@ -149,8 +149,10 @@ impl<'a> Encoder<'a> {
             DfdlValue::Array(items) => items.as_slice(),
             single => core::slice::from_ref(single),
         };
-        for (idx, item) in items.iter().enumerate() {
-            self.write_separator(props, out, bit_count, idx, items.len())?;
+        let suppressed = trailing_suppressed_count(items, props, self.ctx.strings())?;
+        let encode_len = items.len().saturating_sub(suppressed);
+        for (idx, item) in items.iter().take(encode_len).enumerate() {
+            self.write_occurrence_separator(props, out, bit_count, idx, encode_len)?;
             write_alignment(out, bit_count, props)?;
             if let Some(id) = props.initiator {
                 write_byte_aligned(
@@ -183,15 +185,23 @@ impl<'a> Encoder<'a> {
         value: &DfdlValue,
         out: &mut Vec<u8>,
         bit_count: &mut u8,
+        sep_props: &IrProps,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
             single => core::slice::from_ref(single),
         };
-        for (idx, item) in items.iter().enumerate() {
-            self.write_separator(props, out, bit_count, idx, items.len())?;
+        let suppressed = trailing_suppressed_count(items, props, self.ctx.strings())?;
+        let encode_len = items.len().saturating_sub(suppressed);
+        for (idx, item) in items.iter().take(encode_len).enumerate() {
+            if sep_props.separator_position != SeparatorPosition::Postfix {
+                self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
+            }
             write_alignment(out, bit_count, props)?;
             self.encode_node(node_id, item, out, bit_count)?;
+            if sep_props.separator_position == SeparatorPosition::Postfix {
+                self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
+            }
         }
         Ok(())
     }
@@ -200,6 +210,7 @@ impl<'a> Encoder<'a> {
         &self,
         node_id: u32,
         map: &BTreeMap<String, DfdlValue>,
+        parent_props: &IrProps,
         out: &mut Vec<u8>,
         bit_count: &mut u8,
     ) -> Result<()> {
@@ -233,7 +244,14 @@ impl<'a> Encoder<'a> {
                             Some(key),
                         )
                     } else {
-                        self.encode_element_occurrences(*child_id, &resolved, field, out, bit_count)
+                        self.encode_element_occurrences(
+                            *child_id,
+                            &resolved,
+                            field,
+                            out,
+                            bit_count,
+                            parent_props,
+                        )
                     }
                 } else {
                     self.encode_simple_occurrences(*kind, &resolved, &value, out, bit_count, Some(key))
@@ -274,8 +292,10 @@ impl<'a> Encoder<'a> {
             DfdlValue::Array(items) => items.as_slice(),
             single => core::slice::from_ref(single),
         };
-        for (idx, item) in items.iter().enumerate() {
-            self.write_separator(props, out, bit_count, idx, items.len())?;
+        let suppressed = trailing_suppressed_count(items, props, self.ctx.strings())?;
+        let encode_len = items.len().saturating_sub(suppressed);
+        for (idx, item) in items.iter().take(encode_len).enumerate() {
+            self.write_occurrence_separator(props, out, bit_count, idx, encode_len)?;
             write_alignment(out, bit_count, props)?;
             write_simple(
                 out,
@@ -315,7 +335,30 @@ impl<'a> Encoder<'a> {
         index: usize,
         total: usize,
     ) -> Result<()> {
-        if !should_emit_separator(props.separator_position, index, total) {
+        self.write_separator_mode(props, out, bit_count, index, total, false)
+    }
+
+    fn write_occurrence_separator(
+        &self,
+        props: &IrProps,
+        out: &mut Vec<u8>,
+        bit_count: &mut u8,
+        index: usize,
+        total: usize,
+    ) -> Result<()> {
+        self.write_separator_mode(props, out, bit_count, index, total, true)
+    }
+
+    fn write_separator_mode(
+        &self,
+        props: &IrProps,
+        out: &mut Vec<u8>,
+        bit_count: &mut u8,
+        index: usize,
+        total: usize,
+        occurrences: bool,
+    ) -> Result<()> {
+        if !should_emit_separator(props.separator_position, index, total, occurrences) {
             return Ok(());
         }
         if let Some(id) = props.separator {
@@ -483,10 +526,16 @@ fn length_from_value(value: &DfdlValue, cast_long: bool) -> Result<u64> {
     }
 }
 
-fn should_emit_separator(position: SeparatorPosition, index: usize, total: usize) -> bool {
+fn should_emit_separator(
+    position: SeparatorPosition,
+    index: usize,
+    total: usize,
+    occurrences: bool,
+) -> bool {
     match position {
         SeparatorPosition::Prefix => index < total,
         SeparatorPosition::Infix => index > 0,
+        SeparatorPosition::Postfix if occurrences => index < total,
         SeparatorPosition::Postfix => index + 1 < total,
     }
 }

@@ -508,6 +508,9 @@ impl<'a> XsdParser<'a> {
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &xsd_attrs);
+        if xsd_attrs.get("nillable").is_some_and(|v| v == "true") {
+            props.nillable = Some(true);
+        }
 
         let type_name = if let Some(t) = xsd_attrs.get("type") {
             TypeName::new(normalize_qname(t))
@@ -994,6 +997,18 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.encoding_error_policy.is_some() {
         base.encoding_error_policy = overlay.encoding_error_policy;
     }
+    if overlay.nillable.is_some() {
+        base.nillable = overlay.nillable;
+    }
+    if overlay.nil_kind.is_some() {
+        base.nil_kind = overlay.nil_kind;
+    }
+    if overlay.nil_value.is_some() {
+        base.nil_value = overlay.nil_value;
+    }
+    if overlay.separator_suppression_policy.is_some() {
+        base.separator_suppression_policy = overlay.separator_suppression_policy;
+    }
     if overlay.text_trim_kind.is_some() {
         base.text_trim_kind = overlay.text_trim_kind;
     }
@@ -1276,6 +1291,9 @@ fn is_dfdl_property(name: &str) -> bool {
             | "lengthPattern"
             | "encoding"
             | "encodingErrorPolicy"
+            | "nilKind"
+            | "nilValue"
+            | "separatorSuppressionPolicy"
             | "textTrimKind"
             | "truncateSpecifiedLengthString"
             | "textNumberPadCharacter"
@@ -1407,6 +1425,34 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!("unknown encodingErrorPolicy `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "nilKind" => {
+                props.nil_kind = Some(match value.as_str() {
+                    "literalValue" => NilKind::LiteralValue,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown nilKind `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "nilValue" => {
+                props.nil_value = Some(crate::schema::expand_entities_str(value));
+            }
+            "separatorSuppressionPolicy" => {
+                props.separator_suppression_policy = Some(match value.as_str() {
+                    "anyEmpty" => SeparatorSuppressionPolicy::AnyEmpty,
+                    "trailingEmpty" => SeparatorSuppressionPolicy::TrailingEmpty,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!(
+                                "unknown separatorSuppressionPolicy `{other}`"
+                            ),
                         }
                         .into())
                     }

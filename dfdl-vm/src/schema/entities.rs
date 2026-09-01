@@ -40,6 +40,7 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
         let name = &rest[..end];
         let consumed = 1 + end + 1;
         let value = match name {
+            "ES" => vec![],
             "NUL" => vec![0],
             "NL" => vec![b'\n'],
             "CR" => vec![b'\r'],
@@ -241,9 +242,18 @@ fn split_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string:
 
 /// Minimal bytes to emit for a delimiter on encode (one WSP for `+`, none for `*`/`?`).
 pub fn encode_delimiter(pattern: &str) -> Vec<u8> {
-    let pat = pattern.trim();
-    if pat.is_empty() {
+    if pattern.is_empty() {
         return Vec::new();
+    }
+    let pat = pattern;
+    if pat.starts_with('%')
+        && !delimiter_has_top_level_comma(pat)
+        && !pat.starts_with('[')
+    {
+        let bytes = expand_entities(pat);
+        if !bytes.is_empty() {
+            return bytes;
+        }
     }
     let mut out = Vec::new();
     for segment in split_delimiter_segments(pat) {
@@ -297,7 +307,15 @@ fn split_delimiter_segments(pattern: &str) -> Vec<&str> {
 }
 
 fn minimal_encode_segment(segment: &str) -> Vec<u8> {
-    let seg = segment.trim();
+    if segment.is_empty() {
+        return Vec::new();
+    }
+    // Whitespace-only delimiters (e.g. "\n") must not be trimmed away.
+    let seg = if segment.chars().all(|c| c.is_ascii_whitespace()) {
+        segment
+    } else {
+        segment.trim()
+    };
     if seg.is_empty() {
         return Vec::new();
     }
@@ -307,6 +325,12 @@ fn minimal_encode_segment(segment: &str) -> Vec<u8> {
             Some(b'*') | Some(b'?') => Vec::new(),
             _ => vec![b' '],
         };
+    }
+    if seg.starts_with('%') {
+        let expanded = expand_entities(seg);
+        if !expanded.is_empty() {
+            return expanded;
+        }
     }
     if seg.starts_with('[') {
         let q = seg.as_bytes().last().copied();
@@ -1002,5 +1026,12 @@ mod tests {
         let doc = b"!!\xc2\xc2!!";
         assert_eq!(match_length_pattern(doc, "!!.*!!"), Some(6));
         assert!(read_one_utf8_char(doc, 2, EncodingErrorPolicy::Error).is_err());
+    }
+
+    #[test]
+    fn encode_newline_delimiters() {
+        assert_eq!(expand_entities("%NL;"), vec![10u8]);
+        assert_eq!(encode_delimiter("\n"), vec![10u8]);
+        assert_eq!(encode_delimiter("%NL;"), vec![10u8]);
     }
 }

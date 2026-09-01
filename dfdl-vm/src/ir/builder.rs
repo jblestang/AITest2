@@ -807,6 +807,7 @@ fn element_props_for_complex_content(element_props: &DfdlProps) -> DfdlProps {
         bit_order: element_props.bit_order,
         encoding: element_props.encoding.clone(),
         encoding_error_policy: element_props.encoding_error_policy,
+        separator_suppression_policy: element_props.separator_suppression_policy,
         ..DfdlProps::default()
     }
 }
@@ -880,6 +881,21 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     }
     if let Some(v) = props.encoding_error_policy {
         base.encoding_error_policy = v;
+    }
+    if let Some(v) = props.nillable {
+        base.nillable = v;
+    }
+    if let Some(v) = props.nil_kind {
+        base.nil_kind = Some(v);
+    }
+    if props.nil_value.is_some() {
+        base.nil_value = props
+            .nil_value
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
+    if let Some(v) = props.separator_suppression_policy {
+        base.separator_suppression_policy = Some(v);
     }
     if let Some(v) = props.text_trim_kind {
         base.text_trim_kind = v;
@@ -1046,6 +1062,10 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.length_units = overlay.length_units;
     out.encoding = overlay.encoding;
     out.encoding_error_policy = overlay.encoding_error_policy;
+    out.nillable = overlay.nillable;
+    out.nil_kind = overlay.nil_kind;
+    out.nil_value = overlay.nil_value;
+    out.separator_suppression_policy = overlay.separator_suppression_policy;
     out.text_trim_kind = overlay.text_trim_kind;
     out.text_number_pad_character = overlay.text_number_pad_character;
     out.text_string_pad_character = overlay.text_string_pad_character;

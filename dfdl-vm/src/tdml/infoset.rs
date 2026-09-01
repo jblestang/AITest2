@@ -12,6 +12,7 @@ use xml_no_std::reader::XmlEvent;
 pub struct InfosetNode {
     pub name: String,
     pub text: Option<String>,
+    pub nil: bool,
     pub children: BTreeMap<String, Vec<InfosetNode>>,
 }
 
@@ -46,6 +47,9 @@ fn infoset_node_to_ir_value(
 ) -> Result<DfdlValue, String> {
     match program.node(node_id).map_err(|e| e.to_string())? {
         IrNode::Element { kind, child, .. } => {
+            if node.nil {
+                return Ok(DfdlValue::Null);
+            }
             if *kind != ValueKind::Complex {
                 return parse_scalar_for_kind(node.text.as_deref().unwrap_or(""), *kind);
             }
@@ -105,6 +109,7 @@ fn infoset_sequence_children_to_value(
                 }
                 if infoset_children.len() == 1
                     && infoset_children[0].children.is_empty()
+                    && !infoset_children[0].nil
                     && infoset_children[0]
                         .text
                         .as_ref()
@@ -277,13 +282,18 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
         return Err("expected infoset element".into());
     };
     let element_name = owned_local_name(&name).to_string();
-    let _ = attrs_to_map(&attributes);
+    let attrs = attrs_to_map(&attributes);
+    let is_nil = attrs
+        .get("xsi:nil")
+        .or_else(|| attrs.get("{http://www.w3.org/2001/XMLSchema-instance}nil"))
+        .is_some_and(|v| v == "true");
 
     if reader.peek_is_end(&element_name).map_err(|e| e.to_string())? {
         reader.expect_end(&element_name).map_err(|e| e.to_string())?;
         return Ok(InfosetNode {
             name: element_name,
             text: None,
+            nil: is_nil,
             children: BTreeMap::new(),
         });
     }
@@ -294,6 +304,7 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
         return Ok(InfosetNode {
             name: element_name,
             text: None,
+            nil: is_nil,
             children: BTreeMap::new(),
         });
     }
@@ -308,6 +319,7 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
             Ok(InfosetNode {
                 name: element_name,
                 text: None,
+                nil: is_nil,
                 children: map,
             })
         }
@@ -316,6 +328,7 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
             Ok(InfosetNode {
                 name: element_name,
                 text: Some(text.trim().to_string()),
+                nil: is_nil,
                 children: BTreeMap::new(),
             })
         }
@@ -337,6 +350,7 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
         DfdlValue::Sequence(map) => InfosetNode {
             name: name.to_string(),
             text: None,
+            nil: false,
             children: map
                 .iter()
                 .map(|(k, v)| (k.clone(), field_values_to_infoset_nodes(k, v)))
@@ -345,12 +359,20 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
         DfdlValue::Array(items) => InfosetNode {
             name: name.to_string(),
             text: None,
+            nil: false,
             children: BTreeMap::from([(name.to_string(), items.iter().map(|v| value_to_node(name, v)).collect())]),
         },
         DfdlValue::Choice { discriminator, value } => value_to_node(discriminator, value),
+        DfdlValue::Null => InfosetNode {
+            name: name.to_string(),
+            text: None,
+            nil: true,
+            children: BTreeMap::new(),
+        },
         scalar => InfosetNode {
             name: name.to_string(),
             text: Some(scalar_to_string(scalar)),
+            nil: false,
             children: BTreeMap::new(),
         },
     }

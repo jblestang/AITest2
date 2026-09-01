@@ -10,8 +10,8 @@ use crate::length_validate::{
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
     encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, BitOrder, ByteOrder,
-    EncodingErrorPolicy, LengthKind, LengthUnits, Representation, TextNumberJustification,
-    TextTrimKind,
+    EncodingErrorPolicy, LengthKind, LengthUnits, NilKind, Representation, SeparatorSuppressionPolicy,
+    TextNumberJustification, TextTrimKind,
 };
 use alloc::string::ToString;
 use alloc::vec;
@@ -425,7 +425,7 @@ pub(crate) fn read_binary_scalar(
     props: &IrProps,
     strings: &StringPool,
     require_delimiter: bool,
-    parent_terminator: Option<&str>,
+    stop_sequences: &[&IrProps],
     field_name: Option<&str>,
     tunables: &DaffodilTunables,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
@@ -434,7 +434,7 @@ pub(crate) fn read_binary_scalar(
 
     if props.length_kind == LengthKind::Delimited {
         let bytes =
-            read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)?;
+            read_until_delimiters(cursor, props, strings, require_delimiter, stop_sequences)?;
         return decode_binary_scalar(kind, &bytes, props, strings, None);
     }
 
@@ -1261,18 +1261,78 @@ fn decode_binary_bytes(
     }
 }
 
+fn nil_literal<'a>(props: &'a IrProps, strings: &'a StringPool) -> Result<Option<&'a str>, crate::error::VmError> {
+    if !props.nillable || props.nil_kind != Some(NilKind::LiteralValue) {
+        return Ok(None);
+    }
+    props
+        .nil_value
+        .map(|id| strings.get(id).map(|s| s as &str))
+        .transpose()
+}
+
+fn text_matches_nil_literal(text: &str, props: &IrProps, strings: &StringPool) -> Result<bool, crate::error::VmError> {
+    Ok(nil_literal(props, strings)?.is_some_and(|nil| text == nil))
+}
+
+fn match_nil_literal_prefix(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<Option<usize>, crate::error::VmError> {
+    let Some(nil) = nil_literal(props, strings)? else {
+        return Ok(None);
+    };
+    if nil.is_empty() {
+        return Ok(None);
+    }
+    let encoded = encode_document_text(nil, encoding_name(props, strings)?)?;
+    if cursor.data[cursor.pos..].starts_with(&encoded) {
+        Ok(Some(encoded.len()))
+    } else {
+        Ok(None)
+    }
+}
+
+fn pattern_allows_zero_length_match(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    let id = props.length_pattern.ok_or(crate::error::VmError::InvalidValue {
+        message: "pattern length missing lengthPattern".into(),
+    })?;
+    let pat = pattern_str(strings, id)?;
+    if pat == "." && normalize_encoding_name(encoding_name(props, strings)?) == Some("utf-8") {
+        return Ok(cursor.pos >= cursor.data.len());
+    }
+    Ok(match_length_pattern(&cursor.data[cursor.pos..], pat) == Some(0))
+}
+
 pub(crate) fn read_text_scalar(
     cursor: &mut Cursor<'_>,
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
     require_delimiter: bool,
-    parent_terminator: Option<&str>,
+    stop_sequences: &[&IrProps],
     field_name: Option<&str>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
     use crate::value::DfdlValue;
+
+    if props.length_kind == LengthKind::Pattern {
+        if let Some(nil_len) = match_nil_literal_prefix(cursor, props, strings)? {
+            cursor.advance(nil_len);
+            return Ok(DfdlValue::Null);
+        }
+        if nil_literal(props, strings)?.is_some_and(|nil| nil.is_empty())
+            && pattern_allows_zero_length_match(cursor, props, strings)?
+        {
+            return Ok(DfdlValue::Null);
+        }
+    }
 
     let raw = match props.length_kind {
         LengthKind::Fixed => {
@@ -1304,7 +1364,7 @@ pub(crate) fn read_text_scalar(
             )?
         }
         LengthKind::Delimited => {
-            read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)?
+            read_until_delimiters(cursor, props, strings, require_delimiter, stop_sequences)?
         }
         LengthKind::Pattern => {
             let id = props.length_pattern.ok_or(VmError::InvalidValue {
@@ -1326,7 +1386,7 @@ pub(crate) fn read_text_scalar(
             if is_numeric_text_kind(kind) {
                 read_numeric_token(cursor)
             } else {
-                read_until_delimiters(cursor, props, strings, false, parent_terminator)?
+                read_until_delimiters(cursor, props, strings, false, stop_sequences)?
             }
         }
         LengthKind::Prefixed => read_prefixed_payload(cursor, props, strings, field_name)?,
@@ -1343,6 +1403,10 @@ pub(crate) fn read_text_scalar(
         props.encoding_error_policy,
     )?;
     let trimmed = trim_text_value(&text, kind, props.text_trim_kind, props, strings);
+
+    if text_matches_nil_literal(trimmed, props, strings)? {
+        return Ok(DfdlValue::Null);
+    }
 
     match kind {
         Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
@@ -1579,6 +1643,13 @@ pub(crate) fn write_text_scalar(
     use crate::ir::ValueKind::*;
     use crate::value::DfdlValue;
 
+    if matches!(value, DfdlValue::Null) {
+        let nil_text = nil_literal(props, strings)?.unwrap_or("");
+        let payload = encode_document_text(nil_text, encoding_name(props, strings)?)?;
+        write_byte_aligned(out, bit_count, &payload)?;
+        return Ok(());
+    }
+
     let text = match (kind, value) {
         (Boolean, DfdlValue::Boolean(v)) => {
             if *v {
@@ -1812,15 +1883,35 @@ fn non_empty_delimiter_patterns(
 fn enclosing_delimiter_patterns(
     props: &IrProps,
     strings: &StringPool,
-    parent_terminator: Option<&str>,
+    stop_sequences: &[&IrProps],
 ) -> Result<alloc::vec::Vec<alloc::string::String>, crate::error::VmError> {
     let mut patterns = non_empty_delimiter_patterns(props, strings)?;
-    if let Some(term) = parent_terminator {
-        if !term.is_empty() && !patterns.iter().any(|p| p == term) {
-            patterns.push(term.to_string());
+    for seq in stop_sequences {
+        for id in delimiter_pattern_ids(seq) {
+            let pat = strings.get(id)?;
+            if !pat.is_empty() && !patterns.iter().any(|p| p == pat) {
+                patterns.push(pat.to_string());
+            }
         }
     }
     Ok(patterns)
+}
+
+pub(crate) fn would_read_empty_delimited_field(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+    stop_sequences: &[&IrProps],
+) -> Result<bool, crate::error::VmError> {
+    let patterns = enclosing_delimiter_patterns(props, strings, stop_sequences)?;
+    for pat in &patterns {
+        if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], pat) {
+            if n > 0 {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn read_until_delimiters(
@@ -1828,10 +1919,10 @@ fn read_until_delimiters(
     props: &IrProps,
     strings: &StringPool,
     require_delimiter: bool,
-    parent_terminator: Option<&str>,
+    stop_sequences: &[&IrProps],
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
-    let patterns = enclosing_delimiter_patterns(props, strings, parent_terminator)?;
+    let patterns = enclosing_delimiter_patterns(props, strings, stop_sequences)?;
     if patterns.is_empty() {
         if require_delimiter {
             return Err(VmError::InvalidValue {
@@ -1953,9 +2044,9 @@ pub(crate) fn read_delimited_bytes(
     props: &IrProps,
     strings: &StringPool,
     require_delimiter: bool,
-    parent_terminator: Option<&str>,
+    stop_sequences: &[&IrProps],
 ) -> Result<Vec<u8>, crate::error::VmError> {
-    read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)
+    read_until_delimiters(cursor, props, strings, require_delimiter, stop_sequences)
 }
 
 fn read_until_any_delimiter(
@@ -1969,7 +2060,7 @@ fn read_until_any_delimiter(
     while cursor.remaining() > 0 {
         for delim in delimiters {
             if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], delim) {
-                if n > 0 {
+                if n > 0 || cursor.pos == start {
                     return Ok(cursor.data[start..cursor.pos].to_vec());
                 }
             }
@@ -1993,21 +2084,11 @@ pub(crate) fn consume_enclosing_delimiter(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,
-    parent_terminator: Option<&str>,
+    stop_sequences: &[&IrProps],
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     if cursor.is_empty() {
         return Ok(());
-    }
-    // Stop boundary matched during read — parent group consumes its own terminator.
-    if let Some(term) = parent_terminator {
-        if !term.is_empty() {
-            if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], term) {
-                if n > 0 {
-                    return Ok(());
-                }
-            }
-        }
     }
     for pat in non_empty_delimiter_patterns(props, strings)? {
         if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], &pat) {
@@ -2015,11 +2096,59 @@ pub(crate) fn consume_enclosing_delimiter(
                 cursor.advance(n);
                 return Ok(());
             }
+            if n == 0 {
+                return Ok(());
+            }
+        }
+    }
+    for seq in stop_sequences {
+        for id in delimiter_pattern_ids(seq) {
+            let pat = strings.get(id)?;
+            if !pat.is_empty() {
+                if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], pat) {
+                    let own = non_empty_delimiter_patterns(props, strings)?;
+                    if own.iter().any(|p| p == pat) && n > 0 {
+                        cursor.advance(n);
+                    }
+                    return Ok(());
+                }
+            }
         }
     }
     Err(VmError::InvalidValue {
         message: "delimiter mismatch".into(),
     })
+}
+
+pub(crate) fn is_suppressible_empty_representation(
+    value: &crate::value::DfdlValue,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    match value {
+        crate::value::DfdlValue::Null => Ok(nil_literal(props, strings)?.is_some_and(|nil| nil.is_empty())),
+        crate::value::DfdlValue::String(text) if text.is_empty() => Ok(true),
+        _ => Ok(false),
+    }
+}
+
+pub(crate) fn trailing_suppressed_count(
+    items: &[crate::value::DfdlValue],
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<usize, crate::error::VmError> {
+    if props.separator_suppression_policy != Some(SeparatorSuppressionPolicy::TrailingEmpty) {
+        return Ok(0);
+    }
+    let mut count = 0usize;
+    for item in items.iter().rev() {
+        if is_suppressible_empty_representation(item, props, strings)? {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    Ok(count)
 }
 
 pub(crate) fn prefixed_payload_byte_length(
@@ -2530,15 +2659,42 @@ pub(crate) fn consume_alignment(
     Ok(())
 }
 
+fn defer_delimited_enclosing_consume(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+    value: &crate::value::DfdlValue,
+) -> Result<bool, crate::error::VmError> {
+    use crate::value::DfdlValue;
+    if matches!(value, DfdlValue::Null) {
+        return Ok(false);
+    }
+    for id in delimiter_pattern_ids(props) {
+        let pat = strings.get(id)?;
+        if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], pat) {
+            if n == 0 {
+                continue;
+            }
+            let after_first = cursor.pos.saturating_add(n);
+            if match_delimiter(&cursor.data[after_first..], pat).is_some() {
+                let after_second = after_first.saturating_add(n);
+                return Ok(cursor.data.get(after_second).is_none());
+            }
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) fn read_simple(
     cursor: &mut Cursor<'_>,
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
     require_delimiter: bool,
-    parent_terminator: Option<&str>,
+    stop_sequences: &[&IrProps],
     field_name: Option<&str>,
     tunables: &DaffodilTunables,
+    consume_delimited_enclosing: bool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -2565,7 +2721,7 @@ pub(crate) fn read_simple(
             props,
             strings,
             require_enclosing,
-            parent_terminator,
+            stop_sequences,
             field_name,
         )?
     } else {
@@ -2575,13 +2731,17 @@ pub(crate) fn read_simple(
             props,
             strings,
             require_enclosing,
-            parent_terminator,
+            stop_sequences,
             field_name,
             tunables,
         )?
     };
     if props.length_kind == LengthKind::Delimited {
-        consume_enclosing_delimiter(cursor, props, strings, parent_terminator)?;
+        let defer = !consume_delimited_enclosing
+            && defer_delimited_enclosing_consume(cursor, props, strings, &value)?;
+        if consume_delimited_enclosing || !defer {
+            consume_enclosing_delimiter(cursor, props, strings, stop_sequences)?;
+        }
     } else if let Some(id) = props.terminator {
         let pat = strings.get(id)?;
         if !pat.is_empty() && !cursor.consume_delimiter(pat) {
@@ -3396,5 +3556,61 @@ pub(crate) fn default_value_for(
         String => Some(DfdlValue::String(raw.into())),
         HexBinary => decode_hex(raw).ok().map(DfdlValue::HexBinary),
         Complex => None,
+    }
+}
+
+#[cfg(test)]
+mod delimited_stop_tests {
+    use super::*;
+    use crate::ir::compile_named;
+    use crate::schema::parse_schema;
+
+    fn matrix_props() -> (IrProps, IrProps, IrProps) {
+        let xsd = include_str!("../../resources/dfdl/AB.dfdl.xsd");
+        let schema = parse_schema(xsd).unwrap();
+        let program = compile_named(&schema, Some("matrix_02")).unwrap();
+        let mut row_seq = None;
+        let mut cell_seq = None;
+        let mut cell = None;
+        fn walk(program: &crate::ir::IrProgram, id: u32, row_seq: &mut Option<IrProps>, cell_seq: &mut Option<IrProps>, cell: &mut Option<IrProps>, in_row: bool) {
+            match program.node(id).unwrap() {
+                crate::ir::IrNode::Sequence { props, children, .. } => {
+                    if in_row && cell_seq.is_none() {
+                        *cell_seq = Some(props.clone());
+                    } else if row_seq.is_none() {
+                        *row_seq = Some(props.clone());
+                    }
+                    for c in children {
+                        walk(program, *c, row_seq, cell_seq, cell, in_row || row_seq.is_some());
+                    }
+                }
+                crate::ir::IrNode::Element { name, props, child, .. } => {
+                    if program.strings.get(*name).ok() == Some("cell") {
+                        *cell = Some(props.clone());
+                    }
+                    if let Some(c) = child {
+                        walk(program, *c, row_seq, cell_seq, cell, in_row);
+                    }
+                }
+                _ => {}
+            }
+        }
+        walk(&program, program.root, &mut row_seq, &mut cell_seq, &mut cell, false);
+        (row_seq.unwrap(), cell_seq.unwrap(), cell.unwrap())
+    }
+
+    #[test]
+    fn empty_field_before_row_newline_is_zero_bytes() {
+        let (row_seq, cell_seq, cell) = matrix_props();
+        let strings = {
+            let xsd = include_str!("../../resources/dfdl/AB.dfdl.xsd");
+            compile_named(&parse_schema(xsd).unwrap(), Some("matrix_02"))
+                .unwrap()
+                .strings
+        };
+        let stops = [&row_seq, &cell_seq];
+        let mut cursor = Cursor::new(b"\n");
+        let raw = read_until_delimiters(&mut cursor, &cell, &strings, false, &stops).unwrap();
+        assert!(raw.is_empty(), "expected empty before newline, got {raw:?}");
     }
 }

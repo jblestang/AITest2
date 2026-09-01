@@ -336,6 +336,21 @@ fn daffodil_ab_implicit_csv_nillable() {
     assert_named_test_passes(daffodil_tdml!("AB.tdml"), "AB002");
 }
 
+#[test]
+fn daffodil_ab_implicit_csv_nil_middle_field() {
+    assert_named_test_passes(daffodil_tdml!("AB.tdml"), "AB004");
+}
+
+#[test]
+fn daffodil_ab_implicit_csv_nil_trailing_parse() {
+    assert_named_test_passes(daffodil_tdml!("AB.tdml"), "AB005_parse");
+}
+
+#[test]
+fn daffodil_ab_implicit_csv_nil_trailing_unparse() {
+    assert_named_unparser_test_passes(daffodil_tdml!("AB.tdml"), "AB005_unparse");
+}
+
 // --- Delimited: compound newline, eof, mixed sequences (Section 12) ---
 
 #[test]

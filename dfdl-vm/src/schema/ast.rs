@@ -79,6 +79,11 @@ pub struct DfdlProps {
     pub output_value_calc_sibling: Option<String>,
     pub text_string_justification: Option<TextStringJustification>,
     pub text_number_justification: Option<TextNumberJustification>,
+    pub nillable: Option<bool>,
+    pub nil_kind: Option<NilKind>,
+    /// Expanded nil literal (e.g. `%ES;` → empty string, or `nil`).
+    pub nil_value: Option<String>,
+    pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
     /// True when a DFDL statement annotation (e.g. `dfdl:assert`) appears on this construct.
     pub has_statement_annotation: bool,
 }
@@ -137,6 +142,17 @@ pub enum EncodingErrorPolicy {
     #[default]
     Error,
     Replace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NilKind {
+    LiteralValue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeparatorSuppressionPolicy {
+    AnyEmpty,
+    TrailingEmpty,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -4,8 +4,9 @@ pub use builder::{compile, compile_named, compile_named_with_tunables};
 use crate::error::VmError;
 use crate::schema::{
     BinaryFloatRep, BinaryNumberRep, BitOrder, ByteOrder, EncodingErrorPolicy, InputValueCalc,
-    LengthKind, LengthUnits, OutputValueCalc, Representation, SeparatorPosition, SequenceKind,
-    TextNumberJustification, TextStringJustification, TextTrimKind,
+    LengthKind, LengthUnits, NilKind, OutputValueCalc, Representation, SeparatorPosition,
+    SeparatorSuppressionPolicy, SequenceKind, TextNumberJustification, TextStringJustification,
+    TextTrimKind,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -119,6 +120,10 @@ pub struct IrProps {
     pub min_length: Option<u64>,
     pub prefix_length: Option<alloc::boxed::Box<IrPrefixLength>>,
     pub prefix_includes_prefix_length: bool,
+    pub nillable: bool,
+    pub nil_kind: Option<NilKind>,
+    pub nil_value: Option<StringId>,
+    pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
 }
 
 impl Default for IrProps {
@@ -168,6 +173,10 @@ impl Default for IrProps {
             min_length: None,
             prefix_length: None,
             prefix_includes_prefix_length: false,
+            nillable: false,
+            nil_kind: None,
+            nil_value: None,
+            separator_suppression_policy: None,
         }
     }
 }
