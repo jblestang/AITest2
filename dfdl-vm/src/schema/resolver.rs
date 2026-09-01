@@ -29,6 +29,14 @@ impl SchemaResolver {
             "/org/apache/daffodil/xsd/DFDLGeneralFormatBase.dfdl.xsd".into(),
             include_str!("../../resources/dfdl/DFDLGeneralFormatBase.dfdl.xsd"),
         );
+        bundled.insert(
+            "AB.dfdl.xsd".into(),
+            include_str!("../../resources/dfdl/AB.dfdl.xsd"),
+        );
+        bundled.insert(
+            "/org/apache/daffodil/section12/lengthKind/AB.dfdl.xsd".into(),
+            include_str!("../../resources/dfdl/AB.dfdl.xsd"),
+        );
         Self {
             bundled,
             base_dirs: Vec::new(),

@@ -173,7 +173,7 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
     };
     let attrs = attrs_to_map(&attributes);
     let kind = match attrs.get("type").map(String::as_str) {
-        Some("hex") => DocumentKind::Hex,
+        Some("hex") | Some("byte") => DocumentKind::Hex,
         _ => DocumentKind::Text,
     };
     let replace_entities = attrs
@@ -267,6 +267,20 @@ mod tests {
         if let Err(e) = parse_schema(&schema.xsd) {
             assert!(false, "schema compile failed: {e}\n---\n{}", schema.xsd);
         }
+    }
+
+    #[test]
+    fn parse_byte_document_part_as_hex() {
+        let tdml = r##"<tdml:testSuite suiteName="t" xmlns:tdml="http://www.ibm.com/xmlns/dfdl/testData">
+  <tdml:defineSchema name="s"><xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="A" type="xs:int"/></xs:schema></tdml:defineSchema>
+  <tdml:parserTestCase name="bin" root="A" model="s">
+    <tdml:document><tdml:documentPart type="byte">00 00 00 05</tdml:documentPart></tdml:document>
+    <tdml:infoset><tdml:dfdlInfoset><A>5</A></tdml:dfdlInfoset></tdml:infoset>
+  </tdml:parserTestCase>
+</tdml:testSuite>"##;
+        let suite = parse_tdml(tdml).expect("parse");
+        let test = suite.tests.iter().find(|t| t.name == "bin").unwrap();
+        assert_eq!(test.documents[0].data, alloc::vec![0, 0, 0, 5]);
     }
 
     #[test]

@@ -112,6 +112,7 @@ pub(crate) fn read_binary_scalar(
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
+    require_delimiter: bool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind;
@@ -123,7 +124,7 @@ pub(crate) fn read_binary_scalar(
     }
 
     if props.length_kind == LengthKind::Delimited {
-        let bytes = read_until_delimiters(cursor, props, strings)?;
+        let bytes = read_until_delimiters(cursor, props, strings, require_delimiter)?;
         return decode_binary_bytes(kind, &bytes, props.byte_order == ByteOrder::LittleEndian);
     }
 
@@ -227,6 +228,7 @@ pub(crate) fn read_text_scalar(
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
+    require_delimiter: bool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -245,7 +247,7 @@ pub(crate) fn read_text_scalar(
             })? as usize;
             cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?
         }
-        LengthKind::Delimited => read_until_delimiters(cursor, props, strings)?,
+        LengthKind::Delimited => read_until_delimiters(cursor, props, strings, require_delimiter)?,
         LengthKind::Pattern => {
             let id = props.length_pattern.ok_or(VmError::InvalidValue {
                 message: "pattern length missing lengthPattern".into(),
@@ -498,6 +500,7 @@ fn read_until_delimiters(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,
+    require_delimiter: bool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let patterns = non_empty_delimiter_patterns(props, strings)?;
@@ -506,13 +509,24 @@ fn read_until_delimiters(
             message: "delimited field missing enclosing delimiter".into(),
         });
     }
-    read_until_any_delimiter(cursor, &patterns)
+    read_until_any_delimiter(cursor, &patterns, require_delimiter)
+}
+
+pub(crate) fn read_delimited_bytes(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+    require_delimiter: bool,
+) -> Result<Vec<u8>, crate::error::VmError> {
+    read_until_delimiters(cursor, props, strings, require_delimiter)
 }
 
 fn read_until_any_delimiter(
     cursor: &mut Cursor<'_>,
     delimiters: &[alloc::string::String],
+    require_delimiter: bool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
     let start = cursor.pos;
     while cursor.remaining() > 0 {
         for delim in delimiters {
@@ -523,6 +537,11 @@ fn read_until_any_delimiter(
             }
         }
         cursor.advance(1);
+    }
+    if require_delimiter {
+        return Err(VmError::InvalidValue {
+            message: "delimited field missing enclosing delimiter".into(),
+        });
     }
     Ok(cursor.data[start..].to_vec())
 }
@@ -618,6 +637,7 @@ pub(crate) fn read_simple(
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
+    require_delimiter: bool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -630,8 +650,8 @@ pub(crate) fn read_simple(
         }
     }
     let value = match props.representation {
-        Representation::Binary => read_binary_scalar(cursor, kind, props, strings)?,
-        Representation::Text => read_text_scalar(cursor, kind, props, strings)?,
+        Representation::Binary => read_binary_scalar(cursor, kind, props, strings, require_delimiter)?,
+        Representation::Text => read_text_scalar(cursor, kind, props, strings, require_delimiter)?,
     };
     if props.length_kind == LengthKind::Delimited {
         consume_enclosing_delimiter(cursor, props, strings)?;

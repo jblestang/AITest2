@@ -32,17 +32,17 @@ pub fn run_suite(tdml: &str) -> Result<Vec<TestResult>> {
 
 /// Run a single parser test case from an already-parsed suite.
 pub fn run_parser_test(suite: &TdmlSuite, test: &ParserTestCase) -> Result<TestResult> {
-    let schema_def = match suite.schemas.get(&test.model) {
-        Some(s) => s,
-        None => {
+    let schema_xsd = match resolve_model_schema(suite, &test.model) {
+        Ok(xsd) => xsd,
+        Err(e) => {
             return Ok(TestResult {
                 name: test.name.clone(),
-                outcome: TestOutcome::Fail(alloc::format!("schema `{}` not found", test.model)),
+                outcome: TestOutcome::Fail(alloc::format!("schema `{}`: {e}", test.model)),
             });
         }
     };
 
-    let spec = match compile_tdml_schema(&schema_def.xsd, &test.root) {
+    let spec = match compile_tdml_schema(&schema_xsd, &test.root) {
         Ok(s) => s,
         Err(e) => {
             return Ok(TestResult {
@@ -103,4 +103,12 @@ pub fn run_parser_test(suite: &TdmlSuite, test: &ParserTestCase) -> Result<TestR
 
 fn compile_tdml_schema(xsd: &str, root: &str) -> Result<DfdlSpec> {
     DfdlSpec::from_xsd_root(xsd, Some(root))
+}
+
+fn resolve_model_schema(suite: &TdmlSuite, model: &str) -> Result<alloc::string::String> {
+    if let Some(def) = suite.schemas.get(model) {
+        return Ok(def.xsd.clone());
+    }
+    let resolver = crate::schema::SchemaResolver::new();
+    resolver.resolve(model).map_err(Into::into)
 }

@@ -1,12 +1,14 @@
-use super::runtime::{default_value_for, read_simple, consume_enclosing_delimiter, Cursor, RuntimeConfig, VmContext};
-use crate::schema::LengthKind;
-use crate::error::{Result, VmError};
+use super::runtime::{
+    consume_enclosing_delimiter, default_value_for, read_delimited_bytes, read_simple, Cursor,
+    RuntimeConfig, VmContext,
+};
+use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
-use crate::schema::{match_delimiter, SeparatorPosition};
+use crate::schema::{match_delimiter, LengthKind, SeparatorPosition};
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
-use alloc::string::ToString;
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 /// DFDL decoder VM — executes compiled IR against an input byte stream.
@@ -28,7 +30,7 @@ impl<'a> Decoder<'a> {
     /// Decode one logical value from `input`.
     pub fn decode(&self, input: &[u8]) -> Result<DfdlValue> {
         let mut cursor = Cursor::new(input);
-        let value = self.decode_node(self.ctx.program.root, &mut cursor)?;
+        let value = self.decode_node(self.ctx.program.root, &mut cursor, false, None)?;
         self.consume_root_delimited_suffix(&mut cursor)?;
         if self.ctx.config.strict_eos && !cursor.is_empty() {
             return Err(VmError::TrailingData {
@@ -42,14 +44,29 @@ impl<'a> Decoder<'a> {
         ))
     }
 
-    fn decode_node(&self, node_id: u32, cursor: &mut Cursor<'_>) -> Result<DfdlValue> {
+    fn decode_node(
+        &self,
+        node_id: u32,
+        cursor: &mut Cursor<'_>,
+        has_following_sibling: bool,
+        parent_sequence: Option<&IrProps>,
+    ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
                 let mut map = BTreeMap::new();
                 for (idx, &child) in children.iter().enumerate() {
+                    let child_has_following = idx + 1 < children.len();
                     self.consume_separator(props, cursor, idx, children.len())?;
-                    let child_value = self.decode_particle(child, cursor)?;
-                    insert_child(&mut map, child, child_value, self.ctx.program)?;
+                    let saved = cursor.clone();
+                    match self.decode_particle(child, cursor, child_has_following, Some(props)) {
+                        Ok(child_value) => {
+                            insert_child(&mut map, child, child_value, self.ctx.program)?;
+                        }
+                        Err(e) if is_element_absent(&e) => {
+                            *cursor = saved;
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 self.consume_terminator(props, cursor)?;
                 Ok(DfdlValue::Sequence(map))
@@ -59,12 +76,13 @@ impl<'a> Decoder<'a> {
                     let saved = cursor.clone();
                     if let Some(init_id) = branch.initiator {
                         let pat = self.ctx.strings().get(init_id)?;
-                        // Match initiator for dispatch only; branch decode consumes it once.
                         if match_delimiter(&cursor.data[cursor.pos..], pat).is_none() {
                             continue;
                         }
                     }
-                    if let Ok(value) = self.decode_node(branch.node, cursor) {
+                    if let Ok(value) =
+                        self.decode_node(branch.node, cursor, has_following_sibling, parent_sequence)
+                    {
                         let name = self.ctx.strings().get(branch.name)?.to_string();
                         return Ok(DfdlValue::choice(name, value));
                     }
@@ -72,14 +90,32 @@ impl<'a> Decoder<'a> {
                 }
                 Err(VmError::InvalidChoice.into())
             }
-            IrNode::Element { props, .. } => self.decode_element_occurrences(node_id, props, cursor),
+            IrNode::Element { props, .. } => self.decode_element_occurrences(
+                node_id,
+                props,
+                cursor,
+                has_following_sibling,
+                parent_sequence,
+            ),
         }
     }
 
-    fn decode_particle(&self, node_id: u32, cursor: &mut Cursor<'_>) -> Result<DfdlValue> {
+    fn decode_particle(
+        &self,
+        node_id: u32,
+        cursor: &mut Cursor<'_>,
+        has_following_sibling: bool,
+        parent_sequence: Option<&IrProps>,
+    ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
-            IrNode::Element { props, .. } => self.decode_element_occurrences(node_id, props, cursor),
-            _ => self.decode_node(node_id, cursor),
+            IrNode::Element { props, .. } => self.decode_element_occurrences(
+                node_id,
+                props,
+                cursor,
+                has_following_sibling,
+                parent_sequence,
+            ),
+            _ => self.decode_node(node_id, cursor, has_following_sibling, parent_sequence),
         }
     }
 
@@ -88,6 +124,8 @@ impl<'a> Decoder<'a> {
         node_id: u32,
         props: &IrProps,
         cursor: &mut Cursor<'_>,
+        has_following_sibling: bool,
+        parent_sequence: Option<&IrProps>,
     ) -> Result<DfdlValue> {
         let min = props.occurs_min;
         let max = props.occurs_max.unwrap_or(u64::MAX);
@@ -97,20 +135,27 @@ impl<'a> Decoder<'a> {
             if items.len() as u64 >= min && cursor.is_empty() {
                 break;
             }
+            if !items.is_empty() {
+                self.consume_occurrence_separator(parent_sequence, cursor)?;
+            }
+            let require_delimiter = has_following_sibling;
             let saved = cursor.clone();
-            match self.decode_single_element(node_id, cursor) {
+            match self.decode_single_element(node_id, cursor, require_delimiter) {
                 Ok(v) => items.push(v),
                 Err(e) => {
                     if (items.len() as u64) >= min {
                         *cursor = saved;
                         break;
                     }
+                    if min == 0 && items.is_empty() {
+                        *cursor = saved;
+                        return Err(VmError::ElementAbsent.into());
+                    }
                     if let Some(default) = default_value_for(
                         element_kind(self.ctx.program, node_id)?,
                         props,
                         self.ctx.strings(),
                     ) {
-                        // Default applies to absent element; do not consume input.
                         items.push(default);
                         break;
                     }
@@ -126,6 +171,10 @@ impl<'a> Decoder<'a> {
             .into());
         }
 
+        if items.is_empty() {
+            return Err(VmError::ElementAbsent.into());
+        }
+
         if items.len() == 1 {
             Ok(items.remove(0))
         } else {
@@ -133,7 +182,12 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    fn decode_single_element(&self, node_id: u32, cursor: &mut Cursor<'_>) -> Result<DfdlValue> {
+    fn decode_single_element(
+        &self,
+        node_id: u32,
+        cursor: &mut Cursor<'_>,
+        require_delimiter: bool,
+    ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element {
                 name,
@@ -142,18 +196,64 @@ impl<'a> Decoder<'a> {
                 child,
             } => {
                 if let Some(child_id) = child {
-                    let inner = self.decode_node(*child_id, cursor)?;
+                    if props.length_kind == LengthKind::Delimited {
+                        let bytes = read_delimited_bytes(
+                            cursor,
+                            props,
+                            self.ctx.strings(),
+                            require_delimiter,
+                        )?;
+                        consume_enclosing_delimiter(cursor, props, self.ctx.strings())?;
+                        let mut sub = Cursor::new(&bytes);
+                        let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                        if !sub.is_empty() {
+                            return Err(VmError::InvalidValue {
+                                message: "unconsumed bytes in delimited complex element".into(),
+                            }
+                            .into());
+                        }
+                        return Ok(wrap_named(
+                            self.ctx.strings().get(*name)?,
+                            inner,
+                            ValueKind::Complex,
+                        ));
+                    }
+                    let inner = self.decode_node(*child_id, cursor, false, None)?;
                     Ok(wrap_named(
                         self.ctx.strings().get(*name)?,
                         inner,
                         ValueKind::Complex,
                     ))
                 } else {
-                    read_simple(cursor, *kind, props, self.ctx.strings()).map_err(Into::into)
+                    read_simple(cursor, *kind, props, self.ctx.strings(), require_delimiter)
+                        .map_err(Into::into)
                 }
             }
-            _ => self.decode_node(node_id, cursor),
+            _ => self.decode_node(node_id, cursor, false, None),
         }
+    }
+
+    fn consume_occurrence_separator(
+        &self,
+        parent_sequence: Option<&IrProps>,
+        cursor: &mut Cursor<'_>,
+    ) -> Result<()> {
+        let Some(props) = parent_sequence else {
+            return Ok(());
+        };
+        let Some(id) = props.separator else {
+            return Ok(());
+        };
+        let pat = self.ctx.strings().get(id)?;
+        if match_delimiter(&cursor.data[cursor.pos..], pat).is_some() {
+            if !cursor.consume_delimiter(pat) {
+                return Err(VmError::InvalidValue {
+                    message: "separator mismatch".into(),
+                }
+                .into());
+            }
+        }
+        Ok(())
     }
 
     fn consume_root_delimited_suffix(&self, cursor: &mut Cursor<'_>) -> Result<()> {
@@ -208,6 +308,10 @@ impl<'a> Decoder<'a> {
         }
         Ok(())
     }
+}
+
+fn is_element_absent(err: &Error) -> bool {
+    matches!(err, Error::Vm(VmError::ElementAbsent))
 }
 
 fn element_kind(program: &IrProgram, node_id: u32) -> core::result::Result<ValueKind, VmError> {

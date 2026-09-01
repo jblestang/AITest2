@@ -72,6 +72,8 @@ pub enum VmError {
     TypeMismatch { expected: alloc::string::String },
     MissingField { name: alloc::string::String },
     UnsupportedOperation { op: alloc::string::String },
+    /// Optional element (minOccurs=0) absent at current offset.
+    ElementAbsent,
 }
 
 impl fmt::Display for VmError {
@@ -89,6 +91,7 @@ impl fmt::Display for VmError {
             VmError::TypeMismatch { expected } => write!(f, "expected value of type {expected}"),
             VmError::MissingField { name } => write!(f, "missing required field `{name}`"),
             VmError::UnsupportedOperation { op } => write!(f, "unsupported VM operation `{op}`"),
+            VmError::ElementAbsent => write!(f, "element absent"),
         }
     }
 }

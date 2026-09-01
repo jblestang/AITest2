@@ -933,7 +933,10 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.occurs_min.is_some() {
         base.occurs_min = overlay.occurs_min;
     }
-    if overlay.occurs_max.is_some() {
+    if overlay.max_occurs_specified {
+        base.max_occurs_specified = true;
+        base.occurs_max = overlay.occurs_max;
+    } else if overlay.occurs_max.is_some() {
         base.occurs_max = overlay.occurs_max;
     }
     if overlay.choice_dispatch_key.is_some() {
@@ -1258,6 +1261,7 @@ fn format_ref_key(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::{ComplexContent, Particle, TypeDef};
 
     const SAMPLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
@@ -1426,6 +1430,39 @@ mod tests {
             Some(LengthKind::Delimited),
             "format lengthKind=delimited should override GeneralFormat implicit default"
         );
+    }
+
+    #[test]
+    fn element_ref_unbounded_overrides_global_max() {
+        let xsd = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
+           xmlns:ex="http://example.com">
+  <xs:element name="item" type="xs:int"/>
+  <xs:element name="wrap">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="ex:item" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"#;
+        let doc = parse_schema(xsd).expect("parse");
+        let wrap = doc.global_elements.get("wrap").expect("wrap");
+        if let TypeDef::Complex { content, .. } = doc.resolve_type(&wrap.type_name).unwrap() {
+            if let ComplexContent::Sequence(seq) = content {
+                if let Particle::Element(el) = &seq.particles[0] {
+                    assert!(el.props.max_occurs_specified);
+                    assert_eq!(el.props.occurs_max, None);
+                } else {
+                    panic!("expected element particle");
+                }
+            } else {
+                panic!("expected sequence");
+            }
+        } else {
+            panic!("expected complex type");
+        }
     }
 
     #[test]
