@@ -1102,6 +1102,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.length_units = Some(match value.as_str() {
                     "bytes" => LengthUnits::Bytes,
                     "bits" => LengthUnits::Bits,
+                    "characters" => LengthUnits::Characters,
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!("unknown lengthUnits `{other}`"),

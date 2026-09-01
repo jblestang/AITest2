@@ -70,13 +70,15 @@ impl<'a> Cursor<'a> {
         if pattern.is_empty() {
             return false;
         }
-        if let Some(n) = match_delimiter(&self.data[self.pos..], pattern) {
-            if n > 0 {
-                self.advance(n);
-                return true;
+        match match_delimiter(&self.data[self.pos..], pattern) {
+            Some(n) => {
+                if n > 0 {
+                    self.advance(n);
+                }
+                true
             }
+            None => false,
         }
-        false
     }
 }
 
@@ -113,6 +115,7 @@ pub(crate) fn read_binary_scalar(
     props: &IrProps,
     strings: &StringPool,
     require_delimiter: bool,
+    parent_terminator: Option<&str>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind;
@@ -124,7 +127,8 @@ pub(crate) fn read_binary_scalar(
     }
 
     if props.length_kind == LengthKind::Delimited {
-        let bytes = read_until_delimiters(cursor, props, strings, require_delimiter)?;
+        let bytes =
+            read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)?;
         return decode_binary_bytes(kind, &bytes, props.byte_order == ByteOrder::LittleEndian);
     }
 
@@ -229,6 +233,7 @@ pub(crate) fn read_text_scalar(
     props: &IrProps,
     strings: &StringPool,
     require_delimiter: bool,
+    parent_terminator: Option<&str>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -239,15 +244,17 @@ pub(crate) fn read_text_scalar(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "fixed text missing length".into(),
             })? as usize;
-            cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?
+            read_length_span(cursor, len, props.length_units)?
         }
         LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit text missing length".into(),
             })? as usize;
-            cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?
+            read_length_span(cursor, len, props.length_units)?
         }
-        LengthKind::Delimited => read_until_delimiters(cursor, props, strings, require_delimiter)?,
+        LengthKind::Delimited => {
+            read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)?
+        }
         LengthKind::Pattern => {
             let id = props.length_pattern.ok_or(VmError::InvalidValue {
                 message: "pattern length missing lengthPattern".into(),
@@ -266,9 +273,11 @@ pub(crate) fn read_text_scalar(
             rest
         }
         LengthKind::Implicit => {
-            let rest = cursor.data[cursor.pos..].to_vec();
-            cursor.pos = cursor.data.len();
-            rest
+            if is_numeric_text_kind(kind) {
+                read_numeric_token(cursor)
+            } else {
+                read_until_delimiters(cursor, props, strings, false, parent_terminator)?
+            }
         }
         other => {
             return Err(VmError::UnsupportedOperation {
@@ -496,14 +505,29 @@ fn non_empty_delimiter_patterns(
     Ok(patterns)
 }
 
+fn enclosing_delimiter_patterns(
+    props: &IrProps,
+    strings: &StringPool,
+    parent_terminator: Option<&str>,
+) -> Result<alloc::vec::Vec<alloc::string::String>, crate::error::VmError> {
+    let mut patterns = non_empty_delimiter_patterns(props, strings)?;
+    if let Some(term) = parent_terminator {
+        if !term.is_empty() && !patterns.iter().any(|p| p == term) {
+            patterns.push(term.to_string());
+        }
+    }
+    Ok(patterns)
+}
+
 fn read_until_delimiters(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,
     require_delimiter: bool,
+    parent_terminator: Option<&str>,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
-    let patterns = non_empty_delimiter_patterns(props, strings)?;
+    let patterns = enclosing_delimiter_patterns(props, strings, parent_terminator)?;
     if patterns.is_empty() {
         if require_delimiter {
             return Err(VmError::InvalidValue {
@@ -525,13 +549,63 @@ pub(crate) fn read_until_separator(
     read_until_any_delimiter(cursor, &[separator.to_string()], require_delimiter)
 }
 
+pub(crate) fn read_length_span(
+    cursor: &mut Cursor<'_>,
+    len: usize,
+    units: LengthUnits,
+) -> Result<Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
+    match units {
+        LengthUnits::Bytes => cursor
+            .read_bytes(len)
+            .ok_or(VmError::UnexpectedEof),
+        LengthUnits::Characters => read_character_bytes(cursor, len).ok_or(VmError::UnexpectedEof),
+        LengthUnits::Bits => Err(VmError::UnsupportedOperation {
+            op: "bit-level length span".into(),
+        }),
+    }
+}
+
+fn read_character_bytes(cursor: &mut Cursor<'_>, n: usize) -> Option<Vec<u8>> {
+    let start = cursor.pos;
+    let mut count = 0usize;
+    while count < n && cursor.pos < cursor.data.len() {
+        let b = cursor.data[cursor.pos];
+        let width = utf8_char_width(b)?;
+        if cursor.pos + width > cursor.data.len() {
+            return None;
+        }
+        cursor.advance(width);
+        count += 1;
+    }
+    if count < n {
+        return None;
+    }
+    Some(cursor.data[start..cursor.pos].to_vec())
+}
+
+fn utf8_char_width(b: u8) -> Option<usize> {
+    if b < 0x80 {
+        Some(1)
+    } else if b & 0xE0 == 0xC0 {
+        Some(2)
+    } else if b & 0xF0 == 0xE0 {
+        Some(3)
+    } else if b & 0xF8 == 0xF0 {
+        Some(4)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn read_delimited_bytes(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,
     require_delimiter: bool,
+    parent_terminator: Option<&str>,
 ) -> Result<Vec<u8>, crate::error::VmError> {
-    read_until_delimiters(cursor, props, strings, require_delimiter)
+    read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)
 }
 
 fn read_until_any_delimiter(
@@ -563,10 +637,21 @@ pub(crate) fn consume_enclosing_delimiter(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,
+    parent_terminator: Option<&str>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     if cursor.is_empty() {
         return Ok(());
+    }
+    // Stop boundary matched during read — parent group consumes its own terminator.
+    if let Some(term) = parent_terminator {
+        if !term.is_empty() {
+            if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], term) {
+                if n > 0 {
+                    return Ok(());
+                }
+            }
+        }
     }
     for pat in non_empty_delimiter_patterns(props, strings)? {
         if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], &pat) {
@@ -579,6 +664,28 @@ pub(crate) fn consume_enclosing_delimiter(
     Err(VmError::InvalidValue {
         message: "delimiter mismatch".into(),
     })
+}
+
+fn is_numeric_text_kind(kind: crate::ir::ValueKind) -> bool {
+    use crate::ir::ValueKind::*;
+    matches!(
+        kind,
+        Byte | UnsignedByte | Short | UnsignedShort | Int | UnsignedInt | Long | Float | Double
+    )
+}
+
+fn read_numeric_token(cursor: &mut Cursor<'_>) -> Vec<u8> {
+    let start = cursor.pos;
+    if cursor.pos < cursor.data.len() {
+        let b = cursor.data[cursor.pos];
+        if b == b'+' || b == b'-' {
+            cursor.advance(1);
+        }
+    }
+    while cursor.pos < cursor.data.len() && cursor.data[cursor.pos].is_ascii_digit() {
+        cursor.advance(1);
+    }
+    cursor.data[start..cursor.pos].to_vec()
 }
 
 fn trim_text(input: &str, kind: TextTrimKind) -> &str {
@@ -651,6 +758,7 @@ pub(crate) fn read_simple(
     props: &IrProps,
     strings: &StringPool,
     require_delimiter: bool,
+    parent_terminator: Option<&str>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -663,11 +771,15 @@ pub(crate) fn read_simple(
         }
     }
     let value = match props.representation {
-        Representation::Binary => read_binary_scalar(cursor, kind, props, strings, require_delimiter)?,
-        Representation::Text => read_text_scalar(cursor, kind, props, strings, require_delimiter)?,
+        Representation::Binary => {
+            read_binary_scalar(cursor, kind, props, strings, require_delimiter, parent_terminator)?
+        }
+        Representation::Text => {
+            read_text_scalar(cursor, kind, props, strings, require_delimiter, parent_terminator)?
+        }
     };
     if props.length_kind == LengthKind::Delimited {
-        consume_enclosing_delimiter(cursor, props, strings)?;
+        consume_enclosing_delimiter(cursor, props, strings, parent_terminator)?;
     } else if let Some(id) = props.terminator {
         let pat = strings.get(id)?;
         if !pat.is_empty() && !cursor.consume_delimiter(pat) {

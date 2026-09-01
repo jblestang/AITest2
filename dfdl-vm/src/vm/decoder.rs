@@ -1,6 +1,6 @@
 use super::runtime::{
-    consume_enclosing_delimiter, default_value_for, read_delimited_bytes, read_simple,
-    read_until_separator, Cursor, RuntimeConfig, VmContext,
+    consume_enclosing_delimiter, default_value_for, read_delimited_bytes, read_length_span,
+    read_simple, read_until_separator, Cursor, RuntimeConfig, VmContext,
 };
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
@@ -53,6 +53,7 @@ impl<'a> Decoder<'a> {
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
+                self.consume_initiator(props, cursor)?;
                 let mut map = BTreeMap::new();
                 for (idx, &child) in children.iter().enumerate() {
                     let child_has_following = idx + 1 < children.len();
@@ -189,6 +190,7 @@ impl<'a> Decoder<'a> {
         require_delimiter: bool,
         parent_sequence: Option<&IrProps>,
     ) -> Result<DfdlValue> {
+        let parent_term = parent_terminator_str(parent_sequence, self.ctx.strings())?;
         match self.ctx.program.node(node_id)? {
             IrNode::Element {
                 name,
@@ -197,14 +199,35 @@ impl<'a> Decoder<'a> {
                 child,
             } => {
                 if let Some(child_id) = child {
+                    self.consume_initiator(props, cursor)?;
+                    if props.length_kind == LengthKind::Explicit {
+                        let len = props.length.ok_or(VmError::InvalidValue {
+                            message: "explicit complex missing length".into(),
+                        })? as usize;
+                        let bytes = read_length_span(cursor, len, props.length_units)?;
+                        let mut sub = Cursor::new(&bytes);
+                        let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                        if !sub.is_empty() {
+                            return Err(VmError::InvalidValue {
+                                message: "unconsumed bytes in explicit-length complex element".into(),
+                            }
+                            .into());
+                        }
+                        return Ok(wrap_named(
+                            self.ctx.strings().get(*name)?,
+                            inner,
+                            ValueKind::Complex,
+                        ));
+                    }
                     if props.length_kind == LengthKind::Delimited {
                         let bytes = read_delimited_bytes(
                             cursor,
                             props,
                             self.ctx.strings(),
                             require_delimiter,
+                            parent_term,
                         )?;
-                        consume_enclosing_delimiter(cursor, props, self.ctx.strings())?;
+                        consume_enclosing_delimiter(cursor, props, self.ctx.strings(), parent_term)?;
                         let mut sub = Cursor::new(&bytes);
                         let inner = self.decode_node(*child_id, &mut sub, false, None)?;
                         if !sub.is_empty() {
@@ -220,6 +243,30 @@ impl<'a> Decoder<'a> {
                         ));
                     }
                     if props.length_kind == LengthKind::Implicit {
+                        if let Some(term_id) = props.terminator {
+                            let term = self.ctx.strings().get(term_id)?;
+                            if !term.is_empty() {
+                                let bytes = read_until_separator(cursor, term, false)?;
+                                if match_delimiter(&cursor.data[cursor.pos..], term).is_some() {
+                                    let _ = cursor.consume_delimiter(term);
+                                }
+                                let mut sub = Cursor::new(&bytes);
+                                let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                                if !sub.is_empty() {
+                                    return Err(VmError::InvalidValue {
+                                        message:
+                                            "unconsumed bytes in terminator-bounded complex element"
+                                                .into(),
+                                    }
+                                    .into());
+                                }
+                                return Ok(wrap_named(
+                                    self.ctx.strings().get(*name)?,
+                                    inner,
+                                    ValueKind::Complex,
+                                ));
+                            }
+                        }
                         if let Some(parent) = parent_sequence {
                             if let Some(sep_id) = parent.separator {
                                 let sep = self.ctx.strings().get(sep_id)?;
@@ -248,15 +295,23 @@ impl<'a> Decoder<'a> {
                             }
                         }
                     }
-                    let inner = self.decode_node(*child_id, cursor, false, None)?;
+                    let inner = self.decode_node(*child_id, cursor, false, parent_sequence)?;
+                    self.consume_terminator(props, cursor)?;
                     Ok(wrap_named(
                         self.ctx.strings().get(*name)?,
                         inner,
                         ValueKind::Complex,
                     ))
                 } else {
-                    read_simple(cursor, *kind, props, self.ctx.strings(), require_delimiter)
-                        .map_err(Into::into)
+                    read_simple(
+                        cursor,
+                        *kind,
+                        props,
+                        self.ctx.strings(),
+                        require_delimiter,
+                        parent_term,
+                    )
+                    .map_err(Into::into)
                 }
             }
             _ => self.decode_node(node_id, cursor, false, None),
@@ -290,7 +345,20 @@ impl<'a> Decoder<'a> {
         let node = self.ctx.program.node(self.ctx.program.root)?;
         if let IrNode::Element { props, child, .. } = node {
             if child.is_none() && props.length_kind == LengthKind::Delimited && !cursor.is_empty() {
-                consume_enclosing_delimiter(cursor, props, self.ctx.strings())?;
+                consume_enclosing_delimiter(cursor, props, self.ctx.strings(), None)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn consume_initiator(&self, props: &IrProps, cursor: &mut Cursor<'_>) -> Result<()> {
+        if let Some(id) = props.initiator {
+            let pat = self.ctx.strings().get(id)?;
+            if !pat.is_empty() && !cursor.consume_delimiter(pat) {
+                return Err(VmError::InvalidValue {
+                    message: "initiator mismatch".into(),
+                }
+                .into());
             }
         }
         Ok(())
@@ -307,7 +375,10 @@ impl<'a> Decoder<'a> {
                     return Ok(());
                 }
                 return Err(VmError::InvalidValue {
-                    message: "terminator mismatch".into(),
+                    message: alloc::format!(
+                        "terminator mismatch: expected `{pat}` at byte 0x{:02x}",
+                        cursor.data.get(cursor.pos).copied().unwrap_or(0)
+                    ),
                 }
                 .into());
             }
@@ -351,6 +422,24 @@ impl<'a> Decoder<'a> {
                 .transpose()?),
             _ => Ok(None),
         }
+    }
+}
+
+fn parent_terminator_str<'a>(
+    parent: Option<&'a IrProps>,
+    strings: &'a crate::ir::StringPool,
+) -> Result<Option<&'a str>> {
+    let Some(props) = parent else {
+        return Ok(None);
+    };
+    let Some(id) = props.terminator else {
+        return Ok(None);
+    };
+    let pat = strings.get(id)?;
+    if pat.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(pat))
     }
 }
 

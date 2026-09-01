@@ -1,7 +1,8 @@
 use super::{ChoiceBranch, IrNode, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::error::{Result, SchemaError};
 use crate::schema::{
-    BuiltinType, ComplexContent, DfdlProps, Particle, SchemaDocument, SimpleBase, TypeDef, TypeName,
+    BuiltinType, ComplexContent, DfdlProps, LengthKind, Particle, SchemaDocument, SimpleBase,
+    TypeDef, TypeName,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -49,7 +50,30 @@ impl<'a> IrBuilder<'a> {
                 child: None,
             })
         } else {
-            self.compile_type(&root_element.type_name, &root_element.props)?
+            let child = self.compile_type(&root_element.type_name, &DfdlProps::default())?;
+            let needs_element_wrapper = root_element.props.length_kind.is_some()
+                || root_element.props.initiator.is_some()
+                || root_element.props.terminator.is_some();
+            if needs_element_wrapper {
+                let mut ir_props = merge_dfdl_props(
+                    &self.defaults,
+                    &DfdlProps::default(),
+                    &root_element.props,
+                    &mut self.strings,
+                );
+                if root_element.props.length_kind.is_none() {
+                    ir_props.length_kind = LengthKind::Implicit;
+                }
+                let name = self.strings.intern(root_name);
+                self.push(IrNode::Element {
+                    name,
+                    kind: ValueKind::Complex,
+                    props: ir_props,
+                    child: Some(child),
+                })
+            } else {
+                child
+            }
         };
         Ok(IrProgram {
             root_element: root_name.to_string(),
@@ -98,17 +122,8 @@ impl<'a> IrBuilder<'a> {
                 }))
             }
             TypeDef::Complex { content, props, .. } => {
-                let mut content_element_props = element_props.clone();
-                content_element_props.occurs_min = None;
-                content_element_props.max_occurs_specified = false;
-                content_element_props.occurs_max = None;
-                let merged = merge_dfdl_props(
-                    &self.defaults,
-                    props,
-                    &content_element_props,
-                    &mut self.strings,
-                );
-                self.compile_complex(content, &merged)
+                let type_base = merge_dfdl_props(&self.defaults, props, &DfdlProps::default(), &mut self.strings);
+                self.compile_complex(content, &type_base)
             }
         }
     }
@@ -150,7 +165,10 @@ impl<'a> IrBuilder<'a> {
                             }));
                         }
                     }
-                    let ir_props = props;
+                    let mut ir_props = props;
+                    if element.props.length_kind.is_none() {
+                        ir_props.length_kind = LengthKind::Implicit;
+                    }
                     Ok(self.push(IrNode::Element {
                         name,
                         kind: ValueKind::Complex,
@@ -195,10 +213,15 @@ impl<'a> IrBuilder<'a> {
         }
     }
 
-    fn compile_complex(&mut self, content: &ComplexContent, props: &IrProps) -> Result<u32> {
+    fn compile_complex(&mut self, content: &ComplexContent, type_base: &IrProps) -> Result<u32> {
         match content {
             ComplexContent::Sequence(sequence) => {
-                let ir_props = merge_dfdl_props(props, &sequence.props, &DfdlProps::default(), &mut self.strings);
+                let ir_props = merge_dfdl_props(
+                    type_base,
+                    &sequence.props,
+                    &DfdlProps::default(),
+                    &mut self.strings,
+                );
                 let child_inherited =
                     particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
@@ -211,7 +234,12 @@ impl<'a> IrBuilder<'a> {
                 }))
             }
             ComplexContent::Choice(choice) => {
-                let ir_props = merge_dfdl_props(props, &choice.props, &DfdlProps::default(), &mut self.strings);
+                let ir_props = merge_dfdl_props(
+                    type_base,
+                    &choice.props,
+                    &DfdlProps::default(),
+                    &mut self.strings,
+                );
                 let child_inherited =
                     particle_inherited_for_children(&ir_props, &choice.props, &self.defaults);
                 let mut branches = Vec::new();
@@ -230,7 +258,7 @@ impl<'a> IrBuilder<'a> {
             }
             ComplexContent::Empty => Ok(self.push(IrNode::Sequence {
                 children: Vec::new(),
-                props: props.clone(),
+                props: type_base.clone(),
             })),
         }
     }
@@ -303,6 +331,9 @@ fn particle_inherited_for_children(
     if !group_props.max_occurs_specified {
         inherited.occurs_max = defaults.occurs_max;
     }
+    // Initiator/terminator on a group apply to the group node itself, not its children.
+    inherited.initiator = None;
+    inherited.terminator = None;
     inherited
 }
 

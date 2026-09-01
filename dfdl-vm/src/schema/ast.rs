@@ -98,6 +98,7 @@ pub enum SequenceKind {
 pub enum LengthUnits {
     Bytes,
     Bits,
+    Characters,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

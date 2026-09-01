@@ -204,3 +204,65 @@ fn daffodil_delimited_initiator_on_element_ref() {
 fn daffodil_delimited_initiator_on_element_decl() {
     assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "refInitiator2");
 }
+
+#[test]
+fn daffodil_delimited_optional_nested_ref() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "NumSeq_07");
+}
+
+#[test]
+fn daffodil_delimited_optional_nested_ref_min_zero() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "NumSeq_08");
+}
+
+#[test]
+fn daffodil_delimited_explicit_length_complex() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "NumSeq_09");
+}
+
+#[test]
+fn daffodil_delimited_nested_initiator_terminator() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "NumSeq_11");
+}
+
+#[test]
+fn daffodil_delimited_empty_nested_group() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "NumSeq_12");
+}
+
+#[test]
+fn daffodil_delimited_prefix_separator_complex() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "NumSeq_14");
+}
+
+#[test]
+fn daffodil_delimited_compound_wsp_separator_space() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "lengthKindDelimited_01");
+}
+
+#[test]
+fn daffodil_delimited_compound_wsp_separator_tab() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "lengthKindDelimited_02");
+}
+
+#[test]
+fn daffodil_delimited_unused_trailing_bytes() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "lengthKindDelimited_03");
+}
+
+#[test]
+fn daffodil_delimited_unused_trailing_bytes_no_extra_elem() {
+    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "lengthKindDelimited_04");
+}
+
+// --- Implicit complex element (Section 12) ---
+
+#[test]
+fn daffodil_implicit_complex_element_terminator() {
+    assert_named_test_passes(daffodil_tdml!("implicit.tdml"), "nested_seq");
+}
+
+#[test]
+fn daffodil_implicit_complex_element_terminator_max_one() {
+    assert_named_test_passes(daffodil_tdml!("implicit.tdml"), "nested_seq_01");
+}

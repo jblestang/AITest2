@@ -168,7 +168,15 @@ fn split_delimiter_segments(pattern: &str) -> Vec<&str> {
         if bytes[i] == b'%' {
             if let Some(rel) = pattern[i..].find(';') {
                 let mut end = i + rel + 1;
-                if end < bytes.len() && matches!(bytes[end], b'+' | b'*' | b'?') {
+                let entity_body = &pattern[i + 1..i + rel];
+                let entity_has_quantifier = entity_body
+                    .chars()
+                    .last()
+                    .is_some_and(|c| matches!(c, '+' | '*' | '?'));
+                if !entity_has_quantifier
+                    && end < bytes.len()
+                    && matches!(bytes[end], b'+' | b'*' | b'?')
+                {
                     end += 1;
                 }
                 segments.push(&pattern[i..end]);
@@ -422,6 +430,26 @@ mod tests {
     fn match_unicode_property_pattern() {
         assert_eq!(match_length_pattern(b"abcDEFG", r"\p{L}{2,5}"), Some(5));
         assert_eq!(match_length_pattern(b"a1", r"\p{L}{2,5}"), None);
+    }
+
+    #[test]
+    fn match_compound_wsp_nl_separator() {
+        let pat = "%WSP;%WSP+;+%NL;%WSP*;";
+        let sep = b"  +\n\t\t  ";
+        let segs = split_delimiter_segments(pat);
+        assert_eq!(
+            segs,
+            vec!["%WSP;", "%WSP+;", "+", "%NL;", "%WSP*;"],
+            "segment split"
+        );
+        let mut pos = 0usize;
+        for seg in &segs {
+            let m = match_pattern(&sep[pos..], seg).expect("segment should match");
+            pos += m;
+        }
+        assert_eq!(pos, sep.len());
+        assert_eq!(match_delimiter(sep, pat), Some(sep.len()));
+        assert_eq!(match_delimiter(&b"abcd  +\n\t\t  efg"[4..], pat), Some(sep.len()));
     }
 
     #[test]
