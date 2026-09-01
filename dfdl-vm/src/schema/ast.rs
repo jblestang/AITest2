@@ -63,6 +63,9 @@ pub struct DfdlProps {
     /// Type name for prefixed length fields (`dfdl:prefixLengthType`).
     pub prefix_length_type: Option<TypeName>,
     pub prefix_includes_prefix_length: Option<bool>,
+    pub input_value_calc: Option<InputValueCalc>,
+    /// Local name of sibling referenced by `../name` in inputValueCalc.
+    pub input_value_calc_sibling: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +125,15 @@ pub enum TextTrimKind {
     Right,
     /// Trim pad characters (typically `%SP;`) from both ends.
     PadChar,
+}
+
+/// Narrow support for `dfdl:inputValueCalc` used in Daffodil prefixed length tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputValueCalc {
+    ContentLengthSelf(LengthUnits),
+    ValueLengthSelf(LengthUnits),
+    ContentLengthSibling(LengthUnits),
+    ValueLengthSibling(LengthUnits),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

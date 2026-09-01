@@ -3,8 +3,8 @@ mod builder;
 pub use builder::{compile, compile_named};
 use crate::error::VmError;
 use crate::schema::{
-    BinaryFloatRep, BinaryNumberRep, BitOrder, ByteOrder, LengthKind, LengthUnits, Representation,
-    SeparatorPosition, SequenceKind, TextTrimKind,
+    BinaryFloatRep, BinaryNumberRep, BitOrder, ByteOrder, InputValueCalc, LengthKind, LengthUnits,
+    Representation, SeparatorPosition, SequenceKind, TextTrimKind,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -100,6 +100,8 @@ pub struct IrProps {
     pub alignment: u64,
     pub alignment_units: LengthUnits,
     pub fill_byte: u8,
+    pub input_value_calc: Option<InputValueCalc>,
+    pub input_value_calc_sibling: Option<StringId>,
     pub prefix_length: Option<alloc::boxed::Box<IrPrefixLength>>,
     pub prefix_includes_prefix_length: bool,
 }
@@ -137,6 +139,8 @@ impl Default for IrProps {
             alignment: 0,
             alignment_units: LengthUnits::Bytes,
             fill_byte: 0,
+            input_value_calc: None,
+            input_value_calc_sibling: None,
             prefix_length: None,
             prefix_includes_prefix_length: false,
         }

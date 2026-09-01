@@ -1004,7 +1004,48 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.prefix_includes_prefix_length.is_some() {
         base.prefix_includes_prefix_length = overlay.prefix_includes_prefix_length;
     }
+    if overlay.input_value_calc.is_some() {
+        base.input_value_calc = overlay.input_value_calc;
+    }
+    if overlay.input_value_calc_sibling.is_some() {
+        base.input_value_calc_sibling = overlay.input_value_calc_sibling;
+    }
     base
+}
+
+fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>)> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let (func, rest) = inner.split_once('(')?;
+    let args = rest.strip_suffix(')')?;
+    let units = if args.contains("\"bits\"") {
+        LengthUnits::Bits
+    } else {
+        LengthUnits::Bytes
+    };
+    let target = args.split(',').next()?.trim().trim_matches('"');
+    match (func, target) {
+        ("dfdl:contentLength", "..") => Some((InputValueCalc::ContentLengthSelf(units), None)),
+        ("dfdl:valueLength", "..") => Some((InputValueCalc::ValueLengthSelf(units), None)),
+        ("dfdl:contentLength", sib) => {
+            let name = sib.strip_prefix("../")?;
+            Some((
+                InputValueCalc::ContentLengthSibling(units),
+                Some(local_name_from_qname(name).to_string()),
+            ))
+        }
+        ("dfdl:valueLength", sib) => {
+            let name = sib.strip_prefix("../")?;
+            Some((
+                InputValueCalc::ValueLengthSibling(units),
+                Some(local_name_from_qname(name).to_string()),
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn parse_sibling_length_ref(value: &str) -> Option<String> {
@@ -1201,7 +1242,13 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.text_string_pad_character =
                     Some(crate::schema::expand_entities_str(value));
             }
-            "textPadKind" | "textStringJustification" | "outputValueCalc" | "inputValueCalc" => {}
+            "textPadKind" | "textStringJustification" | "outputValueCalc" => {}
+            "inputValueCalc" => {
+                if let Some(calc) = parse_input_value_calc(value) {
+                    props.input_value_calc = Some(calc.0);
+                    props.input_value_calc_sibling = calc.1;
+                }
+            }
             "binaryNumberRep" | "binaryCalendarRep" => {
                 let rep = match value.as_str() {
                     "binary" => BinaryNumberRep::Binary,
@@ -1328,32 +1375,6 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
 fn parse_delimiter_literal(raw: &str) -> Result<String> {
     Ok(crate::schema::expand_entities_str(raw))
 }
-
-fn parse_byte_literal(raw: &str) -> Result<Vec<u8>> {
-    if let Some(hex) = raw.strip_prefix("0x") {
-        let mut out = Vec::new();
-        let bytes = hex.as_bytes();
-        if bytes.len() % 2 != 0 {
-            return Err(ParseError::InvalidXml {
-                message: alloc::format!("invalid hex literal `{raw}`"),
-            }
-            .into());
-        }
-        for chunk in bytes.chunks(2) {
-            let hi = (chunk[0] as char).to_digit(16).ok_or_else(|| ParseError::InvalidXml {
-                message: alloc::format!("invalid hex literal `{raw}`"),
-            })?;
-            let lo = (chunk[1] as char).to_digit(16).ok_or_else(|| ParseError::InvalidXml {
-                message: alloc::format!("invalid hex literal `{raw}`"),
-            })?;
-            out.push((hi << 4 | lo) as u8);
-        }
-        Ok(out)
-    } else {
-        Ok(raw.as_bytes().to_vec())
-    }
-}
-
 
 fn is_dfdl_local(tag: &str) -> bool {
     matches!(

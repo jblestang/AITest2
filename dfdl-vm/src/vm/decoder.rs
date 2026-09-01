@@ -1,16 +1,22 @@
 use super::runtime::{
-    consume_alignment, consume_enclosing_delimiter, default_value_for, read_delimited_bytes,
-    read_length_span, read_prefixed_payload, read_simple, read_until_separator, Cursor,
-    RuntimeConfig, VmContext,
+    consume_alignment, consume_enclosing_delimiter, default_value_for, prefixed_payload_byte_length,
+    read_delimited_bytes, read_length_span, read_prefixed_payload, read_simple, read_until_separator,
+    Cursor, RuntimeConfig, VmContext,
 };
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
-use crate::schema::{match_delimiter, LengthKind, SeparatorPosition};
+use crate::schema::{match_delimiter, InputValueCalc, LengthKind, LengthUnits, SeparatorPosition};
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+
+#[derive(Debug, Clone)]
+struct SiblingState {
+    value: DfdlValue,
+    content_bytes: usize,
+}
 
 /// DFDL decoder VM — executes compiled IR against an input byte stream.
 pub struct Decoder<'a> {
@@ -51,7 +57,7 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         has_following_sibling: bool,
         parent_sequence: Option<&IrProps>,
-        siblings: Option<&BTreeMap<String, DfdlValue>>,
+        siblings: Option<&BTreeMap<String, SiblingState>>,
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
@@ -62,6 +68,7 @@ impl<'a> Decoder<'a> {
                     let child_has_following = idx + 1 < children.len();
                     self.consume_separator(props, cursor, idx, children.len())?;
                     let saved = cursor.clone();
+                    let start = cursor.pos;
                     match self.decode_particle(
                         child,
                         cursor,
@@ -70,9 +77,25 @@ impl<'a> Decoder<'a> {
                         Some(&seq_siblings),
                     ) {
                         Ok(child_value) => {
-                            if let IrNode::Element { name, .. } = self.ctx.program.node(child)? {
+                            let consumed = cursor.pos.saturating_sub(start);
+                            if let IrNode::Element { name, props, .. } = self.ctx.program.node(child)? {
                                 let key = self.ctx.strings().get(*name)?.to_string();
-                                seq_siblings.insert(key, child_value.clone());
+                                let content_bytes = if props.length_kind == LengthKind::Prefixed {
+                                    prefixed_payload_byte_length(
+                                        &cursor.data[start..cursor.pos],
+                                        props,
+                                        self.ctx.strings(),
+                                    )?
+                                } else {
+                                    consumed
+                                };
+                                seq_siblings.insert(
+                                    key,
+                                    SiblingState {
+                                        value: child_value.clone(),
+                                        content_bytes,
+                                    },
+                                );
                             }
                             insert_child(&mut map, child, child_value, self.ctx.program)?;
                         }
@@ -125,7 +148,7 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         has_following_sibling: bool,
         parent_sequence: Option<&IrProps>,
-        siblings: Option<&BTreeMap<String, DfdlValue>>,
+        siblings: Option<&BTreeMap<String, SiblingState>>,
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element { props, .. } => self.decode_element_occurrences(
@@ -153,7 +176,7 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         has_following_sibling: bool,
         parent_sequence: Option<&IrProps>,
-        siblings: Option<&BTreeMap<String, DfdlValue>>,
+        siblings: Option<&BTreeMap<String, SiblingState>>,
     ) -> Result<DfdlValue> {
         let min = props.occurs_min;
         let max = props.occurs_max.unwrap_or(u64::MAX);
@@ -222,7 +245,7 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         require_delimiter: bool,
         parent_sequence: Option<&IrProps>,
-        siblings: Option<&BTreeMap<String, DfdlValue>>,
+        siblings: Option<&BTreeMap<String, SiblingState>>,
     ) -> Result<DfdlValue> {
         let parent_term = parent_terminator_str(parent_sequence, self.ctx.strings())?;
         match self.ctx.program.node(node_id)? {
@@ -355,6 +378,14 @@ impl<'a> Decoder<'a> {
                         inner,
                         ValueKind::Complex,
                     ))
+                } else if props.input_value_calc.is_some() {
+                    eval_input_value_calc(
+                        &props,
+                        cursor,
+                        siblings,
+                        self.ctx.strings(),
+                    )
+                    .map_err(Into::into)
                 } else {
                     read_simple(
                         cursor,
@@ -580,6 +611,13 @@ fn wrap_root(name: &str, value: DfdlValue) -> DfdlValue {
             wrapped.insert(name.into(), DfdlValue::Sequence(map));
             DfdlValue::Sequence(wrapped)
         }
+        DfdlValue::Choice { discriminator, value } => {
+            let mut inner = BTreeMap::new();
+            inner.insert(discriminator, *value);
+            let mut wrapped = BTreeMap::new();
+            wrapped.insert(name.into(), DfdlValue::Sequence(inner));
+            DfdlValue::Sequence(wrapped)
+        }
         other => {
             let mut map = BTreeMap::new();
             map.insert(name.into(), other);
@@ -597,6 +635,11 @@ fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
                 }
                 DfdlValue::Sequence(map)
             }
+            DfdlValue::Choice { discriminator, value } => {
+                let mut map = BTreeMap::new();
+                map.insert(discriminator, *value);
+                DfdlValue::Sequence(map)
+            }
             other => {
                 let mut map = BTreeMap::new();
                 map.insert(name.into(), other);
@@ -608,9 +651,79 @@ fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
     }
 }
 
+fn eval_input_value_calc(
+    props: &IrProps,
+    cursor: &Cursor<'_>,
+    siblings: Option<&BTreeMap<String, SiblingState>>,
+    strings: &crate::ir::StringPool,
+) -> Result<DfdlValue> {
+    let calc = props.input_value_calc.ok_or_else(|| VmError::InvalidValue {
+        message: "missing inputValueCalc".into(),
+    })?;
+    let len = match calc {
+        InputValueCalc::ContentLengthSelf(units) | InputValueCalc::ValueLengthSelf(units) => {
+            length_in_units(cursor.remaining(), units)?
+        }
+        InputValueCalc::ContentLengthSibling(units) => {
+            let sib = sibling_state(props, siblings, strings)?;
+            length_in_units(sib.content_bytes, units)?
+        }
+        InputValueCalc::ValueLengthSibling(_) => {
+            let sib = sibling_state(props, siblings, strings)?;
+            value_byte_length(&sib.value)?
+        }
+    };
+    i32::try_from(len)
+        .map(DfdlValue::Int)
+        .map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("inputValueCalc result `{len}` out of range for int"),
+        })
+        .map_err(Into::into)
+}
+
+fn sibling_state<'a>(
+    props: &IrProps,
+    siblings: Option<&'a BTreeMap<String, SiblingState>>,
+    strings: &crate::ir::StringPool,
+) -> Result<&'a SiblingState> {
+    let id = props.input_value_calc_sibling.ok_or_else(|| VmError::InvalidValue {
+        message: "inputValueCalc sibling missing".into(),
+    })?;
+    let name = strings.get(id)?;
+    siblings
+        .and_then(|m| m.get(name))
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("inputValueCalc sibling `{name}` not available"),
+        })
+        .map_err(Into::into)
+}
+
+fn length_in_units(byte_len: usize, units: LengthUnits) -> Result<usize> {
+    match units {
+        LengthUnits::Bytes => Ok(byte_len),
+        LengthUnits::Bits => Ok(byte_len.saturating_mul(8)),
+        LengthUnits::Characters => Err(VmError::UnsupportedOperation {
+            op: "inputValueCalc character units".into(),
+        }
+        .into()),
+    }
+}
+
+fn value_byte_length(value: &DfdlValue) -> Result<usize> {
+    match value {
+        DfdlValue::String(s) => Ok(s.len()),
+        DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => Ok(s.len()),
+        DfdlValue::HexBinary(v) => Ok(v.len()),
+        other => Err(VmError::InvalidValue {
+            message: alloc::format!("valueLength on unsupported value `{other:?}`"),
+        }
+        .into()),
+    }
+}
+
 fn resolve_length_props(
     props: &IrProps,
-    siblings: Option<&BTreeMap<String, DfdlValue>>,
+    siblings: Option<&BTreeMap<String, SiblingState>>,
     strings: &crate::ir::StringPool,
 ) -> Result<IrProps> {
     if props.length_kind != LengthKind::Explicit || props.length.is_some() {
@@ -622,6 +735,7 @@ fn resolve_length_props(
     let sib_name = strings.get(sib_id)?;
     let sib_val = siblings
         .and_then(|m| m.get(sib_name))
+        .map(|state| &state.value)
         .ok_or_else(|| VmError::InvalidValue {
             message: alloc::format!("length sibling `{sib_name}` not available"),
         })?;

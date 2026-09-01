@@ -21,6 +21,16 @@ pub fn compare_infoset(actual: &DfdlValue, expected_xml: &str) -> Result<(), Str
     compare_nodes(&expected, &actual_nodes)
 }
 
+/// Infer the document root element local name from expected TDML infoset XML.
+pub fn infer_root_element_name(expected_xml: &str) -> Option<String> {
+    let inner = extract_dfdl_infoset_xml(expected_xml);
+    if inner.trim().is_empty() {
+        return None;
+    }
+    let nodes = parse_infoset_elements(&inner).ok()?;
+    nodes.first().map(|n| local_name_str(&n.name).to_string())
+}
+
 fn parse_expected_infoset(xml: &str) -> Result<Vec<InfosetNode>, String> {
     let inner = extract_dfdl_infoset_xml(xml);
     parse_infoset_elements(&inner)

@@ -36,17 +36,17 @@ impl<'a> IrBuilder<'a> {
             })?;
 
         let root = if let Some(builtin) = BuiltinType::from_xsd(root_element.type_name.as_str()) {
+            let kind = value_kind_from_builtin(builtin);
             let defaults = self.defaults.clone();
-            let props = self.merge_props_full(
-                &defaults,
-                &DfdlProps::default(),
-                &root_element.props,
+            let props = finalize_element_props(
+                kind,
+                self.merge_props_full(&defaults, &DfdlProps::default(), &root_element.props)?,
             )?;
-            validate_implicit_text_length(value_kind_from_builtin(builtin), &props)?;
+            validate_implicit_text_length(kind, &props)?;
             let name = self.strings.intern(root_name);
             self.push(IrNode::Element {
                 name,
-                kind: value_kind_from_builtin(builtin),
+                kind,
                 props,
                 child: None,
             })
@@ -112,9 +112,11 @@ impl<'a> IrBuilder<'a> {
         match type_def {
             TypeDef::Simple { base, props, .. } => {
                 let defaults = self.defaults.clone();
-                let merged = self.merge_props_full(&defaults, props, element_props)?;
-                let ir_props = merged;
                 let kind = value_kind_from_simple(base);
+                let ir_props = finalize_element_props(
+                    kind,
+                    self.merge_props_full(&defaults, props, element_props)?,
+                )?;
                 validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern("__value");
                 Ok(self.push(IrNode::Element {
@@ -135,12 +137,14 @@ impl<'a> IrBuilder<'a> {
     fn compile_particle(&mut self, particle: &Particle, inherited: &IrProps) -> Result<u32> {
         match particle {
             Particle::Element(element) => {
-                let props = self.merge_props_full(inherited, &element.props, &DfdlProps::default())?;
                 let name = self.strings.intern(&element.name);
                 if let Some(builtin) = BuiltinType::from_xsd(element.type_name.as_str()) {
                     let kind = value_kind_from_builtin(builtin);
-                    validate_implicit_text_length(kind, &props)?;
-                    let ir_props = props;
+                    let ir_props = finalize_element_props(
+                        kind,
+                        self.merge_props_full(inherited, &element.props, &DfdlProps::default())?,
+                    )?;
+                    validate_implicit_text_length(kind, &ir_props)?;
                     Ok(self.push(IrNode::Element {
                         name,
                         kind,
@@ -148,6 +152,7 @@ impl<'a> IrBuilder<'a> {
                         child: None,
                     }))
                 } else {
+                    let props = self.merge_props_full(inherited, &element.props, &DfdlProps::default())?;
                     let child = self.compile_type(&element.type_name, &element.props)?;
                     let child_node = self.nodes.get(child as usize).ok_or_else(|| {
                         SchemaError::InvalidProperty {
@@ -163,7 +168,10 @@ impl<'a> IrBuilder<'a> {
                     {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
-                            let merged = merge_ir_props(&child_props, &overlay);
+                            let merged = finalize_element_props(
+                                kind,
+                                merge_ir_props(&child_props, &overlay),
+                            )?;
                             validate_implicit_text_length(kind, &merged)?;
                             return Ok(self.push(IrNode::Element {
                                 name,
@@ -283,7 +291,6 @@ impl<'a> IrBuilder<'a> {
     ) -> Result<IrProps> {
         let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings);
         self.attach_prefix_length(type_props, element_props, &mut ir)?;
-        validate_binary_delimited(&ir)?;
         Ok(ir)
     }
 
@@ -310,7 +317,7 @@ impl<'a> IrBuilder<'a> {
         ir.prefix_includes_prefix_length = element_props
             .prefix_includes_prefix_length
             .or(type_props.prefix_includes_prefix_length)
-            .unwrap_or(false);
+            .unwrap_or(ir.prefix_includes_prefix_length);
         Ok(())
     }
 
@@ -339,8 +346,27 @@ impl<'a> IrBuilder<'a> {
     }
 }
 
-fn validate_binary_delimited(props: &IrProps) -> Result<()> {
-    if props.representation == Representation::Binary && props.length_kind == LengthKind::Delimited {
+fn finalize_element_props(kind: ValueKind, mut ir: IrProps) -> Result<IrProps> {
+    validate_binary_delimited(kind, &ir)?;
+    // Binary schemas default to binary representation, but length-delimited string
+    // payloads are still textual. HexBinary keeps binary bytes even with a text prefix.
+    if kind == ValueKind::String
+        && ir.representation == Representation::Binary
+        && matches!(
+            ir.length_kind,
+            LengthKind::Delimited | LengthKind::Prefixed | LengthKind::Explicit
+        )
+    {
+        ir.representation = Representation::Text;
+    }
+    Ok(ir)
+}
+
+fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
+    if props.representation == Representation::Binary
+        && props.length_kind == LengthKind::Delimited
+        && !matches!(kind, ValueKind::String | ValueKind::HexBinary)
+    {
         return Err(SchemaError::InvalidProperty {
             message: "binary data elements cannot have lengthKind=delimited".into(),
         }
@@ -559,6 +585,15 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.sequence_kind {
         base.sequence_kind = v;
     }
+    if let Some(v) = props.input_value_calc {
+        base.input_value_calc = Some(v);
+    }
+    if props.input_value_calc_sibling.is_some() {
+        base.input_value_calc_sibling = props
+            .input_value_calc_sibling
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
     if props.alignment.is_some() {
         base.alignment = props.alignment.unwrap_or(0);
     }
@@ -567,6 +602,9 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     }
     if let Some(ref bytes) = props.fill_byte {
         base.fill_byte = bytes.first().copied().unwrap_or(0);
+    }
+    if let Some(v) = props.prefix_includes_prefix_length {
+        base.prefix_includes_prefix_length = v;
     }
     base
 }
@@ -625,6 +663,8 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.fill_byte != 0 {
         out.fill_byte = overlay.fill_byte;
     }
+    out.input_value_calc = overlay.input_value_calc;
+    out.input_value_calc_sibling = overlay.input_value_calc_sibling;
     if overlay.prefix_length.is_some() {
         out.prefix_length = overlay.prefix_length.clone();
     }

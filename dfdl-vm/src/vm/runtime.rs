@@ -1007,6 +1007,27 @@ pub(crate) fn consume_enclosing_delimiter(
     })
 }
 
+pub(crate) fn prefixed_payload_byte_length(
+    data: &[u8],
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<usize, crate::error::VmError> {
+    use crate::error::VmError;
+    let mut cursor = Cursor::new(data);
+    let span = read_prefixed_span(&mut cursor, props, strings)?;
+    match props.length_units {
+        LengthUnits::Bytes => Ok(span),
+        LengthUnits::Bits => span
+            .checked_div(8)
+            .ok_or(VmError::InvalidValue {
+                message: "prefixed bit span not byte-aligned".into(),
+            }),
+        LengthUnits::Characters => Err(VmError::UnsupportedOperation {
+            op: "prefixed content length in characters".into(),
+        }),
+    }
+}
+
 pub(crate) fn read_prefixed_payload(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
@@ -1086,7 +1107,7 @@ fn read_prefix_integer_value(
 ) -> Result<u64, crate::error::VmError> {
     use crate::error::VmError;
     use crate::schema::Representation;
-    let raw = read_prefix_field_payload(cursor, &prefix.props, strings)?;
+    let raw = read_prefix_field_payload(cursor, prefix.kind, &prefix.props, strings)?;
     match prefix.props.representation {
         Representation::Text => {
             let text = core::str::from_utf8(&raw).map_err(|_| VmError::InvalidValue {
@@ -1108,16 +1129,29 @@ fn read_prefix_integer_value(
 
 fn read_prefix_field_payload(
     cursor: &mut Cursor<'_>,
+    kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
+    use crate::schema::Representation;
     match props.length_kind {
         LengthKind::Explicit | LengthKind::Fixed => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "prefix type missing length".into(),
             })? as usize;
             read_length_span(cursor, len, props.length_units)
+        }
+        LengthKind::Implicit => {
+            if props.representation == Representation::Text {
+                Ok(read_numeric_token(cursor))
+            } else if props.length_units == LengthUnits::Bits {
+                let len = binary_bit_length(cursor, kind, props, strings)?;
+                read_length_span(cursor, len, LengthUnits::Bits)
+            } else {
+                let len = binary_byte_length(cursor, kind, props, strings)?;
+                cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)
+            }
         }
         LengthKind::Prefixed => read_prefixed_payload(cursor, props, strings),
         other => Err(VmError::UnsupportedOperation {

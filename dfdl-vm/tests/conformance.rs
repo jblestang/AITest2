@@ -432,3 +432,29 @@ fn daffodil_prefixed_complex_content_suite() {
         assert_named_test_passes(tdml, name);
     }
 }
+
+#[test]
+fn daffodil_prefixed_input_value_calc_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_implicit_1",
+        "pl_complexContentLengthBytes_1",
+        "pl_complexValueLengthBytes_1",
+        "pl_complexContentLengthBits_1",
+        "pl_complexValueLengthBits_1",
+        "pl_simpleContentLengthBytes_1",
+        "pl_simpleValueLengthBytes_1",
+        "pl_simpleValueLengthBytes_2",
+        "pl_simpleValueLengthBytes_3",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_prefixed_backtrack_suite() {
+    assert_named_test_passes(
+        daffodil_tdml!("PrefixedTests.tdml"),
+        "pl_text_string_txt_bytes_not_enough_prefix_data_includes_backtrack",
+    );
+}
