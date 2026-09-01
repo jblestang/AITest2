@@ -375,8 +375,10 @@ mod tests {
 
     #[test]
     fn match_newline_delimiter() {
-        assert_eq!(match_delimiter(b"1\nrest", "\n"), Some(1));
-        assert_eq!(match_delimiter(b"1\n", "\n"), Some(1));
+        assert_eq!(match_delimiter(b"\n", "\n"), Some(1));
+        assert_eq!(match_delimiter(b"\nrest", "\n"), Some(1));
+        // Newline must not be treated as an empty trimmable pattern.
+        assert_ne!(match_pattern(b"x", "\n"), Some(0));
     }
 
     #[test]
