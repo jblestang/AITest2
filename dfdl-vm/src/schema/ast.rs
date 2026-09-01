@@ -40,6 +40,7 @@ pub struct DfdlProps {
     pub binary_calendar_rep: Option<BinaryNumberRep>,
     pub binary_float_rep: Option<BinaryFloatRep>,
     pub binary_decimal_virtual_point: Option<u32>,
+    pub decimal_signed: Option<bool>,
     pub calendar_pattern: Option<String>,
     pub initiator: Option<String>,
     pub terminator: Option<String>,

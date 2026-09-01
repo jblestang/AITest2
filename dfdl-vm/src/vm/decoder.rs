@@ -281,56 +281,68 @@ impl<'a> Decoder<'a> {
                         let len = props.length.ok_or(VmError::InvalidValue {
                             message: "explicit complex missing length".into(),
                         })? as usize;
-                        if props.length_units == LengthUnits::Bits {
-                            let frame_start = cursor.absolute_bit_index();
-                            let prev_limit = cursor
-                                .frame_bit_limit
-                                .replace(frame_start + len);
+                        if props.length_units == LengthUnits::Characters {
+                            let bytes = read_length_span(
+                                cursor,
+                                len,
+                                props.length_units,
+                                encoding_name(&props, self.ctx.strings())?,
+                                props.bit_order,
+                            )?;
+                            let mut sub = Cursor::new(&bytes);
+                            let scope = bytes.len();
                             let inner = self.decode_node(
                                 *child_id,
-                                cursor,
+                                &mut sub,
                                 false,
                                 None,
                                 None,
-                                None,
+                                Some(scope),
                             )?;
-                            if props.truncate_specified_length_string
-                                && !cursor.is_frame_consumed()
-                            {
-                                cursor.frame_bit_limit = prev_limit;
+                            if props.truncate_specified_length_string && !sub.is_empty() {
                                 return Err(VmError::InvalidValue {
                                     message:
-                                        "unconsumed bytes in explicit-length complex element"
-                                            .into(),
+                                        "unconsumed bytes in explicit-length complex element".into(),
                                 }
                                 .into());
                             }
-                            if let Some(limit) = cursor.frame_bit_limit {
-                                cursor.skip_to_bit_index(limit, props.bit_order)?;
-                            }
-                            cursor.frame_bit_limit = prev_limit;
                             return Ok(wrap_named(
                                 self.ctx.strings().get(*name)?,
                                 inner,
                                 ValueKind::Complex,
                             ));
                         }
-                        let bytes = read_length_span(
+                        let bit_len = match props.length_units {
+                            LengthUnits::Bits => len,
+                            LengthUnits::Bytes => len.saturating_mul(8),
+                            LengthUnits::Characters => unreachable!("handled above"),
+                        };
+                        let frame_start = cursor.absolute_bit_index();
+                        let prev_limit = cursor
+                            .frame_bit_limit
+                            .replace(frame_start.saturating_add(bit_len));
+                        let inner = self.decode_node(
+                            *child_id,
                             cursor,
-                            len,
-                            props.length_units,
-                            encoding_name(&props, self.ctx.strings())?,
-                            props.bit_order,
+                            false,
+                            None,
+                            None,
+                            None,
                         )?;
-                        let mut sub = Cursor::new(&bytes);
-                        let scope = bytes.len();
-                        let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope))?;
-                        if props.truncate_specified_length_string && !sub.is_empty() {
+                        if props.truncate_specified_length_string
+                            && !cursor.is_frame_consumed()
+                        {
+                            cursor.frame_bit_limit = prev_limit;
                             return Err(VmError::InvalidValue {
-                                message: "unconsumed bytes in explicit-length complex element".into(),
+                                message:
+                                    "unconsumed bytes in explicit-length complex element".into(),
                             }
                             .into());
                         }
+                        if let Some(limit) = cursor.frame_bit_limit {
+                            cursor.skip_to_bit_index(limit, props.bit_order)?;
+                        }
+                        cursor.frame_bit_limit = prev_limit;
                         return Ok(wrap_named(
                             self.ctx.strings().get(*name)?,
                             inner,
@@ -362,8 +374,12 @@ impl<'a> Decoder<'a> {
                         ));
                     }
                     if props.length_kind == LengthKind::Prefixed {
-                        let bytes =
-                            read_prefixed_payload(cursor, &props, self.ctx.strings())?;
+                        let bytes = read_prefixed_payload(
+                            cursor,
+                            &props,
+                            self.ctx.strings(),
+                            Some(self.ctx.strings().get(*name)?),
+                        )?;
                         let mut sub = Cursor::new(&bytes);
                         let scope = bytes.len();
                         let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope))?;
@@ -466,6 +482,7 @@ impl<'a> Decoder<'a> {
                         self.ctx.strings(),
                         require_delimiter,
                         parent_term,
+                        Some(self.ctx.strings().get(*name)?),
                     )
                     .map_err(Into::into)
                 }

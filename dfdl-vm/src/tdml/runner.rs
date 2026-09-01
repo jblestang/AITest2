@@ -387,10 +387,31 @@ fn absolute_bit_index(data: &[u8], bit_count: u8) -> usize {
     data.len() * 8 + bit_count as usize
 }
 
+fn normalize_error_text(text: &str) -> alloc::string::String {
+    text.replace('\n', "%NL;")
+        .replace('\r', "%CR;")
+        .replace('\t', "%HT;")
+        .to_lowercase()
+}
+
 fn error_messages_match(expected: &[String], err: &str) -> bool {
-    let _ = expected;
-    let _ = err;
-    true
+    const OPTIONAL: &[&str] = &[
+        "schema definition error",
+        "parse error",
+        "unparse error",
+    ];
+    let err_lower = normalize_error_text(err);
+    expected.iter().all(|fragment| {
+        let fragment = fragment.trim();
+        if fragment.is_empty() {
+            return true;
+        }
+        let fl = normalize_error_text(fragment);
+        if OPTIONAL.contains(&fl.as_str()) {
+            return true;
+        }
+        err_lower.contains(&fl)
+    })
 }
 
 fn compile_tdml_schema(xsd: &str, root: &str, tunables: DaffodilTunables) -> Result<DfdlSpec> {

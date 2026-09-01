@@ -107,7 +107,14 @@ impl<'a> Encoder<'a> {
                         None => value,
                     };
                     if needs_length_frame(props) {
-                        self.encode_framed_element(*child_id, props, field, out, bit_count)
+                        self.encode_framed_element(
+                            *child_id,
+                            props,
+                            field,
+                            out,
+                            bit_count,
+                            Some(name_str),
+                        )
                     } else {
                         self.encode_element_occurrences(*child_id, props, field, out, bit_count)
                     }
@@ -121,6 +128,7 @@ impl<'a> Encoder<'a> {
                         props,
                         self.ctx.strings(),
                         &self.ctx.program.tunables,
+                        Some(self.ctx.strings().get(*name)?),
                     )
                     .map_err(Into::into)
                 }
@@ -135,6 +143,7 @@ impl<'a> Encoder<'a> {
         value: &DfdlValue,
         out: &mut Vec<u8>,
         bit_count: &mut u8,
+        field_name: Option<&str>,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
@@ -161,6 +170,7 @@ impl<'a> Encoder<'a> {
                 payload_bit_count,
                 props,
                 self.ctx.strings(),
+                field_name,
             )?;
         }
         Ok(())
@@ -209,12 +219,19 @@ impl<'a> Encoder<'a> {
                         None => &value,
                     };
                     if needs_length_frame(&resolved) {
-                        self.encode_framed_element(*child_id, &resolved, field, out, bit_count)
+                        self.encode_framed_element(
+                            *child_id,
+                            &resolved,
+                            field,
+                            out,
+                            bit_count,
+                            Some(key),
+                        )
                     } else {
                         self.encode_element_occurrences(*child_id, &resolved, field, out, bit_count)
                     }
                 } else {
-                    self.encode_simple_occurrences(*kind, &resolved, &value, out, bit_count)
+                    self.encode_simple_occurrences(*kind, &resolved, &value, out, bit_count, Some(key))
                 }
             }
             IrNode::Sequence { .. } => self.encode_node(
@@ -246,6 +263,7 @@ impl<'a> Encoder<'a> {
         value: &DfdlValue,
         out: &mut Vec<u8>,
         bit_count: &mut u8,
+        field_name: Option<&str>,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
@@ -262,6 +280,7 @@ impl<'a> Encoder<'a> {
                 props,
                 self.ctx.strings(),
                 &self.ctx.program.tunables,
+                field_name,
             )
             .map_err(Error::from)?;
         }

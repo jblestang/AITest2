@@ -1003,6 +1003,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.binary_decimal_virtual_point.is_some() {
         base.binary_decimal_virtual_point = overlay.binary_decimal_virtual_point;
     }
+    if overlay.decimal_signed.is_some() {
+        base.decimal_signed = overlay.decimal_signed;
+    }
     if overlay.calendar_pattern.is_some() {
         base.calendar_pattern = overlay.calendar_pattern;
     }
@@ -1265,6 +1268,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "binaryCalendarRep"
             | "binaryFloatRep"
             | "binaryDecimalVirtualPoint"
+            | "decimalSigned"
             | "calendarPattern"
             | "calendarPatternKind"
             | "initiator"
@@ -1486,6 +1490,9 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                         message: alloc::format!("invalid binaryDecimalVirtualPoint `{value}`"),
                     }
                 })?);
+            }
+            "decimalSigned" => {
+                props.decimal_signed = Some(matches!(value.as_str(), "yes" | "true" | "1"));
             }
             "calendarPattern" => props.calendar_pattern = Some(value.clone()),
             "calendarPatternKind" => {}

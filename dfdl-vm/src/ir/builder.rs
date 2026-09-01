@@ -1,6 +1,9 @@
 use super::{ChoiceBranch, IrNode, IrProgram, IrPrefixLength, IrProps, StringId, StringPool, ValueKind};
 use crate::error::{Result, SchemaError};
-use crate::length_validate::{validate_data_length_schema, validate_signed_one_bit_length_schema, DaffodilTunables};
+use crate::length_validate::{
+    validate_data_length_schema, validate_float_double_bit_length_schema,
+    validate_signed_one_bit_length_schema, DaffodilTunables,
+};
 use crate::schema::{
     BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, Particle, Representation,
     SchemaDocument, SimpleBase, TypeDef, TypeName,
@@ -336,7 +339,7 @@ impl<'a> IrBuilder<'a> {
         element_props: &DfdlProps,
     ) -> Result<IrProps> {
         let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings);
-        self.attach_prefix_length(type_props, element_props, &mut ir)?;
+        self.attach_prefix_length(type_props, element_props, &mut ir, 0)?;
         Ok(ir)
     }
 
@@ -345,6 +348,7 @@ impl<'a> IrBuilder<'a> {
         type_props: &DfdlProps,
         element_props: &DfdlProps,
         ir: &mut IrProps,
+        depth: usize,
     ) -> Result<()> {
         if ir.length_kind != LengthKind::Prefixed {
             return Ok(());
@@ -359,15 +363,36 @@ impl<'a> IrBuilder<'a> {
             }
             .into());
         };
-        ir.prefix_length = Some(alloc::boxed::Box::new(self.resolve_prefix_length_type(type_name)?));
+        ir.prefix_length = Some(alloc::boxed::Box::new(
+            self.resolve_prefix_length_type(type_name, depth)?,
+        ));
         ir.prefix_includes_prefix_length = element_props
             .prefix_includes_prefix_length
             .or(type_props.prefix_includes_prefix_length)
             .unwrap_or(ir.prefix_includes_prefix_length);
+        if ir.prefix_includes_prefix_length {
+            if let Some(ref prefix) = ir.prefix_length {
+                if prefix.props.length_units == LengthUnits::Bits
+                    && ir.length_units == LengthUnits::Bytes
+                {
+                    return Err(SchemaError::InvalidProperty {
+                        message: alloc::format!(
+                            "Schema Definition Error. ex:{} dfdl:prefixIncludesPrefixLength=\"yes\" dfdl:prefixLengthType dfdl:lengthUnits",
+                            type_name.as_str()
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
         Ok(())
     }
 
-    fn resolve_prefix_length_type(&mut self, type_name: &TypeName) -> Result<IrPrefixLength> {
+    fn resolve_prefix_length_type(
+        &mut self,
+        type_name: &TypeName,
+        depth: usize,
+    ) -> Result<IrPrefixLength> {
         let type_def = self.schema.resolve_type(type_name).ok_or_else(|| {
             SchemaError::UndefinedType {
                 name: type_name.as_str().to_string(),
@@ -376,7 +401,7 @@ impl<'a> IrBuilder<'a> {
         let TypeDef::Simple { base, props, .. } = type_def else {
             return Err(SchemaError::InvalidProperty {
                 message: alloc::format!(
-                    "prefixLengthType `{}` must be a simple type",
+                    "Schema Definition Error. dfdl:prefixLengthType ex:{} must be simpleType",
                     type_name.as_str()
                 ),
             }
@@ -401,8 +426,25 @@ impl<'a> IrBuilder<'a> {
         };
         let mut prefix_props =
             merge_dfdl_props(&self.defaults.clone(), props, &DfdlProps::default(), &mut self.strings);
-        self.attach_prefix_length(props, &DfdlProps::default(), &mut prefix_props)?;
+        validate_prefix_length_type(type_name, props, &prefix_props)?;
+        if prefix_props.length_kind == LengthKind::Prefixed && depth >= 1 {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" not supported"
+                    .into(),
+            }
+            .into());
+        }
+        self.attach_prefix_length(props, &DfdlProps::default(), &mut prefix_props, depth + 1)?;
         let kind = value_kind_from_simple(base);
+        if kind == ValueKind::Decimal {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error. dfdl:prefixLengthType ex:{} xs:decimal subtype xs:integer",
+                    type_name.as_str()
+                ),
+            }
+            .into());
+        }
         if let Some(len) = prefix_props.length {
             validate_data_length_schema(kind, len, prefix_props.length_units)?;
         }
@@ -436,11 +478,15 @@ fn validate_prefixed_character_encoding(
         })?;
     if encoding.eq_ignore_ascii_case("utf-8") {
         return Err(SchemaError::InvalidProperty {
-            message: "dfdl:lengthKind='prefixed' with dfdl:lengthUnits='characters' cannot be used with variable-width encoding".into(),
+            message: "Schema Definition Error. Unparsing dfdl:lengthKind='prefixed' with dfdl:lengthUnits='characters' cannot be used with variable-width encoding".into(),
         }
         .into());
     }
     Ok(())
+}
+
+fn validate_float_double_bit_length(kind: ValueKind, length: u64, units: LengthUnits) -> Result<()> {
+    validate_float_double_bit_length_schema(kind, length, units).map_err(Into::into)
 }
 
 fn finalize_element_props(
@@ -451,10 +497,14 @@ fn finalize_element_props(
 ) -> Result<IrProps> {
     validate_binary_delimited(kind, &ir)?;
     validate_prefixed_character_encoding(kind, &ir, strings)?;
+    validate_end_of_parent(kind, &ir)?;
     if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
         if let Some(len) = ir.length {
-            validate_data_length_schema(kind, len, ir.length_units)?;
-            validate_signed_one_bit_length_schema(kind, len, ir.length_units, &tunables)?;
+            validate_float_double_bit_length(kind, len, ir.length_units)?;
+            if kind != ValueKind::Decimal {
+                validate_data_length_schema(kind, len, ir.length_units)?;
+                validate_signed_one_bit_length_schema(kind, len, ir.length_units, &tunables)?;
+            }
         }
     }
     if matches!(kind, ValueKind::Float | ValueKind::Double)
@@ -505,10 +555,145 @@ fn validate_implicit_text_length(kind: ValueKind, props: &IrProps) -> Result<()>
     }
     Err(SchemaError::InvalidProperty {
         message: alloc::format!(
-            "lengthKind=implicit with text representation requires string or hexBinary type"
+            "Schema Definition Error. type {} representation text lengthKind implicit is not allowed",
+            value_kind_type_name(kind)
         ),
     }
     .into())
+}
+
+fn validate_end_of_parent(kind: ValueKind, props: &IrProps) -> Result<()> {
+    if props.length_kind != LengthKind::EndOfParent {
+        return Ok(());
+    }
+    if kind == ValueKind::Complex {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error. not implemented endOfParent complex type".into(),
+        }
+        .into());
+    }
+    Err(SchemaError::InvalidProperty {
+        message: "Schema Definition Error. not implemented endOfParent simple type".into(),
+    }
+    .into())
+}
+
+fn value_kind_type_name(kind: ValueKind) -> &'static str {
+    match kind {
+        ValueKind::Boolean => "xs:boolean",
+        ValueKind::Byte => "xs:byte",
+        ValueKind::Short => "xs:short",
+        ValueKind::Int => "xs:int",
+        ValueKind::Long => "xs:long",
+        ValueKind::UnsignedByte => "xs:unsignedByte",
+        ValueKind::UnsignedShort => "xs:unsignedShort",
+        ValueKind::UnsignedInt => "xs:unsignedInt",
+        ValueKind::Float => "xs:float",
+        ValueKind::Double => "xs:double",
+        ValueKind::Decimal => "xs:decimal",
+        ValueKind::DateTime => "xs:dateTime",
+        ValueKind::String => "xs:string",
+        ValueKind::HexBinary => "xs:hexBinary",
+        ValueKind::Complex => "complex",
+    }
+}
+
+fn validate_prefix_length_type(
+    type_name: &TypeName,
+    raw_props: &DfdlProps,
+    prefix_props: &IrProps,
+) -> Result<()> {
+    let qname = alloc::format!("ex:{}", type_name.as_str());
+    let prefix_label = alloc::format!("dfdl:prefixLengthType {qname}");
+
+    match prefix_props.length_kind {
+        LengthKind::Explicit | LengthKind::Fixed | LengthKind::Implicit | LengthKind::Prefixed => {}
+        other => {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error. {qname} {prefix_label} lengthKind {}",
+                    length_kind_label(other)
+                ),
+            }
+            .into());
+        }
+    }
+
+    if matches!(
+        prefix_props.length_kind,
+        LengthKind::Explicit | LengthKind::Fixed
+    ) && prefix_props.length.is_none()
+    {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. {qname} {prefix_label} expression"
+            ),
+        }
+        .into());
+    }
+
+    if raw_props.output_value_calc.is_some() {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. {qname} {prefix_label} dfdl:outputValueCalc"
+            ),
+        }
+        .into());
+    }
+    if raw_props.initiator.as_ref().is_some_and(|s| !s.is_empty()) {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. {qname} {prefix_label} dfdl:initiator"
+            ),
+        }
+        .into());
+    }
+    if raw_props.terminator.as_ref().is_some_and(|s| !s.is_empty()) {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. {qname} {prefix_label} dfdl:terminator"
+            ),
+        }
+        .into());
+    }
+    if raw_props.alignment.is_some() && raw_props.alignment != Some(0) {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. {qname} {prefix_label} dfdl:alignment"
+            ),
+        }
+        .into());
+    }
+    if raw_props.leading_skip.is_some() && raw_props.leading_skip != Some(0) {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. {qname} {prefix_label} dfdl:leadingSkip"
+            ),
+        }
+        .into());
+    }
+    if raw_props.trailing_skip.is_some() && raw_props.trailing_skip != Some(0) {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. {qname} {prefix_label} dfdl:trailingSkip"
+            ),
+        }
+        .into());
+    }
+
+    Ok(())
+}
+
+fn length_kind_label(kind: LengthKind) -> &'static str {
+    match kind {
+        LengthKind::Implicit => "implicit",
+        LengthKind::Explicit => "explicit",
+        LengthKind::Fixed => "fixed",
+        LengthKind::Delimited => "delimited",
+        LengthKind::Prefixed => "prefixed",
+        LengthKind::Pattern => "pattern",
+        LengthKind::EndOfParent => "endOfParent",
+    }
 }
 
 fn branch_name(particle: &Particle) -> String {
@@ -662,6 +847,9 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if props.binary_decimal_virtual_point.is_some() {
         base.binary_decimal_virtual_point = props.binary_decimal_virtual_point.unwrap_or(0);
     }
+    if let Some(signed) = props.decimal_signed {
+        base.decimal_signed = signed;
+    }
     if props.calendar_pattern.is_some() {
         base.calendar_pattern = props
             .calendar_pattern
@@ -794,6 +982,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.binary_calendar_rep = overlay.binary_calendar_rep;
     out.binary_float_rep = overlay.binary_float_rep;
     out.binary_decimal_virtual_point = overlay.binary_decimal_virtual_point;
+    out.decimal_signed = overlay.decimal_signed;
     out.calendar_pattern = overlay.calendar_pattern;
     if overlay.initiator.is_some() {
         out.initiator = overlay.initiator;

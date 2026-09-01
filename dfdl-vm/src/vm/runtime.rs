@@ -2,7 +2,11 @@ use super::encoding::{
     character_span_byte_length, count_characters, decode_text_bytes, encode_document_text,
     read_character_bytes,
 };
-use crate::length_validate::{validate_data_length_vm, validate_signed_one_bit_length_vm, DaffodilTunables};
+use crate::length_validate::{
+    validate_data_length_vm, validate_decimal_data_length_vm,
+    validate_decimal_signed_one_bit_length_vm, validate_signed_one_bit_length_vm,
+    DaffodilTunables,
+};
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool};
 use crate::schema::{
     encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, BitOrder, ByteOrder,
@@ -140,20 +144,41 @@ impl<'a> Cursor<'a> {
                 message: alloc::format!("cannot read more than 64 stream bits at once ({n})"),
             });
         }
+        let start = self.absolute_bit_index();
         let mut value = 0u64;
         match bit_order {
             BitOrder::MostSignificantBitFirst => {
                 for _ in 0..n {
-                    value = (value << 1) | self.read_stream_bit(bit_order)?;
+                    value = (value << 1)
+                        | self.read_stream_bit_with_hint(n, start, bit_order)?;
                 }
             }
             BitOrder::LeastSignificantBitFirst => {
                 for i in 0..n {
-                    value |= self.read_stream_bit(bit_order)? << i;
+                    value |= self.read_stream_bit_with_hint(n, start, bit_order)? << i;
                 }
             }
         }
         Ok(value)
+    }
+
+    fn read_stream_bit_with_hint(
+        &mut self,
+        requested: usize,
+        start: usize,
+        bit_order: BitOrder,
+    ) -> Result<u64, crate::error::VmError> {
+        self.read_stream_bit(bit_order).map_err(|e| {
+            use crate::error::VmError;
+            if e == VmError::UnexpectedEof {
+                let found = self.absolute_bit_index().saturating_sub(start);
+                VmError::InvalidValue {
+                    message: alloc::format!("{requested} bit(s) but found only {found}"),
+                }
+            } else {
+                e
+            }
+        })
     }
 
     pub fn read_stream_bits_as_bytes(
@@ -164,10 +189,11 @@ impl<'a> Cursor<'a> {
         if n == 0 {
             return Ok(Vec::new());
         }
+        let start = self.absolute_bit_index();
         let byte_len = n.div_ceil(8);
         let mut out = vec![0u8; byte_len];
         for i in 0..n {
-            let bit = self.read_stream_bit(bit_order)? as u8;
+            let bit = self.read_stream_bit_with_hint(n, start, bit_order)? as u8;
             match bit_order {
                 BitOrder::LeastSignificantBitFirst => {
                     out[i / 8] |= bit << (i % 8);
@@ -346,6 +372,7 @@ pub(crate) fn read_binary_scalar(
     strings: &StringPool,
     require_delimiter: bool,
     parent_terminator: Option<&str>,
+    field_name: Option<&str>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind;
@@ -357,8 +384,16 @@ pub(crate) fn read_binary_scalar(
     }
 
     if props.length_kind == LengthKind::Prefixed {
-        let bytes = read_prefixed_payload(cursor, props, strings)?;
+        let bytes = read_prefixed_payload(cursor, props, strings, field_name)?;
         return decode_binary_scalar(kind, &bytes, props, strings, None);
+    }
+
+    if kind == ValueKind::Decimal {
+        if let Some(len) = props.length {
+            if matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
+                validate_decimal_data_length_vm(props.decimal_signed, len, props.length_units)?;
+            }
+        }
     }
 
     if props.length_units == LengthUnits::Bits {
@@ -374,6 +409,20 @@ pub(crate) fn read_binary_scalar(
         }
         let raw = cursor.read_stream_bits(len, props.bit_order)?;
         return decode_binary_from_raw_bits(kind, raw, len, props, strings);
+    }
+
+    if cursor.frame_bit_limit.is_some()
+        && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
+        && props.length.is_some()
+    {
+        let len = props.length.unwrap_or(0) as usize;
+        let bits = len.saturating_mul(8);
+        if kind == ValueKind::String || kind == ValueKind::HexBinary {
+            let bytes = cursor.read_stream_bits_as_bytes(bits, props.bit_order)?;
+            return decode_binary_scalar(kind, &bytes, props, strings, None);
+        }
+        let raw = cursor.read_stream_bits(bits, props.bit_order)?;
+        return decode_binary_from_raw_bits(kind, raw, bits, props, strings);
     }
 
     let size = binary_byte_length(cursor, kind, props, strings)?;
@@ -1168,6 +1217,7 @@ pub(crate) fn read_text_scalar(
     strings: &StringPool,
     require_delimiter: bool,
     parent_terminator: Option<&str>,
+    field_name: Option<&str>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -1208,7 +1258,7 @@ pub(crate) fn read_text_scalar(
                 read_until_delimiters(cursor, props, strings, false, parent_terminator)?
             }
         }
-        LengthKind::Prefixed => read_prefixed_payload(cursor, props, strings)?,
+        LengthKind::Prefixed => read_prefixed_payload(cursor, props, strings, field_name)?,
         LengthKind::EndOfParent => {
             let rest = cursor.data[cursor.pos..].to_vec();
             cursor.pos = cursor.data.len();
@@ -1273,6 +1323,7 @@ pub(crate) fn write_binary_scalar(
     props: &IrProps,
     strings: &StringPool,
     tunables: &DaffodilTunables,
+    field_name: Option<&str>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -1280,16 +1331,11 @@ pub(crate) fn write_binary_scalar(
 
     if props.length_kind == LengthKind::Prefixed {
         let payload = encode_binary_payload_bytes(value, kind, props, strings)?;
-        return write_prefixed_bytes(out, bit_count, &payload, props, strings);
+        return write_prefixed_bytes(out, bit_count, &payload, props, strings, field_name);
     }
 
     if props.length_units == LengthUnits::Bits {
         let n = binary_encode_bit_length(kind, props, tunables)?;
-        if n == 0 && kind != String && kind != HexBinary {
-            return Err(VmError::InvalidValue {
-                message: "zero-length scalar encode".into(),
-            });
-        }
         let raw = scalar_to_raw_bits(value, kind, props, n)?;
         write_stream_bits(out, bit_count, raw, n, props.bit_order);
         return Ok(());
@@ -1299,8 +1345,18 @@ pub(crate) fn write_binary_scalar(
     let size = match props.length_kind {
         LengthKind::Fixed => {
             let len = props.length.unwrap_or(type_size(kind) as u64);
-            validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
-            validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
+            if kind == crate::ir::ValueKind::Decimal {
+                validate_decimal_data_length_vm(props.decimal_signed, len, LengthUnits::Bytes)?;
+                validate_decimal_signed_one_bit_length_vm(
+                    props.decimal_signed,
+                    len,
+                    LengthUnits::Bytes,
+                    tunables,
+                )?;
+            } else {
+                validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
+                validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
+            }
             len as usize
         }
         LengthKind::Implicit => type_size(kind),
@@ -1308,8 +1364,18 @@ pub(crate) fn write_binary_scalar(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
             })?;
-            validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
-            validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
+            if kind == crate::ir::ValueKind::Decimal {
+                validate_decimal_data_length_vm(props.decimal_signed, len, LengthUnits::Bytes)?;
+                validate_decimal_signed_one_bit_length_vm(
+                    props.decimal_signed,
+                    len,
+                    LengthUnits::Bytes,
+                    tunables,
+                )?;
+            } else {
+                validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
+                validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
+            }
             len as usize
         }
         LengthKind::Pattern | LengthKind::EndOfParent | LengthKind::Delimited => {
@@ -1377,8 +1443,18 @@ fn binary_encode_bit_length(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
             })?;
-            validate_data_length_vm(kind, len, LengthUnits::Bits)?;
-            validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bits, tunables)?;
+            if kind == crate::ir::ValueKind::Decimal {
+                validate_decimal_data_length_vm(props.decimal_signed, len, LengthUnits::Bits)?;
+                validate_decimal_signed_one_bit_length_vm(
+                    props.decimal_signed,
+                    len,
+                    LengthUnits::Bits,
+                    tunables,
+                )?;
+            } else {
+                validate_data_length_vm(kind, len, LengthUnits::Bits)?;
+                validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bits, tunables)?;
+            }
             Ok(len as usize)
         }
         other => Err(VmError::UnsupportedOperation {
@@ -1435,6 +1511,7 @@ pub(crate) fn write_text_scalar(
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
+    field_name: Option<&str>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -1478,7 +1555,7 @@ pub(crate) fn write_text_scalar(
 
     if props.length_kind == LengthKind::Prefixed {
         let encoded = encode_document_text(&text, encoding_name(props, strings)?)?;
-        return write_prefixed_bytes(out, bit_count, &encoded, props, strings);
+        return write_prefixed_bytes(out, bit_count, &encoded, props, strings, field_name);
     }
 
     let encoding = encoding_name(props, strings)?;
@@ -1769,7 +1846,7 @@ fn read_until_any_delimiter(
     if require_delimiter {
         let terms = patterns_for_error
             .iter()
-            .map(|p| alloc::format!("`{p}`"))
+            .map(|p| alloc::format!("`{}`", format_delimiter_for_error(p)))
             .collect::<alloc::vec::Vec<_>>()
             .join(", ");
         return Err(VmError::InvalidValue {
@@ -1819,7 +1896,7 @@ pub(crate) fn prefixed_payload_byte_length(
 ) -> Result<usize, crate::error::VmError> {
     use crate::error::VmError;
     let mut cursor = Cursor::new(data);
-    let span = read_prefixed_span(&mut cursor, props, strings)?;
+    let span = read_prefixed_span(&mut cursor, props, strings, None)?;
     match props.length_units {
         LengthUnits::Bytes => Ok(span),
         LengthUnits::Bits => span
@@ -1837,8 +1914,9 @@ pub(crate) fn read_prefixed_payload(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,
+    field_name: Option<&str>,
 ) -> Result<Vec<u8>, crate::error::VmError> {
-    let span = read_prefixed_span(cursor, props, strings)?;
+    let span = read_prefixed_span(cursor, props, strings, field_name)?;
     read_length_span(
         cursor,
         span,
@@ -1846,12 +1924,28 @@ pub(crate) fn read_prefixed_payload(
         encoding_name(props, strings)?,
         props.bit_order,
     )
+    .map_err(|e| {
+        use crate::error::VmError;
+        if e == VmError::UnexpectedEof {
+            let bits = match props.length_units {
+                LengthUnits::Bytes => span.saturating_mul(8),
+                LengthUnits::Bits => span,
+                LengthUnits::Characters => span.saturating_mul(8),
+            };
+            VmError::InvalidValue {
+                message: alloc::format!("Insufficient bits in data. {bits}"),
+            }
+        } else {
+            e
+        }
+    })
 }
 
 fn read_prefixed_span(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,
+    field_name: Option<&str>,
 ) -> Result<usize, crate::error::VmError> {
     use crate::error::VmError;
     let prefix = props
@@ -1861,13 +1955,16 @@ fn read_prefixed_span(
             message: "prefixed field missing prefixLengthType".into(),
         })?;
     let prefix_start = cursor.pos;
-    let value = read_prefix_integer_value(cursor, prefix, strings)?;
+    let value = read_prefix_integer_value(cursor, prefix, strings, field_name)?;
     let prefix_units =
         consumed_length_units(cursor, prefix_start, props.length_units, props, strings)?;
     let mut span = usize_from_u64(value)?;
     if props.prefix_includes_prefix_length {
         span = span.checked_sub(prefix_units).ok_or(VmError::InvalidValue {
-            message: "prefixed length smaller than prefix field".into(),
+            message: alloc::format!(
+                "Runtime Schema Definition Error. Prefixed length result after dfdl:prefixIncludesPrefixLength adjustment non-negative. {}",
+                span as i64 - prefix_units as i64
+            ),
         })?;
     }
     Ok(span)
@@ -1902,6 +1999,7 @@ fn read_prefix_integer_value(
     cursor: &mut Cursor<'_>,
     prefix: &IrPrefixLength,
     strings: &StringPool,
+    field_name: Option<&str>,
 ) -> Result<u64, crate::error::VmError> {
     use crate::error::VmError;
     use crate::schema::Representation;
@@ -1916,6 +2014,14 @@ fn read_prefix_integer_value(
                 prefix.props.text_trim_kind,
                 pad_char_from_props(&prefix.props, strings),
             );
+            if trimmed.starts_with('-') {
+                let numeric = trimmed.parse::<i64>().unwrap_or(0);
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Runtime Schema Definition Error. Prefixed length must be non-negative. {numeric}"
+                    ),
+                });
+            }
             parse_u64(trimmed)
         }
         Representation::Binary => Ok(decode_unsigned_bytes(
@@ -1923,23 +2029,30 @@ fn read_prefix_integer_value(
             prefix.props.byte_order == ByteOrder::LittleEndian,
         )),
     }?;
-    validate_prefix_facets(value, prefix)?;
+    validate_prefix_facets(value, prefix, field_name)?;
     Ok(value)
 }
 
-fn validate_prefix_facets(value: u64, prefix: &IrPrefixLength) -> Result<(), crate::error::VmError> {
+fn validate_prefix_facets(
+    value: u64,
+    prefix: &IrPrefixLength,
+    field_name: Option<&str>,
+) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
+    let field = field_name
+        .map(|name| alloc::format!("{name} ({value})"))
+        .unwrap_or_else(|| alloc::format!("({value})"));
     if let Some(min) = prefix.min_inclusive {
         if (value as i64) < min {
             return Err(VmError::InvalidValue {
-                message: alloc::format!("failed check: facet minInclusive ({min})"),
+                message: alloc::format!("failed check: {field} facet minInclusive ({min})"),
             });
         }
     }
     if let Some(max) = prefix.max_inclusive {
         if (value as i64) > max {
             return Err(VmError::InvalidValue {
-                message: alloc::format!("failed check: facet maxInclusive ({max})"),
+                message: alloc::format!("failed check: {field} facet maxInclusive ({max})"),
             });
         }
     }
@@ -1978,11 +2091,15 @@ fn read_prefix_field_payload(
                 cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)
             }
         }
-        LengthKind::Prefixed => read_prefixed_payload(cursor, props, strings),
+        LengthKind::Prefixed => read_prefixed_payload(cursor, props, strings, None),
         other => Err(VmError::UnsupportedOperation {
             op: alloc::format!("prefix lengthKind `{}`", length_kind_name(other)),
         }),
     }
+}
+
+fn format_delimiter_for_error(pat: &str) -> alloc::string::String {
+    pat.replace('\n', "%NL;").replace('\r', "%CR;")
 }
 
 fn decode_unsigned_bytes(bytes: &[u8], le: bool) -> u64 {
@@ -2251,6 +2368,7 @@ pub(crate) fn read_simple(
     strings: &StringPool,
     require_delimiter: bool,
     parent_terminator: Option<&str>,
+    field_name: Option<&str>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -2275,6 +2393,7 @@ pub(crate) fn read_simple(
             strings,
             require_enclosing,
             parent_terminator,
+            field_name,
         )?
     } else {
         read_binary_scalar(
@@ -2284,6 +2403,7 @@ pub(crate) fn read_simple(
             strings,
             require_enclosing,
             parent_terminator,
+            field_name,
         )?
     };
     if props.length_kind == LengthKind::Delimited {
@@ -2293,9 +2413,12 @@ pub(crate) fn read_simple(
         if !pat.is_empty() && !cursor.consume_delimiter(pat) {
             return Err(VmError::InvalidValue {
                 message: if cursor.is_empty() {
-                    alloc::format!("terminator `{pat}` not found")
+                    alloc::format!("terminator `{}` not found", format_delimiter_for_error(pat))
                 } else {
-                    alloc::format!("terminator mismatch: expected `{pat}`").into()
+                    alloc::format!(
+                        "terminator mismatch: expected `{}`",
+                        format_delimiter_for_error(pat)
+                    )
                 },
             });
         }
@@ -2509,6 +2632,7 @@ fn write_prefixed_bytes(
     payload: &[u8],
     props: &IrProps,
     strings: &StringPool,
+    field_name: Option<&str>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     let prefix = props
@@ -2530,7 +2654,15 @@ fn write_prefixed_bytes(
             encoding,
         )?;
     }
-    write_prefix_field(out, bit_count, prefix_value, prefix, props.length_units, strings)?;
+    write_prefix_field(
+        out,
+        bit_count,
+        prefix_value,
+        prefix,
+        props.length_units,
+        strings,
+        field_name,
+    )?;
     write_byte_aligned(out, bit_count, payload)?;
     Ok(())
 }
@@ -2555,6 +2687,7 @@ fn adjust_prefix_value_for_includes(
                 prefix,
                 props.length_units,
                 strings,
+                None,
             )?;
             let field_units = payload_length_units(&tmp, props.length_units, encoding)?;
             let adjusted = (payload_units as u64)
@@ -2688,12 +2821,13 @@ fn write_prefix_field(
     prefix: &IrPrefixLength,
     element_length_units: LengthUnits,
     strings: &StringPool,
+    field_name: Option<&str>,
 ) -> Result<(), crate::error::VmError> {
     use crate::schema::Representation;
-    validate_prefix_facets(value, prefix)?;
+    validate_prefix_facets(value, prefix, field_name)?;
     if prefix.props.length_kind == LengthKind::Prefixed {
         let payload = prefix_scalar_payload(value, prefix, strings)?;
-        return write_prefixed_bytes(out, bit_count, &payload, &prefix.props, strings);
+        return write_prefixed_bytes(out, bit_count, &payload, &prefix.props, strings, field_name);
     }
     match prefix.props.representation {
         Representation::Text => {
@@ -2899,9 +3033,12 @@ pub(crate) fn write_framed_payload(
     payload_bit_count: u8,
     props: &IrProps,
     strings: &StringPool,
+    field_name: Option<&str>,
 ) -> Result<(), crate::error::VmError> {
     match props.length_kind {
-        LengthKind::Prefixed => write_prefixed_bytes(out, bit_count, payload, props, strings),
+        LengthKind::Prefixed => {
+            write_prefixed_bytes(out, bit_count, payload, props, strings, field_name)
+        }
         LengthKind::Explicit | LengthKind::Fixed => {
             write_explicit_payload(out, bit_count, payload, payload_bit_count, props, strings)
         }
@@ -3033,16 +3170,26 @@ pub(crate) fn write_simple(
     props: &IrProps,
     strings: &StringPool,
     tunables: &DaffodilTunables,
+    field_name: Option<&str>,
 ) -> Result<(), crate::error::VmError> {
     let value = coerce_value_for_kind(value, kind)?;
     if let Some(id) = props.initiator {
         write_byte_aligned(out, bit_count, &encode_delimiter(strings.get(id)?))?;
     }
     match props.representation {
-        Representation::Binary => {
-            write_binary_scalar(out, bit_count, &value, kind, props, strings, tunables)?
+        Representation::Binary => write_binary_scalar(
+            out,
+            bit_count,
+            &value,
+            kind,
+            props,
+            strings,
+            tunables,
+            field_name,
+        )?,
+        Representation::Text => {
+            write_text_scalar(out, bit_count, &value, kind, props, strings, field_name)?
         }
-        Representation::Text => write_text_scalar(out, bit_count, &value, kind, props, strings)?,
     }
     if let Some(id) = props.terminator {
         write_byte_aligned(out, bit_count, &encode_delimiter(strings.get(id)?))?;
