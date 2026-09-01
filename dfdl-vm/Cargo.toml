@@ -1,0 +1,15 @@
+[package]
+name = "dfdl-vm"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "no_std DFDL virtual machine: XSD → in-memory IR → encode/decode"
+readme = "README.md"
+
+[features]
+default = []
+std = []
+
+[dependencies]
+
+[dev-dependencies]

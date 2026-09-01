@@ -1,0 +1,137 @@
+mod builder;
+
+pub use builder::{compile, compile_named};
+use crate::schema::{
+    BinaryFloatRep, BinaryNumberRep, BitOrder, ByteOrder, LengthKind, LengthUnits, Representation,
+    TextTrimKind,
+};
+use alloc::string::String;
+use alloc::vec::Vec;
+
+/// Compiled in-memory intermediate representation executed by the DFDL VM.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrProgram {
+    pub root_element: String,
+    pub root: u32,
+    pub nodes: Vec<IrNode>,
+    pub strings: StringPool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IrNode {
+    Sequence {
+        children: Vec<u32>,
+        props: IrProps,
+    },
+    Choice {
+        branches: Vec<ChoiceBranch>,
+        props: IrProps,
+    },
+    Element {
+        name: StringId,
+        kind: ValueKind,
+        props: IrProps,
+        child: Option<u32>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChoiceBranch {
+    pub name: StringId,
+    pub initiator: Option<Vec<u8>>,
+    pub node: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueKind {
+    Boolean,
+    Int,
+    Long,
+    Short,
+    Byte,
+    UnsignedInt,
+    UnsignedShort,
+    UnsignedByte,
+    Float,
+    Double,
+    String,
+    HexBinary,
+    Complex,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IrProps {
+    pub representation: Representation,
+    pub byte_order: ByteOrder,
+    pub bit_order: BitOrder,
+    pub length_kind: LengthKind,
+    pub length: Option<u64>,
+    pub length_units: LengthUnits,
+    pub encoding: StringId,
+    pub text_trim_kind: TextTrimKind,
+    pub binary_number_rep: BinaryNumberRep,
+    pub binary_float_rep: BinaryFloatRep,
+    pub initiator: Option<Vec<u8>>,
+    pub terminator: Option<Vec<u8>>,
+    pub separator: Option<Vec<u8>>,
+    pub occurs_min: u64,
+    pub occurs_max: Option<u64>,
+}
+
+impl Default for IrProps {
+    fn default() -> Self {
+        Self {
+            representation: Representation::Binary,
+            byte_order: ByteOrder::BigEndian,
+            bit_order: BitOrder::MostSignificantBitFirst,
+            length_kind: LengthKind::Implicit,
+            length: None,
+            length_units: LengthUnits::Bytes,
+            encoding: StringId(0),
+            text_trim_kind: TextTrimKind::None,
+            binary_number_rep: BinaryNumberRep::Binary,
+            binary_float_rep: BinaryFloatRep::Ieee,
+            initiator: None,
+            terminator: None,
+            separator: None,
+            occurs_min: 1,
+            occurs_max: Some(1),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StringPool {
+    pub values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StringId(pub u32);
+
+impl StringPool {
+    pub fn new() -> Self {
+        let mut pool = Self { values: Vec::new() };
+        pool.intern("UTF-8");
+        pool
+    }
+
+    pub fn intern(&mut self, value: impl Into<String>) -> StringId {
+        let value = value.into();
+        if let Some(idx) = self.values.iter().position(|v| v == &value) {
+            return StringId(idx as u32);
+        }
+        let id = StringId(self.values.len() as u32);
+        self.values.push(value);
+        id
+    }
+
+    pub fn get(&self, id: StringId) -> &str {
+        &self.values[id.0 as usize]
+    }
+}
+
+impl IrProgram {
+    pub fn node(&self, id: u32) -> &IrNode {
+        &self.nodes[id as usize]
+    }
+}
