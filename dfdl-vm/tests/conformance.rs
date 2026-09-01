@@ -337,6 +337,11 @@ fn daffodil_ab_implicit_csv_nillable() {
 }
 
 #[test]
+fn daffodil_ab_implicit_csv_infix_short_row() {
+    assert_named_test_passes(daffodil_tdml!("AB.tdml"), "AB003");
+}
+
+#[test]
 fn daffodil_ab_implicit_csv_nil_middle_field() {
     assert_named_test_passes(daffodil_tdml!("AB.tdml"), "AB004");
 }

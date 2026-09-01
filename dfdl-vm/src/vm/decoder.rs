@@ -595,32 +595,26 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    fn element_consumes_enclosing_delimiter(&self, node_id: u32, props: &IrProps) -> bool {
+    fn is_delimited_element(&self, node_id: u32, props: &IrProps) -> bool {
         if props.length_kind == LengthKind::Delimited {
             return true;
         }
-        if let Ok(IrNode::Element { child: Some(_), props: elem_props, .. }) =
-            self.ctx.program.node(node_id)
-        {
-            return elem_props.length_kind == LengthKind::Delimited;
-        }
-        false
+        matches!(
+            self.ctx.program.node(node_id),
+            Ok(IrNode::Element {
+                child: Some(_),
+                props: elem_props,
+                ..
+            }) if elem_props.length_kind == LengthKind::Delimited
+        )
+    }
+
+    fn element_consumes_enclosing_delimiter(&self, node_id: u32, props: &IrProps) -> bool {
+        self.is_delimited_element(node_id, props)
     }
 
     fn is_complex_delimited_element(&self, node_id: u32, props: &IrProps) -> Result<bool> {
-        let length_delimited = if props.length_kind == LengthKind::Delimited {
-            true
-        } else if let Ok(IrNode::Element {
-            child: Some(_),
-            props: elem_props,
-            ..
-        }) = self.ctx.program.node(node_id)
-        {
-            elem_props.length_kind == LengthKind::Delimited
-        } else {
-            false
-        };
-        Ok(length_delimited
+        Ok(self.is_delimited_element(node_id, props)
             && matches!(
                 self.ctx.program.node(node_id)?,
                 IrNode::Element { child: Some(_), .. }
