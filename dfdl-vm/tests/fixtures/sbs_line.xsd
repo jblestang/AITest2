@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
+  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"/>
+
+  <!-- Generic SBS-1 BaseStation line: comma-separated fields, CRLF terminated -->
+  <xs:element name="SbsLine" dfdl:terminator="%CR;%LF;">
+    <xs:complexType>
+      <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
+        <xs:element name="field" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

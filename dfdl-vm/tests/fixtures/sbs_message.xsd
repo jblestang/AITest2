@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
+  <xs:include schemaLocation="sbs_types.xsd"/>
+
+  <xs:complexType name="SbsPayloadType">
+    <xs:sequence dfdl:separator="," dfdl:separatorPosition="infix">
+      <!-- Field 2: empty for AIR/ID -->
+      <xs:element name="transmissionType" type="xs:string"/>
+      <xs:element name="sessionId" type="xs:unsignedInt"/>
+      <xs:element name="aircraftId" type="xs:unsignedInt"/>
+      <xs:element name="hexIdent" type="SbsHexIdent"/>
+      <xs:element name="flightId" type="xs:unsignedInt"/>
+      <xs:element name="dateGenerated" type="SbsDate"/>
+      <xs:element name="timeGenerated" type="SbsTime"/>
+      <xs:element name="dateLogged" type="SbsDate"/>
+      <xs:element name="timeLogged" type="SbsTime"/>
+      <!-- Fields 11-22: populated depending on message/subtype -->
+      <xs:element name="callsign" type="xs:string"/>
+      <xs:element name="altitude" type="xs:string"/>
+      <xs:element name="groundSpeed" type="xs:string"/>
+      <xs:element name="track" type="xs:string"/>
+      <xs:element name="latitude" type="xs:string"/>
+      <xs:element name="longitude" type="xs:string"/>
+      <xs:element name="verticalRate" type="xs:string"/>
+      <xs:element name="squawk" type="xs:string"/>
+      <xs:element name="alert" type="xs:string"/>
+      <xs:element name="emergency" type="xs:string"/>
+      <xs:element name="spi" type="xs:string"/>
+      <xs:element name="isOnGround" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="SbsMessage" dfdl:terminator="%CR;%LF;">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="Msg" type="SbsPayloadType" dfdl:initiator="MSG,"/>
+        <xs:element name="Air" type="SbsPayloadType" dfdl:initiator="AIR,"/>
+        <xs:element name="Id" type="SbsPayloadType" dfdl:initiator="ID,"/>
+        <xs:element name="Sta" type="SbsPayloadType" dfdl:initiator="STA,"/>
+        <xs:element name="Sel" type="SbsPayloadType" dfdl:initiator="SEL,"/>
+        <xs:element name="Clk" type="SbsPayloadType" dfdl:initiator="CLK,"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

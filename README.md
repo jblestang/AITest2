@@ -84,8 +84,13 @@ See `tests/fixtures/` for sample XSD schemas:
 - `nmea_aivdm.xsd` — typed AIVDM AIS VHF sentence (outer NMEA layer)
 - `nmea_gll.xsd` — typed GPGLL geographic position sentence
 - `nmea_vtg.xsd` — typed GPVTG course/speed sentence
+- `nmea_types.xsd` — shared formatted types (lat/lon, UTC time, enums, checksum, …)
+- `sbs_line.xsd` — generic SBS-1 BaseStation CSV line (22 comma fields, `\r\n`)
+- `sbs_message.xsd` — typed SBS messages (`MSG`, `AIR`, `ID`, `STA`, `SEL`, `CLK`)
+- `sbs_msg.xsd` — typed MSG-only schema with format validation
+- `sbs_types.xsd` — shared SBS types (hex ident, date/time, transmission subtype, flags)
 
-Typed schemas use `xs:unsignedInt`/`xs:unsignedByte`/`xs:float` where appropriate; lat/lon stay strings (ddmm.mmmm), and fixed-width numeric fields use `textNumberPadCharacter="0"` for NMEA leading-zero round-trip.
+Typed schemas use `xs:unsignedInt`/`xs:unsignedByte`/`xs:float` where appropriate; lat/lon stay strings (ddmm.mmmm) in NMEA, decimal degrees as strings in SBS optional fields, and fixed-width numeric fields use `textNumberPadCharacter="0"` for NMEA leading-zero round-trip.
 
 - `text_message.xsd` — text format with fixed and delimited fields
 

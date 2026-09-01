@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
+  <dfdl:format representation="text" encoding="UTF-8" lengthKind="delimited"/>
+
+  <!-- 24-bit ICAO address as 6 hex digits -->
+  <xs:simpleType name="SbsHexIdent">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[0-9A-Fa-f]{6}</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- yyyy/MM/dd -->
+  <xs:simpleType name="SbsDate">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[0-9]{4}/[0-9]{2}/[0-9]{2}</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- HH:mm:ss.fff -->
+  <xs:simpleType name="SbsTime">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- MSG subtypes 1-8 (field 2); empty for AIR/ID -->
+  <xs:simpleType name="SbsTransmissionType">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[1-8]</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:unsignedByte"/>
+  </xs:simpleType>
+
+  <!-- Flag fields: -1, 0, or empty -->
+  <xs:simpleType name="SbsFlag">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>-1|0</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+
+  <!-- 4-digit octal squawk when present -->
+  <xs:simpleType name="SbsSquawk">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/dfdl-1.0/">
+        <dfdl:lengthKind>pattern</dfdl:lengthKind>
+        <dfdl:lengthPattern>[0-7]{4}</dfdl:lengthPattern>
+      </xs:appinfo>
+    </xs:annotation>
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+</xs:schema>
