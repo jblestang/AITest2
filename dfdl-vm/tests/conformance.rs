@@ -1,4 +1,4 @@
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_parser_test_with_options, run_unparser_test, TestOutcome};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_parser_test_with_options, run_unparser_test, RoundTrip, TestOutcome};
 
 macro_rules! daffodil_tdml {
     ($file:literal) => {
@@ -621,22 +621,17 @@ fn daffodil_prefixed_facet_compile_error_suite() {
 #[test]
 fn daffodil_prefixed_twopass_roundtrip_suite() {
     let tdml = daffodil_tdml!("PrefixedTests.tdml");
-    for name in [
-        "pl_text_string_txt_bytes",
-        "pl_text_string_txt_bits",
-        "pl_text_string_txt_bytes_includes",
-        "pl_text_string_txt_bits_includes",
-        "pl_text_int_txt_bytes",
-        "pl_text_int_txt_bits",
-        "pl_text_string_bin_bytes",
-        "pl_text_int_txt_bytes_plchars",
-        "pl_text_int_txt_bytes_plbits",
-        "pl_text_int_txt_bits_plbytes",
-        "pl_text_int_txt_bits_plchars",
-        "pl_bin_int_txt_bytes",
-        "pl_bin_int_bin_bytes",
-    ] {
-        assert_named_test_passes_roundtrip(tdml, name);
+    let suite = parse_tdml(tdml).expect("parse tdml");
+    for test in &suite.tests {
+        if test.round_trip != RoundTrip::TwoPass {
+            continue;
+        }
+        let result = run_parser_test_with_options(&suite, test, true).expect("run test");
+        match result.outcome {
+            TestOutcome::Pass => {}
+            TestOutcome::Fail(msg) => panic!("twoPass test `{}` failed: {msg}", test.name),
+            TestOutcome::Skip(msg) => panic!("twoPass test `{}` skipped: {msg}", test.name),
+        }
     }
 }
 

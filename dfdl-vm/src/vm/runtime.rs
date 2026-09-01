@@ -311,6 +311,38 @@ fn format_virtual_decimal(value: u64, virtual_point: u32) -> alloc::string::Stri
     alloc::format!("{whole}.{frac:0width$}", width = virtual_point as usize)
 }
 
+fn parse_virtual_decimal(text: &str, virtual_point: u32) -> Result<u64, crate::error::VmError> {
+    use crate::error::VmError;
+    let trimmed = text.trim();
+    if virtual_point == 0 {
+        return parse_u64(trimmed);
+    }
+    let scale = 10u64.pow(virtual_point);
+    if let Some((whole, frac)) = trimmed.split_once('.') {
+        let w = parse_u64(whole.trim())?;
+        let mut frac_part = frac.trim().to_string();
+        if frac_part.len() > virtual_point as usize {
+            frac_part.truncate(virtual_point as usize);
+        } else {
+            while frac_part.len() < virtual_point as usize {
+                frac_part.push('0');
+            }
+        }
+        let f = parse_u64(&frac_part)?;
+        w.checked_mul(scale)
+            .and_then(|v| v.checked_add(f))
+            .ok_or(VmError::InvalidValue {
+                message: "decimal value overflow".into(),
+            })
+    } else {
+        parse_u64(trimmed)?
+            .checked_mul(scale)
+            .ok_or(VmError::InvalidValue {
+                message: "decimal value overflow".into(),
+            })
+    }
+}
+
 fn bcd_digit_string(bytes: &[u8], le: bool) -> alloc::string::String {
     let mut out = alloc::string::String::new();
     for b in order_bytes(bytes, le) {
@@ -1452,7 +1484,7 @@ fn encode_binary_payload_bytes(
 
     let le = props.byte_order == ByteOrder::LittleEndian;
     let width = if props.length_kind == LengthKind::Prefixed {
-        prefixed_binary_payload_width(value, kind)?
+        prefixed_binary_payload_width(value, kind, props)?
     } else {
         type_size(kind)
     };
@@ -1469,15 +1501,99 @@ fn encode_binary_payload_bytes(
         (Long, DfdlValue::Long(v)) => Ok(int_bytes(*v, width, le)),
         (Float, DfdlValue::Float(v)) => Ok(int_bytes(*v as i64, width, le)),
         (Double, DfdlValue::Double(v)) => Ok(int_bytes(*v as i64, width, le)),
+        (Decimal, DfdlValue::Decimal(v)) => {
+            let raw = parse_virtual_decimal(v, props.binary_decimal_virtual_point)?;
+            encode_binary_number_u64(raw, props.binary_number_rep, width, le)
+        }
         (expected, _) => Err(VmError::TypeMismatch {
             expected: alloc::format!("{expected:?}"),
         }),
     }
 }
 
+fn encode_binary_number_u64(
+    value: u64,
+    rep: BinaryNumberRep,
+    width: usize,
+    le: bool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    match rep {
+        BinaryNumberRep::Binary => Ok(int_bytes(value as i64, width, le)),
+        BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed => {
+            u64_to_bcd_bytes(value, width, le)
+        }
+        BinaryNumberRep::PackedBcd => u64_to_packed_bcd_bytes(value, width, le),
+    }
+}
+
+fn u64_to_bcd_bytes(value: u64, width: usize, le: bool) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
+    let mut digits = alloc::format!("{value:0width$}", width = width * 2);
+    if digits.len() > width * 2 {
+        digits = digits[digits.len() - width * 2..].to_string();
+    }
+    while digits.len() < width * 2 {
+        digits.insert(0, '0');
+    }
+    let mut bytes = alloc::vec::Vec::with_capacity(width);
+    for chunk in digits.as_bytes().chunks(2) {
+        let hi = chunk[0].wrapping_sub(b'0');
+        let lo = chunk.get(1).copied().unwrap_or(b'0').wrapping_sub(b'0');
+        if hi > 9 || lo > 9 {
+            return Err(VmError::InvalidValue {
+                message: "invalid BCD digit".into(),
+            });
+        }
+        bytes.push((hi << 4) | lo);
+    }
+    if le {
+        bytes.reverse();
+    }
+    Ok(bytes)
+}
+
+fn u64_to_packed_bcd_bytes(
+    value: u64,
+    width: usize,
+    le: bool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
+    let mut digits = value.to_string();
+    if digits.len() % 2 != 0 {
+        digits.insert(0, '0');
+    }
+    while digits.len() < width * 2 - 1 {
+        digits.insert(0, '0');
+    }
+    if digits.len() > width * 2 - 1 {
+        digits = digits[digits.len() - (width * 2 - 1)..].to_string();
+    }
+    let mut bytes = alloc::vec![0u8; width];
+    for (i, chunk) in digits.as_bytes().chunks(2).enumerate() {
+        let hi = chunk[0].wrapping_sub(b'0');
+        let lo = chunk
+            .get(1)
+            .copied()
+            .unwrap_or(b'0')
+            .wrapping_sub(b'0');
+        if hi > 9 || lo > 9 {
+            return Err(VmError::InvalidValue {
+                message: "invalid packed BCD digit".into(),
+            });
+        }
+        bytes[i] = (hi << 4) | lo;
+    }
+    bytes[width - 1] = (bytes[width - 1] & 0x0f) | 0x0c;
+    if le {
+        bytes.reverse();
+    }
+    Ok(bytes)
+}
+
 fn prefixed_binary_payload_width(
     value: &crate::value::DfdlValue,
     kind: crate::ir::ValueKind,
+    props: &IrProps,
 ) -> Result<usize, crate::error::VmError> {
     use crate::ir::ValueKind::*;
     use crate::value::DfdlValue;
@@ -1494,6 +1610,10 @@ fn prefixed_binary_payload_width(
         (Long, DfdlValue::Long(v)) => minimal_byte_width(signed_magnitude(*v)),
         (Float, DfdlValue::Float(_v)) => 4,
         (Double, DfdlValue::Double(_v)) => 8,
+        (Decimal, DfdlValue::Decimal(v)) => {
+            let raw = parse_virtual_decimal(v, props.binary_decimal_virtual_point)?;
+            minimal_byte_width(raw)
+        }
         _ => type_size(kind),
     })
 }
