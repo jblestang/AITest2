@@ -30,6 +30,14 @@ impl SchemaResolver {
             include_str!("../../resources/dfdl/DFDLGeneralFormatBase.dfdl.xsd"),
         );
         bundled.insert(
+            "DFDLGeneralFormatPortable.dfdl.xsd".into(),
+            include_str!("../../resources/dfdl/DFDLGeneralFormatPortable.dfdl.xsd"),
+        );
+        bundled.insert(
+            "/org/apache/daffodil/xsd/DFDLGeneralFormatPortable.dfdl.xsd".into(),
+            include_str!("../../resources/dfdl/DFDLGeneralFormatPortable.dfdl.xsd"),
+        );
+        bundled.insert(
             "AB.dfdl.xsd".into(),
             include_str!("../../resources/dfdl/AB.dfdl.xsd"),
         );

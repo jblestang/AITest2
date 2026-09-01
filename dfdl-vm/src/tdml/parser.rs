@@ -233,10 +233,7 @@ fn parse_unparser_test_case(
     reader: &mut XmlReader<'_>,
 ) -> Result<UnparserTestCase> {
     let name = attrs.get("name").cloned().unwrap_or_default();
-    let root = attrs.get("root").cloned().ok_or_else(|| ParseError::MissingAttribute {
-        element: "unparserTestCase".into(),
-        attribute: "root".into(),
-    })?;
+    let root_from_attr = attrs.get("root").cloned();
     let model = attrs.get("model").cloned().ok_or_else(|| ParseError::MissingAttribute {
         element: "unparserTestCase".into(),
         attribute: "model".into(),
@@ -262,6 +259,10 @@ fn parse_unparser_test_case(
         }
         _ => r.skip_current_subtree(),
     })?;
+
+    let root = root_from_attr.unwrap_or_else(|| {
+        super::infoset::infer_root_element_name(&infoset).unwrap_or_else(|| name.clone())
+    });
 
     Ok(UnparserTestCase {
         name,
@@ -386,12 +387,13 @@ fn wrap_schema(inner: &str) -> String {
 }
 
 fn parse_hex_document(text: &str) -> Result<Vec<u8>> {
-    let hex: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    // TDML: freeform whitespace allowed; any non-hex character is ignored.
+    let mut hex: String = text.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.is_empty() {
+        return Ok(Vec::new());
+    }
     if hex.len() % 2 != 0 {
-        return Err(ParseError::InvalidXml {
-            message: "invalid hex document".into(),
-        }
-        .into());
+        hex.insert(0, '0');
     }
     let mut out = Vec::new();
     for chunk in hex.as_bytes().chunks(2) {
@@ -408,16 +410,12 @@ fn parse_hex_document(text: &str) -> Result<Vec<u8>> {
 
 fn parse_bits_document_with_count(text: &str) -> Result<(Vec<u8>, u8)> {
     let mut bits = Vec::new();
-    for c in text.chars().filter(|c| !c.is_whitespace()) {
+    for c in text.chars() {
         match c {
             '0' => bits.push(0),
             '1' => bits.push(1),
-            other => {
-                return Err(ParseError::InvalidXml {
-                    message: alloc::format!("invalid bits document character `{other}`"),
-                }
-                .into())
-            }
+            // TDML: any character other than 0 or 1 is ignored.
+            _ => {}
         }
     }
     let trailing = (bits.len() % 8) as u8;
@@ -440,6 +438,7 @@ fn local_tag(name: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn parse_ai_tdml() {
@@ -559,5 +558,21 @@ mod tests {
             .find(|t| t.name == "lengthKindPattern_02")
             .expect("no-match test");
         assert_eq!(no_match.expected_errors, Some(alloc::vec![String::new()]));
+    }
+
+    #[test]
+    fn parse_bits_document_ignores_separators() {
+        let (data, trailing) = parse_bits_document_with_count("1000 0000 1|100 0000 001").unwrap();
+        assert_eq!(data, vec![0x80, 0xC0, 0x20]);
+        assert_eq!(trailing, 3);
+    }
+
+    #[test]
+    fn parse_hex_document_ignores_separators_and_odd_nibbles() {
+        use alloc::vec;
+        let data = parse_hex_document("A5-E9-FF-00").unwrap();
+        assert_eq!(data, vec![0xA5, 0xE9, 0xFF, 0x00]);
+        let odd = parse_hex_document("12345").unwrap();
+        assert_eq!(odd, vec![0x01, 0x23, 0x45]);
     }
 }
