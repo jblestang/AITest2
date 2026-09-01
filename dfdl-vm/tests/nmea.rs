@@ -151,6 +151,26 @@ fn nmea_sentence_generic_aivdm() {
 }
 
 #[test]
+fn nmea_empty_field_in_middle_of_payload() {
+    let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_sentence.xsd")).expect("spec");
+    let sentence = b"$GPAAA,one,,three*70\r\n";
+    let decoded = spec.decode(sentence).expect("decode");
+    let standard = decoded.field("Standard").expect("Standard");
+    let payload = standard.field("payload").expect("payload");
+    match payload.field("field").expect("fields") {
+        DfdlValue::Array(items) => {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0], DfdlValue::String("one".into()));
+            assert_eq!(items[1], DfdlValue::String("".into()));
+            assert_eq!(items[2], DfdlValue::String("three".into()));
+        }
+        other => panic!("expected array, got {other:?}"),
+    }
+    let encoded = spec.encode(&decoded).expect("encode");
+    assert_eq!(encoded, sentence);
+}
+
+#[test]
 fn nmea_sentence_gprmc_round_trip() {
     let spec = DfdlSpec::from_xsd(include_str!("fixtures/nmea_sentence.xsd")).expect("spec");
     let decoded = spec.decode(GPRMC_SAMPLE).expect("decode");

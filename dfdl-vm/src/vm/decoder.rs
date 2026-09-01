@@ -1,6 +1,7 @@
 use super::runtime::{
-    consume_enclosing_delimiter, default_value_for, read_delimited_bytes, read_length_span,
-    read_simple, read_until_separator, Cursor, RuntimeConfig, VmContext,
+    at_delimiter, consume_enclosing_delimiter, default_value_for, read_delimited_bytes,
+    read_length_span, read_simple, read_simple_with_options, read_until_separator, Cursor,
+    RuntimeConfig, VmContext,
 };
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
@@ -149,23 +150,35 @@ impl<'a> Decoder<'a> {
         parent_sequence: Option<&IrProps>,
         enclosing_terminator: Option<&str>,
     ) -> Result<DfdlValue> {
+        if let Some(sep) = infix_list_separator(parent_sequence, self.ctx.strings())? {
+            if self.element_uses_infix_csv_semantics(node_id, props, sep)? {
+                return self.decode_infix_delimited_occurrences(
+                    node_id,
+                    props,
+                    cursor,
+                    has_following_sibling,
+                    parent_sequence,
+                    enclosing_terminator,
+                    sep,
+                );
+            }
+        }
+
         let min = props.occurs_min;
         let max = props.occurs_max.unwrap_or(u64::MAX);
         let mut items = Vec::new();
+        let consume_trailing = !self.element_preserves_infix_empty_fields(
+            node_id,
+            props,
+            parent_sequence,
+            self.ctx.strings(),
+        )?;
 
         while (items.len() as u64) < max {
             if items.len() as u64 >= min && cursor.is_empty() {
                 break;
             }
             if !items.is_empty() {
-                if let Some(extra) = self.try_decode_consecutive_empty_fields(
-                    parent_sequence,
-                    cursor,
-                    enclosing_terminator,
-                )? {
-                    items.extend(extra);
-                    continue;
-                }
                 self.consume_occurrence_separator(parent_sequence, cursor)?;
             }
             let require_delimiter = has_following_sibling;
@@ -176,6 +189,7 @@ impl<'a> Decoder<'a> {
                 require_delimiter,
                 parent_sequence,
                 enclosing_terminator,
+                consume_trailing,
             ) {
                 Ok(v) => items.push(v),
                 Err(e) => {
@@ -200,21 +214,144 @@ impl<'a> Decoder<'a> {
             }
         }
 
-        if (items.len() as u64) < min {
-            return Err(VmError::InvalidValue {
-                message: alloc::format!("expected at least {min} occurrences, got {}", items.len()),
+        finalize_occurrence_items(items, min)
+    }
+
+    /// CSV/NMEA-style infix-separated delimited fields: empty segments decode as empty
+    /// strings anywhere in the list (leading, middle, or trailing).
+    fn decode_infix_delimited_occurrences(
+        &self,
+        node_id: u32,
+        props: &IrProps,
+        cursor: &mut Cursor<'_>,
+        has_following_sibling: bool,
+        parent_sequence: Option<&IrProps>,
+        enclosing_terminator: Option<&str>,
+        separator: &str,
+    ) -> Result<DfdlValue> {
+        let min = props.occurs_min;
+        let max = props.occurs_max.unwrap_or(u64::MAX);
+        let stop = effective_stop_delimiter(
+            parent_sequence,
+            enclosing_terminator,
+            self.ctx.strings(),
+        )?;
+        let mut items = Vec::new();
+
+        while (items.len() as u64) < max {
+            if (items.len() as u64) >= min && (cursor.is_empty() || at_stop_delimiter(cursor, stop))
+            {
+                break;
             }
-            .into());
+
+            let require_delimiter = has_following_sibling;
+            let saved = cursor.clone();
+            match self.decode_single_element(
+                node_id,
+                cursor,
+                require_delimiter,
+                parent_sequence,
+                enclosing_terminator,
+                false,
+            ) {
+                Ok(v) => items.push(v),
+                Err(e) => {
+                    if (items.len() as u64) >= min {
+                        *cursor = saved;
+                        break;
+                    }
+                    if min == 0 && items.is_empty() {
+                        *cursor = saved;
+                        return Err(VmError::ElementAbsent.into());
+                    }
+                    if let Some(default) = default_value_for(
+                        element_kind(self.ctx.program, node_id)?,
+                        props,
+                        self.ctx.strings(),
+                    ) {
+                        items.push(default);
+                        break;
+                    }
+                    return Err(e);
+                }
+            }
+
+            if cursor.is_empty() || at_stop_delimiter(cursor, stop) {
+                break;
+            }
+
+            if !at_delimiter(cursor, separator) {
+                break;
+            }
+            if !cursor.consume_delimiter(separator) {
+                return Err(VmError::InvalidValue {
+                    message: "separator mismatch".into(),
+                }
+                .into());
+            }
+
+            if cursor.is_empty() || at_stop_delimiter(cursor, stop) {
+                if (items.len() as u64) < max {
+                    items.push(DfdlValue::String(String::new()));
+                }
+                break;
+            }
         }
 
-        if items.is_empty() {
-            return Err(VmError::ElementAbsent.into());
-        }
+        finalize_occurrence_items(items, min)
+    }
 
-        if items.len() == 1 {
-            Ok(items.remove(0))
-        } else {
-            Ok(DfdlValue::Array(items))
+    fn element_uses_infix_csv_semantics(
+        &self,
+        node_id: u32,
+        props: &IrProps,
+        separator: &str,
+    ) -> Result<bool> {
+        if props.occurs_max.unwrap_or(u64::MAX) != u64::MAX {
+            return Ok(false);
+        }
+        self.element_is_infix_delimited_string(node_id, separator)
+    }
+
+    fn element_preserves_infix_empty_fields(
+        &self,
+        node_id: u32,
+        props: &IrProps,
+        parent_sequence: Option<&IrProps>,
+        strings: &crate::ir::StringPool,
+    ) -> Result<bool> {
+        if props.occurs_max.unwrap_or(1) != 1 {
+            return Ok(false);
+        }
+        let Some(sep) = infix_list_separator(parent_sequence, strings)? else {
+            return Ok(false);
+        };
+        self.element_is_infix_delimited_string(node_id, sep)
+    }
+
+    fn element_is_infix_delimited_string(&self, node_id: u32, separator: &str) -> Result<bool> {
+        if !is_simple_infix_separator(separator) {
+            return Ok(false);
+        }
+        match self.ctx.program.node(node_id)? {
+            IrNode::Element {
+                kind,
+                props,
+                child,
+                ..
+            } => {
+                if child.is_some() {
+                    return Ok(false);
+                }
+                if *kind != ValueKind::String || props.length_kind != LengthKind::Delimited {
+                    return Ok(false);
+                }
+                let Some(sep_id) = props.separator else {
+                    return Ok(false);
+                };
+                Ok(self.ctx.strings().get(sep_id)? == separator)
+            }
+            _ => Ok(false),
         }
     }
 
@@ -225,6 +362,7 @@ impl<'a> Decoder<'a> {
         require_delimiter: bool,
         parent_sequence: Option<&IrProps>,
         enclosing_terminator: Option<&str>,
+        consume_trailing_delimiter: bool,
     ) -> Result<DfdlValue> {
         let parent_term = effective_stop_delimiter(
             parent_sequence,
@@ -357,7 +495,7 @@ impl<'a> Decoder<'a> {
                         inner,
                         ValueKind::Complex,
                     ))
-                } else {
+                } else if consume_trailing_delimiter {
                     read_simple(
                         cursor,
                         *kind,
@@ -365,6 +503,17 @@ impl<'a> Decoder<'a> {
                         self.ctx.strings(),
                         require_delimiter,
                         parent_term,
+                    )
+                    .map_err(Into::into)
+                } else {
+                    read_simple_with_options(
+                        cursor,
+                        *kind,
+                        props,
+                        self.ctx.strings(),
+                        require_delimiter,
+                        parent_term,
+                        false,
                     )
                     .map_err(Into::into)
                 }
@@ -394,61 +543,6 @@ impl<'a> Decoder<'a> {
             }
         }
         Ok(())
-    }
-
-    /// In infix-separated unbounded lists, `,,` before end is two empty fields and
-    /// `,,X` is one empty field then `X` (NMEA/CSV trailing-empty semantics).
-    fn try_decode_consecutive_empty_fields(
-        &self,
-        parent_sequence: Option<&IrProps>,
-        cursor: &mut Cursor<'_>,
-        enclosing_terminator: Option<&str>,
-    ) -> Result<Option<Vec<DfdlValue>>> {
-        let Some(props) = parent_sequence else {
-            return Ok(None);
-        };
-        if props.separator_position != SeparatorPosition::Infix {
-            return Ok(None);
-        }
-        let Some(sep_id) = props.separator else {
-            return Ok(None);
-        };
-        let sep = self.ctx.strings().get(sep_id)?;
-        if sep.is_empty() {
-            return Ok(None);
-        }
-
-        let start = cursor.pos;
-        let mut count = 0usize;
-        while let Some(n) = match_delimiter(&cursor.data[cursor.pos..], sep) {
-            if n == 0 {
-                break;
-            }
-            cursor.advance(n);
-            count += 1;
-        }
-        if count <= 1 {
-            cursor.pos = start;
-            return Ok(None);
-        }
-
-        let stop = effective_stop_delimiter(
-            parent_sequence,
-            enclosing_terminator,
-            self.ctx.strings(),
-        )?;
-        let followed_by_data =
-            !cursor.is_empty() && !at_stop_delimiter(cursor, stop);
-        let num_empties = if followed_by_data {
-            count - 1
-        } else {
-            count
-        };
-        let mut out = Vec::with_capacity(num_empties);
-        for _ in 0..num_empties {
-            out.push(DfdlValue::String(String::new()));
-        }
-        Ok(Some(out))
     }
 
     fn consume_root_delimited_suffix(&self, cursor: &mut Cursor<'_>) -> Result<()> {
@@ -532,6 +626,50 @@ impl<'a> Decoder<'a> {
                 .transpose()?),
             _ => Ok(None),
         }
+    }
+}
+
+fn is_simple_infix_separator(separator: &str) -> bool {
+    !separator.is_empty() && !separator.contains('%') && !separator.contains('+')
+}
+
+fn infix_list_separator<'a>(
+    parent: Option<&'a IrProps>,
+    strings: &'a crate::ir::StringPool,
+) -> Result<Option<&'a str>> {
+    let Some(props) = parent else {
+        return Ok(None);
+    };
+    if props.separator_position != SeparatorPosition::Infix {
+        return Ok(None);
+    }
+    let Some(id) = props.separator else {
+        return Ok(None);
+    };
+    let pat = strings.get(id)?;
+    if pat.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(pat))
+    }
+}
+
+fn finalize_occurrence_items(items: Vec<DfdlValue>, min: u64) -> Result<DfdlValue> {
+    if (items.len() as u64) < min {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("expected at least {min} occurrences, got {}", items.len()),
+        }
+        .into());
+    }
+
+    if items.is_empty() {
+        return Err(VmError::ElementAbsent.into());
+    }
+
+    if items.len() == 1 {
+        Ok(items.into_iter().next().unwrap())
+    } else {
+        Ok(DfdlValue::Array(items))
     }
 }
 

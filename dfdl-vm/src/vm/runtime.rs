@@ -810,31 +810,10 @@ fn read_until_any_delimiter(
     Ok(cursor.data[start..].to_vec())
 }
 
-/// When a non-empty delimited field is immediately followed by two or more infix
-/// separators (`a,,`), leave the first separator unconsumed so occurrence decoding
-/// can count consecutive empty fields (NMEA/CSV trailing-empty semantics).
-fn should_defer_enclosing_delimiter(
-    cursor: &Cursor<'_>,
-    props: &IrProps,
-    strings: &StringPool,
-    field_nonempty: bool,
-) -> Result<bool, crate::error::VmError> {
-    if !field_nonempty || props.length_kind != LengthKind::Delimited {
-        return Ok(false);
-    }
-    let Some(sep_id) = props.separator else {
-        return Ok(false);
-    };
-    let sep = strings.get(sep_id)?;
-    let Some(n) = match_delimiter(&cursor.data[cursor.pos..], sep) else {
-        return Ok(false);
-    };
-    if n == 0 {
-        return Ok(false);
-    }
-    Ok(match_delimiter(&cursor.data[cursor.pos + n..], sep)
-        .map(|n2| n2 > 0)
-        .unwrap_or(false))
+pub(crate) fn at_delimiter(cursor: &Cursor<'_>, pattern: &str) -> bool {
+    match_delimiter(&cursor.data[cursor.pos..], pattern)
+        .map(|n| n > 0)
+        .unwrap_or(false)
 }
 
 pub(crate) fn consume_enclosing_delimiter(
@@ -1130,6 +1109,26 @@ pub(crate) fn read_simple(
     require_delimiter: bool,
     parent_terminator: Option<&str>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    read_simple_with_options(
+        cursor,
+        kind,
+        props,
+        strings,
+        require_delimiter,
+        parent_terminator,
+        true,
+    )
+}
+
+pub(crate) fn read_simple_with_options(
+    cursor: &mut Cursor<'_>,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+    require_delimiter: bool,
+    parent_terminator: Option<&str>,
+    consume_trailing_delimiter: bool,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
     if let Some(id) = props.initiator {
@@ -1149,15 +1148,8 @@ pub(crate) fn read_simple(
             read_text_scalar(cursor, kind, props, strings, require_enclosing, parent_terminator)?
         }
     };
-    if props.length_kind == LengthKind::Delimited {
-        let field_nonempty = match &value {
-            crate::value::DfdlValue::String(s) => !s.is_empty(),
-            crate::value::DfdlValue::HexBinary(b) => !b.is_empty(),
-            _ => true,
-        };
-        if !should_defer_enclosing_delimiter(cursor, props, strings, field_nonempty)? {
-            consume_enclosing_delimiter(cursor, props, strings, parent_terminator)?;
-        }
+    if props.length_kind == LengthKind::Delimited && consume_trailing_delimiter {
+        consume_enclosing_delimiter(cursor, props, strings, parent_terminator)?;
     } else if let Some(id) = props.terminator {
         let pat = strings.get(id)?;
         if !pat.is_empty() && !cursor.consume_delimiter(pat) {
