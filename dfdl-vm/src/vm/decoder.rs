@@ -298,6 +298,7 @@ impl<'a> Decoder<'a> {
                                 props.length_units,
                                 encoding_name(&props, self.ctx.strings())?,
                                 props.bit_order,
+                                true,
                             )?;
                             let mut sub = Cursor::new(&bytes);
                             let scope = bytes.len();
@@ -917,7 +918,7 @@ fn resolve_length_props(
             message: alloc::format!("length sibling `{sib_name}` not available"),
         })?;
     let mut resolved = props.clone();
-    resolved.length = Some(length_from_value(sib_val)?);
+    resolved.length = Some(length_from_value(sib_val, props.length_sibling_cast_long)?);
     if kind == ValueKind::Decimal {
         validate_explicit_decimal_before_decode(kind, &resolved, tunables)?;
     } else if let Some(len) = resolved.length {
@@ -926,30 +927,42 @@ fn resolve_length_props(
     Ok(resolved)
 }
 
-fn length_from_value(value: &DfdlValue) -> Result<u64> {
+fn negative_runtime_length_error(value: i64) -> crate::error::VmError {
+    use crate::error::VmError;
+    VmError::InvalidValue {
+        message: alloc::format!("Runtime Schema Definition Error. dfdl:length {value}"),
+    }
+}
+
+fn length_from_value(value: &DfdlValue, cast_long: bool) -> Result<u64> {
     let err = |msg: alloc::string::String| -> Result<u64> {
         Err(VmError::InvalidValue { message: msg }.into())
     };
     match value {
-        DfdlValue::Byte(v) => Ok(*v as u64),
+        DfdlValue::Double(v) if cast_long => {
+            if v.is_nan() {
+                return err("Parse Error. Cannot convert NaN double value to xs:long".into());
+            }
+            let truncated = *v as i64;
+            u64::try_from(truncated).map_err(|_| negative_runtime_length_error(truncated).into())
+        }
+        DfdlValue::Byte(v) => {
+            let v = *v as i64;
+            u64::try_from(v).map_err(|_| negative_runtime_length_error(v).into())
+        }
         DfdlValue::UnsignedByte(v) => Ok(*v as u64),
-        DfdlValue::Short(v) => u64::try_from(*v)
-            .map_err(|_| VmError::InvalidValue {
-                message: alloc::format!("negative length `{v}`"),
-            })
-            .map_err(Into::into),
+        DfdlValue::Short(v) => {
+            let v = *v as i64;
+            u64::try_from(v).map_err(|_| negative_runtime_length_error(v).into())
+        }
         DfdlValue::UnsignedShort(v) => Ok(*v as u64),
-        DfdlValue::Int(v) => u64::try_from(*v)
-            .map_err(|_| VmError::InvalidValue {
-                message: alloc::format!("negative length `{v}`"),
-            })
-            .map_err(Into::into),
+        DfdlValue::Int(v) => {
+            u64::try_from(*v).map_err(|_| negative_runtime_length_error(*v as i64).into())
+        }
         DfdlValue::UnsignedInt(v) => Ok(*v as u64),
-        DfdlValue::Long(v) => u64::try_from(*v)
-            .map_err(|_| VmError::InvalidValue {
-                message: alloc::format!("negative length `{v}`"),
-            })
-            .map_err(Into::into),
+        DfdlValue::Long(v) => {
+            u64::try_from(*v).map_err(|_| negative_runtime_length_error(*v).into())
+        }
         other => err(alloc::format!("length sibling has unsupported type: {other:?}")),
     }
 }

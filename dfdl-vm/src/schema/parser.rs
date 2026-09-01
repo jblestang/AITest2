@@ -979,6 +979,12 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.length_sibling.is_some() {
         base.length_sibling = overlay.length_sibling;
     }
+    if overlay.length_sibling_cast_long {
+        base.length_sibling_cast_long = true;
+    }
+    if overlay.length_expr_unparsed {
+        base.length_expr_unparsed = true;
+    }
     if overlay.length_units.is_some() {
         base.length_units = overlay.length_units;
     }
@@ -1185,14 +1191,23 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
     }
 }
 
-fn parse_sibling_length_ref(value: &str) -> Option<String> {
+fn parse_sibling_length_expr(value: &str) -> Option<(String, bool)> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
-    let path = inner.strip_prefix("../")?;
-    Some(local_name_from_qname(path).to_string())
+    if let Some(path) = inner.strip_prefix("../") {
+        return Some((local_name_from_qname(path).to_string(), false));
+    }
+    if let Some(idx) = inner.find("../") {
+        let tail = inner[idx + 3..].trim().trim_end_matches(')').trim();
+        if !tail.is_empty() {
+            let cast_long = inner.contains("xs:long(") || inner.contains("xs:integer(");
+            return Some((local_name_from_qname(tail).to_string(), cast_long));
+        }
+    }
+    None
 }
 
 /// Parses constant DFDL length expressions such as `{ 6 }` or `{1}`.
@@ -1354,9 +1369,11 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     props.length = Some(v);
                 } else if let Some(v) = parse_constant_length_expr(value) {
                     props.length = Some(v);
-                } else if let Some(sibling) = parse_sibling_length_ref(value) {
+                } else if let Some((sibling, cast_long)) = parse_sibling_length_expr(value) {
                     props.length_sibling = Some(sibling);
+                    props.length_sibling_cast_long = cast_long;
                 } else if value.trim().starts_with('{') {
+                    props.length_expr_unparsed = true;
                     // Defer unsupported expressions; do not fail the whole property set.
                 } else {
                     return Err(ParseError::InvalidXml {

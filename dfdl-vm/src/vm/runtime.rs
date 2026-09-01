@@ -1278,13 +1278,13 @@ pub(crate) fn read_text_scalar(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "fixed text missing length".into(),
             })? as usize;
-            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?, props.bit_order)?
+            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?, props.bit_order, false)?
         }
         LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit text missing length".into(),
             })? as usize;
-            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?, props.bit_order)?
+            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?, props.bit_order, false)?
         }
         LengthKind::Delimited => {
             read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)?
@@ -1325,7 +1325,7 @@ pub(crate) fn read_text_scalar(
         UnsignedByte => parse_int(trimmed).map(DfdlValue::UnsignedByte),
         Short => parse_int(trimmed).map(DfdlValue::Short),
         UnsignedShort => parse_int(trimmed).map(DfdlValue::UnsignedShort),
-        Int => parse_int(trimmed).map(DfdlValue::Int),
+        Int => parse_int_typed(trimmed, "xs:int").map(DfdlValue::Int),
         UnsignedInt => parse_int(trimmed).map(DfdlValue::UnsignedInt),
         Long => parse_int(trimmed).map(DfdlValue::Long),
         Float => parse_float(trimmed).map(|v| DfdlValue::Float(v as f32)),
@@ -1829,21 +1829,70 @@ pub(crate) fn read_until_separator(
     read_until_any_delimiter(cursor, &patterns, require_delimiter, &patterns)
 }
 
+pub(crate) fn insufficient_data_bits_error(needed_bits: usize, found_bits: usize) -> crate::error::VmError {
+    use crate::error::VmError;
+    VmError::InvalidValue {
+        message: alloc::format!(
+            "Parse Error. Needed {needed_bits} bit(s) to parse but found only {found_bits}. insufficient bits in data"
+        ),
+    }
+}
+
 pub(crate) fn read_length_span(
     cursor: &mut Cursor<'_>,
     len: usize,
     units: LengthUnits,
     encoding: &str,
     bit_order: BitOrder,
+    allow_short_read: bool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     match units {
-        LengthUnits::Bytes => cursor
-            .read_bytes(len)
-            .ok_or(VmError::UnexpectedEof),
+        LengthUnits::Bytes => {
+            if cursor.bit_count != 0 {
+                return Err(VmError::InvalidValue {
+                    message: "unaligned byte read".into(),
+                });
+            }
+            let available = cursor.remaining();
+            if available < len {
+                if allow_short_read {
+                    return Ok(cursor.read_bytes(available).unwrap_or_default());
+                }
+                return Err(insufficient_data_bits_error(
+                    len.saturating_mul(8),
+                    available.saturating_mul(8) + cursor.bit_count as usize,
+                ));
+            }
+            cursor
+                .read_bytes(len)
+                .ok_or(VmError::UnexpectedEof)
+        }
         LengthUnits::Characters => {
             let mut pos = cursor.pos;
-            let bytes = read_character_bytes(cursor.data, &mut pos, len, encoding)?;
+            if allow_short_read {
+                let mut out = alloc::vec::Vec::new();
+                for _ in 0..len {
+                    if pos >= cursor.data.len() {
+                        break;
+                    }
+                    match read_character_bytes(cursor.data, &mut pos, 1, encoding) {
+                        Ok(chunk) => out.extend_from_slice(&chunk),
+                        Err(_) => break,
+                    }
+                }
+                cursor.pos = pos;
+                cursor.bit_count = 0;
+                return Ok(out);
+            }
+            let bytes = read_character_bytes(cursor.data, &mut pos, len, encoding).map_err(|_| {
+                insufficient_data_bits_error(
+                    len.saturating_mul(8),
+                    count_characters(&cursor.data[cursor.pos..], encoding)
+                        .unwrap_or(0)
+                        .saturating_mul(8),
+                )
+            })?;
             cursor.pos = pos;
             cursor.bit_count = 0;
             Ok(bytes)
@@ -1960,6 +2009,7 @@ pub(crate) fn read_prefixed_payload(
         props.length_units,
         encoding_name(props, strings)?,
         props.bit_order,
+        false,
     )
     .map_err(|e| {
         use crate::error::VmError;
@@ -2118,6 +2168,7 @@ fn read_prefix_field_payload(
                 props.length_units,
                 encoding_name(props, strings)?,
                 props.bit_order,
+                false,
             )
             .map_err(|e| {
                 if e == VmError::UnexpectedEof {
@@ -2269,6 +2320,12 @@ fn trim_pad_char<'a>(input: &'a str, pad: &str) -> &'a str {
 fn parse_int<T: core::str::FromStr>(s: &str) -> Result<T, crate::error::VmError> {
     s.parse().map_err(|_| crate::error::VmError::InvalidValue {
         message: alloc::format!("invalid integer `{s}`"),
+    })
+}
+
+fn parse_int_typed<T: core::str::FromStr>(s: &str, type_name: &str) -> Result<T, crate::error::VmError> {
+    s.parse().map_err(|_| crate::error::VmError::InvalidValue {
+        message: alloc::format!("Parse Error. {type_name} {s}"),
     })
 }
 

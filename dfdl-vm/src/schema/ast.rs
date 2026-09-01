@@ -27,6 +27,10 @@ pub struct DfdlProps {
     pub length: Option<u64>,
     /// Parsed sibling element name from `{ ../ex:name }` length expressions.
     pub length_sibling: Option<String>,
+    /// True when `{ xs:long(../ex:name) }` wraps the length sibling reference.
+    pub length_sibling_cast_long: bool,
+    /// True when a `{ ... }` length expression was present but not fully compiled.
+    pub length_expr_unparsed: bool,
     pub length_units: Option<LengthUnits>,
     pub encoding: Option<String>,
     pub text_trim_kind: Option<TextTrimKind>,

@@ -502,6 +502,7 @@ fn finalize_element_props(
         && ir.length.is_none()
         && ir.length_sibling.is_none()
         && ir.length_pattern.is_none()
+        && !ir.length_expr_unparsed
     {
         return Err(SchemaError::InvalidProperty {
             message: "Schema Definition Error: Property length is not defined".into(),
@@ -821,6 +822,12 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if props.length_sibling_cast_long {
+        base.length_sibling_cast_long = true;
+    }
+    if props.length_expr_unparsed {
+        base.length_expr_unparsed = true;
+    }
     if let Some(v) = props.length_units {
         base.length_units = v;
     }
@@ -982,6 +989,12 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.length_sibling.is_some() {
         out.length_sibling = overlay.length_sibling;
+    }
+    if overlay.length_sibling_cast_long {
+        out.length_sibling_cast_long = true;
+    }
+    if overlay.length_expr_unparsed {
+        out.length_expr_unparsed = true;
     }
     out.length_units = overlay.length_units;
     out.encoding = overlay.encoding;
