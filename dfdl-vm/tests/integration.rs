@@ -30,7 +30,7 @@ fn text_message_round_trip() {
     let spec = DfdlSpec::from_xsd(include_str!("fixtures/text_message.xsd")).expect("spec");
     let input = b"TAG123;";
     let decoded = spec.decode(input).expect("decode");
-    assert_eq!(decoded.field("tag"), Some(&DfdlValue::String("TAG".into())));
+    assert_eq!(decoded.field("tag"), Some(&DfdlValue::string("TAG")));
     assert_eq!(decoded.field("value"), Some(&DfdlValue::Int(123)));
 
     let encoded = spec.encode(&decoded).expect("encode");
@@ -41,10 +41,10 @@ fn text_message_round_trip() {
 fn choice_initiator_decode() {
     let spec = DfdlSpec::from_xsd(include_str!("fixtures/choice_initiator.xsd")).expect("spec");
     let decoded = spec.decode(b"1=abc").expect("decode branch A");
-    assert_eq!(decoded.field("A"), Some(&DfdlValue::String("abc".into())));
+    assert_eq!(decoded.field("A"), Some(&DfdlValue::string("abc")));
 
     let decoded_b = spec.decode(b"2=xyz").expect("decode branch B");
-    assert_eq!(decoded_b.field("B"), Some(&DfdlValue::String("xyz".into())));
+    assert_eq!(decoded_b.field("B"), Some(&DfdlValue::string("xyz")));
 }
 
 #[test]

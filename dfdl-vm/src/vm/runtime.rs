@@ -1421,7 +1421,15 @@ pub(crate) fn read_text_scalar(
         Double => parse_float(trimmed).map(DfdlValue::Double),
         Decimal => Ok(DfdlValue::Decimal(trimmed.into())),
         DateTime | Time => Ok(DfdlValue::DateTime(trimmed.into())),
-        String => Ok(DfdlValue::String(trimmed.into())),
+        String => {
+            let mut meta = crate::value::StringMeta::default();
+            if props.encoding_error_policy == crate::schema::EncodingErrorPolicy::Replace
+                && trimmed == text
+            {
+                meta.source_bytes = Some(raw);
+            }
+            Ok(DfdlValue::String(crate::value::StringValue { text: trimmed.into(), meta }))
+        }
         HexBinary => decode_hex(trimmed).map(DfdlValue::HexBinary),
         Complex => Err(VmError::TypeMismatch {
             expected: "complex".into(),
@@ -1650,6 +1658,11 @@ pub(crate) fn write_text_scalar(
         return Ok(());
     }
 
+    let source_bytes = match (kind, value) {
+        (String, DfdlValue::String(v)) => v.meta.source_bytes.clone(),
+        _ => None,
+    };
+
     let text = match (kind, value) {
         (Boolean, DfdlValue::Boolean(v)) => {
             if *v {
@@ -1675,7 +1688,7 @@ pub(crate) fn write_text_scalar(
         (Double, DfdlValue::Double(v)) => alloc::format!("{v}"),
         (Decimal, DfdlValue::Decimal(v)) => v.clone(),
         (DateTime, DfdlValue::DateTime(v)) => v.clone(),
-        (String, DfdlValue::String(v)) => v.clone(),
+        (String, DfdlValue::String(v)) => v.text.clone(),
         (HexBinary, DfdlValue::HexBinary(v)) => encode_hex(v),
         (expected, _) => {
             return Err(VmError::TypeMismatch {
@@ -1684,14 +1697,41 @@ pub(crate) fn write_text_scalar(
         }
     };
 
+    let text_before_pad = text.clone();
     let text = apply_min_length_pad(&text, props, strings, kind);
 
     if props.length_kind == LengthKind::Prefixed {
-        let encoded = encode_document_text(&text, encoding_name(props, strings)?)?;
+        let encoded = if let Some(raw) = source_bytes.filter(|_| text == text_before_pad) {
+            raw
+        } else {
+            encode_document_text(&text, encoding_name(props, strings)?)?
+        };
         return write_prefixed_bytes(out, bit_count, &encoded, props, strings, field_name);
     }
 
     let encoding = encoding_name(props, strings)?;
+    if let Some(raw) = source_bytes.filter(|_| text == text_before_pad) {
+        let payload = match props.length_kind {
+            LengthKind::Fixed | LengthKind::Explicit => {
+                let len = props.length.ok_or(VmError::InvalidValue {
+                    message: "fixed/explicit text missing length".into(),
+                })? as usize;
+                pad_raw_text_field(&raw, len, props.length_units, props, strings, kind, encoding)?
+            }
+            LengthKind::Delimited
+            | LengthKind::Pattern
+            | LengthKind::Implicit
+            | LengthKind::EndOfParent => raw,
+            other => {
+                return Err(VmError::UnsupportedOperation {
+                    op: alloc::format!("text lengthKind `{}` encode", length_kind_name(other)),
+                });
+            }
+        };
+        write_byte_aligned(out, bit_count, &payload)?;
+        return Ok(());
+    }
+
     let payload = match props.length_kind {
         LengthKind::Fixed | LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
@@ -1839,6 +1879,93 @@ fn pad_text_field(
                 }
             }
             encode_document_text(&padded, encoding)
+        }
+        LengthUnits::Bits => Err(VmError::UnsupportedOperation {
+            op: "explicit text bit length encode".into(),
+        }),
+    }
+}
+
+fn pad_raw_text_field(
+    raw: &[u8],
+    len: usize,
+    units: LengthUnits,
+    props: &IrProps,
+    strings: &StringPool,
+    kind: crate::ir::ValueKind,
+    encoding: &str,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::schema::{LengthUnits, TextStringJustification};
+    use crate::vm::encoding::count_characters;
+
+    let pad_char = pad_char_for_kind(props, strings, kind).unwrap_or(" ");
+    let pad_byte = pad_char.chars().next().unwrap_or(b' ' as char) as u8;
+
+    match units {
+        LengthUnits::Bytes => {
+            let mut bytes = raw.to_vec();
+            if bytes.len() > len {
+                bytes.truncate(len);
+                return Ok(bytes);
+            }
+            let pad_count = len - bytes.len();
+            match props.text_string_justification {
+                TextStringJustification::Right => {
+                    bytes.splice(0..0, iter::repeat(pad_byte).take(pad_count));
+                }
+                TextStringJustification::Center => {
+                    let left = pad_count / 2;
+                    let right = pad_count - left;
+                    bytes.splice(0..0, iter::repeat(pad_byte).take(left));
+                    bytes.extend(iter::repeat(pad_byte).take(right));
+                }
+                TextStringJustification::Left => {
+                    bytes.extend(iter::repeat(pad_byte).take(pad_count));
+                }
+            }
+            Ok(bytes)
+        }
+        LengthUnits::Characters => {
+            let current =
+                count_characters(raw, encoding, EncodingErrorPolicy::Replace)?;
+            if current > len {
+                return Err(VmError::InvalidValue {
+                    message: "text value too long for explicit character length".into(),
+                });
+            }
+            if current == len {
+                return Ok(raw.to_vec());
+            }
+            let pad_count = len - current;
+            let pad_bytes = encode_document_text(pad_char, encoding)?;
+            let mut out = alloc::vec::Vec::new();
+            match props.text_string_justification {
+                TextStringJustification::Right => {
+                    for _ in 0..pad_count {
+                        out.extend_from_slice(&pad_bytes);
+                    }
+                    out.extend_from_slice(raw);
+                }
+                TextStringJustification::Center => {
+                    let left = pad_count / 2;
+                    let right = pad_count - left;
+                    for _ in 0..left {
+                        out.extend_from_slice(&pad_bytes);
+                    }
+                    out.extend_from_slice(raw);
+                    for _ in 0..right {
+                        out.extend_from_slice(&pad_bytes);
+                    }
+                }
+                TextStringJustification::Left => {
+                    out.extend_from_slice(raw);
+                    for _ in 0..pad_count {
+                        out.extend_from_slice(&pad_bytes);
+                    }
+                }
+            }
+            Ok(out)
         }
         LengthUnits::Bits => Err(VmError::UnsupportedOperation {
             op: "explicit text bit length encode".into(),
@@ -2127,7 +2254,7 @@ pub(crate) fn is_suppressible_empty_representation(
 ) -> Result<bool, crate::error::VmError> {
     match value {
         crate::value::DfdlValue::Null => Ok(nil_literal(props, strings)?.is_some_and(|nil| nil.is_empty())),
-        crate::value::DfdlValue::String(text) if text.is_empty() => Ok(true),
+        crate::value::DfdlValue::String(text) if text.text.is_empty() => Ok(true),
         _ => Ok(false),
     }
 }
@@ -2802,7 +2929,13 @@ fn encode_binary_payload_bytes(
 
     let le = props.byte_order == ByteOrder::LittleEndian;
     match (kind, value) {
-        (String, DfdlValue::String(v)) => Ok(v.as_bytes().to_vec()),
+        (String, DfdlValue::String(v)) => {
+            if let Some(raw) = &v.meta.source_bytes {
+                Ok(raw.clone())
+            } else {
+                Ok(v.text.as_bytes().to_vec())
+            }
+        }
         (HexBinary, DfdlValue::HexBinary(v)) => Ok(v.clone()),
         (Boolean, DfdlValue::Boolean(v)) => Ok(alloc::vec![u8::from(*v)]),
         (Byte, DfdlValue::Byte(v)) => encode_integer_binary(*v as i64, kind, props, le),
@@ -3583,7 +3716,7 @@ pub(crate) fn default_value_for(
         Double => parse_float(raw).ok().map(DfdlValue::Double),
         Decimal => Some(DfdlValue::Decimal(raw.into())),
         DateTime | Time => Some(DfdlValue::DateTime(raw.into())),
-        String => Some(DfdlValue::String(raw.into())),
+        String => Some(DfdlValue::string(raw)),
         HexBinary => decode_hex(raw).ok().map(DfdlValue::HexBinary),
         Complex => None,
     }
@@ -3649,7 +3782,6 @@ mod delimited_stop_tests {
         use crate::ir::{IrProps, StringPool};
         use crate::schema::{SeparatorPosition, SeparatorSuppressionPolicy};
         use crate::value::DfdlValue;
-        use alloc::string::String;
 
         let mut sep = IrProps::default();
         sep.separator_suppression_policy = Some(SeparatorSuppressionPolicy::AnyEmpty);
@@ -3657,7 +3789,7 @@ mod delimited_stop_tests {
         let item = IrProps::default();
         let items = [
             DfdlValue::Int(1),
-            DfdlValue::String(String::new()),
+            DfdlValue::string(""),
             DfdlValue::Int(3),
         ];
         let strings = StringPool::new();

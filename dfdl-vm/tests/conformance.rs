@@ -375,14 +375,6 @@ fn daffodil_section12_pattern_twopass_roundtrip_suite() {
         if test.round_trip != RoundTrip::TwoPass {
             continue;
         }
-        // Lossy UTF-8 replacement roundtrips cannot reproduce malformed source bytes.
-        if matches!(
-            test.name.as_str(),
-            "LengthPatternIllegalBits_02_EncodingErrorPolicy_Replace"
-                | "lengthPatternEncodingErrorReplace"
-        ) {
-            continue;
-        }
         let result = run_parser_test_with_options(
             &suite,
             test,

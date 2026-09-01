@@ -152,7 +152,7 @@ fn find_infoset_children<'a>(node: &'a InfosetNode, local_name: &str) -> Vec<&'a
 fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, String> {
     let trimmed = text.trim();
     match kind {
-        ValueKind::String => Ok(DfdlValue::String(trimmed.to_string())),
+        ValueKind::String => Ok(DfdlValue::string(trimmed)),
         ValueKind::Boolean => trimmed
             .parse::<bool>()
             .or_else(|_| match trimmed {
@@ -401,7 +401,7 @@ fn scalar_to_string(value: &DfdlValue) -> String {
         DfdlValue::Double(v) => v.to_string(),
         DfdlValue::Decimal(v) => v.clone(),
         DfdlValue::DateTime(v) => v.clone(),
-        DfdlValue::String(v) => v.clone(),
+        DfdlValue::String(v) => v.text.clone(),
         DfdlValue::HexBinary(v) => hex_encode(v),
         DfdlValue::Null => String::new(),
         DfdlValue::Array(_) | DfdlValue::Sequence(_) | DfdlValue::Choice { .. } => String::new(),

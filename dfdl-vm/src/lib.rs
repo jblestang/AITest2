@@ -45,6 +45,6 @@ pub use api::{DfdlCodec, DfdlSchema, DfdlSpec};
 pub use error::{Error, ParseError, Result, SchemaError, VmError};
 pub use ir::{compile, IrProgram, IrProps};
 pub use schema::{parse_schema, SchemaDocument};
-pub use value::DfdlValue;
+pub use value::{DfdlValue, StringValue};
 pub use vm::{Decoder, Encoder, RuntimeConfig};
 pub use tdml::{parse_tdml, run_parser_test, run_suite, TestOutcome, TestResult};

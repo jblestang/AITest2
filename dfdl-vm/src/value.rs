@@ -27,6 +27,38 @@ impl SequenceValue {
     }
 }
 
+/// Optional metadata captured during parse to guide faithful unparse.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StringMeta {
+    /// Original encoded bytes when `encodingErrorPolicy=replace` consumed malformed data.
+    pub source_bytes: Option<Vec<u8>>,
+}
+
+/// Decoded string with optional parse metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StringValue {
+    pub text: String,
+    pub meta: StringMeta,
+}
+
+impl StringValue {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            meta: StringMeta::default(),
+        }
+    }
+
+    pub fn with_source_bytes(text: impl Into<String>, source_bytes: Vec<u8>) -> Self {
+        Self {
+            text: text.into(),
+            meta: StringMeta {
+                source_bytes: Some(source_bytes),
+            },
+        }
+    }
+}
+
 /// Decoded logical data tree produced by the VM.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DfdlValue {
@@ -45,7 +77,7 @@ pub enum DfdlValue {
     Decimal(String),
     /// ISO-like dateTime string (e.g. `2004-06-14T18:56:03`).
     DateTime(String),
-    String(String),
+    String(StringValue),
     HexBinary(Vec<u8>),
     /// Repeated occurrences of an element or group.
     Array(Vec<DfdlValue>),
@@ -89,6 +121,17 @@ impl DfdlValue {
     }
 
     pub fn as_str(&self) -> Option<&str> {
+        match self {
+            DfdlValue::String(v) => Some(&v.text),
+            _ => None,
+        }
+    }
+
+    pub fn string(text: impl Into<String>) -> Self {
+        DfdlValue::String(StringValue::new(text))
+    }
+
+    pub fn string_value(&self) -> Option<&StringValue> {
         match self {
             DfdlValue::String(v) => Some(v),
             _ => None,

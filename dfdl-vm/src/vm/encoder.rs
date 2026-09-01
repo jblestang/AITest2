@@ -431,17 +431,6 @@ impl<'a> Encoder<'a> {
         .map_err(Error::from)
     }
 
-    fn write_separator(
-        &self,
-        props: &IrProps,
-        out: &mut Vec<u8>,
-        bit_count: &mut u8,
-        index: usize,
-        total: usize,
-    ) -> Result<()> {
-        self.write_separator_mode(props, out, bit_count, index, total, false)
-    }
-
     fn write_occurrence_separator(
         &self,
         props: &IrProps,
@@ -578,7 +567,7 @@ fn length_in_units(byte_len: usize, units: LengthUnits) -> Result<usize> {
 
 fn value_byte_length(value: &DfdlValue) -> Result<usize> {
     match value {
-        DfdlValue::String(s) => Ok(s.len()),
+        DfdlValue::String(s) => Ok(s.text.len()),
         DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => Ok(s.len()),
         DfdlValue::HexBinary(v) => Ok(v.len()),
         other => Err(VmError::InvalidValue {
@@ -674,21 +663,6 @@ fn branches_contain(program: &IrProgram, node_id: u32, name: &str) -> bool {
                 .unwrap_or(false)
         }),
         _ => false,
-    }
-}
-
-trait ValueView {
-    fn as_sequence_fields(&self) -> Result<&BTreeMap<String, DfdlValue>>;
-}
-
-impl ValueView for DfdlValue {
-    fn as_sequence_fields(&self) -> Result<&BTreeMap<String, DfdlValue>> {
-        self.sequence_fields().ok_or_else(|| {
-            VmError::TypeMismatch {
-                expected: "sequence".into(),
-            }
-            .into()
-        })
     }
 }
 

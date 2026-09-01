@@ -1037,7 +1037,7 @@ fn length_in_units(byte_len: usize, units: LengthUnits) -> Result<usize> {
 
 fn value_byte_length(value: &DfdlValue) -> Result<usize> {
     match value {
-        DfdlValue::String(s) => Ok(s.len()),
+        DfdlValue::String(s) => Ok(s.text.len()),
         DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => Ok(s.len()),
         DfdlValue::HexBinary(v) => Ok(v.len()),
         other => Err(VmError::InvalidValue {
