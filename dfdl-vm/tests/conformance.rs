@@ -1,4 +1,4 @@
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_unparser_test, TestOutcome};
 
 macro_rules! daffodil_tdml {
     ($file:literal) => {
@@ -7,6 +7,21 @@ macro_rules! daffodil_tdml {
             $file
         ))
     };
+}
+
+fn assert_named_unparser_test_passes(tdml: &str, test_name: &str) {
+    let suite = parse_tdml(tdml).expect("parse tdml");
+    let test = suite
+        .unparser_tests
+        .iter()
+        .find(|t| t.name == test_name)
+        .unwrap_or_else(|| panic!("unparser test `{test_name}` not found"));
+    let result = run_unparser_test(&suite, test).expect("run test");
+    match result.outcome {
+        TestOutcome::Pass => {}
+        TestOutcome::Fail(msg) => panic!("test `{test_name}` failed: {msg}"),
+        TestOutcome::Skip(msg) => panic!("test `{test_name}` skipped: {msg}"),
+    }
 }
 
 fn assert_named_test_passes(tdml: &str, test_name: &str) {
@@ -585,5 +600,16 @@ fn daffodil_prefixed_facet_compile_error_suite() {
         "pl_complexContentLengthCharacters_utf8_1",
     ] {
         assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_prefixed_facet_unparser_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_check_prefix_facets_before_use3",
+        "pl_check_prefix_facets_before_use4",
+    ] {
+        assert_named_unparser_test_passes(tdml, name);
     }
 }

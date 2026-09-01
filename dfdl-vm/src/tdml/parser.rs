@@ -13,6 +13,7 @@ pub struct TdmlSuite {
     pub name: String,
     pub schemas: BTreeMap<String, TdmlSchema>,
     pub tests: Vec<ParserTestCase>,
+    pub unparser_tests: Vec<UnparserTestCase>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +30,16 @@ pub struct ParserTestCase {
     pub documents: Vec<TdmlDocument>,
     pub expected_infoset: String,
     /// When set, the test expects decode to fail with at least this many errors.
+    pub expected_errors: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnparserTestCase {
+    pub name: String,
+    pub root: String,
+    pub model: String,
+    pub infoset: String,
+    /// When set, the test expects encode to fail with at least this many errors.
     pub expected_errors: Option<usize>,
 }
 
@@ -55,6 +66,7 @@ pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
 
     let mut schemas = BTreeMap::new();
     let mut tests = Vec::new();
+    let mut unparser_tests = Vec::new();
 
     reader.for_each_child("testSuite", |local, attrs, r| match local {
         "defineSchema" => {
@@ -66,6 +78,10 @@ pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
             tests.push(parse_parser_test_case(attrs, r)?);
             Ok(())
         }
+        "unparserTestCase" => {
+            unparser_tests.push(parse_unparser_test_case(attrs, r)?);
+            Ok(())
+        }
         _ => r.skip_current_subtree(),
     })?;
 
@@ -73,6 +89,7 @@ pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
         name,
         schemas,
         tests,
+        unparser_tests,
     })
 }
 
@@ -129,6 +146,44 @@ fn parse_parser_test_case(
         model,
         documents,
         expected_infoset,
+        expected_errors,
+    })
+}
+
+fn parse_unparser_test_case(
+    attrs: BTreeMap<String, String>,
+    reader: &mut XmlReader<'_>,
+) -> Result<UnparserTestCase> {
+    let name = attrs.get("name").cloned().unwrap_or_default();
+    let root = attrs.get("root").cloned().ok_or_else(|| ParseError::MissingAttribute {
+        element: "unparserTestCase".into(),
+        attribute: "root".into(),
+    })?;
+    let model = attrs.get("model").cloned().ok_or_else(|| ParseError::MissingAttribute {
+        element: "unparserTestCase".into(),
+        attribute: "model".into(),
+    })?;
+
+    let mut infoset = String::new();
+    let mut expected_errors = None;
+
+    reader.for_each_child("unparserTestCase", |local, _, r| match local {
+        "infoset" => {
+            infoset = r.read_inner_xml()?;
+            Ok(())
+        }
+        "errors" => {
+            expected_errors = Some(parse_errors(r)?);
+            Ok(())
+        }
+        _ => r.skip_current_subtree(),
+    })?;
+
+    Ok(UnparserTestCase {
+        name,
+        root,
+        model,
+        infoset,
         expected_errors,
     })
 }
@@ -317,6 +372,20 @@ mod tests {
             .expect("test");
         assert_eq!(test.documents.len(), 1);
         assert!(test.documents[0].data.starts_with(b"000118"));
+    }
+
+    #[test]
+    fn parse_unparser_test_case() {
+        let tdml = r##"<tdml:testSuite suiteName="t" xmlns:tdml="http://www.ibm.com/xmlns/dfdl/testData" xmlns:ex="http://example.com">
+  <tdml:defineSchema name="s"><xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="A" type="xs:string"/></xs:schema></tdml:defineSchema>
+  <tdml:unparserTestCase name="enc" root="A" model="s">
+    <tdml:infoset><tdml:dfdlInfoset><A>hi</A></tdml:dfdlInfoset></tdml:infoset>
+    <tdml:errors><tdml:error>bad</tdml:error></tdml:errors>
+  </tdml:unparserTestCase>
+</tdml:testSuite>"##;
+        let suite = parse_tdml(tdml).expect("parse");
+        assert_eq!(suite.unparser_tests.len(), 1);
+        assert_eq!(suite.unparser_tests[0].expected_errors, Some(1));
     }
 
     #[test]

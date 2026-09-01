@@ -1,5 +1,5 @@
-use super::infoset::compare_infoset;
-use super::parser::{parse_tdml, ParserTestCase, TdmlSuite};
+use super::infoset::{compare_infoset, infoset_xml_to_root_value};
+use super::parser::{parse_tdml, ParserTestCase, TdmlSuite, UnparserTestCase};
 use crate::api::DfdlSpec;
 use crate::error::Result;
 use crate::vm::RuntimeConfig;
@@ -103,6 +103,71 @@ pub fn run_parser_test(suite: &TdmlSuite, test: &ParserTestCase) -> Result<TestR
         Err(msg) => Ok(TestResult {
             name: test.name.clone(),
             outcome: TestOutcome::Fail(msg),
+        }),
+    }
+}
+
+/// Run a single unparser test case from an already-parsed suite.
+pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<TestResult> {
+    let schema_xsd = match resolve_model_schema(suite, &test.model) {
+        Ok(xsd) => xsd,
+        Err(e) => {
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!("schema `{}`: {e}", test.model)),
+            });
+        }
+    };
+
+    let spec = match compile_tdml_schema(&schema_xsd, &test.root) {
+        Ok(s) => s,
+        Err(e) => {
+            if test.expected_errors.is_some() {
+                return Ok(TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Pass,
+                });
+            }
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!("compile error: {e}")),
+            });
+        }
+    };
+
+    let value = match infoset_xml_to_root_value(&test.infoset, &test.root, spec.program()) {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!("infoset parse error: {e}")),
+            });
+        }
+    };
+
+    if let Some(expected_errors) = test.expected_errors {
+        return match spec.encode(&value) {
+            Ok(_) => Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!(
+                    "expected encode error ({expected_errors} error(s))"
+                )),
+            }),
+            Err(_) => Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Pass,
+            }),
+        };
+    }
+
+    match spec.encode(&value) {
+        Ok(_) => Ok(TestResult {
+            name: test.name.clone(),
+            outcome: TestOutcome::Pass,
+        }),
+        Err(e) => Ok(TestResult {
+            name: test.name.clone(),
+            outcome: TestOutcome::Fail(alloc::format!("encode error: {e}")),
         }),
     }
 }

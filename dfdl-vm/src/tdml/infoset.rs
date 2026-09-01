@@ -1,3 +1,4 @@
+use crate::ir::{IrNode, IrProgram, ValueKind};
 use crate::value::DfdlValue;
 use crate::xml_util::{attrs_to_map, local_name_str, owned_local_name, XmlReader};
 use alloc::collections::BTreeMap;
@@ -19,6 +20,133 @@ pub fn compare_infoset(actual: &DfdlValue, expected_xml: &str) -> Result<(), Str
     let expected = parse_expected_infoset(expected_xml)?;
     let actual_nodes = value_to_infoset(actual);
     compare_nodes(&expected, &actual_nodes)
+}
+
+/// Build a root-wrapped [`DfdlValue`] from TDML infoset XML for unparser tests.
+pub fn infoset_xml_to_root_value(
+    infoset_xml: &str,
+    root: &str,
+    program: &IrProgram,
+) -> Result<DfdlValue, String> {
+    let nodes = parse_expected_infoset(infoset_xml)?;
+    let node = nodes
+        .iter()
+        .find(|n| local_name_str(&n.name) == root)
+        .ok_or_else(|| alloc::format!("infoset missing root element `{root}`"))?;
+    let root_node = program.node(program.root).map_err(|e| e.to_string())?;
+    let IrNode::Element { kind, .. } = root_node else {
+        return Err("compiled root is not an element".into());
+    };
+    let inner = infoset_node_to_value(node, *kind)?;
+    let mut map = BTreeMap::new();
+    map.insert(root.to_string(), inner);
+    Ok(DfdlValue::Sequence(map))
+}
+
+fn infoset_node_to_value(node: &InfosetNode, kind: ValueKind) -> Result<DfdlValue, String> {
+    if node.children.is_empty() {
+        return parse_scalar_for_kind(node.text.as_deref().unwrap_or(""), kind);
+    }
+    if kind != ValueKind::Complex {
+        return Err(alloc::format!(
+            "element `{}` has children but type is not complex",
+            node.name
+        ));
+    }
+    let mut map = BTreeMap::new();
+    for (name, children) in &node.children {
+        let key = local_name_str(name).to_string();
+        if children.len() == 1 {
+            map.insert(key, infoset_node_to_value(&children[0], ValueKind::String)?);
+        } else {
+            map.insert(
+                key.clone(),
+                DfdlValue::Array(
+                    children
+                        .iter()
+                        .map(|c| infoset_node_to_value(c, ValueKind::String))
+                        .collect::<Result<_, _>>()?,
+                ),
+            );
+        }
+    }
+    Ok(DfdlValue::Sequence(map))
+}
+
+fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, String> {
+    let trimmed = text.trim();
+    match kind {
+        ValueKind::String => Ok(DfdlValue::String(trimmed.to_string())),
+        ValueKind::Boolean => trimmed
+            .parse::<bool>()
+            .or_else(|_| match trimmed {
+                "TRUE" | "true" | "1" => Ok(true),
+                "FALSE" | "false" | "0" => Ok(false),
+                _ => Err(()),
+            })
+            .map(DfdlValue::Boolean)
+            .map_err(|_| alloc::format!("invalid boolean `{trimmed}`")),
+        ValueKind::Byte => trimmed
+            .parse::<i8>()
+            .map(DfdlValue::Byte)
+            .map_err(|e| e.to_string()),
+        ValueKind::Short => trimmed
+            .parse::<i16>()
+            .map(DfdlValue::Short)
+            .map_err(|e| e.to_string()),
+        ValueKind::Int => trimmed
+            .parse::<i32>()
+            .map(DfdlValue::Int)
+            .map_err(|e| e.to_string()),
+        ValueKind::Long => trimmed
+            .parse::<i64>()
+            .map(DfdlValue::Long)
+            .map_err(|e| e.to_string()),
+        ValueKind::UnsignedByte => trimmed
+            .parse::<u8>()
+            .map(DfdlValue::UnsignedByte)
+            .map_err(|e| e.to_string()),
+        ValueKind::UnsignedShort => trimmed
+            .parse::<u16>()
+            .map(DfdlValue::UnsignedShort)
+            .map_err(|e| e.to_string()),
+        ValueKind::UnsignedInt => trimmed
+            .parse::<u32>()
+            .map(DfdlValue::UnsignedInt)
+            .map_err(|e| e.to_string()),
+        ValueKind::Float => trimmed
+            .parse::<f32>()
+            .map(DfdlValue::Float)
+            .map_err(|e| e.to_string()),
+        ValueKind::Double => trimmed
+            .parse::<f64>()
+            .map(DfdlValue::Double)
+            .map_err(|e| e.to_string()),
+        ValueKind::Decimal => Ok(DfdlValue::Decimal(trimmed.to_string())),
+        ValueKind::DateTime => Ok(DfdlValue::DateTime(trimmed.to_string())),
+        ValueKind::HexBinary => decode_hex(trimmed).map(DfdlValue::HexBinary),
+        ValueKind::Complex => {
+            if trimmed.is_empty() {
+                Ok(DfdlValue::Sequence(BTreeMap::new()))
+            } else {
+                Err("complex element requires child elements in infoset".into())
+            }
+        }
+    }
+}
+
+fn decode_hex(text: &str) -> Result<Vec<u8>, String> {
+    let hex = text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>();
+    if hex.len() % 2 != 0 {
+        return Err(alloc::format!("invalid hex `{text}`"));
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| e.to_string()))
+        .collect()
 }
 
 /// Infer the document root element local name from expected TDML infoset XML.

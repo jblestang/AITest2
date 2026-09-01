@@ -2,6 +2,6 @@ mod infoset;
 mod parser;
 mod runner;
 
-pub use infoset::{compare_infoset, infer_root_element_name, InfosetNode};
-pub use parser::{parse_tdml, ParserTestCase, TdmlDocument, TdmlSchema, TdmlSuite};
-pub use runner::{run_parser_test, run_suite, TestOutcome, TestResult};
+pub use infoset::{compare_infoset, infer_root_element_name, infoset_xml_to_root_value, InfosetNode};
+pub use parser::{parse_tdml, ParserTestCase, TdmlDocument, TdmlSchema, TdmlSuite, UnparserTestCase};
+pub use runner::{run_parser_test, run_unparser_test, run_suite, TestOutcome, TestResult};

@@ -1112,6 +1112,12 @@ fn read_prefix_integer_value(
             prefix.props.byte_order == ByteOrder::LittleEndian,
         )),
     }?;
+    validate_prefix_facets(value, prefix)?;
+    Ok(value)
+}
+
+fn validate_prefix_facets(value: u64, prefix: &IrPrefixLength) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
     if let Some(min) = prefix.min_inclusive {
         if (value as i64) < min {
             return Err(VmError::InvalidValue {
@@ -1126,7 +1132,7 @@ fn read_prefix_integer_value(
             });
         }
     }
-    Ok(value)
+    Ok(())
 }
 
 fn read_prefix_field_payload(
@@ -1622,6 +1628,7 @@ fn write_prefix_field(
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::schema::Representation;
+    validate_prefix_facets(value, prefix)?;
     match prefix.props.representation {
         Representation::Text => {
             let text = alloc::format!("{value}");
