@@ -125,6 +125,7 @@ pub struct IrProps {
     pub nil_kind: Option<NilKind>,
     pub nil_value: Option<StringId>,
     pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
+    pub ignore_case: bool,
 }
 
 impl Default for IrProps {
@@ -179,6 +180,7 @@ impl Default for IrProps {
             nil_kind: None,
             nil_value: None,
             separator_suppression_policy: None,
+            ignore_case: false,
         }
     }
 }

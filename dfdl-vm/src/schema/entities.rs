@@ -59,10 +59,42 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
     None
 }
 
+/// Normalize a DFDL delimiter property value (trim ignored trailing space, expand entities).
+pub fn normalize_delimiter_pattern(raw: &str) -> String {
+    expand_entities_str(raw.trim_end())
+}
+
+fn ascii_eq_ic(a: u8, b: u8, ignore_case: bool) -> bool {
+    if a == b {
+        return true;
+    }
+    if !ignore_case {
+        return false;
+    }
+    a.to_ascii_lowercase() == b.to_ascii_lowercase()
+}
+
+fn bytes_startswith_ic(input: &[u8], prefix: &[u8], ignore_case: bool) -> bool {
+    if input.len() < prefix.len() {
+        return false;
+    }
+    if !ignore_case {
+        return input.starts_with(prefix);
+    }
+    input[..prefix.len()]
+        .iter()
+        .zip(prefix.iter())
+        .all(|(a, b)| ascii_eq_ic(*a, *b, true))
+}
+
 /// Match input against a DFDL delimiter/initiator/terminator pattern.
 /// Supports literal bytes (after entity expansion) plus simple regex suffixes: `+`, `*`, `?`.
 /// Compound patterns like `%NL;%WSP*;` are matched segment-by-segment.
 pub fn match_pattern(input: &[u8], pattern: &str) -> Option<usize> {
+    match_pattern_opts(input, pattern, false)
+}
+
+pub fn match_pattern_opts(input: &[u8], pattern: &str, ignore_case: bool) -> Option<usize> {
     if pattern.is_empty() {
         return Some(0);
     }
@@ -70,11 +102,14 @@ pub fn match_pattern(input: &[u8], pattern: &str) -> Option<usize> {
     // Single-byte literals (e.g. CSV `*` separator) — never quantifiers.
     if pattern.len() == 1 {
         let b = pattern.as_bytes()[0];
-        return if input.first() == Some(&b) { Some(1) } else { None };
+        return input
+            .first()
+            .filter(|&&x| ascii_eq_ic(x, b, ignore_case))
+            .map(|_| 1);
     }
 
     // Regex-style character class: [abc]+ or [a-zA-Z]+
-    if pattern.starts_with('[') {
+    if pattern.starts_with('[') && pattern.contains(']') {
         return match_char_class(input, pattern);
     }
 
@@ -111,7 +146,7 @@ pub fn match_pattern(input: &[u8], pattern: &str) -> Option<usize> {
             if base == b"\n" {
                 return match_one_newline(input);
             }
-            if input.starts_with(base) {
+            if bytes_startswith_ic(input, base, ignore_case) {
                 Some(base.len())
             } else {
                 None
@@ -119,20 +154,24 @@ pub fn match_pattern(input: &[u8], pattern: &str) -> Option<usize> {
         }
         Some(b'+') => {
             let mut pos = 0;
-            while input.len() >= pos + base.len() && input[pos..].starts_with(base) {
+            while input.len() >= pos + base.len()
+                && bytes_startswith_ic(&input[pos..], base, ignore_case)
+            {
                 pos += base.len();
             }
             if pos > 0 { Some(pos) } else { None }
         }
         Some(b'*') => {
             let mut pos = 0;
-            while input.len() >= pos + base.len() && input[pos..].starts_with(base) {
+            while input.len() >= pos + base.len()
+                && bytes_startswith_ic(&input[pos..], base, ignore_case)
+            {
                 pos += base.len();
             }
             Some(pos)
         }
         Some(b'?') => {
-            if input.starts_with(base) {
+            if bytes_startswith_ic(input, base, ignore_case) {
                 Some(base.len())
             } else {
                 Some(0)
@@ -144,24 +183,73 @@ pub fn match_pattern(input: &[u8], pattern: &str) -> Option<usize> {
 
 /// Match a compound DFDL delimiter (e.g. `%NL;%WSP*;`, or `%NL;, ,` alternates).
 pub fn match_delimiter(input: &[u8], pattern: &str) -> Option<usize> {
+    match_delimiter_opts(input, pattern, false)
+}
+
+pub fn match_delimiter_opts(input: &[u8], pattern: &str, ignore_case: bool) -> Option<usize> {
     if pattern.is_empty() {
         return Some(0);
     }
     if pattern.len() == 1 {
-        return match_pattern(input, pattern);
+        return match_pattern_opts(input, pattern, ignore_case);
     }
     if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
         return match_nl_comma_space_separator(input);
     }
-    if delimiter_has_top_level_comma(pattern) {
-        for alt in split_delimiter_alternatives(pattern) {
-            if let Some(n) = match_delimiter_compound(input, &alt) {
+    let mut alts = delimiter_alternatives(pattern);
+    if alts.len() > 1 {
+        alts.sort_by_key(|b| core::cmp::Reverse(b.len()));
+        for alt in &alts {
+            if let Some(n) = match_delimiter_compound(input, alt, ignore_case) {
                 return Some(n);
             }
         }
         return None;
     }
-    match_delimiter_compound(input, pattern)
+    match_delimiter_compound(input, pattern, ignore_case)
+}
+
+/// All delimiter/initiator/terminator alternatives for a property value.
+pub fn delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::String> {
+    if delimiter_has_top_level_comma(pattern) {
+        return split_delimiter_alternatives_comma(pattern);
+    }
+    if pattern.contains("||") {
+        let mut out = alloc::vec::Vec::new();
+        for part in pattern.split("||") {
+            out.extend(split_whitespace_delimiter_alternatives(part.trim()));
+        }
+        return out;
+    }
+    if should_split_whitespace_alternatives(pattern) {
+        return split_whitespace_delimiter_alternatives(pattern);
+    }
+    alloc::vec![unescape_dfdl_delimiter_alt(pattern)]
+}
+
+fn unescape_dfdl_delimiter_alt(raw: &str) -> alloc::string::String {
+    raw.trim().to_string()
+}
+
+fn has_regex_char_class(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            if pattern[i..].find(']').is_some() {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn should_split_whitespace_alternatives(pattern: &str) -> bool {
+    pattern.contains(' ')
+        && !pattern.contains('%')
+        && !has_regex_char_class(pattern)
+        && !pattern.contains('(')
 }
 
 fn delimiter_has_top_level_comma(pattern: &str) -> bool {
@@ -186,16 +274,16 @@ fn delimiter_has_top_level_comma(pattern: &str) -> bool {
     false
 }
 
-fn match_delimiter_compound(input: &[u8], pattern: &str) -> Option<usize> {
+fn match_delimiter_compound(input: &[u8], pattern: &str, ignore_case: bool) -> Option<usize> {
     if pattern.is_empty() {
         return Some(0);
     }
     if pattern.len() == 1 {
-        return match_pattern(input, pattern);
+        return match_pattern_opts(input, pattern, ignore_case);
     }
     let mut pos = 0;
     for segment in split_delimiter_segments(pattern) {
-        let matched = match_pattern(&input[pos..], segment)?;
+        let matched = match_pattern_opts(&input[pos..], segment, ignore_case)?;
         pos += matched;
     }
     Some(pos)
@@ -204,7 +292,7 @@ fn match_delimiter_compound(input: &[u8], pattern: &str) -> Option<usize> {
 /// Split a separator/initiator/terminator into comma-separated alternatives.
 /// Commas inside `%...;` entities and `[...]` classes are not separators.
 /// Each comma in the list also denotes a literal `,` alternative (DFDL-12).
-fn split_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::String> {
+fn split_delimiter_alternatives_comma(pattern: &str) -> alloc::vec::Vec<alloc::string::String> {
     let mut alts = alloc::vec::Vec::new();
     let mut start = 0usize;
     let bytes = pattern.as_bytes();
@@ -223,7 +311,7 @@ fn split_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string:
         } else if bytes[i] == b',' {
             let part = pattern[start..i].trim();
             if !part.is_empty() {
-                alts.push(part.to_string());
+                alts.push(unescape_dfdl_delimiter_alt(part));
             }
             alts.push(",".to_string());
             start = i + 1;
@@ -232,7 +320,7 @@ fn split_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string:
     }
     let tail = pattern[start..].trim();
     if !tail.is_empty() {
-        alts.push(tail.to_string());
+        alts.push(unescape_dfdl_delimiter_alt(tail));
     }
     if alts.is_empty() {
         alts.push(pattern.to_string());
@@ -240,14 +328,35 @@ fn split_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string:
     alts
 }
 
+fn split_whitespace_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::String> {
+    pattern
+        .split_whitespace()
+        .filter(|s| !s.is_empty())
+        .map(unescape_dfdl_delimiter_alt)
+        .collect()
+}
+
 /// Minimal bytes to emit for a delimiter on encode (one WSP for `+`, none for `*`/`?`).
 pub fn encode_delimiter(pattern: &str) -> Vec<u8> {
     if pattern.is_empty() {
         return Vec::new();
     }
+    let alts = delimiter_alternatives(pattern);
+    if alts.len() > 1 {
+        if alts.iter().any(|alt| alt == ",") {
+            return vec![b','];
+        }
+        for alt in &alts {
+            let bytes = encode_delimiter(alt);
+            if !bytes.is_empty() {
+                return bytes;
+            }
+        }
+        return encode_delimiter(&alts[0]);
+    }
     let pat = pattern;
     if delimiter_has_top_level_comma(pat) {
-        let alts = split_delimiter_alternatives(pat);
+        let alts = split_delimiter_alternatives_comma(pat);
         if alts.iter().any(|alt| alt == ",") {
             return vec![b','];
         }
@@ -1067,6 +1176,20 @@ mod tests {
         let doc = b"cat,dog\r\n,house.";
         let pat = "(?s)cat(\r\n)?,dog(\r\n)?,house.";
         assert_eq!(match_length_pattern(doc, pat), Some(doc.len()));
+    }
+
+    #[test]
+    fn match_or_and_whitespace_delimiter_alternatives() {
+        assert_eq!(match_delimiter(b"]2", "} ] )"), Some(1));
+        assert_eq!(match_delimiter(b")3", "} ] )"), Some(1));
+        assert_eq!(match_delimiter(b":-5", ":: || : $"), Some(1));
+        assert_eq!(match_delimiter(b"$", ":: || : $"), Some(1));
+        assert_eq!(match_delimiter(b"::13", ":: || : $"), Some(2));
+        let alts = super::delimiter_alternatives(":: || : $");
+        assert_eq!(alts, vec!["::", ":", "$"]);
+        let alts2 = super::delimiter_alternatives("{{ {{ [");
+        assert_eq!(alts2, vec!["{{", "{{", "["]);
+        assert_eq!(match_delimiter(b"{{9", "{{ {{ ["), Some(2));
     }
 
     #[test]

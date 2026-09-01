@@ -897,6 +897,9 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.separator_suppression_policy {
         base.separator_suppression_policy = Some(v);
     }
+    if let Some(v) = props.ignore_case {
+        base.ignore_case = v;
+    }
     if let Some(v) = props.text_trim_kind {
         base.text_trim_kind = v;
     }
@@ -1071,6 +1074,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.nil_kind = overlay.nil_kind;
     out.nil_value = overlay.nil_value;
     out.separator_suppression_policy = overlay.separator_suppression_policy;
+    out.ignore_case = overlay.ignore_case;
     out.text_trim_kind = overlay.text_trim_kind;
     out.text_number_pad_character = overlay.text_number_pad_character;
     out.text_string_pad_character = overlay.text_string_pad_character;

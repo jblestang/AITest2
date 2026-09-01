@@ -1009,6 +1009,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.separator_suppression_policy.is_some() {
         base.separator_suppression_policy = overlay.separator_suppression_policy;
     }
+    if overlay.ignore_case.is_some() {
+        base.ignore_case = overlay.ignore_case;
+    }
     if overlay.text_trim_kind.is_some() {
         base.text_trim_kind = overlay.text_trim_kind;
     }
@@ -1297,6 +1300,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "nilKind"
             | "nilValue"
             | "separatorSuppressionPolicy"
+            | "ignoreCase"
             | "textTrimKind"
             | "truncateSpecifiedLengthString"
             | "textNumberPadCharacter"
@@ -1452,11 +1456,24 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.separator_suppression_policy = Some(match value.as_str() {
                     "anyEmpty" => SeparatorSuppressionPolicy::AnyEmpty,
                     "trailingEmpty" => SeparatorSuppressionPolicy::TrailingEmpty,
+                    "never" => SeparatorSuppressionPolicy::Never,
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!(
                                 "unknown separatorSuppressionPolicy `{other}`"
                             ),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "ignoreCase" => {
+                props.ignore_case = Some(match value.as_str() {
+                    "yes" => true,
+                    "no" => false,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown ignoreCase `{other}`"),
                         }
                         .into())
                     }
@@ -1665,7 +1682,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
 }
 
 fn parse_delimiter_literal(raw: &str) -> Result<String> {
-    Ok(crate::schema::expand_entities_str(raw))
+    Ok(crate::schema::normalize_delimiter_pattern(raw))
 }
 
 fn is_dfdl_local(tag: &str) -> bool {

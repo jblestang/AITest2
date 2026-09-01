@@ -7,7 +7,7 @@ use super::runtime::{
 use crate::length_validate::validate_data_length_vm;
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
-use crate::schema::{match_delimiter, match_length_pattern, InputValueCalc, LengthKind, LengthUnits, Representation, SeparatorPosition};
+use crate::schema::{match_length_pattern, InputValueCalc, LengthKind, LengthUnits, Representation, SeparatorPosition};
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -140,12 +140,18 @@ impl<'a> Decoder<'a> {
                     },
                 }))
             }
-            IrNode::Choice { branches, .. } => {
+            IrNode::Choice { branches, props } => {
                 for branch in branches {
                     let saved = cursor.clone();
                     if let Some(init_id) = branch.initiator {
                         let pat = self.ctx.strings().get(init_id)?;
-                        if match_delimiter(&cursor.data[cursor.pos..], pat).is_none() {
+                        if crate::schema::match_delimiter_opts(
+                            &cursor.data[cursor.pos..],
+                            pat,
+                            props.ignore_case,
+                        )
+                        .is_none()
+                        {
                             continue;
                         }
                     }
@@ -511,9 +517,15 @@ impl<'a> Decoder<'a> {
                         if let Some(term_id) = props.terminator {
                             let term = self.ctx.strings().get(term_id)?;
                             if !term.is_empty() {
-                                let bytes = read_until_separator(cursor, term, false)?;
-                                if match_delimiter(&cursor.data[cursor.pos..], term).is_some() {
-                                    let _ = cursor.consume_delimiter(term);
+                                let bytes = read_until_separator(cursor, term, false, props.ignore_case)?;
+                                if crate::schema::match_delimiter_opts(
+                                    &cursor.data[cursor.pos..],
+                                    term,
+                                    props.ignore_case,
+                                )
+                                .is_some()
+                                {
+                                    let _ = cursor.consume_delimiter(term, props.ignore_case);
                                 }
                                 let mut sub = Cursor::new(&bytes);
                                 let scope = bytes.len();
@@ -538,9 +550,16 @@ impl<'a> Decoder<'a> {
                                 let sep = self.ctx.strings().get(sep_id)?;
                                 if self.inner_sequence_separator(*child_id)?.as_deref() != Some(sep)
                                 {
-                                    let bytes = read_until_separator(cursor, sep, false)?;
-                                    if match_delimiter(&cursor.data[cursor.pos..], sep).is_some() {
-                                        let _ = cursor.consume_delimiter(sep);
+                                    let bytes =
+                                        read_until_separator(cursor, sep, false, parent.ignore_case)?;
+                                    if crate::schema::match_delimiter_opts(
+                                        &cursor.data[cursor.pos..],
+                                        sep,
+                                        parent.ignore_case,
+                                    )
+                                    .is_some()
+                                    {
+                                        let _ = cursor.consume_delimiter(sep, parent.ignore_case);
                                     }
                                     let mut sub = Cursor::new(&bytes);
                                     let scope = bytes.len();
@@ -651,7 +670,13 @@ impl<'a> Decoder<'a> {
             return Ok(false);
         };
         let parent_sep = self.ctx.strings().get(sep_id)?;
-        if match_delimiter(&cursor.data[cursor.pos..], parent_sep).is_none() {
+        if crate::schema::match_delimiter_opts(
+            &cursor.data[cursor.pos..],
+            parent_sep,
+            parent.ignore_case,
+        )
+        .is_none()
+        {
             return Ok(false);
         }
         would_read_empty_delimited_field(cursor, props, self.ctx.strings(), stop_sequences)
@@ -670,8 +695,14 @@ impl<'a> Decoder<'a> {
             return Ok(());
         };
         let pat = self.ctx.strings().get(id)?;
-        if match_delimiter(&cursor.data[cursor.pos..], pat).is_some() {
-            if !cursor.consume_delimiter(pat) {
+        if crate::schema::match_delimiter_opts(
+            &cursor.data[cursor.pos..],
+            pat,
+            props.ignore_case,
+        )
+        .is_some()
+        {
+            if !cursor.consume_delimiter(pat, props.ignore_case) {
                 return Err(VmError::InvalidValue {
                     message: "separator mismatch".into(),
                 }
@@ -694,7 +725,7 @@ impl<'a> Decoder<'a> {
     fn consume_initiator(&self, props: &IrProps, cursor: &mut Cursor<'_>) -> Result<()> {
         if let Some(id) = props.initiator {
             let pat = self.ctx.strings().get(id)?;
-            if !pat.is_empty() && !cursor.consume_delimiter(pat) {
+            if !pat.is_empty() && !cursor.consume_delimiter(pat, props.ignore_case) {
                 return Err(VmError::InvalidValue {
                     message: "initiator mismatch".into(),
                 }
@@ -710,7 +741,7 @@ impl<'a> Decoder<'a> {
             if pat.is_empty() {
                 return Ok(());
             }
-            if !cursor.consume_delimiter(pat) {
+            if !cursor.consume_delimiter(pat, props.ignore_case) {
                 if cursor.is_empty() {
                     return Ok(());
                 }
@@ -751,8 +782,14 @@ impl<'a> Decoder<'a> {
                     return Ok(());
                 }
             }
-            if match_delimiter(&cursor.data[cursor.pos..], pat).is_some() {
-                if !cursor.consume_delimiter(pat) {
+            if crate::schema::match_delimiter_opts(
+                &cursor.data[cursor.pos..],
+                pat,
+                props.ignore_case,
+            )
+            .is_some()
+            {
+                if !cursor.consume_delimiter(pat, props.ignore_case) {
                     return Err(VmError::InvalidValue {
                         message: "separator mismatch".into(),
                     }

@@ -9,7 +9,7 @@ use crate::length_validate::{
 };
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
-    encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, BitOrder, ByteOrder,
+    encode_delimiter, match_length_pattern, BinaryNumberRep, BitOrder, ByteOrder,
     EncodingErrorPolicy, LengthKind, LengthUnits, NilKind, Representation, SeparatorPosition,
     SeparatorSuppressionPolicy, TextNumberJustification, TextTrimKind,
 };
@@ -230,11 +230,11 @@ impl<'a> Cursor<'a> {
         Ok(bit as u64)
     }
 
-    pub fn consume_delimiter(&mut self, pattern: &str) -> bool {
+    pub fn consume_delimiter(&mut self, pattern: &str, ignore_case: bool) -> bool {
         if pattern.is_empty() {
             return false;
         }
-        match match_delimiter(&self.data[self.pos..], pattern) {
+        match crate::schema::match_delimiter_opts(&self.data[self.pos..], pattern, ignore_case) {
             Some(n) => {
                 if n > 0 {
                     self.advance(n);
@@ -2033,7 +2033,11 @@ pub(crate) fn would_read_empty_delimited_field(
 ) -> Result<bool, crate::error::VmError> {
     let patterns = enclosing_delimiter_patterns(props, strings, stop_sequences)?;
     for pat in &patterns {
-        if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], pat) {
+        if let Some(n) = crate::schema::match_delimiter_opts(
+            &cursor.data[cursor.pos..],
+            pat,
+            props.ignore_case,
+        ) {
             if n > 0 {
                 return Ok(true);
             }
@@ -2061,16 +2065,29 @@ fn read_until_delimiters(
         cursor.pos = cursor.data.len();
         return Ok(rest);
     }
-    read_until_any_delimiter(cursor, &patterns, require_delimiter, &patterns)
+    read_until_any_delimiter(
+        cursor,
+        &patterns,
+        require_delimiter,
+        &patterns,
+        props.ignore_case,
+    )
 }
 
 pub(crate) fn read_until_separator(
     cursor: &mut Cursor<'_>,
     separator: &str,
     require_delimiter: bool,
+    ignore_case: bool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     let patterns = [separator.to_string()];
-    read_until_any_delimiter(cursor, &patterns, require_delimiter, &patterns)
+    read_until_any_delimiter(
+        cursor,
+        &patterns,
+        require_delimiter,
+        &patterns,
+        ignore_case,
+    )
 }
 
 pub(crate) fn insufficient_data_bits_error(needed_bits: usize, found_bits: usize) -> crate::error::VmError {
@@ -2182,12 +2199,15 @@ fn read_until_any_delimiter(
     delimiters: &[alloc::string::String],
     require_delimiter: bool,
     patterns_for_error: &[alloc::string::String],
+    ignore_case: bool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let start = cursor.pos;
     while cursor.remaining() > 0 {
         for delim in delimiters {
-            if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], delim) {
+            if let Some(n) =
+                crate::schema::match_delimiter_opts(&cursor.data[cursor.pos..], delim, ignore_case)
+            {
                 if n > 0 || cursor.pos == start {
                     return Ok(cursor.data[start..cursor.pos].to_vec());
                 }
@@ -2219,7 +2239,11 @@ pub(crate) fn consume_enclosing_delimiter(
         return Ok(());
     }
     for pat in non_empty_delimiter_patterns(props, strings)? {
-        if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], &pat) {
+        if let Some(n) = crate::schema::match_delimiter_opts(
+            &cursor.data[cursor.pos..],
+            &pat,
+            props.ignore_case,
+        ) {
             if n > 0 {
                 cursor.advance(n);
                 return Ok(());
@@ -2233,7 +2257,11 @@ pub(crate) fn consume_enclosing_delimiter(
         for id in delimiter_pattern_ids(seq) {
             let pat = strings.get(id)?;
             if !pat.is_empty() {
-                if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], pat) {
+                if let Some(n) = crate::schema::match_delimiter_opts(
+                    &cursor.data[cursor.pos..],
+                    pat,
+                    seq.ignore_case,
+                ) {
                     let own = non_empty_delimiter_patterns(props, strings)?;
                     if own.iter().any(|p| p == pat) && n > 0 {
                         cursor.advance(n);
@@ -2829,12 +2857,18 @@ fn defer_delimited_enclosing_consume(
     }
     for id in delimiter_pattern_ids(props) {
         let pat = strings.get(id)?;
-        if let Some(n) = match_delimiter(&cursor.data[cursor.pos..], pat) {
+        if let Some(n) = crate::schema::match_delimiter_opts(
+            &cursor.data[cursor.pos..],
+            pat,
+            props.ignore_case,
+        ) {
             if n == 0 {
                 continue;
             }
             let after_first = cursor.pos.saturating_add(n);
-            if match_delimiter(&cursor.data[after_first..], pat).is_some() {
+            if crate::schema::match_delimiter_opts(&cursor.data[after_first..], pat, props.ignore_case)
+                .is_some()
+            {
                 let after_second = after_first.saturating_add(n);
                 return Ok(cursor.data.get(after_second).is_none());
             }
@@ -2858,7 +2892,7 @@ pub(crate) fn read_simple(
 
     if let Some(id) = props.initiator {
         let pat = strings.get(id)?;
-        if !pat.is_empty() && !cursor.consume_delimiter(pat) {
+        if !pat.is_empty() && !cursor.consume_delimiter(pat, props.ignore_case) {
             return Err(VmError::InvalidValue {
                 message: "initiator mismatch".into(),
             });
@@ -2902,7 +2936,7 @@ pub(crate) fn read_simple(
         }
     } else if let Some(id) = props.terminator {
         let pat = strings.get(id)?;
-        if !pat.is_empty() && !cursor.consume_delimiter(pat) {
+        if !pat.is_empty() && !cursor.consume_delimiter(pat, props.ignore_case) {
             return Err(VmError::InvalidValue {
                 message: if cursor.is_empty() {
                     alloc::format!("terminator `{}` not found", format_delimiter_for_error(pat))

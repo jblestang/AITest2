@@ -85,6 +85,8 @@ pub struct DfdlProps {
     /// Expanded nil literal (e.g. `%ES;` → empty string, or `nil`).
     pub nil_value: Option<String>,
     pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
+    /// When true, initiator/terminator/separator matching ignores ASCII case.
+    pub ignore_case: Option<bool>,
     /// True when a DFDL statement annotation (e.g. `dfdl:assert`) appears on this construct.
     pub has_statement_annotation: bool,
 }
@@ -154,6 +156,7 @@ pub enum NilKind {
 pub enum SeparatorSuppressionPolicy {
     AnyEmpty,
     TrailingEmpty,
+    Never,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
