@@ -1042,6 +1042,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.separator.is_some() {
         base.separator = overlay.separator;
     }
+    if overlay.output_new_line.is_some() {
+        base.output_new_line = overlay.output_new_line;
+    }
     if overlay.occurs_min.is_some() {
         base.occurs_min = overlay.occurs_min;
     }
@@ -1311,6 +1314,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "initiator"
             | "terminator"
             | "separator"
+            | "outputNewLine"
             | "separatorPosition"
             | "textBooleanTrueRep"
             | "textBooleanFalseRep"
@@ -1578,6 +1582,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             "initiator" => props.initiator = Some(parse_delimiter_literal(value)?),
             "terminator" => props.terminator = Some(parse_delimiter_literal(value)?),
             "separator" => props.separator = Some(parse_delimiter_literal(value)?),
+            "outputNewLine" => props.output_new_line = Some(parse_delimiter_literal(value)?),
             "separatorPosition" => {
                 props.separator_position = Some(match value.as_str() {
                     "infix" => SeparatorPosition::Infix,

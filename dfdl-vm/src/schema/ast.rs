@@ -50,6 +50,7 @@ pub struct DfdlProps {
     pub initiator: Option<String>,
     pub terminator: Option<String>,
     pub separator: Option<String>,
+    pub output_new_line: Option<String>,
     pub occurs_min: Option<u64>,
     pub occurs_max: Option<u64>,
     /// True when `maxOccurs` was present in XSD (distinguishes unset vs unbounded).

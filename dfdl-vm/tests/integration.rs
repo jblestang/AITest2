@@ -20,7 +20,7 @@ fn binary_record_encode_from_value() {
     fields.insert("id".into(), DfdlValue::UnsignedInt(42));
     fields.insert("flags".into(), DfdlValue::UnsignedByte(3));
     let encoded = spec
-        .encode(&DfdlValue::Sequence(fields))
+        .encode(&DfdlValue::sequence(fields))
         .expect("encode");
     assert_eq!(encoded, vec![0x00, 0x00, 0x00, 0x2A, 0x03]);
 }

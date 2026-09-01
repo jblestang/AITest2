@@ -37,7 +37,7 @@ pub fn infoset_xml_to_root_value(
     let inner = infoset_node_to_ir_value(program, program.root, node)?;
     let mut map = BTreeMap::new();
     map.insert(root.to_string(), inner);
-    Ok(DfdlValue::Sequence(map))
+    Ok(DfdlValue::sequence(map))
 }
 
 fn infoset_node_to_ir_value(
@@ -54,7 +54,7 @@ fn infoset_node_to_ir_value(
                 return parse_scalar_for_kind(node.text.as_deref().unwrap_or(""), *kind);
             }
             let Some(child_id) = child else {
-                return Ok(DfdlValue::Sequence(BTreeMap::new()));
+                return Ok(DfdlValue::sequence(BTreeMap::new()));
             };
             infoset_particle_to_value(program, *child_id, node)
         }
@@ -132,13 +132,13 @@ fn infoset_sequence_children_to_value(
             }
             IrNode::Sequence { .. } | IrNode::Choice { .. } => {
                 let nested = infoset_particle_to_value(program, child_id, node)?;
-                if let DfdlValue::Sequence(nested_map) = nested {
-                    map.extend(nested_map);
+                if let DfdlValue::Sequence(nested) = nested {
+                    map.extend(nested.fields);
                 }
             }
         }
     }
-    Ok(DfdlValue::Sequence(map))
+    Ok(DfdlValue::sequence(map))
 }
 
 fn find_infoset_children<'a>(node: &'a InfosetNode, local_name: &str) -> Vec<&'a InfosetNode> {
@@ -203,7 +203,7 @@ fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, Strin
         ValueKind::HexBinary => decode_hex(trimmed).map(DfdlValue::HexBinary),
         ValueKind::Complex => {
             if trimmed.is_empty() {
-                Ok(DfdlValue::Sequence(BTreeMap::new()))
+                Ok(DfdlValue::sequence(BTreeMap::new()))
             } else {
                 Err("complex element requires child elements in infoset".into())
             }
@@ -337,7 +337,8 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
 
 fn value_to_infoset(value: &DfdlValue) -> Vec<InfosetNode> {
     match value {
-        DfdlValue::Sequence(map) => map
+        DfdlValue::Sequence(seq) => seq
+            .fields
             .iter()
             .map(|(name, v)| value_to_node(name, v))
             .collect(),
@@ -347,11 +348,12 @@ fn value_to_infoset(value: &DfdlValue) -> Vec<InfosetNode> {
 
 fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
     match value {
-        DfdlValue::Sequence(map) => InfosetNode {
+        DfdlValue::Sequence(seq) => InfosetNode {
             name: name.to_string(),
             text: None,
             nil: false,
-            children: map
+            children: seq
+                .fields
                 .iter()
                 .map(|(k, v)| (k.clone(), field_values_to_infoset_nodes(k, v)))
                 .collect(),

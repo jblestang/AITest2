@@ -3,6 +3,30 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// Optional metadata captured during parse to guide faithful unparse.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SequenceMeta {
+    /// For each infix separator slot (before child index 1..n-1), whether a newline
+    /// prefix was consumed for `%NL;, ,`-style separator patterns.
+    pub infix_sep_newline_prefix: Vec<bool>,
+}
+
+/// Named fields in a DFDL sequence with optional parse metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SequenceValue {
+    pub fields: BTreeMap<String, DfdlValue>,
+    pub meta: SequenceMeta,
+}
+
+impl SequenceValue {
+    pub fn new(fields: BTreeMap<String, DfdlValue>) -> Self {
+        Self {
+            fields,
+            meta: SequenceMeta::default(),
+        }
+    }
+}
+
 /// Decoded logical data tree produced by the VM.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DfdlValue {
@@ -25,7 +49,7 @@ pub enum DfdlValue {
     HexBinary(Vec<u8>),
     /// Repeated occurrences of an element or group.
     Array(Vec<DfdlValue>),
-    Sequence(BTreeMap<String, DfdlValue>),
+    Sequence(SequenceValue),
     Choice {
         /// Name of the selected element in the choice group.
         discriminator: String,
@@ -86,13 +110,13 @@ impl DfdlValue {
                 }
                 value.field(name)
             }
-            DfdlValue::Sequence(map) => {
-                if let Some(v) = map.get(name) {
+            DfdlValue::Sequence(seq) => {
+                if let Some(v) = seq.fields.get(name) {
                     return Some(v);
                 }
                 // Transparently search through a single root-element wrapper.
-                if map.len() == 1 {
-                    if let Some(inner) = map.values().next() {
+                if seq.fields.len() == 1 {
+                    if let Some(inner) = seq.fields.values().next() {
                         return inner.field(name);
                     }
                 }
@@ -103,7 +127,28 @@ impl DfdlValue {
     }
 
     pub fn sequence(fields: BTreeMap<String, DfdlValue>) -> Self {
-        DfdlValue::Sequence(fields)
+        DfdlValue::Sequence(SequenceValue::new(fields))
+    }
+
+    pub fn sequence_fields(&self) -> Option<&BTreeMap<String, DfdlValue>> {
+        match self {
+            DfdlValue::Sequence(seq) => Some(&seq.fields),
+            _ => None,
+        }
+    }
+
+    pub fn sequence_value(&self) -> Option<&SequenceValue> {
+        match self {
+            DfdlValue::Sequence(seq) => Some(seq),
+            _ => None,
+        }
+    }
+
+    pub fn sequence_value_mut(&mut self) -> Option<&mut SequenceValue> {
+        match self {
+            DfdlValue::Sequence(seq) => Some(seq),
+            _ => None,
+        }
     }
 
     pub fn choice(name: impl Into<String>, value: DfdlValue) -> Self {

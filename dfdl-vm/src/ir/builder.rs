@@ -951,6 +951,11 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
             base.separator = Some(strings.intern(s.clone()));
         }
     }
+    if let Some(ref s) = props.output_new_line {
+        if !s.is_empty() {
+            base.output_new_line = Some(strings.intern(s.clone()));
+        }
+    }
     if props.occurs_min.is_some() {
         base.occurs_min = props.occurs_min.unwrap_or(1);
     }
@@ -1084,6 +1089,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.separator.is_some() {
         out.separator = overlay.separator;
+    }
+    if overlay.output_new_line.is_some() {
+        out.output_new_line = overlay.output_new_line;
     }
     if overlay.length_pattern.is_some() {
         out.length_pattern = overlay.length_pattern;

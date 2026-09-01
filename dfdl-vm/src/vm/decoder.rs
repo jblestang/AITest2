@@ -81,9 +81,16 @@ impl<'a> Decoder<'a> {
                 let child_stops = extended.as_slice();
                 let mut map = BTreeMap::new();
                 let mut seq_siblings = BTreeMap::new();
+                let mut infix_sep_newline_prefix = Vec::new();
                 for (idx, &child) in children.iter().enumerate() {
                     let child_has_following = self.following_sibling_consumes_input(children, idx);
-                    self.consume_separator(props, cursor, idx, children.len())?;
+                    self.consume_separator(
+                        props,
+                        cursor,
+                        idx,
+                        children.len(),
+                        &mut infix_sep_newline_prefix,
+                    )?;
                     let saved = cursor.clone();
                     let start = cursor.pos;
                     match self.decode_particle(
@@ -126,7 +133,12 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 self.consume_terminator(props, cursor)?;
-                Ok(DfdlValue::Sequence(map))
+                Ok(DfdlValue::Sequence(crate::value::SequenceValue {
+                    fields: map,
+                    meta: crate::value::SequenceMeta {
+                        infix_sep_newline_prefix,
+                    },
+                }))
             }
             IrNode::Choice { branches, .. } => {
                 for branch in branches {
@@ -720,12 +732,25 @@ impl<'a> Decoder<'a> {
         cursor: &mut Cursor<'_>,
         index: usize,
         total: usize,
+        infix_sep_newline_prefix: &mut Vec<bool>,
     ) -> Result<()> {
         if !should_write_separator(props.separator_position, index, total) {
             return Ok(());
         }
         if let Some(id) = props.separator {
             let pat = self.ctx.strings().get(id)?;
+            if crate::schema::is_nl_comma_space_pattern(pat)
+                && props.separator_position == SeparatorPosition::Infix
+                && index > 0
+            {
+                if let Some((n, had_nl)) =
+                    crate::schema::match_nl_comma_space_separator_with_flag(&cursor.data[cursor.pos..])
+                {
+                    cursor.advance(n);
+                    infix_sep_newline_prefix.push(had_nl);
+                    return Ok(());
+                }
+            }
             if match_delimiter(&cursor.data[cursor.pos..], pat).is_some() {
                 if !cursor.consume_delimiter(pat) {
                     return Err(VmError::InvalidValue {
@@ -796,8 +821,8 @@ fn insert_child(
             Ok(())
         }
         IrNode::Sequence { .. } => {
-            if let DfdlValue::Sequence(fields) = value {
-                for (k, v) in fields {
+            if let DfdlValue::Sequence(seq) = value {
+                for (k, v) in seq.fields {
                     map.insert(k, v);
                 }
                 Ok(())
@@ -850,23 +875,23 @@ fn append_value(existing: DfdlValue, value: DfdlValue) -> DfdlValue {
 
 fn wrap_root(name: &str, value: DfdlValue) -> DfdlValue {
     match value {
-        DfdlValue::Sequence(map) if map.contains_key(name) => DfdlValue::Sequence(map),
-        DfdlValue::Sequence(map) => {
+        DfdlValue::Sequence(seq) if seq.fields.contains_key(name) => DfdlValue::Sequence(seq),
+        DfdlValue::Sequence(seq) => {
             let mut wrapped = BTreeMap::new();
-            wrapped.insert(name.into(), DfdlValue::Sequence(map));
-            DfdlValue::Sequence(wrapped)
+            wrapped.insert(name.into(), DfdlValue::Sequence(seq));
+            DfdlValue::sequence(wrapped)
         }
         DfdlValue::Choice { discriminator, value } => {
             let mut inner = BTreeMap::new();
             inner.insert(discriminator, *value);
             let mut wrapped = BTreeMap::new();
-            wrapped.insert(name.into(), DfdlValue::Sequence(inner));
-            DfdlValue::Sequence(wrapped)
+            wrapped.insert(name.into(), DfdlValue::sequence(inner));
+            DfdlValue::sequence(wrapped)
         }
         other => {
             let mut map = BTreeMap::new();
             map.insert(name.into(), other);
-            DfdlValue::Sequence(map)
+            DfdlValue::sequence(map)
         }
     }
 }
@@ -874,21 +899,21 @@ fn wrap_root(name: &str, value: DfdlValue) -> DfdlValue {
 fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
     if kind == ValueKind::Complex {
         match inner {
-            DfdlValue::Sequence(map) => {
-                if !map.contains_key(name) {
-                    return DfdlValue::Sequence(map);
+            DfdlValue::Sequence(seq) => {
+                if !seq.fields.contains_key(name) {
+                    return DfdlValue::Sequence(seq);
                 }
-                DfdlValue::Sequence(map)
+                DfdlValue::Sequence(seq)
             }
             DfdlValue::Choice { discriminator, value } => {
                 let mut map = BTreeMap::new();
                 map.insert(discriminator, *value);
-                DfdlValue::Sequence(map)
+                DfdlValue::sequence(map)
             }
             other => {
                 let mut map = BTreeMap::new();
                 map.insert(name.into(), other);
-                DfdlValue::Sequence(map)
+                DfdlValue::sequence(map)
             }
         }
     } else {

@@ -2,7 +2,8 @@ use super::runtime::{write_alignment, write_byte_aligned, write_framed_payload, 
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
-    encode_delimiter, LengthKind, LengthUnits, OutputValueCalc, SeparatorPosition,
+    encode_delimiter, encode_sequence_separator, LengthKind, LengthUnits, OutputValueCalc,
+    SeparatorPosition,
 };
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
@@ -59,14 +60,24 @@ impl<'a> Encoder<'a> {
     ) -> Result<()> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
-                let map = value.as_sequence_fields()?;
+                let seq = value
+                    .sequence_value()
+                    .ok_or_else(|| VmError::TypeMismatch { expected: "sequence".into() })?;
+                let map = &seq.fields;
                 let effective = precompute_output_values(self, children, map)?;
                 self.write_initiator(props, out, bit_count)?;
                 for (idx, &child) in children.iter().enumerate() {
                     if child_skips_encode(self, child)? {
                         continue;
                     }
-                    self.write_separator(props, out, bit_count, idx, children.len())?;
+                    self.write_sequence_separator(
+                        props,
+                        out,
+                        bit_count,
+                        idx,
+                        children.len(),
+                        &seq.meta,
+                    )?;
                     self.encode_sequence_particle(child, &effective, props, out, bit_count)?;
                 }
                 self.write_terminator(props, out, bit_count)?;
@@ -86,7 +97,7 @@ impl<'a> Encoder<'a> {
                         .ok_or(VmError::InvalidChoice)?;
                     return self.encode_node(branch.node, value, out, bit_count);
                 }
-                if let DfdlValue::Sequence(map) = value {
+                if let Some(map) = value.sequence_fields() {
                     for branch in branches {
                         let key = self.ctx.strings().get(branch.name)?;
                         if let Some(branch_value) = map.get(key) {
@@ -279,7 +290,7 @@ impl<'a> Encoder<'a> {
             }
             IrNode::Sequence { .. } => self.encode_node(
                 node_id,
-                &DfdlValue::Sequence(map.clone()),
+                &DfdlValue::sequence(map.clone()),
                 out,
                 bit_count,
             ),
@@ -384,6 +395,40 @@ impl<'a> Encoder<'a> {
             }
         }
         Ok(())
+    }
+
+    fn write_sequence_separator(
+        &self,
+        props: &IrProps,
+        out: &mut Vec<u8>,
+        bit_count: &mut u8,
+        index: usize,
+        total: usize,
+        meta: &crate::value::SequenceMeta,
+    ) -> Result<()> {
+        if !should_emit_separator(props.separator_position, index, total, false) {
+            return Ok(());
+        }
+        let Some(id) = props.separator else {
+            return Ok(());
+        };
+        let pat = self.ctx.strings().get(id)?;
+        let newline_prefix = meta
+            .infix_sep_newline_prefix
+            .get(index.saturating_sub(1))
+            .copied()
+            .unwrap_or(false);
+        let output_new_line = props
+            .output_new_line
+            .map(|id| self.ctx.strings().get(id))
+            .transpose()?
+            .map(|s| s as &str);
+        write_byte_aligned(
+            out,
+            bit_count,
+            &encode_sequence_separator(pat, output_new_line, newline_prefix),
+        )
+        .map_err(Error::from)
     }
 
     fn write_separator(
@@ -607,9 +652,9 @@ fn needs_length_frame(props: &IrProps) -> bool {
 }
 
 fn unwrap_root_for_encode<'a>(value: &'a DfdlValue, root_element: &str) -> &'a DfdlValue {
-    if let DfdlValue::Sequence(map) = value {
-        if map.len() == 1 {
-            if let Some((name, inner)) = map.iter().next() {
+    if let Some(seq) = value.sequence_value() {
+        if seq.fields.len() == 1 {
+            if let Some((name, inner)) = seq.fields.iter().next() {
                 if name == root_element {
                     return inner;
                 }
@@ -638,13 +683,12 @@ trait ValueView {
 
 impl ValueView for DfdlValue {
     fn as_sequence_fields(&self) -> Result<&BTreeMap<String, DfdlValue>> {
-        match self {
-            DfdlValue::Sequence(map) => Ok(map),
-            _ => Err(VmError::TypeMismatch {
+        self.sequence_fields().ok_or_else(|| {
+            VmError::TypeMismatch {
                 expected: "sequence".into(),
             }
-            .into()),
-        }
+            .into()
+        })
     }
 }
 

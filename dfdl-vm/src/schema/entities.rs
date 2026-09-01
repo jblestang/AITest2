@@ -369,17 +369,55 @@ fn is_wsp(b: u8) -> bool {
 }
 
 fn match_nl_comma_space_separator(input: &[u8]) -> Option<usize> {
+    match_nl_comma_space_separator_with_flag(input).map(|(n, _)| n)
+}
+
+/// Match `%NL;, ,` / `\n, ,` and report whether a newline prefix was consumed.
+pub fn match_nl_comma_space_separator_with_flag(input: &[u8]) -> Option<(usize, bool)> {
     if let Some(nl) = match_one_newline(input) {
         let mut total = nl;
         if input.get(total) == Some(&b',') {
             total += 1;
         }
-        return Some(total);
+        return Some((total, true));
     }
     if input.first() == Some(&b',') || input.first() == Some(&b' ') {
-        return Some(1);
+        return Some((1, false));
     }
     None
+}
+
+pub fn is_nl_comma_space_pattern(pattern: &str) -> bool {
+    pattern.trim() == "%NL;, ," || pattern == "\n, ,"
+}
+
+/// Encode `%NL;, ,` separator using optional outputNewLine when newline prefix is required.
+pub fn encode_nl_comma_space_separator(
+    output_new_line: Option<&str>,
+    newline_prefix: bool,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    if newline_prefix {
+        if let Some(onl) = output_new_line {
+            out.extend(encode_delimiter(onl));
+        } else {
+            out.push(b'\n');
+        }
+    }
+    out.push(b',');
+    out
+}
+
+pub fn encode_sequence_separator(
+    pattern: &str,
+    output_new_line: Option<&str>,
+    newline_prefix: bool,
+) -> Vec<u8> {
+    if is_nl_comma_space_pattern(pattern) {
+        encode_nl_comma_space_separator(output_new_line, newline_prefix)
+    } else {
+        encode_delimiter(pattern)
+    }
 }
 
 fn match_nl_entity(input: &[u8], pattern: &str) -> Option<usize> {
@@ -1051,5 +1089,11 @@ mod tests {
     fn encode_delimiter_alternatives_prefers_comma() {
         assert_eq!(encode_delimiter("%NL;, ,"), vec![b',']);
         assert_eq!(encode_delimiter("\n, ,"), vec![b',']);
+    }
+
+    #[test]
+    fn encode_nl_comma_space_separator_uses_output_new_line() {
+        assert_eq!(encode_nl_comma_space_separator(Some("%CR;%LF;"), true), vec![13, 10, 44]);
+        assert_eq!(encode_nl_comma_space_separator(Some("%CR;%LF;"), false), vec![44]);
     }
 }
