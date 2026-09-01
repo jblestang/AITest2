@@ -1,4 +1,5 @@
 mod decoder;
+pub(crate) mod encoding;
 mod encoder;
 mod runtime;
 

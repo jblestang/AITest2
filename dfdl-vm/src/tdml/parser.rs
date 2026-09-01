@@ -1,5 +1,6 @@
 use crate::error::{ParseError, Result};
 use crate::schema::expand_entities;
+use crate::vm::encoding::encode_document_text;
 use crate::xml_util::{attrs_to_map, local_name_str, XmlReader};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
@@ -181,11 +182,16 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
         .get("replaceDFDLEntities")
         .map(|v| v == "true")
         .unwrap_or(false);
+    let encoding = attrs.get("encoding").map(String::as_str);
     let text = reader.read_text_until_end("documentPart")?;
     let data = match kind {
         DocumentKind::Text => {
             if replace_entities {
                 expand_entities(&text)
+            } else if let Some(enc) = encoding {
+                encode_document_text(&text, enc).map_err(|e| ParseError::InvalidXml {
+                    message: alloc::format!("documentPart encoding: {e}"),
+                })?
             } else {
                 text.into_bytes()
             }
@@ -282,6 +288,20 @@ mod tests {
         let suite = parse_tdml(tdml).expect("parse");
         let test = suite.tests.iter().find(|t| t.name == "bin").unwrap();
         assert_eq!(test.documents[0].data, alloc::vec![0, 0, 0, 5]);
+    }
+
+    #[test]
+    fn parse_utf16be_document_part() {
+        let tdml = r##"<tdml:testSuite suiteName="t" xmlns:tdml="http://www.ibm.com/xmlns/dfdl/testData">
+  <tdml:defineSchema name="s"><xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="A" type="xs:string"/></xs:schema></tdml:defineSchema>
+  <tdml:parserTestCase name="utf16" root="A" model="s">
+    <tdml:document><tdml:documentPart type="text" encoding="utf-16be">AB</tdml:documentPart></tdml:document>
+    <tdml:infoset><tdml:dfdlInfoset><A>AB</A></tdml:dfdlInfoset></tdml:infoset>
+  </tdml:parserTestCase>
+</tdml:testSuite>"##;
+        let suite = parse_tdml(tdml).expect("parse");
+        let test = suite.tests.iter().find(|t| t.name == "utf16").unwrap();
+        assert_eq!(test.documents[0].data, alloc::vec![0x00, b'A', 0x00, b'B']);
     }
 
     #[test]

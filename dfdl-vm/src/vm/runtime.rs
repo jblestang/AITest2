@@ -1,3 +1,6 @@
+use super::encoding::{
+    character_span_byte_length, count_characters, decode_text_bytes, read_character_bytes,
+};
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool};
 use crate::schema::{
     encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, ByteOrder, LengthKind,
@@ -82,6 +85,13 @@ impl<'a> Cursor<'a> {
     }
 }
 
+pub(crate) fn encoding_name<'a>(
+    props: &IrProps,
+    strings: &'a StringPool,
+) -> Result<&'a str, crate::error::VmError> {
+    strings.get(props.encoding)
+}
+
 pub(crate) struct VmContext<'a> {
     pub program: &'a IrProgram,
     pub config: RuntimeConfig,
@@ -138,7 +148,7 @@ pub(crate) fn read_binary_scalar(
                 message: "zero-length scalar".into(),
             });
         }
-        let bytes = read_length_span(cursor, len, LengthUnits::Bits)?;
+        let bytes = read_length_span(cursor, len, LengthUnits::Bits, "utf-8")?;
         return decode_binary_scalar(kind, &bytes, props, strings);
     }
 
@@ -579,13 +589,13 @@ pub(crate) fn read_text_scalar(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "fixed text missing length".into(),
             })? as usize;
-            read_length_span(cursor, len, props.length_units)?
+            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?)?
         }
         LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit text missing length".into(),
             })? as usize;
-            read_length_span(cursor, len, props.length_units)?
+            read_length_span(cursor, len, props.length_units, encoding_name(props, strings)?)?
         }
         LengthKind::Delimited => {
             read_until_delimiters(cursor, props, strings, require_delimiter, parent_terminator)?
@@ -617,10 +627,8 @@ pub(crate) fn read_text_scalar(
         }
     };
 
-    let text = core::str::from_utf8(&raw).map_err(|_| VmError::InvalidValue {
-        message: "invalid UTF-8".into(),
-    })?;
-    let trimmed = trim_text_value(text, kind, props.text_trim_kind, props, strings);
+    let text = decode_text_bytes(&raw, encoding_name(props, strings)?)?;
+    let trimmed = trim_text_value(&text, kind, props.text_trim_kind, props, strings);
 
     match kind {
         Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
@@ -886,13 +894,19 @@ pub(crate) fn read_length_span(
     cursor: &mut Cursor<'_>,
     len: usize,
     units: LengthUnits,
+    encoding: &str,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     match units {
         LengthUnits::Bytes => cursor
             .read_bytes(len)
             .ok_or(VmError::UnexpectedEof),
-        LengthUnits::Characters => read_character_bytes(cursor, len).ok_or(VmError::UnexpectedEof),
+        LengthUnits::Characters => {
+            let mut pos = cursor.pos;
+            let bytes = read_character_bytes(cursor.data, &mut pos, len, encoding)?;
+            cursor.pos = pos;
+            Ok(bytes)
+        }
         LengthUnits::Bits => {
             if cursor.bit_count != 0 {
                 return Err(VmError::UnsupportedOperation {
@@ -904,38 +918,6 @@ pub(crate) fn read_length_span(
                 .read_bytes(byte_len)
                 .ok_or(VmError::UnexpectedEof)
         }
-    }
-}
-
-fn read_character_bytes(cursor: &mut Cursor<'_>, n: usize) -> Option<Vec<u8>> {
-    let start = cursor.pos;
-    let mut count = 0usize;
-    while count < n && cursor.pos < cursor.data.len() {
-        let b = cursor.data[cursor.pos];
-        let width = utf8_char_width(b)?;
-        if cursor.pos + width > cursor.data.len() {
-            return None;
-        }
-        cursor.advance(width);
-        count += 1;
-    }
-    if count < n {
-        return None;
-    }
-    Some(cursor.data[start..cursor.pos].to_vec())
-}
-
-fn utf8_char_width(b: u8) -> Option<usize> {
-    if b < 0x80 {
-        Some(1)
-    } else if b & 0xE0 == 0xC0 {
-        Some(2)
-    } else if b & 0xF0 == 0xE0 {
-        Some(3)
-    } else if b & 0xF8 == 0xF0 {
-        Some(4)
-    } else {
-        None
     }
 }
 
@@ -1022,9 +1004,9 @@ pub(crate) fn prefixed_payload_byte_length(
             .ok_or(VmError::InvalidValue {
                 message: "prefixed bit span not byte-aligned".into(),
             }),
-        LengthUnits::Characters => Err(VmError::UnsupportedOperation {
-            op: "prefixed content length in characters".into(),
-        }),
+        LengthUnits::Characters => {
+            character_span_byte_length(span, encoding_name(props, strings)?)
+        }
     }
 }
 
@@ -1034,7 +1016,12 @@ pub(crate) fn read_prefixed_payload(
     strings: &StringPool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     let span = read_prefixed_span(cursor, props, strings)?;
-    read_length_span(cursor, span, props.length_units)
+    read_length_span(
+        cursor,
+        span,
+        props.length_units,
+        encoding_name(props, strings)?,
+    )
 }
 
 fn read_prefixed_span(
@@ -1051,7 +1038,8 @@ fn read_prefixed_span(
         })?;
     let prefix_start = cursor.pos;
     let value = read_prefix_integer_value(cursor, prefix, strings)?;
-    let prefix_units = consumed_length_units(cursor, prefix_start, props.length_units)?;
+    let prefix_units =
+        consumed_length_units(cursor, prefix_start, props.length_units, props, strings)?;
     let mut span = usize_from_u64(value)?;
     if props.prefix_includes_prefix_length {
         span = span.checked_sub(prefix_units).ok_or(VmError::InvalidValue {
@@ -1065,15 +1053,16 @@ fn consumed_length_units(
     cursor: &Cursor<'_>,
     start: usize,
     units: LengthUnits,
+    props: &IrProps,
+    strings: &StringPool,
 ) -> Result<usize, crate::error::VmError> {
     use crate::error::VmError;
     let bytes = cursor.pos.saturating_sub(start);
     match units {
         LengthUnits::Bytes => Ok(bytes),
-        LengthUnits::Characters => count_utf8_characters(&cursor.data[start..cursor.pos])
-            .ok_or(VmError::InvalidValue {
-                message: "invalid UTF-8 while measuring character prefix".into(),
-            }),
+        LengthUnits::Characters => {
+            count_characters(&cursor.data[start..cursor.pos], encoding_name(props, strings)?)
+        }
         LengthUnits::Bits => {
             if cursor.bit_count != 0 {
                 return Err(VmError::UnsupportedOperation {
@@ -1083,21 +1072,6 @@ fn consumed_length_units(
             Ok(bytes.saturating_mul(8))
         }
     }
-}
-
-fn count_utf8_characters(bytes: &[u8]) -> Option<usize> {
-    let mut count = 0usize;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let b = bytes[i];
-        let width = utf8_char_width(b)?;
-        if i + width > bytes.len() {
-            return None;
-        }
-        i += width;
-        count += 1;
-    }
-    Some(count)
 }
 
 fn read_prefix_integer_value(
@@ -1140,14 +1114,19 @@ fn read_prefix_field_payload(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "prefix type missing length".into(),
             })? as usize;
-            read_length_span(cursor, len, props.length_units)
+            read_length_span(
+                cursor,
+                len,
+                props.length_units,
+                encoding_name(props, strings)?,
+            )
         }
         LengthKind::Implicit => {
             if props.representation == Representation::Text {
                 Ok(read_numeric_token(cursor))
             } else if props.length_units == LengthUnits::Bits {
                 let len = binary_bit_length(cursor, kind, props, strings)?;
-                read_length_span(cursor, len, LengthUnits::Bits)
+                read_length_span(cursor, len, LengthUnits::Bits, "utf-8")
             } else {
                 let len = binary_byte_length(cursor, kind, props, strings)?;
                 cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)

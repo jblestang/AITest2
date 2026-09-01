@@ -21,6 +21,8 @@ fn probe_remaining_prefixed() {
         "plSlash1_data",
         "pl_complexContentLengthBytes_1",
         "pl_simpleValueLengthBytes_1",
+        "pl_simpleContentLengthCharacters_1",
+        "pl_complexContentLengthCharacters_1",
         "pl_text_string_txt_bytes_not_enough_prefix_data_includes_backtrack",
     ] {
         let test = suite.tests.iter().find(|t| t.name == name).unwrap();

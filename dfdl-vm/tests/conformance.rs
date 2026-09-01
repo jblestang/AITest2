@@ -458,3 +458,14 @@ fn daffodil_prefixed_backtrack_suite() {
         "pl_text_string_txt_bytes_not_enough_prefix_data_includes_backtrack",
     );
 }
+
+#[test]
+fn daffodil_prefixed_character_units_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_simpleContentLengthCharacters_1",
+        "pl_complexContentLengthCharacters_1",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
