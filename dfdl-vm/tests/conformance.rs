@@ -57,21 +57,6 @@ fn assert_named_test_passes(tdml: &str, test_name: &str) {
     }
 }
 
-fn assert_named_test_passes_roundtrip(tdml: &str, test_name: &str) {
-    let suite = parse_tdml(tdml).expect("parse tdml");
-    let test = suite
-        .tests
-        .iter()
-        .find(|t| t.name == test_name)
-        .unwrap_or_else(|| panic!("test `{test_name}` not found"));
-    let result = run_parser_test_with_options(&suite, test, true).expect("run test");
-    match result.outcome {
-        TestOutcome::Pass => {}
-        TestOutcome::Fail(msg) => panic!("test `{test_name}` failed: {msg}"),
-        TestOutcome::Skip(msg) => panic!("test `{test_name}` skipped: {msg}"),
-    }
-}
-
 // --- AI / pattern / explicit (Section 12) ---
 
 #[test]
@@ -639,7 +624,13 @@ fn daffodil_prefixed_facet_compile_error_suite() {
 #[test]
 fn daffodil_prefixed_complex_roundtrip_suite() {
     let tdml = daffodil_tdml!("PrefixedTests.tdml");
-    for name in ["pl_complex_bin_bytes", "pl_complex_bin_bits"] {
+    for name in [
+        "pl_complex_bin_bytes",
+        "pl_complex_bin_bits",
+        "pl_complex_bin_bytes_suspension",
+        "pl_complex_bin_bytes_suspension_includes",
+        "plSlash1_data",
+    ] {
         assert_decode_encode_roundtrip(tdml, name);
     }
 }

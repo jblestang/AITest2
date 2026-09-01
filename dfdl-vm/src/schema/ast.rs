@@ -66,6 +66,10 @@ pub struct DfdlProps {
     pub input_value_calc: Option<InputValueCalc>,
     /// Local name of sibling referenced by `../name` in inputValueCalc.
     pub input_value_calc_sibling: Option<String>,
+    pub output_value_calc: Option<OutputValueCalc>,
+    /// Local name of sibling referenced by `../name` in outputValueCalc.
+    pub output_value_calc_sibling: Option<String>,
+    pub text_string_justification: Option<TextStringJustification>,
     /// True when a DFDL statement annotation (e.g. `dfdl:assert`) appears on this construct.
     pub has_statement_annotation: bool,
 }
@@ -136,6 +140,23 @@ pub enum InputValueCalc {
     ValueLengthSelf(LengthUnits),
     ContentLengthSibling(LengthUnits),
     ValueLengthSibling(LengthUnits),
+}
+
+/// Narrow support for `dfdl:outputValueCalc` used on encode/unparse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputValueCalc {
+    Constant(i64),
+    ContentLengthSelf(LengthUnits, i64),
+    ValueLengthSelf(LengthUnits, i64),
+    ContentLengthSibling(LengthUnits, i64),
+    ValueLengthSibling(LengthUnits, i64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextStringJustification {
+    Left,
+    Right,
+    Center,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

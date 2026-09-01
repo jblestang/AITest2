@@ -4,7 +4,8 @@ pub use builder::{compile, compile_named};
 use crate::error::VmError;
 use crate::schema::{
     BinaryFloatRep, BinaryNumberRep, BitOrder, ByteOrder, InputValueCalc, LengthKind, LengthUnits,
-    Representation, SeparatorPosition, SequenceKind, TextTrimKind,
+    OutputValueCalc, Representation, SeparatorPosition, SequenceKind, TextStringJustification,
+    TextTrimKind,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -104,6 +105,9 @@ pub struct IrProps {
     pub fill_byte: u8,
     pub input_value_calc: Option<InputValueCalc>,
     pub input_value_calc_sibling: Option<StringId>,
+    pub output_value_calc: Option<OutputValueCalc>,
+    pub output_value_calc_sibling: Option<StringId>,
+    pub text_string_justification: TextStringJustification,
     pub prefix_length: Option<alloc::boxed::Box<IrPrefixLength>>,
     pub prefix_includes_prefix_length: bool,
 }
@@ -143,6 +147,9 @@ impl Default for IrProps {
             fill_byte: 0,
             input_value_calc: None,
             input_value_calc_sibling: None,
+            output_value_calc: None,
+            output_value_calc_sibling: None,
+            text_string_justification: TextStringJustification::Left,
             prefix_length: None,
             prefix_includes_prefix_length: false,
         }

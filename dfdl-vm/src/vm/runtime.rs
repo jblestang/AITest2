@@ -834,29 +834,104 @@ pub(crate) fn write_text_scalar(
         return write_prefixed_bytes(out, &encoded, props, strings);
     }
 
-    let mut payload = text.into_bytes();
-    match props.length_kind {
+    let encoding = encoding_name(props, strings)?;
+    let payload = match props.length_kind {
         LengthKind::Fixed | LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "fixed/explicit text missing length".into(),
             })? as usize;
-            if payload.len() > len {
-                payload.truncate(len);
-            } else if payload.len() < len {
-                payload.extend(iter::repeat(b' ').take(len - payload.len()));
-            }
-            out.extend_from_slice(&payload);
+            pad_text_field(&text, len, props.length_units, props, strings, kind, encoding)?
         }
         LengthKind::Delimited | LengthKind::Pattern | LengthKind::Implicit | LengthKind::EndOfParent => {
-            out.extend_from_slice(&payload);
+            text.into_bytes()
         }
         other => {
             return Err(VmError::UnsupportedOperation {
                 op: alloc::format!("text lengthKind `{}` encode", length_kind_name(other)),
             });
         }
-    }
+    };
+    out.extend_from_slice(&payload);
     Ok(())
+}
+
+fn pad_text_field(
+    text: &str,
+    len: usize,
+    units: LengthUnits,
+    props: &IrProps,
+    strings: &StringPool,
+    kind: crate::ir::ValueKind,
+    encoding: &str,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::schema::{LengthUnits, TextStringJustification};
+
+    let pad_char = pad_char_for_kind(props, strings, kind).unwrap_or(" ");
+    let pad_byte = pad_char.chars().next().unwrap_or(b' ' as char) as u8;
+
+    match units {
+        LengthUnits::Bytes => {
+            let mut bytes = text.as_bytes().to_vec();
+            if bytes.len() > len {
+                bytes.truncate(len);
+                return Ok(bytes);
+            }
+            let pad_count = len - bytes.len();
+            match props.text_string_justification {
+                TextStringJustification::Right => {
+                    bytes.splice(0..0, iter::repeat(pad_byte).take(pad_count));
+                }
+                TextStringJustification::Center => {
+                    let left = pad_count / 2;
+                    let right = pad_count - left;
+                    bytes.splice(0..0, iter::repeat(pad_byte).take(left));
+                    bytes.extend(iter::repeat(pad_byte).take(right));
+                }
+                TextStringJustification::Left => {
+                    bytes.extend(iter::repeat(pad_byte).take(pad_count));
+                }
+            }
+            Ok(bytes)
+        }
+        LengthUnits::Characters => {
+            let current = count_characters(text.as_bytes(), encoding)?;
+            if current > len {
+                return Err(VmError::InvalidValue {
+                    message: "text value too long for explicit character length".into(),
+                });
+            }
+            let mut padded = text.to_string();
+            let pad_count = len - current;
+            let pad_str: alloc::string::String = pad_char.chars().take(1).collect();
+            match props.text_string_justification {
+                TextStringJustification::Right => {
+                    for _ in 0..pad_count {
+                        padded.insert_str(0, &pad_str);
+                    }
+                }
+                TextStringJustification::Center => {
+                    let left = pad_count / 2;
+                    let right = pad_count - left;
+                    for _ in 0..left {
+                        padded.insert_str(0, &pad_str);
+                    }
+                    for _ in 0..right {
+                        padded.push_str(&pad_str);
+                    }
+                }
+                TextStringJustification::Left => {
+                    for _ in 0..pad_count {
+                        padded.push_str(&pad_str);
+                    }
+                }
+            }
+            encode_document_text(&padded, encoding)
+        }
+        LengthUnits::Bits => Err(VmError::UnsupportedOperation {
+            op: "explicit text bit length encode".into(),
+        }),
+    }
 }
 
 fn delimiter_pattern_ids(props: &IrProps) -> alloc::vec::Vec<StringId> {
@@ -1369,6 +1444,32 @@ fn length_kind_name(kind: LengthKind) -> &'static str {
         LengthKind::Pattern => "pattern",
         LengthKind::EndOfParent => "endOfParent",
     }
+}
+
+pub(crate) fn write_alignment(
+    out: &mut alloc::vec::Vec<u8>,
+    props: &IrProps,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::schema::LengthUnits;
+
+    if props.alignment == 0 {
+        return Ok(());
+    }
+    if props.alignment_units != LengthUnits::Bytes {
+        return Err(VmError::UnsupportedOperation {
+            op: "non-byte alignment encode".into(),
+        });
+    }
+    let align = props.alignment as usize;
+    if align <= 1 {
+        return Ok(());
+    }
+    let skip = (align - (out.len() % align)) % align;
+    if skip > 0 {
+        out.extend(iter::repeat(props.fill_byte).take(skip));
+    }
+    Ok(())
 }
 
 pub(crate) fn consume_alignment(

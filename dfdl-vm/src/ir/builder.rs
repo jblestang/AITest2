@@ -654,6 +654,18 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if let Some(v) = props.output_value_calc {
+        base.output_value_calc = Some(v);
+    }
+    if props.output_value_calc_sibling.is_some() {
+        base.output_value_calc_sibling = props
+            .output_value_calc_sibling
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
+    if let Some(v) = props.text_string_justification {
+        base.text_string_justification = v;
+    }
     if props.alignment.is_some() {
         base.alignment = props.alignment.unwrap_or(0);
     }
@@ -725,6 +737,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     out.input_value_calc = overlay.input_value_calc;
     out.input_value_calc_sibling = overlay.input_value_calc_sibling;
+    out.output_value_calc = overlay.output_value_calc;
+    out.output_value_calc_sibling = overlay.output_value_calc_sibling;
+    out.text_string_justification = overlay.text_string_justification;
     if overlay.prefix_length.is_some() {
         out.prefix_length = overlay.prefix_length.clone();
     }

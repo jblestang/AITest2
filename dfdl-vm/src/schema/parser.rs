@@ -1070,6 +1070,15 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.input_value_calc_sibling.is_some() {
         base.input_value_calc_sibling = overlay.input_value_calc_sibling;
     }
+    if overlay.output_value_calc.is_some() {
+        base.output_value_calc = overlay.output_value_calc;
+    }
+    if overlay.output_value_calc_sibling.is_some() {
+        base.output_value_calc_sibling = overlay.output_value_calc_sibling;
+    }
+    if overlay.text_string_justification.is_some() {
+        base.text_string_justification = overlay.text_string_justification;
+    }
     if overlay.has_statement_annotation {
         base.has_statement_annotation = true;
     }
@@ -1104,6 +1113,51 @@ fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>
             let name = sib.strip_prefix("../")?;
             Some((
                 InputValueCalc::ValueLengthSibling(units),
+                Some(local_name_from_qname(name).to_string()),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<String>)> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    if let Ok(v) = inner.parse::<i64>() {
+        return Some((OutputValueCalc::Constant(v), None));
+    }
+    let (func_part, addend) = if let Some((left, right)) = inner.rsplit_once('+') {
+        (left.trim(), right.trim().parse::<i64>().unwrap_or(0))
+    } else {
+        (inner, 0)
+    };
+    let (func, rest) = func_part.split_once('(')?;
+    let args = rest.strip_suffix(')')?;
+    let units = if args.contains("\"bits\"") {
+        LengthUnits::Bits
+    } else if args.contains("\"characters\"") {
+        LengthUnits::Characters
+    } else {
+        LengthUnits::Bytes
+    };
+    let target = args.split(',').next()?.trim().trim_matches('"');
+    match (func, target) {
+        ("dfdl:contentLength", "..") => Some((OutputValueCalc::ContentLengthSelf(units, addend), None)),
+        ("dfdl:valueLength", "..") => Some((OutputValueCalc::ValueLengthSelf(units, addend), None)),
+        ("dfdl:contentLength", sib) => {
+            let name = sib.strip_prefix("../")?;
+            Some((
+                OutputValueCalc::ContentLengthSibling(units, addend),
+                Some(local_name_from_qname(name).to_string()),
+            ))
+        }
+        ("dfdl:valueLength", sib) => {
+            let name = sib.strip_prefix("../")?;
+            Some((
+                OutputValueCalc::ValueLengthSibling(units, addend),
                 Some(local_name_from_qname(name).to_string()),
             ))
         }
@@ -1305,7 +1359,26 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.text_string_pad_character =
                     Some(crate::schema::expand_entities_str(value));
             }
-            "textPadKind" | "textStringJustification" | "outputValueCalc" => {}
+            "textPadKind" => {}
+            "textStringJustification" => {
+                props.text_string_justification = Some(match value.as_str() {
+                    "left" => TextStringJustification::Left,
+                    "right" => TextStringJustification::Right,
+                    "center" => TextStringJustification::Center,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown textStringJustification `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "outputValueCalc" => {
+                if let Some(calc) = parse_output_value_calc(value) {
+                    props.output_value_calc = Some(calc.0);
+                    props.output_value_calc_sibling = calc.1;
+                }
+            }
             "inputValueCalc" => {
                 if let Some(calc) = parse_input_value_calc(value) {
                     props.input_value_calc = Some(calc.0);
