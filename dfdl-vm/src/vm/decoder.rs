@@ -56,9 +56,9 @@ impl<'a> Decoder<'a> {
                     let saved = cursor.clone();
                     if let Some(init_id) = branch.initiator {
                         let pat = self.ctx.strings().get(init_id);
-                        match match_delimiter(&cursor.data[cursor.pos..], pat) {
-                            Some(n) => cursor.advance(n),
-                            None => continue,
+                        // Match initiator for dispatch only; branch decode consumes it once.
+                        if match_delimiter(&cursor.data[cursor.pos..], pat).is_none() {
+                            continue;
                         }
                     }
                     if let Ok(value) = self.decode_node(branch.node, cursor) {

@@ -36,7 +36,7 @@ fn extract_dfdl_infoset_xml(xml: &str) -> String {
     let _ = reader.expect_start("wrapper");
     reader.skip_insignificant_ws().ok();
     if reader.peek_start_local().ok().flatten().as_deref() == Some("dfdlInfoset") {
-        let _ = reader.next();
+        let _ = reader.next_event();
         return reader.read_inner_xml().unwrap_or_default();
     }
     xml.to_string()
@@ -63,7 +63,7 @@ fn parse_infoset_elements(xml: &str) -> Result<Vec<InfosetNode>, String> {
 }
 
 fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, String> {
-    let XmlEvent::StartElement { name, attributes, .. } = reader.next().map_err(|e| e.to_string())?
+    let XmlEvent::StartElement { name, attributes, .. } = reader.next_event().map_err(|e| e.to_string())?
     else {
         return Err("expected infoset element".into());
     };
@@ -223,6 +223,19 @@ fn compare_node(expected: &InfosetNode, actual: &InfosetNode) -> Result<(), Stri
         }
         for (e, a) in exp_children.iter().zip(act_children.iter()) {
             compare_node(e, a)?;
+        }
+    }
+    for (name, act_children) in &actual.children {
+        let key = local_name_str(name);
+        if !expected
+            .children
+            .keys()
+            .any(|k| local_name_str(k) == key)
+        {
+            return Err(alloc::format!(
+                "unexpected child `{key}` ({} occurrence(s))",
+                act_children.len()
+            ));
         }
     }
     Ok(())

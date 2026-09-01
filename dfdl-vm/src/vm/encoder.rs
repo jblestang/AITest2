@@ -50,7 +50,7 @@ impl<'a> Encoder<'a> {
                 let branch = branches
                     .iter()
                     .find(|b| self.ctx.strings().get(b.name) == discriminator)
-                    .ok_or_else(|| VmError::InvalidChoice)?;
+                    .ok_or(VmError::InvalidChoice)?;
                 self.encode_node(branch.node, branch_value, out)
             }
             IrNode::Element {

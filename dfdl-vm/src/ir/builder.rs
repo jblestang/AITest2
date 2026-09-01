@@ -179,7 +179,7 @@ impl<'a> IrBuilder<'a> {
                 for branch in &choice.branches {
                     let node = self.compile_particle(branch, &ir_props)?;
                     branches.push(ChoiceBranch {
-                        name: self.strings.intern(&branch_name(branch)),
+                        name: self.strings.intern(branch_name(branch)),
                         initiator: branch_initiator(branch, &mut self.strings),
                         node,
                     });

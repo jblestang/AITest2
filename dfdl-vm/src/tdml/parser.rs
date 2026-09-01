@@ -156,7 +156,7 @@ fn parse_document(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
 }
 
 fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
-    let XmlEvent::StartElement { attributes, .. } = reader.next()? else {
+    let XmlEvent::StartElement { attributes, .. } = reader.next_event()? else {
         return Err(ParseError::InvalidXml {
             message: "expected documentPart".into(),
         }

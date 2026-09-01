@@ -69,7 +69,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn consume_start(&mut self) -> Result<(String, Option<String>, BTreeMap<String, String>)> {
-        let XmlEvent::StartElement { name, attributes, .. } = self.reader.next()? else {
+        let XmlEvent::StartElement { name, attributes, .. } = self.reader.next_event()? else {
             return Err(ParseError::InvalidXml {
                 message: "expected start element".into(),
             }
@@ -102,7 +102,7 @@ impl<'a> XsdParser<'a> {
 
     fn parse_document(&mut self) -> Result<SchemaDocument> {
         loop {
-            match self.reader.next()? {
+            match self.reader.next_event()? {
                 XmlEvent::StartElement { name, attributes, .. } => {
                     if local_name_str(&name.local_name) == "schema" {
                         self.parse_schema_element(attrs_to_map(&attributes))?;
@@ -143,7 +143,7 @@ impl<'a> XsdParser<'a> {
             self.reader.skip_insignificant_ws()?;
             match self.reader.peek()? {
                 XmlEvent::EndElement { name } if name.local_name == "schema" => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                     break;
                 }
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
@@ -151,7 +151,7 @@ impl<'a> XsdParser<'a> {
                     let local = name.local_name.clone();
                     let prefix = name.prefix.clone();
                     let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
                             unreachable!();
                         };
                         attrs_to_map(&attributes)
@@ -176,7 +176,7 @@ impl<'a> XsdParser<'a> {
                     }
                 }
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                 }
                 other => {
                     return Err(ParseError::InvalidXml {
@@ -351,7 +351,7 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
                             unreachable!();
                         };
                         attrs_to_map(&attributes)
@@ -368,7 +368,7 @@ impl<'a> XsdParser<'a> {
                     }
                 }
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                 }
                 other => {
                     return Err(ParseError::InvalidXml {
@@ -404,14 +404,14 @@ impl<'a> XsdParser<'a> {
             self.reader.skip_insignificant_ws()?;
             match self.reader.peek()? {
                 XmlEvent::EndElement { name } if name.local_name == "sequence" => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                     break;
                 }
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
                             unreachable!();
                         };
                         attrs_to_map(&attributes)
@@ -427,7 +427,7 @@ impl<'a> XsdParser<'a> {
                     }
                 }
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                 }
                 other => {
                     return Err(ParseError::InvalidXml {
@@ -465,14 +465,14 @@ impl<'a> XsdParser<'a> {
             self.reader.skip_insignificant_ws()?;
             match self.reader.peek()? {
                 XmlEvent::EndElement { name } if name.local_name == "choice" => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                     break;
                 }
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
                             unreachable!();
                         };
                         attrs_to_map(&attributes)
@@ -488,7 +488,7 @@ impl<'a> XsdParser<'a> {
                     }
                 }
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                 }
                 other => {
                     return Err(ParseError::InvalidXml {
@@ -524,13 +524,15 @@ impl<'a> XsdParser<'a> {
         let type_name = if let Some(t) = xsd_attrs.get("type") {
             TypeName::new(normalize_qname(t))
         } else if is_ref {
-            self.doc
+            let global = self
+                .doc
                 .global_elements
                 .get(&name)
-                .map(|g| g.type_name.clone())
                 .ok_or_else(|| ParseError::UnknownElement {
                     name: name.clone(),
-                })?
+                })?;
+            props = merge_props(global.props.clone(), props);
+            global.type_name.clone()
         } else {
             self.reader.skip_insignificant_ws()?;
             if self.reader.peek_is_end("element")? {
@@ -604,7 +606,7 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
                             unreachable!();
                         };
                         attrs_to_map(&attributes)
@@ -630,7 +632,7 @@ impl<'a> XsdParser<'a> {
                     self.skip_element_body(&local)?;
                 }
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                 }
                 other => {
                     return Err(ParseError::InvalidXml {
@@ -654,7 +656,7 @@ impl<'a> XsdParser<'a> {
                     let local = name.local_name.clone();
                     if local == "annotation" {
                         let child_attrs = {
-                            let XmlEvent::StartElement { attributes, .. } = self.reader.next()?
+                            let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()?
                             else {
                                 unreachable!();
                             };
@@ -664,12 +666,12 @@ impl<'a> XsdParser<'a> {
                     } else if allowed.iter().any(|a| *a == local.as_str()) {
                         break;
                     } else {
-                        let _ = self.reader.next()?;
+                        let _ = self.reader.next_event()?;
                         self.reader.skip_current_subtree()?;
                     }
                 }
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                 }
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 other => {
@@ -700,14 +702,14 @@ impl<'a> XsdParser<'a> {
             self.reader.skip_insignificant_ws()?;
             match self.reader.peek()? {
                 XmlEvent::EndElement { name } if name.local_name == "annotation" => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                     break;
                 }
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
                             unreachable!();
                         };
                         attrs_to_map(&attributes)
@@ -719,7 +721,7 @@ impl<'a> XsdParser<'a> {
                     }
                 }
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                 }
                 other => {
                     return Err(ParseError::InvalidXml {
@@ -750,7 +752,7 @@ impl<'a> XsdParser<'a> {
                 self.reader.skip_insignificant_ws()?;
                 match self.reader.peek()? {
                     XmlEvent::EndElement { name } if name.local_name == "appinfo" => {
-                        let _ = self.reader.next()?;
+                        let _ = self.reader.next_event()?;
                         break;
                     }
                     XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
@@ -758,7 +760,7 @@ impl<'a> XsdParser<'a> {
                         let local = name.local_name.clone();
                         let prefix = name.prefix.clone();
                         let child_attrs = {
-                            let XmlEvent::StartElement { attributes, .. } = self.reader.next()?
+                            let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()?
                             else {
                                 unreachable!();
                             };
@@ -773,7 +775,7 @@ impl<'a> XsdParser<'a> {
                         }
                     }
                     XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
-                        let _ = self.reader.next()?;
+                        let _ = self.reader.next_event()?;
                     }
                     other => {
                         return Err(ParseError::InvalidXml {
@@ -848,7 +850,7 @@ impl<'a> XsdParser<'a> {
             self.reader.skip_insignificant_ws()?;
             match self.reader.peek()? {
                 XmlEvent::EndElement { name } if name.local_name == "defineFormat" => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                     break;
                 }
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
@@ -856,7 +858,7 @@ impl<'a> XsdParser<'a> {
                     let local = name.local_name.clone();
                     let prefix = name.prefix.clone();
                     let child_attrs = {
-                        let XmlEvent::StartElement { attributes, .. } = self.reader.next()? else {
+                        let XmlEvent::StartElement { attributes, .. } = self.reader.next_event()? else {
                             unreachable!();
                         };
                         attrs_to_map(&attributes)
@@ -870,7 +872,7 @@ impl<'a> XsdParser<'a> {
                     }
                 }
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
-                    let _ = self.reader.next()?;
+                    let _ = self.reader.next_event()?;
                 }
                 other => {
                     return Err(ParseError::InvalidXml {

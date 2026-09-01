@@ -38,6 +38,16 @@ fn text_message_round_trip() {
 }
 
 #[test]
+fn choice_initiator_decode() {
+    let spec = DfdlSpec::from_xsd(include_str!("fixtures/choice_initiator.xsd")).expect("spec");
+    let decoded = spec.decode(b"1=abc").expect("decode branch A");
+    assert_eq!(decoded.field("A"), Some(&DfdlValue::String("abc".into())));
+
+    let decoded_b = spec.decode(b"2=xyz").expect("decode branch B");
+    assert_eq!(decoded_b.field("B"), Some(&DfdlValue::String("xyz".into())));
+}
+
+#[test]
 fn ir_is_populated() {
     let spec = DfdlSpec::from_xsd(include_str!("fixtures/record.xsd")).expect("spec");
     assert_eq!(spec.root_element(), "Record");

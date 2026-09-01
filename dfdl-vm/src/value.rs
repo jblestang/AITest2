@@ -76,6 +76,12 @@ impl DfdlValue {
 
     pub fn field(&self, name: &str) -> Option<&DfdlValue> {
         match self {
+            DfdlValue::Choice { discriminator, value } => {
+                if discriminator == name {
+                    return Some(value.as_ref());
+                }
+                value.field(name)
+            }
             DfdlValue::Sequence(map) => {
                 if let Some(v) = map.get(name) {
                     return Some(v);

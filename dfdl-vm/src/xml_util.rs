@@ -22,7 +22,7 @@ impl<'a> XmlReader<'a> {
         }
     }
 
-    pub fn next(&mut self) -> Result<XmlEvent> {
+    pub fn next_event(&mut self) -> Result<XmlEvent> {
         if let Some(ev) = self.peeked.take() {
             return Ok(ev);
         }
@@ -31,7 +31,7 @@ impl<'a> XmlReader<'a> {
 
     pub fn peek(&mut self) -> Result<&XmlEvent> {
         if self.peeked.is_none() {
-            self.peeked = Some(self.next()?);
+            self.peeked = Some(self.next_event()?);
         }
         Ok(self.peeked.as_ref().expect("peeked"))
     }
@@ -40,10 +40,10 @@ impl<'a> XmlReader<'a> {
         loop {
             match self.peek()? {
                 XmlEvent::Whitespace(_) => {
-                    let _ = self.next()?;
+                    let _ = self.next_event()?;
                 }
                 XmlEvent::Characters(s) if s.trim().is_empty() => {
-                    let _ = self.next()?;
+                    let _ = self.next_event()?;
                 }
                 _ => break,
             }
@@ -68,7 +68,7 @@ impl<'a> XmlReader<'a> {
     /// Advance until the first `StartElement` with the given local name.
     pub fn expect_start(&mut self, local: &str) -> Result<BTreeMap<String, String>> {
         loop {
-            match self.next()? {
+            match self.next_event()? {
                 XmlEvent::StartElement { name, attributes, .. } if name.local_name == local => {
                     return Ok(attrs_to_map(&attributes));
                 }
@@ -96,7 +96,7 @@ impl<'a> XmlReader<'a> {
     pub fn take_start_if(&mut self, local: &str) -> Result<Option<BTreeMap<String, String>>> {
         match self.peek()? {
             XmlEvent::StartElement { name, .. } if name.local_name == local => {
-                let XmlEvent::StartElement { attributes, .. } = self.next()? else {
+                let XmlEvent::StartElement { attributes, .. } = self.next_event()? else {
                     unreachable!();
                 };
                 Ok(Some(attrs_to_map(&attributes)))
@@ -106,7 +106,7 @@ impl<'a> XmlReader<'a> {
     }
 
     pub fn expect_end(&mut self, local: &str) -> Result<()> {
-        match self.next()? {
+        match self.next_event()? {
             XmlEvent::EndElement { name } if name.local_name == local => Ok(()),
             other => Err(ParseError::InvalidXml {
                 message: alloc::format!("expected </{local}>, found {:?}", event_label(&other)),
@@ -117,7 +117,7 @@ impl<'a> XmlReader<'a> {
 
     /// Must be positioned at `StartElement`; skips the entire element subtree.
     pub fn skip_element(&mut self) -> Result<()> {
-        match self.next()? {
+        match self.next_event()? {
             XmlEvent::StartElement { .. } => map_xml_err(self.reader.skip()),
             other => Err(ParseError::InvalidXml {
                 message: alloc::format!("expected start element, found {:?}", event_label(&other)),
@@ -130,7 +130,7 @@ impl<'a> XmlReader<'a> {
     pub fn skip_current_subtree(&mut self) -> Result<()> {
         let mut depth = 1;
         while depth > 0 {
-            match self.next()? {
+            match self.next_event()? {
                 XmlEvent::StartElement { .. } => depth += 1,
                 XmlEvent::EndElement { .. } => depth -= 1,
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
@@ -144,7 +144,7 @@ impl<'a> XmlReader<'a> {
     pub fn read_text_until_end(&mut self, local: &str) -> Result<String> {
         let mut out = String::new();
         loop {
-            match self.next()? {
+            match self.next_event()? {
                 XmlEvent::EndElement { name } if name.local_name == local => return Ok(out),
                 XmlEvent::Characters(s) | XmlEvent::CData(s) => out.push_str(&s),
                 XmlEvent::Whitespace(s) => out.push_str(&s),
@@ -168,7 +168,7 @@ impl<'a> XmlReader<'a> {
         let mut writer = EventWriter::new_with_config(config);
         let mut depth = 1;
         while depth > 0 {
-            let ev = self.next()?;
+            let ev = self.next_event()?;
             match &ev {
                 XmlEvent::StartElement { .. } => {
                     depth += 1;
@@ -220,19 +220,19 @@ impl<'a> XmlReader<'a> {
         loop {
             match self.peek()? {
                 XmlEvent::EndElement { name } if name.local_name == parent_local => {
-                    let _ = self.next()?;
+                    let _ = self.next_event()?;
                     return Ok(());
                 }
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
-                    let XmlEvent::StartElement { attributes, .. } = self.next()? else {
+                    let XmlEvent::StartElement { attributes, .. } = self.next_event()? else {
                         unreachable!();
                     };
                     f(&local, attrs_to_map(&attributes), self)?;
                 }
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
-                    let _ = self.next()?;
+                    let _ = self.next_event()?;
                 }
                 other => {
                     return Err(ParseError::InvalidXml {
