@@ -175,17 +175,35 @@ fn daffodil_signed_one_bit_error(kind: ValueKind, runtime: bool) -> alloc::strin
     alloc::format!("{prefix}. {type_label}. 2 bit(s). 1 out of range")
 }
 
+/// VM runtime phase for decimal length validation messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmDecimalPhase {
+    Parse,
+    Unparse,
+}
+
+fn vm_decimal_prefix(phase: VmDecimalPhase) -> &'static str {
+    match phase {
+        VmDecimalPhase::Parse => "Parse Error",
+        VmDecimalPhase::Unparse => "Unparse Error",
+    }
+}
+
 fn daffodil_decimal_length_error(
     signed: bool,
     bit_length: u64,
-    runtime: bool,
+    schema: bool,
+    phase: Option<VmDecimalPhase>,
+    runtime_resolved_length: bool,
 ) -> alloc::string::String {
-    let prefix = if runtime {
-        "Unparse Error"
-    } else {
+    let prefix = if schema {
         "Schema Definition Error"
+    } else {
+        vm_decimal_prefix(phase.unwrap_or(VmDecimalPhase::Unparse))
     };
-    let type_label = if signed {
+    let type_label = if runtime_resolved_length {
+        "signed binary number"
+    } else if signed {
         "signed binary number"
     } else {
         "unsigned binary number"
@@ -201,13 +219,20 @@ fn daffodil_decimal_length_error(
     )
 }
 
-fn daffodil_decimal_signed_one_bit_error(signed: bool, runtime: bool) -> alloc::string::String {
-    let prefix = if runtime {
-        "Unparse Error"
-    } else {
+fn daffodil_decimal_signed_one_bit_error(
+    signed: bool,
+    schema: bool,
+    phase: Option<VmDecimalPhase>,
+    runtime_resolved_length: bool,
+) -> alloc::string::String {
+    let prefix = if schema {
         "Schema Definition Error"
+    } else {
+        vm_decimal_prefix(phase.unwrap_or(VmDecimalPhase::Unparse))
     };
-    let type_label = if signed {
+    let type_label = if runtime_resolved_length {
+        "signed binary number"
+    } else if signed {
         "signed binary number"
     } else {
         "unsigned binary number"
@@ -233,7 +258,7 @@ pub fn validate_decimal_data_length_schema(
     units: LengthUnits,
 ) -> Result<(), SchemaError> {
     validate_decimal_length_inner(length, units).map_err(|bit_length| SchemaError::InvalidProperty {
-        message: daffodil_decimal_length_error(signed, bit_length, false),
+        message: daffodil_decimal_length_error(signed, bit_length, true, None, false),
     })
 }
 
@@ -242,9 +267,17 @@ pub fn validate_decimal_data_length_vm(
     signed: bool,
     length: u64,
     units: LengthUnits,
+    phase: VmDecimalPhase,
+    runtime_resolved_length: bool,
 ) -> Result<(), VmError> {
     validate_decimal_length_inner(length, units).map_err(|bit_length| VmError::InvalidValue {
-        message: daffodil_decimal_length_error(signed, bit_length, true),
+        message: daffodil_decimal_length_error(
+            signed,
+            bit_length,
+            false,
+            Some(phase),
+            runtime_resolved_length,
+        ),
     })
 }
 
@@ -254,7 +287,7 @@ pub fn validate_decimal_signed_one_bit_length_schema(
     units: LengthUnits,
     tunables: &DaffodilTunables,
 ) -> Result<(), SchemaError> {
-    validate_decimal_signed_one_bit_length_inner(signed, length, units, tunables, false)
+    validate_decimal_signed_one_bit_length_inner(signed, length, units, tunables, true, None, false)
         .map_err(|msg| SchemaError::InvalidProperty { message: msg })
 }
 
@@ -263,9 +296,19 @@ pub fn validate_decimal_signed_one_bit_length_vm(
     length: u64,
     units: LengthUnits,
     tunables: &DaffodilTunables,
+    phase: VmDecimalPhase,
+    runtime_resolved_length: bool,
 ) -> Result<(), VmError> {
-    validate_decimal_signed_one_bit_length_inner(signed, length, units, tunables, true)
-        .map_err(|msg| VmError::InvalidValue { message: msg })
+    validate_decimal_signed_one_bit_length_inner(
+        signed,
+        length,
+        units,
+        tunables,
+        false,
+        Some(phase),
+        runtime_resolved_length,
+    )
+    .map_err(|msg| VmError::InvalidValue { message: msg })
 }
 
 fn validate_decimal_signed_one_bit_length_inner(
@@ -273,13 +316,20 @@ fn validate_decimal_signed_one_bit_length_inner(
     length: u64,
     units: LengthUnits,
     tunables: &DaffodilTunables,
-    runtime: bool,
+    schema: bool,
+    phase: Option<VmDecimalPhase>,
+    runtime_resolved_length: bool,
 ) -> Result<(), alloc::string::String> {
     if !signed || tunables.allow_signed_integer_length1_bit {
         return Ok(());
     }
     if bit_length(length, units) == Some(1) {
-        return Err(daffodil_decimal_signed_one_bit_error(signed, runtime));
+        return Err(daffodil_decimal_signed_one_bit_error(
+            signed,
+            schema,
+            phase,
+            runtime_resolved_length,
+        ));
     }
     Ok(())
 }

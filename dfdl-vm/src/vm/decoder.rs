@@ -1,12 +1,13 @@
 use super::runtime::{
     consume_alignment, consume_enclosing_delimiter, default_value_for, encoding_name,
     prefixed_payload_byte_length, read_delimited_bytes, read_length_span, read_prefixed_payload,
-    read_simple, read_until_separator, Cursor, RuntimeConfig, VmContext,
+    read_simple, read_until_separator, validate_explicit_decimal_before_decode, Cursor,
+    RuntimeConfig, VmContext,
 };
 use crate::length_validate::validate_data_length_vm;
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
-use crate::schema::{match_delimiter, InputValueCalc, LengthKind, LengthUnits, SeparatorPosition};
+use crate::schema::{match_delimiter, InputValueCalc, LengthKind, LengthUnits, Representation, SeparatorPosition};
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -49,7 +50,7 @@ impl<'a> Decoder<'a> {
         self.consume_root_delimited_suffix(&mut cursor)?;
         if self.ctx.config.strict_eos && cursor.bit_count == 0 && cursor.remaining() > 0 {
             return Err(VmError::TrailingData {
-                remaining: cursor.remaining(),
+                remaining_bits: cursor.remaining() * 8,
             }
             .into());
         }
@@ -273,7 +274,13 @@ impl<'a> Decoder<'a> {
                 props,
                 child,
             } => {
-                let props = resolve_length_props(props, siblings, *kind, self.ctx.strings())?;
+                let props = resolve_length_props(
+                    props,
+                    siblings,
+                    *kind,
+                    self.ctx.strings(),
+                    &self.ctx.program.tunables,
+                )?;
                 consume_alignment(cursor, &props)?;
                 if let Some(child_id) = child {
                     self.consume_initiator(&props, cursor)?;
@@ -281,7 +288,10 @@ impl<'a> Decoder<'a> {
                         let len = props.length.ok_or(VmError::InvalidValue {
                             message: "explicit complex missing length".into(),
                         })? as usize;
-                        if props.length_units == LengthUnits::Characters {
+                        if props.length_units == LengthUnits::Characters
+                            || (props.length_units == LengthUnits::Bytes
+                                && props.representation == Representation::Text)
+                        {
                             let bytes = read_length_span(
                                 cursor,
                                 len,
@@ -483,6 +493,7 @@ impl<'a> Decoder<'a> {
                         require_delimiter,
                         parent_term,
                         Some(self.ctx.strings().get(*name)?),
+                        &self.ctx.program.tunables,
                     )
                     .map_err(Into::into)
                 }
@@ -890,6 +901,7 @@ fn resolve_length_props(
     siblings: Option<&BTreeMap<String, SiblingState>>,
     kind: ValueKind,
     strings: &crate::ir::StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
 ) -> Result<IrProps> {
     if props.length_kind != LengthKind::Explicit || props.length.is_some() {
         return Ok(props.clone());
@@ -906,7 +918,9 @@ fn resolve_length_props(
         })?;
     let mut resolved = props.clone();
     resolved.length = Some(length_from_value(sib_val)?);
-    if let Some(len) = resolved.length {
+    if kind == ValueKind::Decimal {
+        validate_explicit_decimal_before_decode(kind, &resolved, tunables)?;
+    } else if let Some(len) = resolved.length {
         validate_data_length_vm(kind, len, resolved.length_units)?;
     }
     Ok(resolved)

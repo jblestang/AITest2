@@ -498,6 +498,16 @@ fn finalize_element_props(
     validate_binary_delimited(kind, &ir)?;
     validate_prefixed_character_encoding(kind, &ir, strings)?;
     validate_end_of_parent(kind, &ir)?;
+    if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed)
+        && ir.length.is_none()
+        && ir.length_sibling.is_none()
+        && ir.length_pattern.is_none()
+    {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Property length is not defined".into(),
+        }
+        .into());
+    }
     if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
         if let Some(len) = ir.length {
             validate_float_double_bit_length(kind, len, ir.length_units)?;
@@ -982,7 +992,8 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.binary_calendar_rep = overlay.binary_calendar_rep;
     out.binary_float_rep = overlay.binary_float_rep;
     out.binary_decimal_virtual_point = overlay.binary_decimal_virtual_point;
-    out.decimal_signed = overlay.decimal_signed;
+    // decimal_signed comes from the resolved simple type; the element wrapper overlay
+    // carries schema defaults and must not clobber type-derived decimalSigned.
     out.calendar_pattern = overlay.calendar_pattern;
     if overlay.initiator.is_some() {
         out.initiator = overlay.initiator;

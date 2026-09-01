@@ -5,9 +5,9 @@ use super::encoding::{
 use crate::length_validate::{
     validate_data_length_vm, validate_decimal_data_length_vm,
     validate_decimal_signed_one_bit_length_vm, validate_signed_one_bit_length_vm,
-    DaffodilTunables,
+    DaffodilTunables, VmDecimalPhase,
 };
-use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool};
+use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
     encode_delimiter, match_delimiter, match_length_pattern, BinaryNumberRep, BitOrder, ByteOrder,
     LengthKind, LengthUnits, Representation, TextNumberJustification, TextTrimKind,
@@ -331,6 +331,59 @@ fn payload_bit_length(payload: &[u8], payload_bit_count: u8) -> usize {
     encode_absolute_bit_index(payload, payload_bit_count)
 }
 
+fn validate_explicit_decimal_vm(
+    props: &IrProps,
+    phase: VmDecimalPhase,
+    tunables: &DaffodilTunables,
+    units: Option<LengthUnits>,
+) -> Result<(), crate::error::VmError> {
+    if !matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
+        return Ok(());
+    }
+    let Some(len) = props.length else {
+        return Ok(());
+    };
+    let runtime_resolved = props.length_sibling.is_some();
+    let units = units.unwrap_or(props.length_units);
+    validate_decimal_data_length_vm(
+        props.decimal_signed,
+        len,
+        units,
+        phase,
+        runtime_resolved,
+    )?;
+    validate_decimal_signed_one_bit_length_vm(
+        props.decimal_signed,
+        len,
+        units,
+        tunables,
+        phase,
+        runtime_resolved,
+    )
+}
+
+pub(crate) fn validate_explicit_decimal_before_encode(
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    tunables: &DaffodilTunables,
+) -> Result<(), crate::error::VmError> {
+    if kind == crate::ir::ValueKind::Decimal {
+        validate_explicit_decimal_vm(props, VmDecimalPhase::Unparse, tunables, None)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_explicit_decimal_before_decode(
+    kind: ValueKind,
+    props: &IrProps,
+    tunables: &DaffodilTunables,
+) -> Result<(), crate::error::VmError> {
+    if kind == ValueKind::Decimal {
+        validate_explicit_decimal_vm(props, VmDecimalPhase::Parse, tunables, None)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn encoding_name<'a>(
     props: &IrProps,
     strings: &'a StringPool,
@@ -373,6 +426,7 @@ pub(crate) fn read_binary_scalar(
     require_delimiter: bool,
     parent_terminator: Option<&str>,
     field_name: Option<&str>,
+    tunables: &DaffodilTunables,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind;
@@ -389,11 +443,7 @@ pub(crate) fn read_binary_scalar(
     }
 
     if kind == ValueKind::Decimal {
-        if let Some(len) = props.length {
-            if matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
-                validate_decimal_data_length_vm(props.decimal_signed, len, props.length_units)?;
-            }
-        }
+        validate_explicit_decimal_vm(props, VmDecimalPhase::Parse, tunables, None)?;
     }
 
     if props.length_units == LengthUnits::Bits {
@@ -1334,6 +1384,10 @@ pub(crate) fn write_binary_scalar(
         return write_prefixed_bytes(out, bit_count, &payload, props, strings, field_name);
     }
 
+    if kind == crate::ir::ValueKind::Decimal {
+        validate_explicit_decimal_vm(props, VmDecimalPhase::Unparse, tunables, None)?;
+    }
+
     if props.length_units == LengthUnits::Bits {
         let n = binary_encode_bit_length(kind, props, tunables)?;
         let raw = scalar_to_raw_bits(value, kind, props, n)?;
@@ -1345,15 +1399,7 @@ pub(crate) fn write_binary_scalar(
     let size = match props.length_kind {
         LengthKind::Fixed => {
             let len = props.length.unwrap_or(type_size(kind) as u64);
-            if kind == crate::ir::ValueKind::Decimal {
-                validate_decimal_data_length_vm(props.decimal_signed, len, LengthUnits::Bytes)?;
-                validate_decimal_signed_one_bit_length_vm(
-                    props.decimal_signed,
-                    len,
-                    LengthUnits::Bytes,
-                    tunables,
-                )?;
-            } else {
+            if kind != crate::ir::ValueKind::Decimal {
                 validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
                 validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
             }
@@ -1364,15 +1410,7 @@ pub(crate) fn write_binary_scalar(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
             })?;
-            if kind == crate::ir::ValueKind::Decimal {
-                validate_decimal_data_length_vm(props.decimal_signed, len, LengthUnits::Bytes)?;
-                validate_decimal_signed_one_bit_length_vm(
-                    props.decimal_signed,
-                    len,
-                    LengthUnits::Bytes,
-                    tunables,
-                )?;
-            } else {
+            if kind != crate::ir::ValueKind::Decimal {
                 validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
                 validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
             }
@@ -1444,12 +1482,11 @@ fn binary_encode_bit_length(
                 message: "explicit binary missing length".into(),
             })?;
             if kind == crate::ir::ValueKind::Decimal {
-                validate_decimal_data_length_vm(props.decimal_signed, len, LengthUnits::Bits)?;
-                validate_decimal_signed_one_bit_length_vm(
-                    props.decimal_signed,
-                    len,
-                    LengthUnits::Bits,
+                validate_explicit_decimal_vm(
+                    props,
+                    VmDecimalPhase::Unparse,
                     tunables,
+                    Some(LengthUnits::Bits),
                 )?;
             } else {
                 validate_data_length_vm(kind, len, LengthUnits::Bits)?;
@@ -1927,13 +1964,16 @@ pub(crate) fn read_prefixed_payload(
     .map_err(|e| {
         use crate::error::VmError;
         if e == VmError::UnexpectedEof {
-            let bits = match props.length_units {
+            let needed = match props.length_units {
                 LengthUnits::Bytes => span.saturating_mul(8),
                 LengthUnits::Bits => span,
                 LengthUnits::Characters => span.saturating_mul(8),
             };
+            let found = cursor.remaining() * 8 + cursor.bit_count as usize;
             VmError::InvalidValue {
-                message: alloc::format!("Insufficient bits in data. {bits}"),
+                message: alloc::format!(
+                    "Insufficient bits in data. needed {needed} bit(s). found only {found}"
+                ),
             }
         } else {
             e
@@ -2079,6 +2119,20 @@ fn read_prefix_field_payload(
                 encoding_name(props, strings)?,
                 props.bit_order,
             )
+            .map_err(|e| {
+                if e == VmError::UnexpectedEof {
+                    let bits = match props.length_units {
+                        LengthUnits::Bytes => len.saturating_mul(8),
+                        LengthUnits::Bits => len,
+                        LengthUnits::Characters => len.saturating_mul(8),
+                    };
+                    VmError::InvalidValue {
+                        message: alloc::format!("Insufficient bits in data. {bits}"),
+                    }
+                } else {
+                    e
+                }
+            })
         }
         LengthKind::Implicit => {
             if props.representation == Representation::Text {
@@ -2369,6 +2423,7 @@ pub(crate) fn read_simple(
     require_delimiter: bool,
     parent_terminator: Option<&str>,
     field_name: Option<&str>,
+    tunables: &DaffodilTunables,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -2404,6 +2459,7 @@ pub(crate) fn read_simple(
             require_enclosing,
             parent_terminator,
             field_name,
+            tunables,
         )?
     };
     if props.length_kind == LengthKind::Delimited {

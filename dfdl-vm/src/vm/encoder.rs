@@ -1,4 +1,4 @@
-use super::runtime::{write_alignment, write_byte_aligned, write_framed_payload, write_simple, RuntimeConfig, VmContext};
+use super::runtime::{write_alignment, write_byte_aligned, write_framed_payload, write_simple, validate_explicit_decimal_before_encode, RuntimeConfig, VmContext};
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
@@ -213,6 +213,11 @@ impl<'a> Encoder<'a> {
                 let key = self.ctx.strings().get(*name)?;
                 let value = self.element_encode_value(props, key, map)?;
                 let resolved = resolve_length_props_encode(props, map, self.ctx.strings())?;
+                validate_explicit_decimal_before_encode(
+                    *kind,
+                    &resolved,
+                    &self.ctx.program.tunables,
+                )?;
                 if let Some(child_id) = child {
                     let field = match value.field(key) {
                         Some(inner) => inner,
