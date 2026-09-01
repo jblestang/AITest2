@@ -920,8 +920,17 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.binary_number_rep.is_some() {
         base.binary_number_rep = overlay.binary_number_rep;
     }
+    if overlay.binary_calendar_rep.is_some() {
+        base.binary_calendar_rep = overlay.binary_calendar_rep;
+    }
     if overlay.binary_float_rep.is_some() {
         base.binary_float_rep = overlay.binary_float_rep;
+    }
+    if overlay.binary_decimal_virtual_point.is_some() {
+        base.binary_decimal_virtual_point = overlay.binary_decimal_virtual_point;
+    }
+    if overlay.calendar_pattern.is_some() {
+        base.calendar_pattern = overlay.calendar_pattern;
     }
     if overlay.initiator.is_some() {
         base.initiator = overlay.initiator;
@@ -1032,7 +1041,11 @@ fn is_dfdl_property(name: &str) -> bool {
             | "textTrimKind"
             | "textNumberPadCharacter"
             | "binaryNumberRep"
+            | "binaryCalendarRep"
             | "binaryFloatRep"
+            | "binaryDecimalVirtualPoint"
+            | "calendarPattern"
+            | "calendarPatternKind"
             | "initiator"
             | "terminator"
             | "separator"
@@ -1148,18 +1161,24 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.text_number_pad_character =
                     Some(crate::schema::expand_entities_str(value));
             }
-            "binaryNumberRep" => {
-                props.binary_number_rep = Some(match value.as_str() {
+            "binaryNumberRep" | "binaryCalendarRep" => {
+                let rep = match value.as_str() {
                     "binary" => BinaryNumberRep::Binary,
                     "bcd" => BinaryNumberRep::Bcd,
                     "packed" | "packedBCD" => BinaryNumberRep::PackedBcd,
+                    "ibm4690Packed" | "ibm4690" => BinaryNumberRep::Ibm4690Packed,
                     other => {
                         return Err(ParseError::InvalidXml {
-                            message: alloc::format!("unknown binaryNumberRep `{other}`"),
+                            message: alloc::format!("unknown binary number/calendar rep `{other}`"),
                         }
                         .into())
                     }
-                });
+                };
+                if key == "binaryCalendarRep" {
+                    props.binary_calendar_rep = Some(rep);
+                } else {
+                    props.binary_number_rep = Some(rep);
+                }
             }
             "binaryFloatRep" => {
                 props.binary_float_rep = Some(match value.as_str() {
@@ -1172,6 +1191,15 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     }
                 });
             }
+            "binaryDecimalVirtualPoint" => {
+                props.binary_decimal_virtual_point = Some(value.parse().map_err(|_| {
+                    ParseError::InvalidXml {
+                        message: alloc::format!("invalid binaryDecimalVirtualPoint `{value}`"),
+                    }
+                })?);
+            }
+            "calendarPattern" => props.calendar_pattern = Some(value.clone()),
+            "calendarPatternKind" => {}
             "initiator" => props.initiator = Some(parse_delimiter_literal(value)?),
             "terminator" => props.terminator = Some(parse_delimiter_literal(value)?),
             "separator" => props.separator = Some(parse_delimiter_literal(value)?),

@@ -1,6 +1,6 @@
 use super::runtime::{
     consume_enclosing_delimiter, default_value_for, read_delimited_bytes, read_length_span,
-    read_simple, read_until_separator, Cursor, RuntimeConfig, VmContext,
+    read_prefixed_payload, read_simple, read_until_separator, Cursor, RuntimeConfig, VmContext,
 };
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
@@ -233,6 +233,23 @@ impl<'a> Decoder<'a> {
                         if !sub.is_empty() {
                             return Err(VmError::InvalidValue {
                                 message: "unconsumed bytes in delimited complex element".into(),
+                            }
+                            .into());
+                        }
+                        return Ok(wrap_named(
+                            self.ctx.strings().get(*name)?,
+                            inner,
+                            ValueKind::Complex,
+                        ));
+                    }
+                    if props.length_kind == LengthKind::Prefixed {
+                        let bytes =
+                            read_prefixed_payload(cursor, props, self.ctx.strings())?;
+                        let mut sub = Cursor::new(&bytes);
+                        let inner = self.decode_node(*child_id, &mut sub, false, None)?;
+                        if !sub.is_empty() {
+                            return Err(VmError::InvalidValue {
+                                message: "unconsumed bytes in prefixed complex element".into(),
                             }
                             .into());
                         }

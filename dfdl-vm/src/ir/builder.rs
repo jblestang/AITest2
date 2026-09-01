@@ -403,6 +403,8 @@ fn value_kind_from_builtin(builtin: BuiltinType) -> ValueKind {
         BuiltinType::UnsignedByte => ValueKind::UnsignedByte,
         BuiltinType::Float => ValueKind::Float,
         BuiltinType::Double => ValueKind::Double,
+        BuiltinType::Decimal => ValueKind::Decimal,
+        BuiltinType::DateTime => ValueKind::DateTime,
         BuiltinType::String => ValueKind::String,
         BuiltinType::HexBinary => ValueKind::HexBinary,
     }
@@ -479,8 +481,20 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.binary_number_rep {
         base.binary_number_rep = v;
     }
+    if let Some(v) = props.binary_calendar_rep {
+        base.binary_calendar_rep = v;
+    }
     if let Some(v) = props.binary_float_rep {
         base.binary_float_rep = v;
+    }
+    if props.binary_decimal_virtual_point.is_some() {
+        base.binary_decimal_virtual_point = props.binary_decimal_virtual_point.unwrap_or(0);
+    }
+    if props.calendar_pattern.is_some() {
+        base.calendar_pattern = props
+            .calendar_pattern
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
     }
     if let Some(ref s) = props.initiator {
         if !s.is_empty() {
@@ -550,7 +564,10 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.text_trim_kind = overlay.text_trim_kind;
     out.text_number_pad_character = overlay.text_number_pad_character;
     out.binary_number_rep = overlay.binary_number_rep;
+    out.binary_calendar_rep = overlay.binary_calendar_rep;
     out.binary_float_rep = overlay.binary_float_rep;
+    out.binary_decimal_virtual_point = overlay.binary_decimal_virtual_point;
+    out.calendar_pattern = overlay.calendar_pattern;
     if overlay.initiator.is_some() {
         out.initiator = overlay.initiator;
     }

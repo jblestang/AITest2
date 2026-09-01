@@ -387,3 +387,40 @@ fn daffodil_prefixed_bin_representation_suite() {
         assert_named_test_passes(tdml, name);
     }
 }
+
+#[test]
+fn daffodil_prefixed_decimal_and_datetime_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_text_dec_txt_bytes",
+        "pl_text_dec_txt_bits",
+        "pl_text_date_txt_bytes",
+        "pl_text_date_txt_bits",
+        "pl_bin_dec_txt_bytes",
+        "pl_bin_dec_txt_bits",
+        "pl_bin_dec_bin_bytes",
+        "pl_bin_dec_bin_bits",
+        "pl_bin_dec_bin_bytes_packed",
+        "pl_bin_dec_bin_bits_packed",
+        "pl_bin_dec_bin_bytes_bcd",
+        "pl_bin_dec_bin_bits_bcd",
+        "pl_bin_dec_bin_bytes_ibm4690",
+        "pl_bin_dec_bin_bits_ibm4690",
+        "pl_bin_date_bin_bytes_packed",
+        "pl_bin_date_bin_bits_packed",
+        "pl_bin_date_bin_bytes_bcd",
+        "pl_bin_date_bin_bits_bcd",
+        "pl_bin_date_bin_bytes_ibm4690",
+        "pl_bin_date_bin_bits_ibm4690",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_prefixed_complex_content_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in ["pl_complex_bin_bytes", "pl_complex_bin_bits"] {
+        assert_named_test_passes(tdml, name);
+    }
+}

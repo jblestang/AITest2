@@ -31,7 +31,10 @@ pub struct DfdlProps {
     /// Expanded pad character for numeric text (`dfdl:textNumberPadCharacter`).
     pub text_number_pad_character: Option<String>,
     pub binary_number_rep: Option<BinaryNumberRep>,
+    pub binary_calendar_rep: Option<BinaryNumberRep>,
     pub binary_float_rep: Option<BinaryFloatRep>,
+    pub binary_decimal_virtual_point: Option<u32>,
+    pub calendar_pattern: Option<String>,
     pub initiator: Option<String>,
     pub terminator: Option<String>,
     pub separator: Option<String>,
@@ -121,6 +124,7 @@ pub enum BinaryNumberRep {
     Binary,
     Bcd,
     PackedBcd,
+    Ibm4690Packed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +185,8 @@ pub enum BuiltinType {
     UnsignedByte,
     Float,
     Double,
+    Decimal,
+    DateTime,
     Boolean,
     HexBinary,
 }
@@ -199,6 +205,8 @@ impl BuiltinType {
             "xs:unsignedByte" | "unsignedByte" => Some(BuiltinType::UnsignedByte),
             "xs:float" | "float" => Some(BuiltinType::Float),
             "xs:double" | "double" => Some(BuiltinType::Double),
+            "xs:decimal" | "decimal" => Some(BuiltinType::Decimal),
+            "xs:dateTime" | "dateTime" => Some(BuiltinType::DateTime),
             "xs:boolean" | "boolean" => Some(BuiltinType::Boolean),
             "xs:hexBinary" | "hexBinary" => Some(BuiltinType::HexBinary),
             _ => None,
@@ -217,6 +225,8 @@ impl BuiltinType {
             BuiltinType::UnsignedByte => "xs:unsignedByte",
             BuiltinType::Float => "xs:float",
             BuiltinType::Double => "xs:double",
+            BuiltinType::Decimal => "xs:decimal",
+            BuiltinType::DateTime => "xs:dateTime",
             BuiltinType::Boolean => "xs:boolean",
             BuiltinType::HexBinary => "xs:hexBinary",
         }

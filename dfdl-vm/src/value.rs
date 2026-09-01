@@ -17,6 +17,10 @@ pub enum DfdlValue {
     UnsignedByte(u8),
     Float(f32),
     Double(f64),
+    /// Decimal value as canonical string (e.g. `123.45`).
+    Decimal(String),
+    /// ISO-like dateTime string (e.g. `2004-06-14T18:56:03`).
+    DateTime(String),
     String(String),
     HexBinary(Vec<u8>),
     /// Repeated occurrences of an element or group.

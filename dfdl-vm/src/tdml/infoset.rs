@@ -166,6 +166,8 @@ fn scalar_to_string(value: &DfdlValue) -> String {
         DfdlValue::UnsignedByte(v) => v.to_string(),
         DfdlValue::Float(v) => v.to_string(),
         DfdlValue::Double(v) => v.to_string(),
+        DfdlValue::Decimal(v) => v.clone(),
+        DfdlValue::DateTime(v) => v.clone(),
         DfdlValue::String(v) => v.clone(),
         DfdlValue::HexBinary(v) => hex_encode(v),
         DfdlValue::Null => String::new(),
