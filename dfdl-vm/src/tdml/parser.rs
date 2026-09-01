@@ -7,6 +7,15 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use xml_no_std::reader::XmlEvent;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoundTrip {
+    /// Use the suite-level `defaultRoundTrip` attribute.
+    Inherit,
+    Disabled,
+    OnePass,
+    TwoPass,
+}
+
 /// Parsed TDML test suite.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TdmlSuite {
@@ -14,6 +23,7 @@ pub struct TdmlSuite {
     pub schemas: BTreeMap<String, TdmlSchema>,
     pub tests: Vec<ParserTestCase>,
     pub unparser_tests: Vec<UnparserTestCase>,
+    pub default_round_trip: RoundTrip,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +41,7 @@ pub struct ParserTestCase {
     pub expected_infoset: String,
     /// When set, the test expects decode to fail with at least this many errors.
     pub expected_errors: Option<usize>,
+    pub round_trip: RoundTrip,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +74,7 @@ pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
         .get("suiteName")
         .cloned()
         .unwrap_or_else(|| "unnamed".into());
+    let default_round_trip = parse_round_trip(attrs.get("defaultRoundTrip").map(String::as_str));
 
     let mut schemas = BTreeMap::new();
     let mut tests = Vec::new();
@@ -90,7 +102,27 @@ pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
         schemas,
         tests,
         unparser_tests,
+        default_round_trip,
     })
+}
+
+fn parse_round_trip(value: Option<&str>) -> RoundTrip {
+    match value {
+        Some("false") | Some("none") => RoundTrip::Disabled,
+        Some("onePass") => RoundTrip::OnePass,
+        Some("twoPass") => RoundTrip::TwoPass,
+        _ => RoundTrip::Inherit,
+    }
+}
+
+pub(crate) fn effective_round_trip(test: RoundTrip, suite_default: RoundTrip) -> RoundTrip {
+    if test != RoundTrip::Inherit {
+        return test;
+    }
+    if suite_default != RoundTrip::Inherit {
+        return suite_default;
+    }
+    RoundTrip::Disabled
 }
 
 fn parse_define_schema(attrs: BTreeMap<String, String>, reader: &mut XmlReader<'_>) -> Result<TdmlSchema> {
@@ -115,6 +147,7 @@ fn parse_parser_test_case(
         element: "parserTestCase".into(),
         attribute: "model".into(),
     })?;
+    let round_trip = parse_round_trip(attrs.get("roundTrip").map(String::as_str));
 
     let mut documents = Vec::new();
     let mut expected_infoset = String::new();
@@ -147,6 +180,7 @@ fn parse_parser_test_case(
         documents,
         expected_infoset,
         expected_errors,
+        round_trip,
     })
 }
 
@@ -372,6 +406,20 @@ mod tests {
             .expect("test");
         assert_eq!(test.documents.len(), 1);
         assert!(test.documents[0].data.starts_with(b"000118"));
+    }
+
+    #[test]
+    fn parse_round_trip_attributes() {
+        let tdml = r##"<tdml:testSuite suiteName="t" defaultRoundTrip="onePass" xmlns:tdml="http://www.ibm.com/xmlns/dfdl/testData">
+  <tdml:defineSchema name="s"><xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="A" type="xs:string"/></xs:schema></tdml:defineSchema>
+  <tdml:parserTestCase name="two" root="A" model="s" roundTrip="twoPass">
+    <tdml:document><tdml:documentPart type="text">x</tdml:documentPart></tdml:document>
+    <tdml:infoset><tdml:dfdlInfoset><A>x</A></tdml:dfdlInfoset></tdml:infoset>
+  </tdml:parserTestCase>
+</tdml:testSuite>"##;
+        let suite = parse_tdml(tdml).expect("parse");
+        assert_eq!(suite.default_round_trip, RoundTrip::OnePass);
+        assert_eq!(suite.tests[0].round_trip, RoundTrip::TwoPass);
     }
 
     #[test]

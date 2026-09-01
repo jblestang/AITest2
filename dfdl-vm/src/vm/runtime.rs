@@ -688,15 +688,15 @@ pub(crate) fn write_binary_scalar(
     use crate::ir::ValueKind::*;
     use crate::value::DfdlValue;
 
+    if props.length_kind == LengthKind::Prefixed {
+        let payload = encode_binary_payload_bytes(value, kind, props)?;
+        return write_prefixed_bytes(out, &payload, props, strings);
+    }
+
     if props.length_units == LengthUnits::Bits {
         return Err(VmError::UnsupportedOperation {
             op: "bit-level encode".into(),
         });
-    }
-
-    if props.length_kind == LengthKind::Prefixed {
-        let payload = encode_binary_payload_bytes(value, kind, props)?;
-        return write_prefixed_bytes(out, &payload, props, strings);
     }
 
     let le = props.byte_order == ByteOrder::LittleEndian;
@@ -786,6 +786,8 @@ pub(crate) fn write_text_scalar(
         (Long, DfdlValue::Long(v)) => alloc::format!("{v}"),
         (Float, DfdlValue::Float(v)) => alloc::format!("{v}"),
         (Double, DfdlValue::Double(v)) => alloc::format!("{v}"),
+        (Decimal, DfdlValue::Decimal(v)) => v.clone(),
+        (DateTime, DfdlValue::DateTime(v)) => v.clone(),
         (String, DfdlValue::String(v)) => v.clone(),
         (HexBinary, DfdlValue::HexBinary(v)) => encode_hex(v),
         (expected, _) => {
@@ -1620,6 +1622,49 @@ fn prefix_field_length_units(
     }
 }
 
+fn prefix_field_byte_length(prefix: &IrPrefixLength) -> Result<usize, crate::error::VmError> {
+    use crate::error::VmError;
+    let len = match prefix.props.length_kind {
+        LengthKind::Explicit | LengthKind::Fixed => prefix
+            .props
+            .length
+            .ok_or(VmError::InvalidValue {
+                message: "prefix type missing length".into(),
+            })? as usize,
+        LengthKind::Implicit => type_size(prefix.kind),
+        other => {
+            return Err(VmError::UnsupportedOperation {
+                op: alloc::format!(
+                    "prefix lengthKind `{}` encode",
+                    length_kind_name(other)
+                ),
+            });
+        }
+    };
+    Ok(match prefix.props.length_units {
+        LengthUnits::Bits => len.div_ceil(8),
+        LengthUnits::Bytes | LengthUnits::Characters => len,
+    })
+}
+
+fn prefix_is_numeric(kind: crate::ir::ValueKind) -> bool {
+    use crate::ir::ValueKind::*;
+    matches!(
+        kind,
+        Boolean
+            | Byte
+            | Short
+            | Int
+            | Long
+            | UnsignedByte
+            | UnsignedShort
+            | UnsignedInt
+            | Float
+            | Double
+            | Decimal
+    )
+}
+
 fn write_prefix_field(
     out: &mut alloc::vec::Vec<u8>,
     value: u64,
@@ -1636,7 +1681,7 @@ fn write_prefix_field(
                 message: "text prefix type missing length".into(),
             })? as usize;
             let mut pad = pad_char_from_props(&prefix.props, strings).unwrap_or("0");
-            if pad == " " {
+            if pad == " " || prefix_is_numeric(prefix.kind) {
                 pad = "0";
             }
             let mut padded = text;
@@ -1662,36 +1707,29 @@ fn write_prefix_field(
                     );
                 }
                 LengthUnits::Bits => {
-                    return Err(VmError::UnsupportedOperation {
-                        op: "text prefix with bit length units".into(),
-                    });
+                    let byte_len = len.div_ceil(8);
+                    while padded.as_bytes().len() < byte_len {
+                        padded.insert(0, pad.chars().next().unwrap_or('0'));
+                    }
+                    let bytes = padded.as_bytes();
+                    if bytes.len() > byte_len {
+                        return Err(VmError::InvalidValue {
+                            message: "prefix value too long".into(),
+                        });
+                    }
+                    out.extend_from_slice(bytes);
                 }
             }
             Ok(())
         }
         Representation::Binary => {
-            let len = match prefix.props.length_kind {
-                LengthKind::Explicit | LengthKind::Fixed => {
-                    prefix.props.length.ok_or(VmError::InvalidValue {
-                        message: "binary prefix type missing length".into(),
-                    })? as usize
-                }
-                LengthKind::Implicit => type_size(prefix.kind),
-                other => {
-                    return Err(VmError::UnsupportedOperation {
-                        op: alloc::format!(
-                            "binary prefix lengthKind `{}` encode",
-                            length_kind_name(other)
-                        ),
-                    });
-                }
-            };
+            let byte_len = prefix_field_byte_length(prefix)?;
             let le = prefix.props.byte_order == ByteOrder::LittleEndian;
             let mut bytes = value.to_be_bytes().to_vec();
-            if bytes.len() > len {
-                bytes = bytes[bytes.len() - len..].to_vec();
-            } else if bytes.len() < len {
-                let pad = len - bytes.len();
+            if bytes.len() > byte_len {
+                bytes = bytes[bytes.len() - byte_len..].to_vec();
+            } else if bytes.len() < byte_len {
+                let pad = byte_len - bytes.len();
                 if le {
                     bytes.splice(0..0, iter::repeat(0u8).take(pad));
                 } else {

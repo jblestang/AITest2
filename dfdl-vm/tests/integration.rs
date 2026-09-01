@@ -101,25 +101,34 @@ fn ir_is_populated() {
 }
 
 #[test]
-fn prefixed_text_string_round_trip() {
+fn prefixed_roundtrip_probe() {
     use dfdl_vm::tdml::parse_tdml;
 
     let tdml = include_str!(
         "../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/lengthKind/PrefixedTests.tdml"
     );
     let suite = parse_tdml(tdml).expect("parse tdml");
-    let test = suite
-        .tests
-        .iter()
-        .find(|t| t.name == "pl_text_string_txt_bytes")
-        .expect("test");
     let schema = suite
         .schemas
         .get("lengthKindPrefixed-text.dfdl.xsd")
         .expect("schema");
-    let spec =
-        DfdlSpec::from_xsd_root(&schema.xsd, Some("pl_text_string_txt_bytes")).expect("spec");
-    let decoded = spec.decode(&test.documents[0].data).expect("decode");
-    let encoded = spec.encode(&decoded).expect("encode");
-    assert_eq!(encoded, test.documents[0].data);
+    for name in [
+        "pl_text_string_txt_bytes",
+        "pl_text_string_txt_bits",
+        "pl_text_string_txt_bytes_includes",
+        "pl_text_string_txt_bits_includes",
+        "pl_text_int_txt_bytes",
+        "pl_text_int_txt_bits",
+        "pl_text_string_bin_bytes",
+        "pl_text_int_txt_bytes_plchars",
+    ] {
+        let test = suite.tests.iter().find(|t| t.name == name).unwrap();
+        let spec = DfdlSpec::from_xsd_root(&schema.xsd, Some(&test.root)).expect("spec");
+        let input = &test.documents[0].data;
+        let decoded = spec.decode(input).expect("decode");
+        match spec.encode(&decoded) {
+            Ok(enc) => assert_eq!(enc, *input, "roundtrip mismatch for {name}"),
+            Err(e) => panic!("encode failed for {name}: {e}"),
+        }
+    }
 }

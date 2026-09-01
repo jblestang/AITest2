@@ -1,5 +1,7 @@
 use super::infoset::{compare_infoset, infoset_xml_to_root_value};
-use super::parser::{parse_tdml, ParserTestCase, TdmlSuite, UnparserTestCase};
+use super::parser::{
+    effective_round_trip, parse_tdml, ParserTestCase, RoundTrip, TdmlSuite, UnparserTestCase,
+};
 use crate::api::DfdlSpec;
 use crate::error::Result;
 use crate::vm::RuntimeConfig;
@@ -32,6 +34,15 @@ pub fn run_suite(tdml: &str) -> Result<Vec<TestResult>> {
 
 /// Run a single parser test case from an already-parsed suite.
 pub fn run_parser_test(suite: &TdmlSuite, test: &ParserTestCase) -> Result<TestResult> {
+    run_parser_test_with_options(suite, test, false)
+}
+
+/// Run a parser test case, optionally verifying `roundTrip="twoPass"` after a successful parse.
+pub fn run_parser_test_with_options(
+    suite: &TdmlSuite,
+    test: &ParserTestCase,
+    verify_round_trip: bool,
+) -> Result<TestResult> {
     let schema_xsd = match resolve_model_schema(suite, &test.model) {
         Ok(xsd) => xsd,
         Err(e) => {
@@ -96,10 +107,35 @@ pub fn run_parser_test(suite: &TdmlSuite, test: &ParserTestCase) -> Result<TestR
     };
 
     match compare_infoset(&decoded, &test.expected_infoset) {
-        Ok(()) => Ok(TestResult {
-            name: test.name.clone(),
-            outcome: TestOutcome::Pass,
-        }),
+        Ok(()) => {
+            if verify_round_trip
+                && effective_round_trip(test.round_trip, suite.default_round_trip) == RoundTrip::TwoPass
+            {
+                match spec.encode(&decoded) {
+                    Ok(encoded) if encoded == doc.data => Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Pass,
+                    }),
+                    Ok(encoded) => Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Fail(alloc::format!(
+                            "roundtrip byte mismatch: expected {} byte(s), got {} byte(s)",
+                            doc.data.len(),
+                            encoded.len()
+                        )),
+                    }),
+                    Err(e) => Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Fail(alloc::format!("roundtrip encode error: {e}")),
+                    }),
+                }
+            } else {
+                Ok(TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Pass,
+                })
+            }
+        }
         Err(msg) => Ok(TestResult {
             name: test.name.clone(),
             outcome: TestOutcome::Fail(msg),

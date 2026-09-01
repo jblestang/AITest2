@@ -1,4 +1,4 @@
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_unparser_test, TestOutcome};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_parser_test_with_options, run_unparser_test, TestOutcome};
 
 macro_rules! daffodil_tdml {
     ($file:literal) => {
@@ -32,6 +32,21 @@ fn assert_named_test_passes(tdml: &str, test_name: &str) {
         .find(|t| t.name == test_name)
         .unwrap_or_else(|| panic!("test `{test_name}` not found"));
     let result = run_parser_test(&suite, test).expect("run test");
+    match result.outcome {
+        TestOutcome::Pass => {}
+        TestOutcome::Fail(msg) => panic!("test `{test_name}` failed: {msg}"),
+        TestOutcome::Skip(msg) => panic!("test `{test_name}` skipped: {msg}"),
+    }
+}
+
+fn assert_named_test_passes_roundtrip(tdml: &str, test_name: &str) {
+    let suite = parse_tdml(tdml).expect("parse tdml");
+    let test = suite
+        .tests
+        .iter()
+        .find(|t| t.name == test_name)
+        .unwrap_or_else(|| panic!("test `{test_name}` not found"));
+    let result = run_parser_test_with_options(&suite, test, true).expect("run test");
     match result.outcome {
         TestOutcome::Pass => {}
         TestOutcome::Fail(msg) => panic!("test `{test_name}` failed: {msg}"),
@@ -600,6 +615,28 @@ fn daffodil_prefixed_facet_compile_error_suite() {
         "pl_complexContentLengthCharacters_utf8_1",
     ] {
         assert_named_test_passes(tdml, name);
+    }
+}
+
+#[test]
+fn daffodil_prefixed_twopass_roundtrip_suite() {
+    let tdml = daffodil_tdml!("PrefixedTests.tdml");
+    for name in [
+        "pl_text_string_txt_bytes",
+        "pl_text_string_txt_bits",
+        "pl_text_string_txt_bytes_includes",
+        "pl_text_string_txt_bits_includes",
+        "pl_text_int_txt_bytes",
+        "pl_text_int_txt_bits",
+        "pl_text_string_bin_bytes",
+        "pl_text_int_txt_bytes_plchars",
+        "pl_text_int_txt_bytes_plbits",
+        "pl_text_int_txt_bits_plbytes",
+        "pl_text_int_txt_bits_plchars",
+        "pl_bin_int_txt_bytes",
+        "pl_bin_int_bin_bytes",
+    ] {
+        assert_named_test_passes_roundtrip(tdml, name);
     }
 }
 
