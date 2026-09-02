@@ -64,6 +64,34 @@ pub fn normalize_delimiter_pattern(raw: &str) -> String {
     expand_entities_str(raw.trim_end_matches([' ', '\t']))
 }
 
+/// Unescape DFDL `{`/`{{` open-brace escape sequences in a single delimiter token.
+pub fn unescape_dfdl_open_braces(raw: &str) -> String {
+    let mut out = String::new();
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            out.push('{');
+            i += 2;
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Parse a delimiter literal from an XSD attribute value.
+pub fn parse_delimiter_literal_value(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let unescaped = if trimmed.chars().any(char::is_whitespace) {
+        trimmed.to_string()
+    } else {
+        unescape_dfdl_open_braces(trimmed)
+    };
+    normalize_delimiter_pattern(&unescaped)
+}
+
 fn ascii_eq_ic(a: u8, b: u8, ignore_case: bool) -> bool {
     if a == b {
         return true;
@@ -1176,6 +1204,13 @@ mod tests {
         let doc = b"cat,dog\r\n,house.";
         let pat = "(?s)cat(\r\n)?,dog(\r\n)?,house.";
         assert_eq!(match_length_pattern(doc, pat), Some(doc.len()));
+    }
+
+    #[test]
+    fn parse_delimiter_literal_unescapes_single_token_open_braces() {
+        assert_eq!(super::parse_delimiter_literal_value("{{"), "{");
+        assert_eq!(super::parse_delimiter_literal_value("{{{"), "{{");
+        assert_eq!(super::parse_delimiter_literal_value("{{ {{ ["), "{{ {{ [");
     }
 
     #[test]

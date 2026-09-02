@@ -1682,7 +1682,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
 }
 
 fn parse_delimiter_literal(raw: &str) -> Result<String> {
-    Ok(crate::schema::normalize_delimiter_pattern(raw))
+    Ok(crate::schema::parse_delimiter_literal_value(raw))
 }
 
 fn is_dfdl_local(tag: &str) -> bool {

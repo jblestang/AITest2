@@ -28,3 +28,8 @@ fn delims_ignorecase_01() {
 fn delims_ignorecase_02() {
     assert_named_test_passes("delims_ignorecase_02");
 }
+
+#[test]
+fn parse_sequence4_brace_escaping() {
+    assert_named_test_passes("ParseSequence4");
+}
