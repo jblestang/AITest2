@@ -1987,42 +1987,61 @@ fn delimiter_pattern_ids(props: &IrProps) -> alloc::vec::Vec<StringId> {
     ids
 }
 
-fn non_empty_delimiter_patterns(
+#[derive(Clone, Debug)]
+struct DelimScanPattern {
+    pat: alloc::string::String,
+    ignore_case: bool,
+}
+
+fn push_delimiter_scan_patterns(
+    patterns: &mut alloc::vec::Vec<DelimScanPattern>,
+    pat: &str,
+    ignore_case: bool,
+) {
+    if pat.is_empty() {
+        return;
+    }
+    if patterns.iter().any(|p| p.pat == pat) {
+        return;
+    }
+    patterns.push(DelimScanPattern {
+        pat: pat.to_string(),
+        ignore_case,
+    });
+    if let Some((_, suffix)) = pat.rsplit_once(' ') {
+        push_delimiter_scan_patterns(patterns, suffix, ignore_case);
+    }
+}
+
+fn non_empty_delimiter_scan_patterns(
     props: &IrProps,
     strings: &StringPool,
-) -> Result<alloc::vec::Vec<alloc::string::String>, crate::error::VmError> {
+) -> Result<alloc::vec::Vec<DelimScanPattern>, crate::error::VmError> {
     let mut patterns = alloc::vec::Vec::new();
     for id in delimiter_pattern_ids(props) {
         let pat = strings.get(id)?;
-        if pat.is_empty() {
-            continue;
-        }
-        patterns.push(pat.to_string());
-        // Daffodil delimiter literals like `a aab` also match the suffix token (`aab`).
-        if let Some((_, suffix)) = pat.rsplit_once(' ') {
-            if !suffix.is_empty() && !patterns.iter().any(|p| p == suffix) {
-                patterns.push(suffix.to_string());
-            }
+        push_delimiter_scan_patterns(&mut patterns, pat, props.ignore_case);
+    }
+    Ok(patterns)
+}
+
+fn enclosing_delimiter_scan_patterns(
+    props: &IrProps,
+    strings: &StringPool,
+    stop_sequences: &[&IrProps],
+) -> Result<alloc::vec::Vec<DelimScanPattern>, crate::error::VmError> {
+    let mut patterns = non_empty_delimiter_scan_patterns(props, strings)?;
+    for seq in stop_sequences {
+        for id in delimiter_pattern_ids(seq) {
+            let pat = strings.get(id)?;
+            push_delimiter_scan_patterns(&mut patterns, pat, seq.ignore_case);
         }
     }
     Ok(patterns)
 }
 
-fn enclosing_delimiter_patterns(
-    props: &IrProps,
-    strings: &StringPool,
-    stop_sequences: &[&IrProps],
-) -> Result<alloc::vec::Vec<alloc::string::String>, crate::error::VmError> {
-    let mut patterns = non_empty_delimiter_patterns(props, strings)?;
-    for seq in stop_sequences {
-        for id in delimiter_pattern_ids(seq) {
-            let pat = strings.get(id)?;
-            if !pat.is_empty() && !patterns.iter().any(|p| p == pat) {
-                patterns.push(pat.to_string());
-            }
-        }
-    }
-    Ok(patterns)
+fn should_defer_parent_stop_delimiter(props: &IrProps) -> bool {
+    props.initiator.is_some()
 }
 
 pub(crate) fn would_read_empty_delimited_field(
@@ -2031,12 +2050,12 @@ pub(crate) fn would_read_empty_delimited_field(
     strings: &StringPool,
     stop_sequences: &[&IrProps],
 ) -> Result<bool, crate::error::VmError> {
-    let patterns = enclosing_delimiter_patterns(props, strings, stop_sequences)?;
-    for pat in &patterns {
+    let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences)?;
+    for entry in &patterns {
         if let Some(n) = crate::schema::match_delimiter_opts(
             &cursor.data[cursor.pos..],
-            pat,
-            props.ignore_case,
+            &entry.pat,
+            entry.ignore_case,
         ) {
             if n > 0 {
                 return Ok(true);
@@ -2054,7 +2073,7 @@ fn read_until_delimiters(
     stop_sequences: &[&IrProps],
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
-    let patterns = enclosing_delimiter_patterns(props, strings, stop_sequences)?;
+    let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences)?;
     if patterns.is_empty() {
         if require_delimiter {
             return Err(VmError::InvalidValue {
@@ -2065,13 +2084,7 @@ fn read_until_delimiters(
         cursor.pos = cursor.data.len();
         return Ok(rest);
     }
-    read_until_any_delimiter(
-        cursor,
-        &patterns,
-        require_delimiter,
-        &patterns,
-        props.ignore_case,
-    )
+    read_until_any_delimiter(cursor, &patterns, require_delimiter)
 }
 
 pub(crate) fn read_until_separator(
@@ -2080,14 +2093,11 @@ pub(crate) fn read_until_separator(
     require_delimiter: bool,
     ignore_case: bool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
-    let patterns = [separator.to_string()];
-    read_until_any_delimiter(
-        cursor,
-        &patterns,
-        require_delimiter,
-        &patterns,
+    let patterns = [DelimScanPattern {
+        pat: separator.to_string(),
         ignore_case,
-    )
+    }];
+    read_until_any_delimiter(cursor, &patterns, require_delimiter)
 }
 
 pub(crate) fn insufficient_data_bits_error(needed_bits: usize, found_bits: usize) -> crate::error::VmError {
@@ -2196,18 +2206,18 @@ pub(crate) fn read_delimited_bytes(
 
 fn read_until_any_delimiter(
     cursor: &mut Cursor<'_>,
-    delimiters: &[alloc::string::String],
+    delimiters: &[DelimScanPattern],
     require_delimiter: bool,
-    patterns_for_error: &[alloc::string::String],
-    ignore_case: bool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let start = cursor.pos;
     while cursor.remaining() > 0 {
-        for delim in delimiters {
-            if let Some(n) =
-                crate::schema::match_delimiter_opts(&cursor.data[cursor.pos..], delim, ignore_case)
-            {
+        for entry in delimiters {
+            if let Some(n) = crate::schema::match_delimiter_opts(
+                &cursor.data[cursor.pos..],
+                &entry.pat,
+                entry.ignore_case,
+            ) {
                 if n > 0 || cursor.pos == start {
                     return Ok(cursor.data[start..cursor.pos].to_vec());
                 }
@@ -2216,9 +2226,9 @@ fn read_until_any_delimiter(
         cursor.advance(1);
     }
     if require_delimiter {
-        let terms = patterns_for_error
+        let terms = delimiters
             .iter()
-            .map(|p| alloc::format!("`{}`", format_delimiter_for_error(p)))
+            .map(|p| alloc::format!("`{}`", format_delimiter_for_error(&p.pat)))
             .collect::<alloc::vec::Vec<_>>()
             .join(", ");
         return Err(VmError::InvalidValue {
@@ -2238,11 +2248,11 @@ pub(crate) fn consume_enclosing_delimiter(
     if cursor.is_empty() {
         return Ok(());
     }
-    for pat in non_empty_delimiter_patterns(props, strings)? {
+    for entry in non_empty_delimiter_scan_patterns(props, strings)? {
         if let Some(n) = crate::schema::match_delimiter_opts(
             &cursor.data[cursor.pos..],
-            &pat,
-            props.ignore_case,
+            &entry.pat,
+            entry.ignore_case,
         ) {
             if n > 0 {
                 cursor.advance(n);
@@ -2253,27 +2263,31 @@ pub(crate) fn consume_enclosing_delimiter(
             }
         }
     }
-    for seq in stop_sequences {
-        for id in delimiter_pattern_ids(seq) {
-            let pat = strings.get(id)?;
-            if !pat.is_empty() {
-                if let Some(n) = crate::schema::match_delimiter_opts(
-                    &cursor.data[cursor.pos..],
-                    pat,
-                    seq.ignore_case,
-                ) {
-                    let own = non_empty_delimiter_patterns(props, strings)?;
-                    if own.iter().any(|p| p == pat) && n > 0 {
-                        cursor.advance(n);
+    if !should_defer_parent_stop_delimiter(props) {
+        for seq in stop_sequences {
+            for id in delimiter_pattern_ids(seq) {
+                let pat = strings.get(id)?;
+                if !pat.is_empty() {
+                    if let Some(n) = crate::schema::match_delimiter_opts(
+                        &cursor.data[cursor.pos..],
+                        pat,
+                        seq.ignore_case,
+                    ) {
+                        let own = non_empty_delimiter_scan_patterns(props, strings)?;
+                        if own.iter().any(|p| p.pat == pat) && n > 0 {
+                            cursor.advance(n);
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
                 }
             }
         }
+        Err(VmError::InvalidValue {
+            message: "delimiter mismatch".into(),
+        })
+    } else {
+        Ok(())
     }
-    Err(VmError::InvalidValue {
-        message: "delimiter mismatch".into(),
-    })
 }
 
 pub(crate) fn is_suppressible_empty_representation(

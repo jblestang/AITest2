@@ -641,7 +641,16 @@ impl<'a> Decoder<'a> {
     }
 
     fn element_consumes_enclosing_delimiter(&self, node_id: u32, props: &IrProps) -> bool {
-        self.is_delimited_element(node_id, props)
+        if !self.is_delimited_element(node_id, props) {
+            return false;
+        }
+        if matches!(
+            self.ctx.program.node(node_id),
+            Ok(IrNode::Element { child: Some(_), .. })
+        ) {
+            return true;
+        }
+        props.initiator.is_none() && props.terminator.is_none()
     }
 
     fn is_complex_delimited_element(&self, node_id: u32, props: &IrProps) -> Result<bool> {

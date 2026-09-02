@@ -12,6 +12,15 @@ macro_rules! daffodil_tdml {
     };
 }
 
+macro_rules! daffodil_delimiter_tdml {
+    ($file:literal) => {
+        include_str!(concat!(
+            "../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/delimiter_properties/",
+            $file
+        ))
+    };
+}
+
 fn assert_named_unparser_test_passes(tdml: &str, test_name: &str) {
     let suite = parse_tdml(tdml).expect("parse tdml");
     let test = suite
@@ -1014,5 +1023,22 @@ fn daffodil_section12_length_kind_full_regression_suite() {
                 }
             }
         }
+    }
+}
+
+/// Section 12 delimiter_properties regression subset (parse cases we pass).
+#[test]
+fn daffodil_section12_delimiter_properties_suite() {
+    let tdml = daffodil_delimiter_tdml!("DelimiterProperties.tdml");
+    for name in [
+        "DelimProp_02",
+        "DelimProp_03",
+        "DelimProp_04",
+        "DelimProp_05",
+        "delims_ignorecase_01",
+        "delims_ignorecase_02",
+        "Lesson4_initiators_terminators",
+    ] {
+        assert_named_test_passes(tdml, name);
     }
 }

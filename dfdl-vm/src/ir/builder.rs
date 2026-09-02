@@ -828,9 +828,12 @@ fn particle_inherited_for_children(
     if !group_props.max_occurs_specified {
         inherited.occurs_max = defaults.occurs_max;
     }
-    // Initiator/terminator on a group apply to the group node itself, not its children.
+    // Initiator/terminator/separator on a group apply to the group node itself, not its children.
     inherited.initiator = None;
     inherited.terminator = None;
+    inherited.separator = None;
+    // Group ignoreCase applies to group delimiters only; children inherit format defaults.
+    inherited.ignore_case = defaults.ignore_case;
     inherited
 }
 

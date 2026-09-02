@@ -61,7 +61,7 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
 
 /// Normalize a DFDL delimiter property value (trim ignored trailing space, expand entities).
 pub fn normalize_delimiter_pattern(raw: &str) -> String {
-    expand_entities_str(raw.trim_end())
+    expand_entities_str(raw.trim_end_matches([' ', '\t']))
 }
 
 fn ascii_eq_ic(a: u8, b: u8, ignore_case: bool) -> bool {
