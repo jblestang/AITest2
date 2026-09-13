@@ -467,7 +467,32 @@ impl<'a> Decoder<'a> {
                 }
                 consume_alignment(cursor, &props)?;
                 if let Some(child_id) = child {
+                    crate::vm::runtime::validate_nil_value_runtime(&props, self.ctx.strings())?;
                     self.consume_initiator(&props, cursor)?;
+                    if props.nillable
+                        && crate::vm::runtime::nil_value_includes_empty(&props, self.ctx.strings())?
+                        && cursor.is_empty()
+                    {
+                        return Ok(wrap_named(
+                            self.ctx.strings().get(*name)?,
+                            DfdlValue::Null,
+                            *kind,
+                        ));
+                    }
+                    if props.nillable
+                        && crate::vm::runtime::try_consume_nillable_element_nil(
+                            cursor,
+                            &props,
+                            parent_sequence,
+                            self.ctx.strings(),
+                        )?
+                    {
+                        return Ok(wrap_named(
+                            self.ctx.strings().get(*name)?,
+                            DfdlValue::Null,
+                            *kind,
+                        ));
+                    }
                     if props.length_kind == LengthKind::Pattern {
                         let id = props.length_pattern.ok_or(VmError::InvalidValue {
                             message: "pattern complex missing lengthPattern".into(),
@@ -541,6 +566,7 @@ impl<'a> Decoder<'a> {
                                 }
                                 .into());
                             }
+                            self.consume_terminator(&props, cursor)?;
                             return Ok(wrap_named(
                                 self.ctx.strings().get(*name)?,
                                 inner,
@@ -1184,6 +1210,9 @@ fn wrap_root(name: &str, value: DfdlValue) -> DfdlValue {
 
 fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
     if kind == ValueKind::Complex {
+        if matches!(inner, DfdlValue::Null) {
+            return DfdlValue::Null;
+        }
         match inner {
             DfdlValue::Sequence(seq) => {
                 if !seq.fields.contains_key(name) {

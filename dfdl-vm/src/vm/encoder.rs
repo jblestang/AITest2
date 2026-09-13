@@ -242,7 +242,13 @@ impl<'a> Encoder<'a> {
             }
             write_alignment(out, bit_count, props)?;
             self.write_initiator(props, out, bit_count, None)?;
-            self.encode_node(node_id, item, out, bit_count)?;
+            if matches!(item, DfdlValue::Null) {
+                let nil_bytes =
+                    nil_unparse_bytes_for_encode(props, self.ctx.strings()).map_err(Error::from)?;
+                write_byte_aligned(out, bit_count, &nil_bytes).map_err(Error::from)?;
+            } else {
+                self.encode_node(node_id, item, out, bit_count)?;
+            }
             self.write_terminator(props, out, bit_count, None)?;
             if sep_props.separator_position == SeparatorPosition::Postfix {
                 if !should_suppress_occurrence_separator(

@@ -1217,6 +1217,72 @@ fn read_implicit_numeric_text(
     read_numeric_token(cursor)
 }
 
+fn validate_standard_v_pattern_runtime(
+    pattern: &str,
+    kind: crate::ir::ValueKind,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::ir::ValueKind;
+    if !pattern.contains('V') {
+        return Ok(());
+    }
+    if !matches!(kind, ValueKind::Decimal | ValueKind::Float | ValueKind::Double) {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Schema Definition Error: textNumberPattern xs:double xs:float xs:decimal xs:byte The dfdl:textNumberPattern has a virtual decimal point 'V' or decimal scaling 'P' and dfdl:textNumberRep='standard'. The type must be xs:decimal but was: xs:{}",
+                match kind {
+                    ValueKind::Byte => "byte",
+                    ValueKind::Float => "float",
+                    ValueKind::Double => "double",
+                    ValueKind::Decimal => "decimal",
+                    _ => "number",
+                }
+            ),
+        });
+    }
+    for sub in pattern.split(';') {
+        let mut bare = sub.to_string();
+        let mut in_q = false;
+        let mut stripped = alloc::string::String::new();
+        for c in bare.chars() {
+            if c == '\'' {
+                in_q = !in_q;
+                continue;
+            }
+            if !in_q {
+                stripped.push(c);
+            }
+        }
+        bare = stripped;
+        if bare.starts_with('-') {
+            bare = bare[1..].to_string();
+        }
+        if bare.starts_with('[') && bare.ends_with(']') {
+            bare = bare[1..bare.len() - 1].to_string();
+        }
+        if bare.starts_with('(') && bare.ends_with(')') {
+            bare = bare[1..bare.len() - 1].to_string();
+        }
+        let Some(v_idx) = bare.find('V') else {
+            continue;
+        };
+        let (before, rest) = bare.split_at(v_idx);
+        let after = &rest[1..];
+        let ok = !before.is_empty()
+            && !after.is_empty()
+            && before
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '#')
+            && after.chars().all(|c| c.is_ascii_digit());
+        if !ok {
+            return Err(VmError::InvalidValue {
+                message: "Schema Definition Error: Invalid textNumberPattern: Must match '#', then digits 0-9 then 'V' then digits 0-9".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn parse_field_text_number(
     trimmed: &str,
     kind: crate::ir::ValueKind,
@@ -1234,6 +1300,20 @@ fn parse_field_text_number(
         return Ok(trimmed.into());
     };
     let raw_pattern = strings.get(pat_id)?;
+    if props.text_number_rep == crate::schema::TextNumberRep::Standard {
+        validate_standard_v_pattern_runtime(raw_pattern, kind)?;
+        if raw_pattern.contains('V')
+            && trimmed.contains('.')
+            && !trimmed.contains('E')
+            && !trimmed.contains('e')
+        {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Parse Error. Unable to parse xs:decimal from text: {trimmed}"
+                ),
+            });
+        }
+    }
     if props.text_number_rep == crate::schema::TextNumberRep::Zoned {
         if matches!(kind, ValueKind::Float | ValueKind::Double) {
             return Err(VmError::InvalidValue {
@@ -2055,6 +2135,13 @@ fn nil_first_alternative(props: &IrProps, strings: &StringPool) -> Result<Option
         .and_then(|alts| alts.into_iter().next()))
 }
 
+pub(crate) fn nil_value_includes_empty(props: &IrProps, strings: &StringPool) -> Result<bool, crate::error::VmError> {
+    let Some(alts) = nil_value_alternatives(props, strings)? else {
+        return Ok(false);
+    };
+    Ok(alts.iter().any(|a| crate::schema::expand_entities(a.trim()).is_empty()))
+}
+
 fn nil_character_repeat_count(props: &IrProps) -> Result<usize, crate::error::VmError> {
     use crate::error::VmError;
     match props.length_kind {
@@ -2158,6 +2245,126 @@ fn text_matches_nil_literal(text: &str, props: &IrProps, strings: &StringPool) -
     Ok(alts.iter().any(|alt| text == alt.as_str()))
 }
 
+pub(crate) fn validate_nil_value_runtime(
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::schema::NilKind;
+    if !props.nillable {
+        return Ok(());
+    }
+    let Some(nil_id) = props.nil_value else {
+        return Ok(());
+    };
+    let raw = strings.get(nil_id)?;
+    if raw.is_empty() {
+        return Err(VmError::InvalidValue {
+            message: "Schema Definition Error: Property dfdl:nilValue cannot be empty string. Use dfdl:nilValue='%ES;' for empty string.".into(),
+        });
+    }
+    if props.nil_kind == Some(NilKind::LiteralCharacter) {
+        for token in ["%NL;", "%ES;", "%WSP;", "%WSP+;", "%WSP*;"] {
+            if raw.contains(token) {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Schema Definition Error: Property dfdl:nilValue contains disallowed character class(es): {token}"
+                    ),
+                });
+            }
+        }
+        for alt in crate::schema::nil_value_alternatives(raw) {
+            let expanded = crate::schema::expand_entities(alt.trim());
+            let as_text = alloc::string::String::from_utf8_lossy(&expanded);
+            if as_text.chars().count() != 1 {
+                return Err(VmError::InvalidValue {
+                    message: "Schema Definition Error: For property dfdl:nilValue the length of string must be exactly 1 character.".into(),
+                });
+            }
+        }
+    }
+    let _ = strings;
+    Ok(())
+}
+
+pub(crate) fn try_consume_nillable_element_nil(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+    parent_sequence: Option<&IrProps>,
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::schema::NilKind;
+    if !props.nillable {
+        return Ok(false);
+    }
+    if !matches!(
+        props.nil_kind,
+        Some(NilKind::LiteralValue) | Some(NilKind::LiteralCharacter)
+    ) {
+        return Ok(false);
+    }
+    let saved = cursor.pos;
+    let empty_nil = nil_value_includes_empty(props, strings)?;
+    if let Some(nil_len) = match_nil_literal_prefix(cursor, props, strings)? {
+        cursor.advance(nil_len);
+        if let Some(term_id) = props.terminator {
+            let term = strings.get(term_id)?;
+            if !term.is_empty()
+                && crate::schema::match_delimiter_opts(
+                    &cursor.data[cursor.pos..],
+                    term,
+                    props.ignore_case,
+                )
+                .is_some()
+            {
+                let _ = cursor.consume_delimiter(term, props.ignore_case);
+                return Ok(true);
+            }
+        }
+        if empty_nil && nil_len == 0 {
+            // fall through to parent-separator / EOS empty-nil checks below
+        } else {
+            cursor.pos = saved;
+        }
+    }
+    if empty_nil {
+        if let Some(term_id) = props.terminator {
+            let term = strings.get(term_id)?;
+            if !term.is_empty()
+                && crate::schema::match_delimiter_opts(
+                    &cursor.data[cursor.pos..],
+                    term,
+                    props.ignore_case,
+                )
+                .is_some()
+            {
+                let _ = cursor.consume_delimiter(term, props.ignore_case);
+                return Ok(true);
+            }
+        }
+        if let Some(parent) = parent_sequence {
+            if let Some(sep_id) = parent.separator {
+                let sep = strings.get(sep_id)?;
+                if !sep.is_empty()
+                    && crate::schema::match_delimiter_opts(
+                        &cursor.data[cursor.pos..],
+                        sep,
+                        parent.ignore_case,
+                    )
+                    .is_some()
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        if cursor.pos >= cursor.data.len() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn match_nil_literal_prefix(
     cursor: &Cursor<'_>,
     props: &IrProps,
@@ -2207,6 +2414,8 @@ pub(crate) fn read_text_scalar(
     use crate::ir::ValueKind::*;
     use crate::value::DfdlValue;
 
+    validate_nil_value_runtime(props, strings)?;
+
     if matches!(kind, String) {
         if let Some(id) = props.text_string_pad_character {
             let raw = strings.get(id)?;
@@ -2223,7 +2432,7 @@ pub(crate) fn read_text_scalar(
             cursor.advance(nil_len);
             return Ok(DfdlValue::Null);
         }
-        if nil_first_alternative(props, strings)?.is_some_and(|nil| nil.is_empty())
+        if nil_value_includes_empty(props, strings)?
             && pattern_allows_zero_length_match(cursor, props, strings)?
         {
             return Ok(DfdlValue::Null);
@@ -2308,6 +2517,14 @@ pub(crate) fn read_text_scalar(
     if trimmed.is_empty() {
         if let Some(v) = default_value_for(kind, props, strings) {
             return Ok(v);
+        }
+    }
+
+    if props.custom_text_number_pattern
+        && props.text_number_rep == crate::schema::TextNumberRep::Standard
+    {
+        if let Some(id) = props.text_number_pattern {
+            validate_standard_v_pattern_runtime(strings.get(id)?, kind)?;
         }
     }
 
