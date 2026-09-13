@@ -48,9 +48,10 @@ macro_rules! section13_file_cases {
     }};
 }
 
-/// Parser/unparser cases that pass today (`packed/packed.tdml` covered in section13_smoke).
+/// Parser/unparser cases that pass today (`packed/packed.tdml` full scan in section13_smoke).
 #[test]
 fn daffodil_section13_regression_suite() {
+    section13_file_cases!("nillable/literal-character-nils.tdml", &["text_01"]);
     section13_file_cases!("decimal/TestDecimalSigned.tdml", &[
         "parseTestDecimalSigned_no_binary",
     ]);
