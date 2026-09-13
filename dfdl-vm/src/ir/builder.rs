@@ -8,10 +8,12 @@ use crate::length_validate::{
 use crate::schema::{
     BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, Particle, Representation,
     SchemaDocument, SimpleBase, TypeDef, TypeName, expand_entities_str,
-    parse_text_standard_separator_list, validate_length_pattern,
+    parse_text_standard_separator_list, parse_text_standard_zero_rep_list,
+    validate_length_pattern,
     validate_text_standard_exponent_rep_literal,
     validate_text_standard_separator_literal,
     validate_text_standard_special_value_literal,
+    validate_text_standard_zero_rep_literal,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -53,6 +55,11 @@ impl<'a> IrBuilder<'a> {
         }
         if defaults.text_standard_nan_rep == StringId(0) {
             defaults.text_standard_nan_rep = strings.intern("NaN");
+        }
+        if defaults.text_standard_zero_rep_defined
+            && strings.get(defaults.text_standard_zero_rep).ok() == Some("")
+        {
+            defaults.text_standard_zero_rep_defined = false;
         }
         Ok(Self {
             schema,
@@ -989,18 +996,20 @@ fn finalize_element_props(
         None
     };
     validate_text_standard_separator_semantics(&ir, pattern_for_sep, strings)?;
-    if ir.text_standard_exponent_rep != StringId(0) && ir.text_standard_exponent_rep_sibling.is_none()
+    if ir.text_standard_exponent_rep_defined
+        && ir.text_standard_exponent_rep_sibling.is_none()
+        && !strings.get(ir.text_standard_exponent_rep).unwrap_or("").is_empty()
     {
         let raw = strings.get(ir.text_standard_exponent_rep).unwrap_or("");
-        if let Some(pat) = pattern_for_sep {
-            if raw.is_empty() && text_number_pattern_requires_exponent(pat) {
-                return Err(SchemaError::InvalidProperty {
-                    message: "Schema Definition Error: Property textStandardExponentRep cannot be empty".into(),
-                }
-                .into());
-            }
-        }
         validate_text_standard_exponent_rep_literal(raw).map_err(|msg| {
+            SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {msg}"),
+            }
+        })?;
+    }
+    if ir.text_standard_zero_rep_defined {
+        let raw = strings.get(ir.text_standard_zero_rep).unwrap_or("");
+        validate_text_standard_zero_rep_literal(raw).map_err(|msg| {
             SchemaError::InvalidProperty {
                 message: alloc::format!("Schema Definition Error: {msg}"),
             }
@@ -1599,12 +1608,25 @@ fn overlay_dfdl_to_ir(
             .map(|s| strings.intern(s.clone()));
     } else if props.text_standard_exponent_rep.is_some() {
         let raw = props.text_standard_exponent_rep.as_deref().unwrap_or("E");
-        validate_text_standard_exponent_rep_literal(raw).map_err(|msg| {
+        if !raw.is_empty() {
+            validate_text_standard_exponent_rep_literal(raw).map_err(|msg| {
+                SchemaError::InvalidProperty {
+                    message: alloc::format!("Schema Definition Error: {msg}"),
+                }
+            })?;
+        }
+        base.text_standard_exponent_rep = strings.intern(raw);
+        base.text_standard_exponent_rep_defined = true;
+    }
+    if props.text_standard_zero_rep.is_some() {
+        let raw = props.text_standard_zero_rep.as_deref().unwrap_or("");
+        validate_text_standard_zero_rep_literal(raw).map_err(|msg| {
             SchemaError::InvalidProperty {
                 message: alloc::format!("Schema Definition Error: {msg}"),
             }
         })?;
-        base.text_standard_exponent_rep = strings.intern(raw);
+        base.text_standard_zero_rep = strings.intern(raw);
+        base.text_standard_zero_rep_defined = true;
     }
     if props.text_standard_infinity_rep.is_some() {
         base.text_standard_infinity_rep = strings.intern(
@@ -1803,6 +1825,15 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.text_standard_nan_rep != StringId(0) {
         out.text_standard_nan_rep = overlay.text_standard_nan_rep;
+    }
+    if overlay.text_standard_zero_rep != StringId(0) || overlay.text_standard_zero_rep_defined {
+        out.text_standard_zero_rep = overlay.text_standard_zero_rep;
+    }
+    if overlay.text_standard_zero_rep_defined {
+        out.text_standard_zero_rep_defined = true;
+    }
+    if overlay.text_standard_exponent_rep_defined {
+        out.text_standard_exponent_rep_defined = true;
     }
     if overlay.initiator.is_some() {
         out.initiator = overlay.initiator;

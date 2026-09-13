@@ -1029,12 +1029,20 @@ fn resolved_text_number_format_parts(
     {
         dec_seps.push(".".into());
     }
-    let exponent = props
-        .resolved_text_standard_exponent_rep
-        .as_deref()
-        .or_else(|| strings.get(props.text_standard_exponent_rep).ok())
-        .unwrap_or("E")
-        .to_string();
+    let exponent = if props.text_standard_exponent_rep_defined {
+        props
+            .resolved_text_standard_exponent_rep
+            .clone()
+            .or_else(|| strings.get(props.text_standard_exponent_rep).ok().map(|s| s.to_string()))
+            .unwrap_or_default()
+    } else {
+        props
+            .resolved_text_standard_exponent_rep
+            .as_deref()
+            .or_else(|| strings.get(props.text_standard_exponent_rep).ok())
+            .unwrap_or("E")
+            .to_string()
+    };
     let grouping = props
         .resolved_text_standard_grouping_separator
         .clone()
@@ -1116,6 +1124,9 @@ fn parse_field_text_number(
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::ir::ValueKind;
     use crate::error::VmError;
+    if let Some(zero) = text_standard_zero_rep_match(trimmed, props, strings) {
+        return Ok(zero);
+    }
     if !props.custom_text_number_pattern {
         if props.text_standard_base != 10 {
             return Ok(trimmed.into());
@@ -1233,6 +1244,33 @@ fn text_standard_infinity_nan_match(
     None
 }
 
+fn text_standard_zero_rep_match(
+    trimmed: &str,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Option<alloc::string::String> {
+    if !props.text_standard_zero_rep_defined {
+        return None;
+    }
+    let raw = strings.get(props.text_standard_zero_rep).ok()?;
+    let reps = crate::schema::parse_text_standard_zero_rep_list(raw);
+    if reps.is_empty() {
+        return None;
+    }
+    let ic = props.ignore_case;
+    for rep in reps {
+        let matches = if ic {
+            trimmed.eq_ignore_ascii_case(rep.as_str())
+        } else {
+            trimmed == rep
+        };
+        if matches {
+            return Some("0".into());
+        }
+    }
+    None
+}
+
 pub(crate) fn reject_text_standard_special_for_integer(
     trimmed: &str,
     props: &IrProps,
@@ -1267,6 +1305,9 @@ fn text_number_for_parse<'a>(
     }
     if let Some(special) = text_standard_infinity_nan_match(trimmed, props, strings) {
         return Ok(special.into());
+    }
+    if let Some(zero) = text_standard_zero_rep_match(trimmed, props, strings) {
+        return Ok(zero);
     }
     parse_field_text_number(trimmed, kind, props, strings)
 }

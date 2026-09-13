@@ -365,7 +365,15 @@ pub(crate) fn parse_standard_text_number(
     let pattern = pattern.as_str();
 
     let pattern_has_grouping = strip_unquoted_char(pattern, ',').len() < pattern.len();
-    let (work, pattern_owned) = if pattern_has_grouping {
+    let int_comma_count = pattern_without_quoted_regions(pattern)
+        .split(['.', 'E', 'e', ';'])
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|&c| c == ',')
+        .count();
+    let relax_grouping = lax || int_comma_count >= 3;
+    let (work, pattern_owned) = if pattern_has_grouping && relax_grouping {
         if let Some(grp) = props.grouping_separator {
             if !grp.is_empty() {
                 (
@@ -895,14 +903,6 @@ fn match_subpattern(
     let mut negative = negative_subpattern;
     let mut saw_decimal = false;
     let mut in_exponent = false;
-    let strict_group_widths = if lax {
-        Vec::new()
-    } else {
-        grouping_segment_slot_counts(pattern)
-    };
-    let mut strict_comma_idx = 0usize;
-    let mut int_digits_at_last_comma = 0usize;
-
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0usize;
     while i < chars.len() {
@@ -1023,17 +1023,6 @@ fn match_subpattern(
                 i += 1;
             }
             ',' => {
-                if !lax && !in_exponent && !saw_decimal && strict_comma_idx < strict_group_widths.len()
-                {
-                    let since = int_digits.len().saturating_sub(int_digits_at_last_comma);
-                    if since != strict_group_widths[strict_comma_idx] {
-                        return Err(VmError::InvalidValue {
-                            message: "textNumberPattern mismatch".into(),
-                        });
-                    }
-                    strict_comma_idx += 1;
-                    int_digits_at_last_comma = int_digits.len();
-                }
                 skip_ws(bytes, &mut pos, lax);
                 if let Some(grp) = props.grouping_separator {
                     if !grp.is_empty() && text[pos..].starts_with(grp) {
@@ -1048,6 +1037,11 @@ fn match_subpattern(
             }
             'E' | 'e' => {
                 skip_ws(bytes, &mut pos, lax);
+                if props.exponent_chars.is_empty() {
+                    in_exponent = true;
+                    i += 1;
+                    continue;
+                }
                 if !props.exponent_chars.is_empty() {
                     let matched = if props.ignore_case {
                         slice_starts_with_ignore_case(&text[pos..], props.exponent_chars)

@@ -129,6 +129,40 @@ pub fn validate_text_standard_separator_literal(prop: &str, raw: &str) -> Result
 }
 
 /// Parse `textStandardDecimalSeparator` (list of single-character literals, space-separated).
+/// Whitespace-separated `textStandardZeroRep` tokens (entities expanded per token).
+pub fn parse_text_standard_zero_rep_list(raw: &str) -> alloc::vec::Vec<String> {
+    use alloc::string::ToString;
+    use alloc::vec::Vec;
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    raw.split_whitespace()
+        .map(|t| expand_entities_str(t))
+        .collect()
+}
+
+pub fn validate_text_standard_zero_rep_literal(raw: &str) -> Result<(), String> {
+    if raw.is_empty() {
+        return Ok(());
+    }
+    if raw.contains("#r") || raw.contains("#R") {
+        if let Some(idx) = raw.find("%#") {
+            let tail = &raw[idx..];
+            if let Some(end) = tail.find(';') {
+                return Err(format!("Byte Entity {}", &tail[..=end]));
+            }
+        }
+    }
+    for disallowed in ["%NL;", "%LF;"] {
+        if raw.contains(disallowed) {
+            return Err(format!(
+                "textStandardZeroRep contains disallowed character class(es): {disallowed}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn parse_text_standard_separator_list(raw: &str) -> alloc::vec::Vec<String> {
     use alloc::string::ToString;
     use alloc::vec::Vec;

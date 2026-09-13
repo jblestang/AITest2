@@ -62,6 +62,7 @@ pub struct DfdlProps {
     pub text_standard_exponent_rep_sibling: Option<String>,
     pub text_standard_infinity_rep: Option<String>,
     pub text_standard_nan_rep: Option<String>,
+    pub text_standard_zero_rep: Option<String>,
     pub initiator: Option<String>,
     pub terminator: Option<String>,
     pub separator: Option<String>,

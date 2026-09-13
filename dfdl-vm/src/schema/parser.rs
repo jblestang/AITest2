@@ -1083,6 +1083,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_standard_nan_rep.is_some() {
         base.text_standard_nan_rep = overlay.text_standard_nan_rep;
     }
+    if overlay.text_standard_zero_rep.is_some() {
+        base.text_standard_zero_rep = overlay.text_standard_zero_rep;
+    }
     if overlay.initiator.is_some() {
         base.initiator = overlay.initiator;
     }
@@ -1381,6 +1384,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "textStandardExponentRep"
             | "textStandardInfinityRep"
             | "textStandardNaNRep"
+            | "textStandardZeroRep"
             | "binaryNumberRep"
             | "binaryPackedSignCodes"
             | "binaryNumberCheckPolicy"
@@ -1768,6 +1772,9 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             }
             "textStandardNaNRep" => {
                 props.text_standard_nan_rep = Some(crate::schema::expand_entities_str(value));
+            }
+            "textStandardZeroRep" => {
+                props.text_standard_zero_rep = Some(value.clone());
             }
             "initiator" => {
                 let lit = parse_delimiter_literal(value)?;

@@ -228,16 +228,16 @@ fn daffodil_section13_regression_gate() {
         "section13 TDML load errors: {stats:?}"
     );
     // Baseline (2026-03): TextStandardBase radix overflow + xs:integer; text number SDE/grouping;
-    // ~421 pass / ~121 fail on full section13 TDML.
+    // ~427 pass / ~115 fail on full section13 TDML.
     assert!(
-        stats.pass >= 421,
-        "section13: expected at least 421 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 427,
+        "section13: expected at least 427 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 121,
+        stats.fail <= 115,
         "section13 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
