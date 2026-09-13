@@ -1,7 +1,42 @@
 //! Scan a single Daffodil section subdirectory and print pass/fail summary.
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_unparser_test, TestOutcome};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlSchema, TdmlSuite};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+fn enrich_external_tdml_models(suite: &mut TdmlSuite, tdml_path: &Path) {
+    let Some(dir) = tdml_path.parent() else {
+        return;
+    };
+    let dir_str = dir.to_string_lossy().into_owned();
+    let mut models = HashSet::new();
+    for t in &suite.tests {
+        models.insert(t.model.clone());
+    }
+    for t in &suite.unparser_tests {
+        models.insert(t.model.clone());
+    }
+    for model in models {
+        if suite.schemas.contains_key(&model) {
+            continue;
+        }
+        if !(model.ends_with(".xsd") || model.ends_with(".dfdl.xsd")) {
+            continue;
+        }
+        let path = dir.join(&model);
+        let Ok(xsd) = fs::read_to_string(&path) else {
+            continue;
+        };
+        suite.schemas.insert(
+            model.clone(),
+            TdmlSchema {
+                name: model,
+                xsd,
+                compile_base_dir: Some(dir_str.clone()),
+            },
+        );
+    }
+}
 
 const TDML_ROOT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -48,11 +83,12 @@ fn scan_dir_skipping(rel: &str, skip_rel_paths: &[&str]) -> (usize, usize, usize
             parse_fail += 1;
             continue;
         };
-        let Ok(suite) = parse_tdml(&tdml) else {
+        let Ok(mut suite) = parse_tdml(&tdml) else {
             parse_fail += 1;
             samples.push(format!("{}: parse error", path.display()));
             continue;
         };
+        enrich_external_tdml_models(&mut suite, &path);
         let relp = path.strip_prefix(TDML_ROOT).unwrap_or(&path).display().to_string();
         for t in &suite.tests {
             let Ok(r) = run_parser_test(&suite, t) else {
@@ -140,3 +176,17 @@ macro_rules! scan_test_skip {
 
 scan_test!(scan_section13, "section13");
 scan_test!(scan_section14, "section14");
+
+#[test]
+fn daffodil_section14_regression_gate() {
+    let (pass, fail, skip, parse_fail, _) = scan_dir("section14");
+    assert_eq!(parse_fail, 0, "section14 TDML parse errors");
+    assert!(
+        pass >= 23,
+        "section14: expected at least 23 passing cases, got pass={pass} fail={fail} skip={skip}"
+    );
+    assert!(
+        fail <= 130,
+        "section14 regression: too many failures pass={pass} fail={fail} skip={skip}"
+    );
+}

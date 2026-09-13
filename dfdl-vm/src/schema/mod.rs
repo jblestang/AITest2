@@ -24,5 +24,5 @@ pub use entities::{
     validate_text_string_pad_character, validate_text_string_pad_character_compile,
     validate_text_string_pad_character_runtime,
 };
-pub use parser::{parse_schema, parse_schema_with_resolver, ParseOptions};
+pub use parser::{parse_schema, parse_schema_with_options, parse_schema_with_resolver, ParseOptions};
 pub use resolver::SchemaResolver;

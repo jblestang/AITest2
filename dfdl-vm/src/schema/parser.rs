@@ -158,6 +158,7 @@ impl<'a> XsdParser<'a> {
                         "element" => self.parse_global_element(child_attrs)?,
                         "complexType" => self.parse_complex_type(None, child_attrs)?,
                         "simpleType" => self.parse_simple_type(None, child_attrs)?,
+                        "group" => self.parse_global_group(child_attrs)?,
                         "include" => self.parse_include(child_attrs)?,
                         "format" => {
                             let props =
@@ -384,6 +385,35 @@ impl<'a> XsdParser<'a> {
         }
     }
 
+    fn parse_global_group(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
+        let (xsd, _) = split_dfdl_attrs("group", &attrs)?;
+        let group_name = xsd.get("name").cloned().ok_or_else(|| ParseError::MissingAttribute {
+            element: "group".into(),
+            attribute: "name".into(),
+        })?;
+        self.reader.skip_insignificant_ws()?;
+        if self.reader.peek_is_end("group")? {
+            return Err(ParseError::InvalidXml {
+                message: "group must contain a sequence".into(),
+            }
+            .into());
+        }
+        self.reader.skip_insignificant_ws()?;
+        match self.reader.peek()? {
+            XmlEvent::StartElement { name, .. } if name.local_name == "sequence" => {
+                let child_attrs = self.reader.take_start_attributes()?;
+                let seq = self.parse_sequence(child_attrs)?;
+                self.expect_end_local("group")?;
+                self.doc.groups.insert(group_name, seq);
+                Ok(())
+            }
+            _ => Err(ParseError::InvalidXml {
+                message: "group must contain xs:sequence".into(),
+            }
+            .into()),
+        }
+    }
+
     fn parse_sequence(&mut self, attrs: BTreeMap<String, String>) -> Result<SequenceDecl> {
         let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("sequence", &attrs)?;
         let pending = core::mem::take(&mut self.pending_props);
@@ -416,6 +446,15 @@ impl<'a> XsdParser<'a> {
                         "element" => particles.push(Particle::Element(self.parse_element_decl(child_attrs)?)),
                         "sequence" => {
                             particles.push(Particle::Sequence(self.parse_sequence(child_attrs)?))
+                        }
+                        "group" => {
+                            let (xsd, _) = split_dfdl_attrs("group", &child_attrs)?;
+                            let ref_name = xsd.get("ref").cloned().ok_or_else(|| ParseError::MissingAttribute {
+                                element: "group".into(),
+                                attribute: "ref".into(),
+                            })?;
+                            particles.push(Particle::GroupRef(normalize_qname(&ref_name)));
+                            self.skip_element_body("group")?;
                         }
                         "choice" => particles.push(Particle::Choice(self.parse_choice(child_attrs)?)),
                         "annotation" => self.skip_element_body("annotation")?,
@@ -472,6 +511,15 @@ impl<'a> XsdParser<'a> {
                         "element" => branches.push(Particle::Element(self.parse_element_decl(child_attrs)?)),
                         "sequence" => {
                             branches.push(Particle::Sequence(self.parse_sequence(child_attrs)?))
+                        }
+                        "group" => {
+                            let (xsd, _) = split_dfdl_attrs("group", &child_attrs)?;
+                            let ref_name = xsd.get("ref").cloned().ok_or_else(|| ParseError::MissingAttribute {
+                                element: "group".into(),
+                                attribute: "ref".into(),
+                            })?;
+                            branches.push(Particle::GroupRef(normalize_qname(&ref_name)));
+                            self.skip_element_body("group")?;
                         }
                         "choice" => branches.push(Particle::Choice(self.parse_choice(child_attrs)?)),
                         "annotation" => self.skip_element_body("annotation")?,
@@ -1480,6 +1528,8 @@ fn is_dfdl_property(name: &str) -> bool {
             | "nilKind"
             | "nilValue"
             | "separatorSuppressionPolicy"
+            | "occursCountKind"
+            | "hiddenGroupRef"
             | "ignoreCase"
             | "textTrimKind"
             | "truncateSpecifiedLengthString"
@@ -1655,6 +1705,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.separator_suppression_policy = Some(match value.as_str() {
                     "anyEmpty" => SeparatorSuppressionPolicy::AnyEmpty,
                     "trailingEmpty" => SeparatorSuppressionPolicy::TrailingEmpty,
+                    "trailingEmptyStrict" => SeparatorSuppressionPolicy::TrailingEmptyStrict,
                     "never" => SeparatorSuppressionPolicy::Never,
                     other => {
                         return Err(ParseError::InvalidXml {
@@ -1665,6 +1716,23 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                         .into())
                     }
                 });
+            }
+            "occursCountKind" => {
+                props.occurs_count_kind = Some(match value.as_str() {
+                    "parsed" => OccursCountKind::Parsed,
+                    "implicit" => OccursCountKind::Implicit,
+                    "fixed" => OccursCountKind::Fixed,
+                    "expression" => OccursCountKind::Expression,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown occursCountKind `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "hiddenGroupRef" => {
+                props.hidden_group_ref = Some(normalize_qname(value));
             }
             "ignoreCase" => {
                 props.ignore_case = Some(match value.as_str() {

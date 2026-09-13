@@ -32,6 +32,8 @@ pub struct TdmlSuite {
 pub struct TdmlSchema {
     pub name: String,
     pub xsd: String,
+    /// Directory for resolving relative `xs:include` when schema was loaded from a file.
+    pub compile_base_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +151,7 @@ fn parse_define_schema(attrs: BTreeMap<String, String>, reader: &mut XmlReader<'
     Ok(TdmlSchema {
         name,
         xsd: wrap_schema(&inner),
+        compile_base_dir: None,
     })
 }
 

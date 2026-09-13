@@ -106,6 +106,9 @@ pub struct DfdlProps {
     /// Expanded nil literal (e.g. `%ES;` → empty string, or `nil`).
     pub nil_value: Option<String>,
     pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
+    pub occurs_count_kind: Option<OccursCountKind>,
+    /// `dfdl:hiddenGroupRef` on a sequence (inline hidden model group).
+    pub hidden_group_ref: Option<String>,
     /// When true, initiator/terminator/separator matching ignores ASCII case.
     pub ignore_case: Option<bool>,
     pub initiated_content: Option<bool>,
@@ -179,7 +182,18 @@ pub enum NilKind {
 pub enum SeparatorSuppressionPolicy {
     AnyEmpty,
     TrailingEmpty,
+    /// Daffodil extension: trailing empty optional elements are not allowed.
+    TrailingEmptyStrict,
     Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OccursCountKind {
+    #[default]
+    Parsed,
+    Implicit,
+    Fixed,
+    Expression,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +306,7 @@ pub enum Particle {
     Element(ElementDecl),
     Sequence(SequenceDecl),
     Choice(ChoiceDecl),
+    GroupRef(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -439,6 +454,8 @@ pub struct SchemaDocument {
     pub named_formats: BTreeMap<String, DfdlProps>,
     pub types: BTreeMap<TypeName, TypeDef>,
     pub global_elements: BTreeMap<String, GlobalElement>,
+    /// Named `xs:group` model groups (local name → content sequence).
+    pub groups: BTreeMap<String, SequenceDecl>,
 }
 
 impl SchemaDocument {

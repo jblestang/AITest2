@@ -5,8 +5,9 @@ use crate::error::VmError;
 use crate::schema::{
     BinaryFloatRep, BinaryNumberCheckPolicy, BinaryNumberRep, BitOrder, ByteOrder,
     EncodingErrorPolicy, InputValueCalc,
-    LengthKind, LengthUnits, NilKind, OutputValueCalc, Representation, SeparatorPosition,
-    SeparatorSuppressionPolicy, SequenceKind, TextNumberJustification, TextPadKind,
+    LengthKind, LengthUnits, NilKind, OccursCountKind, OutputValueCalc, Representation,
+    SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind, TextNumberJustification,
+    TextPadKind,
     TextStringJustification, TextTrimKind,
 };
 use alloc::string::String;
@@ -159,6 +160,9 @@ pub struct IrProps {
     pub nil_kind: Option<NilKind>,
     pub nil_value: Option<StringId>,
     pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
+    pub occurs_count_kind: OccursCountKind,
+    /// When true, parsed value is not placed in the infoset (hidden model group member).
+    pub hidden: bool,
     pub ignore_case: bool,
     pub initiated_content: bool,
     /// When true, treat Long bit fields as unsigned (xs:unsignedLong).
@@ -248,6 +252,8 @@ impl Default for IrProps {
             nil_kind: None,
             nil_value: None,
             separator_suppression_policy: None,
+            occurs_count_kind: OccursCountKind::Parsed,
+            hidden: false,
             ignore_case: false,
             initiated_content: false,
             unsigned_integer: false,

@@ -6,8 +6,8 @@ use crate::length_validate::{
     validate_signed_one_bit_length_schema, DaffodilTunables,
 };
 use crate::schema::{
-    BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, Particle, Representation,
-    SchemaDocument, SimpleBase, TypeDef, TypeName, expand_entities_str,
+    BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, OccursCountKind, Particle,
+    Representation, SchemaDocument, SimpleBase, TypeDef, TypeName, expand_entities_str,
     parse_text_standard_separator_list, parse_text_standard_zero_rep_list,
     validate_length_pattern,
     validate_text_standard_distinct_values,
@@ -230,6 +230,16 @@ impl<'a> IrBuilder<'a> {
         inherited: &IrProps,
         prior_element_names: &[String],
     ) -> Result<u32> {
+        self.compile_particle_inner(particle, inherited, prior_element_names, false)
+    }
+
+    fn compile_particle_inner(
+        &mut self,
+        particle: &Particle,
+        inherited: &IrProps,
+        prior_element_names: &[String],
+        hidden: bool,
+    ) -> Result<u32> {
         match particle {
             Particle::Element(element) => {
                 let merged =
@@ -244,6 +254,7 @@ impl<'a> IrBuilder<'a> {
                         &self.strings,
                         self.tunables,
                     )?;
+                    ir_props.hidden = hidden;
                     apply_unsigned_long_flag(&element.type_name, &mut ir_props);
                     apply_integer_type_flags(&element.type_name, &mut ir_props);
                     validate_implicit_text_length(kind, &ir_props)?;
@@ -282,6 +293,7 @@ impl<'a> IrBuilder<'a> {
                                 }
                             }
                             validate_implicit_text_length(kind, &merged)?;
+                            merged.hidden = hidden;
                             return Ok(self.push(IrNode::Element {
                                 name,
                                 kind,
@@ -294,8 +306,9 @@ impl<'a> IrBuilder<'a> {
                     if element.props.length_kind.is_none() {
                         ir_props.length_kind = LengthKind::Implicit;
                     }
-                    let ir_props =
+                    let mut ir_props =
                         finalize_element_props(ValueKind::Complex, ir_props, &self.strings, self.tunables)?;
+                    ir_props.hidden = hidden;
                     Ok(self.push(IrNode::Element {
                         name,
                         kind: ValueKind::Complex,
@@ -304,18 +317,72 @@ impl<'a> IrBuilder<'a> {
                     }))
                 }
             }
+            Particle::GroupRef(qname) => {
+                let group = self
+                    .schema
+                    .groups
+                    .get(group_local_name(qname))
+                    .ok_or_else(|| SchemaError::InvalidProperty {
+                        message: alloc::format!("unknown group `{qname}`"),
+                    })?;
+                let ir_props = inherited.clone();
+                let child_inherited =
+                    particle_inherited_for_children(&ir_props, &group.props, &self.defaults);
+                let mut children = Vec::new();
+                let mut prior_element_names: Vec<String> = Vec::new();
+                for particle in &group.particles {
+                    children.push(self.compile_particle_inner(
+                        particle,
+                        &child_inherited,
+                        &prior_element_names,
+                        hidden,
+                    )?);
+                    if let Particle::Element(el) = particle {
+                        prior_element_names.push(el.name.clone());
+                    }
+                }
+                Ok(self.push(IrNode::Sequence {
+                    children,
+                    props: ir_props,
+                }))
+            }
             Particle::Sequence(sequence) => {
                 let ir_props = self.merge_props_full(inherited, &sequence.props, &DfdlProps::default())?;
                 let child_inherited =
                     particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
                 let mut prior_element_names: Vec<String> = Vec::new();
+                if let Some(ref href) = sequence.props.hidden_group_ref {
+                    let group = self
+                        .schema
+                        .groups
+                        .get(group_local_name(href))
+                        .ok_or_else(|| SchemaError::InvalidProperty {
+                            message: alloc::format!("unknown hidden group `{href}`"),
+                        })?;
+                    for particle in &group.particles {
+                        children.push(self.compile_particle_inner(
+                            particle,
+                            &child_inherited,
+                            &prior_element_names,
+                            true,
+                        )?);
+                        if let Particle::Element(el) = particle {
+                            prior_element_names.push(el.name.clone());
+                        }
+                    }
+                }
+                validate_implicit_unbounded_in_sequence(
+                    &sequence.particles,
+                    sequence.props.hidden_group_ref.is_some(),
+                )?;
                 for particle in &sequence.particles {
                     validate_initiated_content_particle(&sequence.props, particle)?;
-                    children.push(self.compile_particle(
+                    children.push(self.compile_particle_inner(
                         particle,
                         &child_inherited,
                         &prior_element_names,
+                        false,
                     )?);
                     if let Particle::Element(el) = particle {
                         prior_element_names.push(el.name.clone());
@@ -1374,11 +1441,39 @@ fn length_kind_label(kind: LengthKind) -> &'static str {
     }
 }
 
+fn group_local_name(qname: &str) -> &str {
+    qname.rsplit(':').next().unwrap_or(qname)
+}
+
+fn validate_implicit_unbounded_in_sequence(
+    particles: &[Particle],
+    has_hidden_prefix: bool,
+) -> Result<()> {
+    let mut saw_implicit_unbounded = false;
+    for (idx, particle) in particles.iter().enumerate() {
+        if let Particle::Element(el) = particle {
+            let implicit = el.props.occurs_count_kind == Some(OccursCountKind::Implicit);
+            let unbounded = el.props.max_occurs_specified && el.props.occurs_max.is_none();
+            if implicit && unbounded {
+                if saw_implicit_unbounded || idx + 1 < particles.len() || has_hidden_prefix {
+                    return Err(SchemaError::InvalidProperty {
+                        message: "Schema Definition Error: occursCountKind='implicit' with unbounded maxOccurs only allowed for last element of a positional sequence".into(),
+                    }
+                    .into());
+                }
+                saw_implicit_unbounded = true;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn branch_name(particle: &Particle) -> String {
     match particle {
         Particle::Element(e) => e.name.clone(),
         Particle::Sequence(_) => "sequence".to_string(),
         Particle::Choice(_) => "choice".to_string(),
+        Particle::GroupRef(q) => group_local_name(q).to_string(),
     }
 }
 
@@ -1387,6 +1482,7 @@ fn branch_initiator(particle: &Particle, strings: &mut StringPool) -> Option<Str
         Particle::Element(e) => e.props.initiator.as_deref(),
         Particle::Sequence(s) => s.props.initiator.as_deref(),
         Particle::Choice(c) => c.props.initiator.as_deref(),
+        Particle::GroupRef(_) => None,
     };
     raw.map(|s| strings.intern(s))
 }
@@ -1545,6 +1641,9 @@ fn overlay_dfdl_to_ir(
     }
     if let Some(v) = props.separator_suppression_policy {
         base.separator_suppression_policy = Some(v);
+    }
+    if let Some(v) = props.occurs_count_kind {
+        base.occurs_count_kind = v;
     }
     if let Some(v) = props.ignore_case {
         base.ignore_case = v;

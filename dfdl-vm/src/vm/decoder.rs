@@ -1141,7 +1141,10 @@ fn insert_child(
     program: &IrProgram,
 ) -> Result<()> {
     match program.node(node_id)? {
-        IrNode::Element { name, .. } => {
+        IrNode::Element { name, props, .. } => {
+            if props.hidden {
+                return Ok(());
+            }
             let key = program.strings.get(*name)?.to_string();
             insert_field(map, key, value);
             Ok(())

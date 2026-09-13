@@ -54,8 +54,8 @@ pub fn run_parser_test_with_options(
     test: &ParserTestCase,
     options: ParserTestRunOptions,
 ) -> Result<TestResult> {
-    let schema_xsd = match resolve_model_schema(suite, &test.model) {
-        Ok(xsd) => xsd,
+    let (schema_xsd, compile_base_dir) = match resolve_model_schema(suite, &test.model) {
+        Ok(v) => v,
         Err(e) => {
             return Ok(TestResult {
                 name: test.name.clone(),
@@ -71,7 +71,12 @@ pub fn run_parser_test_with_options(
         .copied()
         .unwrap_or_default();
 
-    let spec = match compile_tdml_schema(&schema_xsd, &test.root, tunables) {
+    let spec = match compile_tdml_schema(
+        &schema_xsd,
+        &test.root,
+        tunables,
+        compile_base_dir.as_deref(),
+    ) {
         Ok(s) => s,
         Err(e) => {
             if let Some(expected) = &test.expected_errors {
@@ -242,8 +247,8 @@ pub fn run_parser_test_with_options(
 
 /// Run a single unparser test case from an already-parsed suite.
 pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<TestResult> {
-    let schema_xsd = match resolve_model_schema(suite, &test.model) {
-        Ok(xsd) => xsd,
+    let (schema_xsd, compile_base_dir) = match resolve_model_schema(suite, &test.model) {
+        Ok(v) => v,
         Err(e) => {
             return Ok(TestResult {
                 name: test.name.clone(),
@@ -259,7 +264,12 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         .copied()
         .unwrap_or_default();
 
-    let spec = match compile_tdml_schema(&schema_xsd, &test.root, tunables) {
+    let spec = match compile_tdml_schema(
+        &schema_xsd,
+        &test.root,
+        tunables,
+        compile_base_dir.as_deref(),
+    ) {
         Ok(s) => s,
         Err(e) => {
             if let Some(expected) = &test.expected_errors {
@@ -415,15 +425,32 @@ fn error_messages_match(expected: &[String], err: &str) -> bool {
     })
 }
 
-fn compile_tdml_schema(xsd: &str, root: &str, tunables: DaffodilTunables) -> Result<DfdlSpec> {
-    let schema = crate::schema::parse_schema(xsd)?;
+fn compile_tdml_schema(
+    xsd: &str,
+    root: &str,
+    tunables: DaffodilTunables,
+    compile_base_dir: Option<&str>,
+) -> Result<DfdlSpec> {
+    let schema = if let Some(base) = compile_base_dir {
+        crate::schema::parse_schema_with_options(
+            xsd,
+            &crate::schema::ParseOptions {
+                base_dir: Some(base.to_string()),
+            },
+        )?
+    } else {
+        crate::schema::parse_schema(xsd)?
+    };
     DfdlSpec::from_schema_root_with_tunables(schema, Some(root), tunables)
 }
 
-fn resolve_model_schema(suite: &TdmlSuite, model: &str) -> Result<alloc::string::String> {
+fn resolve_model_schema(
+    suite: &TdmlSuite,
+    model: &str,
+) -> Result<(alloc::string::String, Option<alloc::string::String>)> {
     if let Some(def) = suite.schemas.get(model) {
-        return Ok(def.xsd.clone());
+        return Ok((def.xsd.clone(), def.compile_base_dir.clone()));
     }
     let resolver = crate::schema::SchemaResolver::new();
-    resolver.resolve(model).map_err(Into::into)
+    Ok((resolver.resolve(model)?, None))
 }

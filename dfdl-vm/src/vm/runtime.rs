@@ -3915,7 +3915,11 @@ pub(crate) fn trailing_suppressed_count(
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<usize, crate::error::VmError> {
-    if props.separator_suppression_policy != Some(SeparatorSuppressionPolicy::TrailingEmpty) {
+    if !matches!(
+        props.separator_suppression_policy,
+        Some(SeparatorSuppressionPolicy::TrailingEmpty)
+            | Some(SeparatorSuppressionPolicy::TrailingEmptyStrict)
+    ) {
         return Ok(0);
     }
     let mut count = 0usize;
