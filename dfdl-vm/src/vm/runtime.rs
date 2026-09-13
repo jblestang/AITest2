@@ -9,7 +9,8 @@ use crate::length_validate::{
 };
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
-    encode_delimiter, match_length_pattern, BinaryNumberRep, BitOrder, ByteOrder,
+    encode_delimiter, encode_delimiter_by_alt, match_length_pattern, BinaryNumberRep, BitOrder,
+    ByteOrder,
     EncodingErrorPolicy, LengthKind, LengthUnits, NilKind, Representation, SeparatorPosition,
     SeparatorSuppressionPolicy, TextNumberJustification, TextTrimKind,
 };
@@ -231,18 +232,25 @@ impl<'a> Cursor<'a> {
     }
 
     pub fn consume_delimiter(&mut self, pattern: &str, ignore_case: bool) -> bool {
+        self.consume_delimiter_with_alt(pattern, ignore_case)
+            .map(|(n, _)| n > 0 || pattern.is_empty())
+            .unwrap_or(false)
+    }
+
+    pub fn consume_delimiter_with_alt(
+        &mut self,
+        pattern: &str,
+        ignore_case: bool,
+    ) -> Option<(usize, u8)> {
         if pattern.is_empty() {
-            return false;
+            return Some((0, 0));
         }
-        match crate::schema::match_delimiter_opts(&self.data[self.pos..], pattern, ignore_case) {
-            Some(n) => {
-                if n > 0 {
-                    self.advance(n);
-                }
-                true
-            }
-            None => false,
+        let (n, alt) =
+            crate::schema::match_delimiter_with_alt(&self.data[self.pos..], pattern, ignore_case)?;
+        if n > 0 {
+            self.advance(n);
         }
+        Some((n, alt))
     }
 }
 
@@ -1110,7 +1118,7 @@ fn decode_binary_from_raw_bits(
             };
             Ok(DfdlValue::Byte(v))
         }
-        UnsignedByte => unsigned!(u8, DfdlValue::UnsignedByte),
+        UnsignedByte => Ok(DfdlValue::UnsignedByte((raw & bit_mask(bit_width)) as u8)),
         Short => {
             let v = if bit_width == 1 {
                 raw as i16
@@ -1119,7 +1127,7 @@ fn decode_binary_from_raw_bits(
             };
             Ok(DfdlValue::Short(v))
         }
-        UnsignedShort => unsigned!(u16, DfdlValue::UnsignedShort),
+        UnsignedShort => Ok(DfdlValue::UnsignedShort((raw & bit_mask(bit_width)) as u16)),
         Int => {
             let v = if bit_width == 1 {
                 raw as i32
@@ -1128,7 +1136,7 @@ fn decode_binary_from_raw_bits(
             };
             Ok(DfdlValue::Int(v))
         }
-        UnsignedInt => unsigned!(u32, DfdlValue::UnsignedInt),
+        UnsignedInt => Ok(DfdlValue::UnsignedInt((raw & bit_mask(bit_width)) as u32)),
         Long => {
             let v = if props.unsigned_integer {
                 raw & bit_mask(bit_width)
@@ -2887,15 +2895,48 @@ pub(crate) fn consume_alignment(
     Ok(())
 }
 
+fn ambiguous_delimiter_prefix_at_cursor(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+    stop_sequences: &[&IrProps],
+) -> Result<bool, crate::error::VmError> {
+    let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences)?;
+    let mut matches = alloc::vec::Vec::new();
+    for entry in &patterns {
+        if let Some(n) = crate::schema::match_delimiter_opts(
+            &cursor.data[cursor.pos..],
+            &entry.pat,
+            entry.ignore_case,
+        ) {
+            if n > 0 {
+                matches.push((n, entry.pat.as_str()));
+            }
+        }
+    }
+    for &(n_short, short) in &matches {
+        for &(n_long, long) in &matches {
+            if n_long > n_short && long.starts_with(short) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn defer_delimited_enclosing_consume(
     cursor: &Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,
     value: &crate::value::DfdlValue,
+    stop_sequences: &[&IrProps],
 ) -> Result<bool, crate::error::VmError> {
     use crate::value::DfdlValue;
     if matches!(value, DfdlValue::Null) {
         return Ok(false);
+    }
+    if ambiguous_delimiter_prefix_at_cursor(cursor, props, strings, stop_sequences)? {
+        return Ok(true);
     }
     for id in delimiter_pattern_ids(props) {
         let pat = strings.get(id)?;
@@ -2929,20 +2970,29 @@ pub(crate) fn read_simple(
     field_name: Option<&str>,
     tunables: &DaffodilTunables,
     consume_delimited_enclosing: bool,
+    mut delim_out: Option<&mut crate::value::FieldDelimiterMeta>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
     if let Some(id) = props.initiator {
         let pat = strings.get(id)?;
-        if !pat.is_empty() && !cursor.consume_delimiter(pat, props.ignore_case) {
-            return Err(VmError::InvalidValue {
-                message: alloc::format!(
-                    "initiator mismatch: expected `{pat}` at offset {}",
-                    cursor.pos
-                ),
-            });
+        if !pat.is_empty() {
+            let Some((n, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) else {
+                return Err(VmError::InvalidValue {
+                    message: "initiator mismatch".into(),
+                });
+            };
+            if n == 0 {
+                return Err(VmError::InvalidValue {
+                    message: "initiator mismatch".into(),
+                });
+            }
+            if let Some(out) = delim_out.as_mut() {
+                out.initiator_alt = Some(alt);
+            }
         }
     }
+    let _ = field_name;
     let require_enclosing = require_delimiter || props.terminator.is_some();
     use crate::ir::ValueKind;
     use crate::schema::Representation;
@@ -2975,23 +3025,37 @@ pub(crate) fn read_simple(
     };
     if props.length_kind == LengthKind::Delimited {
         let defer = !consume_delimited_enclosing
-            && defer_delimited_enclosing_consume(cursor, props, strings, &value)?;
+            && defer_delimited_enclosing_consume(cursor, props, strings, &value, stop_sequences)?;
         if consume_delimited_enclosing || !defer {
             consume_enclosing_delimiter(cursor, props, strings, stop_sequences)?;
         }
     } else if let Some(id) = props.terminator {
         let pat = strings.get(id)?;
-        if !pat.is_empty() && !cursor.consume_delimiter(pat, props.ignore_case) {
-            return Err(VmError::InvalidValue {
-                message: if cursor.is_empty() {
-                    alloc::format!("terminator `{}` not found", format_delimiter_for_error(pat))
-                } else {
-                    alloc::format!(
-                        "terminator mismatch: expected `{}`",
-                        format_delimiter_for_error(pat)
-                    )
-                },
-            });
+        if !pat.is_empty() {
+            if let Some((n, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) {
+                if n == 0 && !cursor.is_empty() {
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!(
+                            "terminator mismatch: expected `{}`",
+                            format_delimiter_for_error(pat)
+                        ),
+                    });
+                }
+                if let Some(out) = delim_out.as_mut() {
+                    out.terminator_alt = Some(alt);
+                }
+            } else if !cursor.is_empty() {
+                return Err(VmError::InvalidValue {
+                    message: if cursor.is_empty() {
+                        alloc::format!("terminator `{}` not found", format_delimiter_for_error(pat))
+                    } else {
+                        alloc::format!(
+                            "terminator mismatch: expected `{}`",
+                            format_delimiter_for_error(pat)
+                        )
+                    },
+                });
+            }
         }
     }
     Ok(value)
@@ -3611,6 +3675,7 @@ pub(crate) fn write_framed_payload(
     props: &IrProps,
     strings: &StringPool,
     field_name: Option<&str>,
+    delim_meta: Option<&crate::value::FieldDelimiterMeta>,
 ) -> Result<(), crate::error::VmError> {
     match props.length_kind {
         LengthKind::Prefixed => {
@@ -3628,7 +3693,14 @@ pub(crate) fn write_framed_payload(
                 props.bit_order,
             )?;
             if let Some(id) = props.terminator {
-                write_byte_aligned(out, bit_count, &encode_delimiter(strings.get(id)?))?;
+                let pat = strings.get(id)?;
+                if !pat.is_empty() {
+                    let bytes = match delim_meta.and_then(|m| m.terminator_alt) {
+                        Some(a) => encode_delimiter_by_alt(pat, a),
+                        None => encode_delimiter(pat),
+                    };
+                    write_byte_aligned(out, bit_count, &bytes)?;
+                }
             }
             Ok(())
         }
@@ -3748,10 +3820,18 @@ pub(crate) fn write_simple(
     strings: &StringPool,
     tunables: &DaffodilTunables,
     field_name: Option<&str>,
+    delim_meta: Option<&crate::value::FieldDelimiterMeta>,
 ) -> Result<(), crate::error::VmError> {
     let value = coerce_value_for_kind(value, kind)?;
     if let Some(id) = props.initiator {
-        write_byte_aligned(out, bit_count, &encode_delimiter(strings.get(id)?))?;
+        let pat = strings.get(id)?;
+        if !pat.is_empty() {
+            let bytes = match delim_meta.and_then(|m| m.initiator_alt) {
+                Some(a) => encode_delimiter_by_alt(pat, a),
+                None => encode_delimiter(pat),
+            };
+            write_byte_aligned(out, bit_count, &bytes)?;
+        }
     }
     match props.representation {
         Representation::Binary => write_binary_scalar(
@@ -3769,7 +3849,14 @@ pub(crate) fn write_simple(
         }
     }
     if let Some(id) = props.terminator {
-        write_byte_aligned(out, bit_count, &encode_delimiter(strings.get(id)?))?;
+        let pat = strings.get(id)?;
+        if !pat.is_empty() {
+            let bytes = match delim_meta.and_then(|m| m.terminator_alt) {
+                Some(a) => encode_delimiter_by_alt(pat, a),
+                None => encode_delimiter(pat),
+            };
+            write_byte_aligned(out, bit_count, &bytes)?;
+        }
     }
     Ok(())
 }

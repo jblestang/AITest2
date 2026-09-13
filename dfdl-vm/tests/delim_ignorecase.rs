@@ -40,7 +40,6 @@ fn parse_sequence5_length_expr() {
 }
 
 #[test]
-#[ignore = "prefix separator vs enclosing $$ conflict not yet detected"]
 fn req_field_missing_prefix() {
     assert_named_test_passes("ReqFieldMissingAndSepIsPrefixOfTerminator_Prefix");
 }

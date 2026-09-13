@@ -5,10 +5,23 @@ use alloc::vec::Vec;
 
 /// Optional metadata captured during parse to guide faithful unparse.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FieldDelimiterMeta {
+    pub initiator_alt: Option<u8>,
+    pub terminator_alt: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SequenceMeta {
     /// For each infix separator slot (before child index 1..n-1), whether a newline
     /// prefix was consumed for `%NL;, ,`-style separator patterns.
     pub infix_sep_newline_prefix: Vec<bool>,
+    /// Matched alternative index for sequence initiator/terminator (when pattern has alts).
+    pub initiator_alt: Option<u8>,
+    pub terminator_alt: Option<u8>,
+    /// Matched alternative index per infix/prefix/postfix separator slot (parallel to child indices).
+    pub separator_alts: Vec<Option<u8>>,
+    /// Per-child initiator/terminator alternatives (key = element local name).
+    pub field_delimiters: BTreeMap<String, FieldDelimiterMeta>,
 }
 
 /// Named fields in a DFDL sequence with optional parse metadata.

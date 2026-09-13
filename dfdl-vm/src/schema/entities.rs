@@ -252,6 +252,34 @@ pub fn match_delimiter(input: &[u8], pattern: &str) -> Option<usize> {
     match_delimiter_opts(input, pattern, false)
 }
 
+/// Returns `(bytes_consumed, alternative_index)` when `pattern` has multiple alternatives.
+pub fn match_delimiter_with_alt(
+    input: &[u8],
+    pattern: &str,
+    ignore_case: bool,
+) -> Option<(usize, u8)> {
+    if pattern.is_empty() {
+        return Some((0, 0));
+    }
+    if pattern.len() == 1 {
+        return match_pattern_opts(input, pattern, ignore_case).map(|n| (n, 0));
+    }
+    if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
+        return match_nl_comma_space_separator(input).map(|n| (n, 0));
+    }
+    let mut alts = delimiter_alternatives(pattern);
+    if alts.len() > 1 {
+        alts.sort_by_key(|b| core::cmp::Reverse(b.len()));
+        for (idx, alt) in alts.iter().enumerate() {
+            if let Some(n) = match_delimiter_compound(input, alt, ignore_case) {
+                return Some((n, idx as u8));
+            }
+        }
+        return None;
+    }
+    match_delimiter_compound(input, pattern, ignore_case).map(|n| (n, 0))
+}
+
 pub fn match_delimiter_opts(input: &[u8], pattern: &str, ignore_case: bool) -> Option<usize> {
     if pattern.is_empty() {
         return Some(0);
@@ -403,6 +431,16 @@ fn split_whitespace_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<all
         .filter(|s| !s.is_empty())
         .map(unescape_dfdl_delimiter_alt)
         .collect()
+}
+
+/// Encode one alternative from a multi-alternative delimiter property value.
+pub fn encode_delimiter_by_alt(pattern: &str, alt_index: u8) -> Vec<u8> {
+    let alts = delimiter_alternatives(pattern);
+    if alts.is_empty() {
+        return Vec::new();
+    }
+    let idx = (alt_index as usize).min(alts.len().saturating_sub(1));
+    encode_delimiter(&alts[idx])
 }
 
 /// Minimal bytes to emit for a delimiter on encode (one WSP for `+`, none for `*`/`?`).

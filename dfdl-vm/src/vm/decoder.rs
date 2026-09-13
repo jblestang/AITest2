@@ -13,6 +13,8 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use core::cell::RefCell;
+use crate::value::FieldDelimiterMeta;
 
 #[derive(Debug, Clone)]
 struct SiblingState {
@@ -23,6 +25,12 @@ struct SiblingState {
 /// DFDL decoder VM — executes compiled IR against an input byte stream.
 pub struct Decoder<'a> {
     ctx: VmContext<'a>,
+    /// Enclosing complex elements (for terminator/separator conflict detection).
+    enclosing: RefCell<Vec<IrProps>>,
+    /// Element names aligned with [`Self::enclosing`] (for separator error context).
+    enclosing_names: RefCell<Vec<String>>,
+    /// Per-field delimiter alternative indices captured during the current sequence child.
+    field_delimiters: RefCell<BTreeMap<String, FieldDelimiterMeta>>,
 }
 
 impl<'a> Decoder<'a> {
@@ -33,6 +41,9 @@ impl<'a> Decoder<'a> {
     pub fn with_config(program: &'a IrProgram, config: RuntimeConfig) -> Self {
         Self {
             ctx: VmContext { program, config },
+            enclosing: RefCell::new(Vec::new()),
+            enclosing_names: RefCell::new(Vec::new()),
+            field_delimiters: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -75,13 +86,26 @@ impl<'a> Decoder<'a> {
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
-                self.consume_initiator(props, cursor)?;
+                let mut initiator_alt = None;
+                if let Some(id) = props.initiator {
+                    let pat = self.ctx.strings().get(id)?;
+                    if !pat.is_empty() {
+                        let alt = cursor
+                            .consume_delimiter_with_alt(pat, props.ignore_case)
+                            .ok_or(VmError::InvalidValue {
+                                message: "initiator mismatch".into(),
+                            })?;
+                        initiator_alt = Some(alt.1);
+                    }
+                }
                 let mut extended = stop_sequences.to_vec();
                 extended.push(props);
                 let child_stops = extended.as_slice();
                 let mut map = BTreeMap::new();
                 let mut seq_siblings = BTreeMap::new();
                 let mut infix_sep_newline_prefix = Vec::new();
+                let mut separator_alts = Vec::new();
+                let mut field_delim_meta = BTreeMap::new();
                 for (idx, &child) in children.iter().enumerate() {
                     let child_has_following = self.following_sibling_consumes_input(children, idx);
                     if idx > 0 {
@@ -97,7 +121,8 @@ impl<'a> Decoder<'a> {
                             }
                         }
                     }
-                    self.consume_separator(
+                    self.field_delimiters.borrow_mut().clear();
+                    let sep_alt = self.consume_separator(
                         props,
                         cursor,
                         idx,
@@ -105,6 +130,7 @@ impl<'a> Decoder<'a> {
                         &mut infix_sep_newline_prefix,
                         child_stops,
                     )?;
+                    separator_alts.push(sep_alt);
                     let saved = cursor.clone();
                     let start = cursor.pos;
                     match self.decode_particle(
@@ -139,6 +165,12 @@ impl<'a> Decoder<'a> {
                                 );
                             }
                             insert_child(&mut map, child, child_value, self.ctx.program)?;
+                            if let IrNode::Element { name, .. } = self.ctx.program.node(child)? {
+                                let key = self.ctx.strings().get(*name)?.to_string();
+                                if let Some(meta) = self.field_delimiters.borrow_mut().remove(&key) {
+                                    field_delim_meta.insert(key, meta);
+                                }
+                            }
                         }
                         Err(e) if is_element_absent(&e) => {
                             if let Ok(IrNode::Element { props, .. }) =
@@ -153,11 +185,36 @@ impl<'a> Decoder<'a> {
                         Err(e) => return Err(e),
                     }
                 }
-                self.consume_terminator(props, cursor)?;
+                let mut terminator_alt = None;
+                if let Some(id) = props.terminator {
+                    let pat = self.ctx.strings().get(id)?;
+                    if !pat.is_empty() {
+                        if let Some((n, alt)) =
+                            cursor.consume_delimiter_with_alt(pat, props.ignore_case)
+                        {
+                            if n == 0 && !cursor.is_empty() {
+                                return Err(VmError::InvalidValue {
+                                    message: alloc::format!("terminator mismatch: expected `{pat}`"),
+                                }
+                                .into());
+                            }
+                            terminator_alt = Some(alt);
+                        } else if !cursor.is_empty() {
+                            return Err(VmError::InvalidValue {
+                                message: alloc::format!("terminator mismatch: expected `{pat}`"),
+                            }
+                            .into());
+                        }
+                    }
+                }
                 Ok(DfdlValue::Sequence(crate::value::SequenceValue {
                     fields: map,
                     meta: crate::value::SequenceMeta {
                         infix_sep_newline_prefix,
+                        initiator_alt,
+                        terminator_alt,
+                        separator_alts,
+                        field_delimiters: field_delim_meta,
                     },
                 }))
             }
@@ -489,28 +546,49 @@ impl<'a> Decoder<'a> {
                         ));
                     }
                     if props.length_kind == LengthKind::Delimited {
-                        let bytes = read_delimited_bytes(
-                            cursor,
-                            &props,
-                            self.ctx.strings(),
-                            require_delimiter,
-                            stop_sequences,
-                        )?;
-                        consume_enclosing_delimiter(cursor, &props, self.ctx.strings(), stop_sequences)?;
-                        let mut sub = Cursor::new(&bytes);
-                        let scope = bytes.len();
-                        let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope), pattern_text_frame, &[])?;
-                        if !sub.is_empty() {
-                            return Err(VmError::InvalidValue {
-                                message: "unconsumed bytes in delimited complex element".into(),
+                        let inline_sequence = matches!(
+                            self.ctx.program.node(*child_id),
+                            Ok(IrNode::Sequence { .. })
+                        );
+                        if !inline_sequence {
+                            let bytes = read_delimited_bytes(
+                                cursor,
+                                &props,
+                                self.ctx.strings(),
+                                require_delimiter,
+                                stop_sequences,
+                            )?;
+                            consume_enclosing_delimiter(
+                                cursor,
+                                &props,
+                                self.ctx.strings(),
+                                stop_sequences,
+                            )?;
+                            let mut sub = Cursor::new(&bytes);
+                            let scope = bytes.len();
+                            let inner = self.decode_node(
+                                *child_id,
+                                &mut sub,
+                                false,
+                                None,
+                                None,
+                                Some(scope),
+                                pattern_text_frame,
+                                &[],
+                            )?;
+                            if !sub.is_empty() {
+                                return Err(VmError::InvalidValue {
+                                    message: "unconsumed bytes in delimited complex element".into(),
+                                }
+                                .into());
                             }
-                            .into());
+                            return Ok(wrap_named(
+                                self.ctx.strings().get(*name)?,
+                                inner,
+                                ValueKind::Complex,
+                            ));
                         }
-                        return Ok(wrap_named(
-                            self.ctx.strings().get(*name)?,
-                            inner,
-                            ValueKind::Complex,
-                        ));
+                        // Sequence children decode in the outer stream (see implicit+terminator path).
                     }
                     if props.length_kind == LengthKind::Prefixed {
                         let bytes = read_prefixed_payload(
@@ -614,6 +692,10 @@ impl<'a> Decoder<'a> {
                     if props.terminator.is_some() || props.separator.is_some() {
                         element_stops.push(&props);
                     }
+                    self.enclosing.borrow_mut().push(props.clone());
+                    self.enclosing_names
+                        .borrow_mut()
+                        .push(self.ctx.strings().get(*name)?.to_string());
                     let inner = self.decode_node(
                         *child_id,
                         cursor,
@@ -624,6 +706,8 @@ impl<'a> Decoder<'a> {
                         pattern_text_frame,
                         &element_stops,
                     )?;
+                    self.enclosing_names.borrow_mut().pop();
+                    self.enclosing.borrow_mut().pop();
                     self.consume_terminator(&props, cursor)?;
                     Ok(wrap_named(
                         self.ctx.strings().get(*name)?,
@@ -641,18 +725,27 @@ impl<'a> Decoder<'a> {
                     )
                     .map_err(Into::into)
                 } else {
-                    read_simple(
+                    let field_name = self.ctx.strings().get(*name)?.to_string();
+                    let mut delim_meta = FieldDelimiterMeta::default();
+                    let value = read_simple(
                         cursor,
                         *kind,
                         &props,
                         self.ctx.strings(),
                         require_delimiter,
                         stop_sequences,
-                        Some(self.ctx.strings().get(*name)?),
+                        Some(&field_name),
                         &self.ctx.program.tunables,
                         false,
+                        Some(&mut delim_meta),
                     )
-                    .map_err(Into::into)
+                    .map_err(crate::error::Error::from)?;
+                    if delim_meta.initiator_alt.is_some() || delim_meta.terminator_alt.is_some() {
+                        self.field_delimiters
+                            .borrow_mut()
+                            .insert(field_name, delim_meta);
+                    }
+                    Ok(value)
                 }
             }
             _ => self.decode_node(node_id, cursor, false, None, None, content_scope_bytes, pattern_text_frame, stop_sequences),
@@ -769,10 +862,7 @@ impl<'a> Decoder<'a> {
             let pat = self.ctx.strings().get(id)?;
             if !pat.is_empty() && !cursor.consume_delimiter(pat, props.ignore_case) {
                 return Err(VmError::InvalidValue {
-                    message: alloc::format!(
-                        "initiator mismatch: expected `{pat}` at offset {}",
-                        cursor.pos
-                    ),
+                    message: "initiator mismatch".into(),
                 }
                 .into());
             }
@@ -810,9 +900,9 @@ impl<'a> Decoder<'a> {
         total: usize,
         infix_sep_newline_prefix: &mut Vec<bool>,
         stop_sequences: &[&IrProps],
-    ) -> Result<()> {
+    ) -> Result<Option<u8>> {
         if !should_write_separator(props.separator_position, index, total) {
-            return Ok(());
+            return Ok(None);
         }
         if let Some(id) = props.separator {
             let pat = self.ctx.strings().get(id)?;
@@ -830,25 +920,18 @@ impl<'a> Decoder<'a> {
                 {
                     cursor.advance(n);
                     infix_sep_newline_prefix.push(had_nl);
-                    return Ok(());
+                    return Ok(None);
                 }
             }
-            if crate::schema::match_delimiter_opts(
-                &cursor.data[cursor.pos..],
-                pat,
-                props.ignore_case,
-            )
-            .is_some()
-            {
-                if !cursor.consume_delimiter(pat, props.ignore_case) {
-                    return Err(VmError::InvalidValue {
-                        message: "separator mismatch".into(),
-                    }
-                    .into());
-                }
+            if let Some((_, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) {
+                return Ok(Some(alt));
             }
+            return Err(VmError::InvalidValue {
+                message: "separator mismatch".into(),
+            }
+            .into());
         }
-        Ok(())
+        Ok(None)
     }
 
     fn separator_enclosing_delimiter_conflict(
@@ -865,7 +948,15 @@ impl<'a> Decoder<'a> {
             SeparatorPosition::Infix => "infix",
             SeparatorPosition::Postfix => "postfix",
         };
-        for enc in stop_sequences {
+        let enclosing = self.enclosing.borrow();
+        let enclosing_names = self.enclosing_names.borrow();
+        let source = enclosing_names
+            .last()
+            .map(|n| alloc::format!(" ex:{n}"))
+            .unwrap_or_default();
+        let mut scans: Vec<&IrProps> = stop_sequences.to_vec();
+        scans.extend(enclosing.iter());
+        for enc in scans.iter().copied() {
             let Some(term_id) = enc.terminator else {
                 continue;
             };
@@ -881,7 +972,7 @@ impl<'a> Decoder<'a> {
             {
                 return Some(VmError::InvalidValue {
                     message: alloc::format!(
-                        "Parse Error. {position} separator. Found enclosing delimiter: '{term}'. during scan for local delimiter(s): '{separator}'. Separator '{separator}' from ex:E1"
+                        "Parse Error. {position} separator. Found enclosing delimiter: '{term}'. during scan for local delimiter(s): '{separator}'. Separator '{separator}' from{source}"
                     ),
                 }
                 .into());
@@ -895,7 +986,7 @@ impl<'a> Decoder<'a> {
         if sep_n == 0 {
             return None;
         }
-        for enc in stop_sequences {
+        for enc in scans.iter().copied() {
             let Some(term_id) = enc.terminator else {
                 continue;
             };
@@ -908,7 +999,7 @@ impl<'a> Decoder<'a> {
             if term_n > sep_n {
                 return Some(VmError::InvalidValue {
                     message: alloc::format!(
-                        "Parse Error. {position} separator. Found enclosing delimiter: '{term}'. during scan for local delimiter(s): '{separator}'. Separator '{separator}' from ex:E1"
+                        "Parse Error. {position} separator. Found enclosing delimiter: '{term}'. during scan for local delimiter(s): '{separator}'. Separator '{separator}' from{source}"
                     ),
                 }
                 .into());
@@ -1005,7 +1096,7 @@ fn should_write_separator(position: SeparatorPosition, index: usize, total: usiz
     match position {
         SeparatorPosition::Prefix => index < total,
         SeparatorPosition::Infix => index > 0,
-        SeparatorPosition::Postfix => index + 1 < total,
+        SeparatorPosition::Postfix => index > 0 && index < total,
     }
 }
 

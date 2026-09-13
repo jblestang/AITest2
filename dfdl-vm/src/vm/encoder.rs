@@ -2,8 +2,8 @@ use super::runtime::{write_alignment, write_byte_aligned, write_framed_payload, 
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
-    encode_delimiter, encode_sequence_separator, LengthKind, LengthUnits, OutputValueCalc,
-    SeparatorPosition,
+    encode_delimiter, encode_delimiter_by_alt, encode_sequence_separator, LengthKind, LengthUnits,
+    OutputValueCalc, SeparatorPosition,
 };
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
@@ -65,7 +65,7 @@ impl<'a> Encoder<'a> {
                     .ok_or_else(|| VmError::TypeMismatch { expected: "sequence".into() })?;
                 let map = &seq.fields;
                 let effective = precompute_output_values(self, children, map)?;
-                self.write_initiator(props, out, bit_count)?;
+                self.write_initiator(props, out, bit_count, seq.meta.initiator_alt)?;
                 for (idx, &child) in children.iter().enumerate() {
                     if child_skips_encode(self, child)? {
                         continue;
@@ -78,9 +78,9 @@ impl<'a> Encoder<'a> {
                         children.len(),
                         &seq.meta,
                     )?;
-                    self.encode_sequence_particle(child, &effective, props, out, bit_count)?;
+                    self.encode_sequence_particle(child, &effective, props, out, bit_count, &seq.meta)?;
                 }
-                self.write_terminator(props, out, bit_count)?;
+                self.write_terminator(props, out, bit_count, seq.meta.terminator_alt)?;
                 Ok(())
             }
             IrNode::Choice { branches, .. } => {
@@ -127,6 +127,7 @@ impl<'a> Encoder<'a> {
                             out,
                             bit_count,
                             Some(name_str),
+                            None,
                         )
                     } else {
                         self.encode_element_occurrences(*child_id, props, field, out, bit_count, props)
@@ -142,6 +143,7 @@ impl<'a> Encoder<'a> {
                         self.ctx.strings(),
                         &self.ctx.program.tunables,
                         Some(self.ctx.strings().get(*name)?),
+                        None,
                     )
                     .map_err(Into::into)
                 }
@@ -157,6 +159,7 @@ impl<'a> Encoder<'a> {
         out: &mut Vec<u8>,
         bit_count: &mut u8,
         field_name: Option<&str>,
+        delim_meta: Option<&crate::value::FieldDelimiterMeta>,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
@@ -168,12 +171,14 @@ impl<'a> Encoder<'a> {
             self.write_occurrence_separator(props, out, bit_count, idx, encode_len)?;
             write_alignment(out, bit_count, props)?;
             if let Some(id) = props.initiator {
-                write_byte_aligned(
-                    out,
-                    bit_count,
-                    &encode_delimiter(self.ctx.strings().get(id)?),
-                )
-                .map_err(Error::from)?;
+                let pat = self.ctx.strings().get(id)?;
+                if !pat.is_empty() {
+                    let bytes = match delim_meta.and_then(|m| m.initiator_alt) {
+                        Some(a) => encode_delimiter_by_alt(pat, a),
+                        None => encode_delimiter(pat),
+                    };
+                    write_byte_aligned(out, bit_count, &bytes).map_err(Error::from)?;
+                }
             }
             let mut payload = Vec::new();
             let mut payload_bit_count = 0u8;
@@ -186,6 +191,7 @@ impl<'a> Encoder<'a> {
                 props,
                 self.ctx.strings(),
                 field_name,
+                delim_meta,
             )?;
         }
         Ok(())
@@ -244,6 +250,7 @@ impl<'a> Encoder<'a> {
         parent_props: &IrProps,
         out: &mut Vec<u8>,
         bit_count: &mut u8,
+        seq_meta: &crate::value::SequenceMeta,
     ) -> Result<()> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element {
@@ -253,6 +260,7 @@ impl<'a> Encoder<'a> {
                 child,
             } => {
                 let key = self.ctx.strings().get(*name)?;
+                let field_delim = seq_meta.field_delimiters.get(key);
                 let value = self.element_encode_value(props, key, map)?;
                 let resolved = resolve_length_props_encode(props, map, self.ctx.strings())?;
                 validate_explicit_decimal_before_encode(
@@ -273,6 +281,7 @@ impl<'a> Encoder<'a> {
                             out,
                             bit_count,
                             Some(key),
+                            field_delim,
                         )
                     } else {
                         self.encode_element_occurrences(
@@ -285,7 +294,15 @@ impl<'a> Encoder<'a> {
                         )
                     }
                 } else {
-                    self.encode_simple_occurrences(*kind, &resolved, &value, out, bit_count, Some(key))
+                    self.encode_simple_occurrences(
+                        *kind,
+                        &resolved,
+                        &value,
+                        out,
+                        bit_count,
+                        Some(key),
+                        field_delim,
+                    )
                 }
             }
             IrNode::Sequence { .. } => self.encode_node(
@@ -318,6 +335,7 @@ impl<'a> Encoder<'a> {
         out: &mut Vec<u8>,
         bit_count: &mut u8,
         field_name: Option<&str>,
+        delim_meta: Option<&crate::value::FieldDelimiterMeta>,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
@@ -346,6 +364,7 @@ impl<'a> Encoder<'a> {
                 self.ctx.strings(),
                 &self.ctx.program.tunables,
                 field_name,
+                delim_meta,
             )
             .map_err(Error::from)?;
         }
@@ -372,11 +391,16 @@ impl<'a> Encoder<'a> {
         props: &IrProps,
         out: &mut Vec<u8>,
         bit_count: &mut u8,
+        alt: Option<u8>,
     ) -> Result<()> {
         if let Some(id) = props.initiator {
             let pat = self.ctx.strings().get(id)?;
             if !pat.is_empty() {
-                write_byte_aligned(out, bit_count, &encode_delimiter(pat)).map_err(Error::from)?;
+                let bytes = match alt {
+                    Some(a) => encode_delimiter_by_alt(pat, a),
+                    None => encode_delimiter(pat),
+                };
+                write_byte_aligned(out, bit_count, &bytes).map_err(Error::from)?;
             }
         }
         Ok(())
@@ -387,11 +411,16 @@ impl<'a> Encoder<'a> {
         props: &IrProps,
         out: &mut Vec<u8>,
         bit_count: &mut u8,
+        alt: Option<u8>,
     ) -> Result<()> {
         if let Some(id) = props.terminator {
             let pat = self.ctx.strings().get(id)?;
             if !pat.is_empty() {
-                write_byte_aligned(out, bit_count, &encode_delimiter(pat)).map_err(Error::from)?;
+                let bytes = match alt {
+                    Some(a) => encode_delimiter_by_alt(pat, a),
+                    None => encode_delimiter(pat),
+                };
+                write_byte_aligned(out, bit_count, &bytes).map_err(Error::from)?;
             }
         }
         Ok(())
@@ -413,6 +442,12 @@ impl<'a> Encoder<'a> {
             return Ok(());
         };
         let pat = self.ctx.strings().get(id)?;
+        let sep_alt = meta.separator_alts.get(index).and_then(|a| *a);
+        if let Some(alt) = sep_alt {
+            write_byte_aligned(out, bit_count, &encode_delimiter_by_alt(pat, alt))
+                .map_err(Error::from)?;
+            return Ok(());
+        }
         let newline_prefix = meta
             .infix_sep_newline_prefix
             .get(index.saturating_sub(1))
