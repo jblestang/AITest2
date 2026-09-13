@@ -350,13 +350,54 @@ pub(crate) fn implicit_text_number_byte_length(
     best
 }
 
+fn apply_configured_separators_to_input(
+    work: &str,
+    pattern: &str,
+    props: &TextNumberFormatProps<'_>,
+) -> String {
+    let bare = pattern_without_quoted_regions(pattern);
+    let mut s = work.to_string();
+    if let Some(grp) = props.grouping_separator {
+        if !grp.is_empty() && (grp != "," || !bare.contains(',')) {
+            s = strip_unquoted_substr(&s, grp);
+        }
+    }
+    if !bare.contains('.') {
+        for ds in props.decimal_separators {
+            if !ds.is_empty() {
+                if let Some(idx) = s.find(ds.as_str()) {
+                    s.replace_range(idx..idx + ds.len(), ".");
+                    break;
+                }
+            }
+        }
+    }
+    s
+}
+
+fn needs_separator_preprocess(work: &str, pattern: &str, props: &TextNumberFormatProps<'_>) -> bool {
+    let bare = pattern_without_quoted_regions(pattern);
+    if props
+        .grouping_separator
+        .is_some_and(|g| !g.is_empty() && g != "," && work.contains(g))
+    {
+        return true;
+    }
+    if !bare.contains('.') {
+        return props.decimal_separators.iter().any(|ds| {
+            !ds.is_empty() && ds != "." && work.contains(ds.as_str())
+        });
+    }
+    false
+}
+
 pub(crate) fn parse_standard_text_number(
     input: &str,
     pattern: &str,
     props: &TextNumberFormatProps<'_>,
 ) -> Result<String, VmError> {
     let lax = props.check_policy == BinaryNumberCheckPolicy::Lax;
-    let work = if lax {
+    let mut work = if lax {
         input.trim().to_string()
     } else {
         input.to_string()
@@ -364,6 +405,14 @@ pub(crate) fn parse_standard_text_number(
 
     let pattern = expand_pattern_doubled_apostrophes(pattern);
     let pattern = pattern.as_str();
+
+    let custom_grouping = props
+        .grouping_separator
+        .map(|g| !g.is_empty() && g != "," && work.contains(g))
+        .unwrap_or(false);
+    if needs_separator_preprocess(&work, pattern, props) {
+        work = apply_configured_separators_to_input(&work, pattern, props);
+    }
 
     let pattern_has_grouping = strip_unquoted_char(pattern, ',').len() < pattern.len();
     let int_comma_count = pattern_without_quoted_regions(pattern)
@@ -373,7 +422,7 @@ pub(crate) fn parse_standard_text_number(
         .chars()
         .filter(|&c| c == ',')
         .count();
-    let relax_grouping = lax || int_comma_count >= 3;
+    let relax_grouping = lax || int_comma_count >= 3 || custom_grouping;
     let (work, pattern_owned) = if pattern_has_grouping && relax_grouping {
         if let Some(grp) = props.grouping_separator {
             if !grp.is_empty() {
@@ -766,6 +815,19 @@ fn match_negative_prefix(
     })
 }
 
+fn trailing_star_pad_from_negative_pattern(pattern: &str) -> Option<char> {
+    let chars: Vec<char> = pattern.chars().collect();
+    if chars.len() < 2 {
+        return None;
+    }
+    let n = chars.len();
+    if chars[n - 2] == '*' {
+        Some(chars[n - 1])
+    } else {
+        None
+    }
+}
+
 fn match_negative_subpattern(
     text: &mut String,
     negative_pattern: &str,
@@ -776,6 +838,7 @@ fn match_negative_subpattern(
     v_int_slots: usize,
 ) -> Result<String, VmError> {
     let (prefix, suffix) = negative_affixes(negative_pattern, positive_pattern);
+    let neg_trailing_pad = trailing_star_pad_from_negative_pattern(negative_pattern);
     let bytes = text.as_bytes();
     let mut pos = 0usize;
     skip_ws(bytes, &mut pos, lax);
@@ -790,10 +853,8 @@ fn match_negative_subpattern(
         let sl = suffix.len();
         if end >= sl && &text[end - sl..end] == suffix.as_str() {
             end -= sl;
-        } else if !lax {
-            return Err(VmError::InvalidValue {
-                message: "textNumberPattern mismatch".into(),
-            });
+        } else if let Some(rel) = text[pos..end].find(suffix.as_str()) {
+            end = pos + rel;
         } else {
             return Err(VmError::InvalidValue {
                 message: "textNumberPattern mismatch".into(),
@@ -807,7 +868,7 @@ fn match_negative_subpattern(
     }
     let core = text[pos..end].to_string();
     let mut inner = core;
-    match_subpattern(
+    let result = match_subpattern(
         &mut inner,
         positive_pattern,
         props,
@@ -815,7 +876,30 @@ fn match_negative_subpattern(
         true,
         v_frac_digits,
         v_int_slots,
-    )
+    )?;
+    let mut tail = end;
+    if !suffix.is_empty() {
+        if !text[tail..].starts_with(suffix.as_str()) {
+            return Err(VmError::InvalidValue {
+                message: "textNumberPattern mismatch".into(),
+            });
+        }
+        tail += suffix.len();
+    }
+    if let Some(pad) = neg_trailing_pad {
+        while tail < text.len() && text.as_bytes()[tail] == pad as u8 {
+            tail += 1;
+        }
+    }
+    if lax {
+        skip_ws(bytes, &mut tail, true);
+    }
+    if tail != text.len() {
+        return Err(VmError::InvalidValue {
+            message: "textNumberPattern mismatch".into(),
+        });
+    }
+    Ok(result)
 }
 
 fn skip_pad_chars(
@@ -895,6 +979,7 @@ fn match_subpattern(
     v_frac_digits: usize,
     v_int_slots: usize,
 ) -> Result<String, VmError> {
+    let bare_pattern = pattern_without_quoted_regions(pattern);
     let bytes = text.as_bytes();
     let mut pos = 0usize;
     if lax && !negative_subpattern && pos < bytes.len() && bytes[pos] == b'+' {
@@ -907,6 +992,7 @@ fn match_subpattern(
     let mut negative = negative_subpattern;
     let mut saw_decimal = false;
     let mut in_exponent = false;
+    let mut saw_digit = false;
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0usize;
     while i < chars.len() {
@@ -979,6 +1065,9 @@ fn match_subpattern(
                     pos += 1;
                 }
                 let digit_count = pos - start;
+                if digit_count > 0 {
+                    saw_digit = true;
+                }
                 if digit_count < min_digits && !lax {
                     return Err(VmError::InvalidValue {
                         message: "textNumberPattern mismatch".into(),
@@ -1141,6 +1230,27 @@ fn match_subpattern(
         }
     }
 
+    if !saw_decimal
+        && !bare_pattern.contains('.')
+        && pos < bytes.len()
+        && (bytes[pos] == b'.'
+            || props
+                .decimal_separators
+                .iter()
+                .any(|ds| bytes[pos..].starts_with(ds.as_bytes())))
+    {
+        if bytes[pos] == b'.' {
+            pos += 1;
+        } else {
+            let _ = match_decimal_separator(bytes, &mut pos, props);
+        }
+        saw_decimal = true;
+        while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+            frac_digits.push(bytes[pos] as char);
+            pos += 1;
+        }
+    }
+
     skip_ws(bytes, &mut pos, lax);
     if pos != bytes.len() {
         if lax {
@@ -1210,6 +1320,12 @@ fn match_subpattern(
 
     if negative && !out.starts_with('-') {
         out.insert(0, '-');
+    }
+
+    if !saw_digit && pattern.contains('*') {
+        return Err(VmError::InvalidValue {
+            message: "textNumberPattern mismatch".into(),
+        });
     }
 
     Ok(out)

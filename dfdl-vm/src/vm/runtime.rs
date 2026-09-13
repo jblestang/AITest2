@@ -1114,9 +1114,15 @@ fn read_implicit_numeric_text(
                         cursor.pos += len;
                         return cursor.data[start..cursor.pos].to_vec();
                     } else if pattern.contains('*') && available > 0 {
-                        let start = cursor.pos;
-                        cursor.pos += available;
-                        return cursor.data[start..cursor.pos].to_vec();
+                        let at_nil = match_nil_literal_prefix(cursor, props, strings)
+                            .ok()
+                            .flatten()
+                            .is_some();
+                        if !at_nil {
+                            let start = cursor.pos;
+                            cursor.pos += available;
+                            return cursor.data[start..cursor.pos].to_vec();
+                        }
                     }
                 }
             }
@@ -1212,12 +1218,46 @@ fn parse_field_text_number(
         text_number::parse_standard_text_number(&text_to_parse, pattern, &fmt)
     };
     if let Ok(v) = parse_result {
+        if matches!(
+            kind,
+            crate::ir::ValueKind::Int
+                | crate::ir::ValueKind::Integer
+                | crate::ir::ValueKind::Long
+                | crate::ir::ValueKind::Short
+                | crate::ir::ValueKind::Byte
+                |             crate::ir::ValueKind::UnsignedInt
+                | crate::ir::ValueKind::UnsignedShort
+                | crate::ir::ValueKind::UnsignedByte
+        ) {
+            return normalize_text_number_for_integer(
+                &v,
+                trimmed,
+                type_name_for_parse(kind, props),
+            );
+        }
         return Ok(v);
     }
     if let Some(zero) = text_standard_zero_rep_match(trimmed, props, strings) {
         return Ok(zero);
     }
     Err(unable_parse_from_text(type_name_for_parse(kind, props), trimmed))
+}
+
+fn normalize_text_number_for_integer(
+    parsed: &str,
+    raw_input: &str,
+    type_name: &str,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    if let Some((int_part, frac)) = parsed.split_once('.') {
+        if frac.chars().all(|c| c == '0') {
+            return Ok(int_part.to_string());
+        }
+        return Err(unable_parse_from_text(type_name, raw_input));
+    }
+    if parsed.contains('E') || parsed.contains('e') {
+        return Err(unable_parse_from_text(type_name, raw_input));
+    }
+    Ok(parsed.to_string())
 }
 
 fn type_name_for_parse(kind: crate::ir::ValueKind, props: &IrProps) -> &'static str {
