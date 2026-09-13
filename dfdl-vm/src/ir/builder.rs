@@ -625,11 +625,34 @@ fn finalize_element_props(
     {
         ir.representation = Representation::Text;
     }
+    if ir.text_standard_base != 10
+        && matches!(kind, ValueKind::Float | ValueKind::Double | ValueKind::Decimal)
+    {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: dfdl:textStandardBase=\"{}\" cannot be used with xs:{}",
+                ir.text_standard_base,
+                match kind {
+                    ValueKind::Float => "float",
+                    ValueKind::Double => "double",
+                    ValueKind::Decimal => "decimal",
+                    _ => "number",
+                }
+            ),
+        }
+        .into());
+    }
     if ir.custom_text_number_pattern {
         if let Some(id) = ir.text_number_pattern {
             let pat = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
                 message: e.to_string(),
             })?;
+            if pat.starts_with(';') {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: The positive part of the dfdl:textNumberPattern is required. The dfdl:textNumberPattern cannot begin with ';'.".into(),
+                }
+                .into());
+            }
             if text_number_pattern_requires_decimal_separator(pat)
                 && !ir.text_standard_decimal_separator_defined
             {
@@ -1154,7 +1177,13 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.text_number_check_policy {
         base.text_number_check_policy = v;
     }
-    if props.text_standard_decimal_separator.is_some() {
+    if props.text_standard_decimal_separator_sibling.is_some() {
+        base.text_standard_decimal_separator_sibling = props
+            .text_standard_decimal_separator_sibling
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+        base.text_standard_decimal_separator_defined = true;
+    } else if props.text_standard_decimal_separator.is_some() {
         base.text_standard_decimal_separator = strings.intern(
             props
                 .text_standard_decimal_separator
@@ -1163,7 +1192,13 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
         );
         base.text_standard_decimal_separator_defined = true;
     }
-    if props.text_standard_grouping_separator.is_some() {
+    if props.text_standard_grouping_separator_sibling.is_some() {
+        base.text_standard_grouping_separator_sibling = props
+            .text_standard_grouping_separator_sibling
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+        base.text_standard_grouping_separator_defined = true;
+    } else if props.text_standard_grouping_separator.is_some() {
         let g = props.text_standard_grouping_separator.as_deref().unwrap_or(",");
         base.text_standard_grouping_separator = if g.is_empty() {
             None
@@ -1172,7 +1207,12 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
         };
         base.text_standard_grouping_separator_defined = true;
     }
-    if props.text_standard_exponent_rep.is_some() {
+    if props.text_standard_exponent_rep_sibling.is_some() {
+        base.text_standard_exponent_rep_sibling = props
+            .text_standard_exponent_rep_sibling
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    } else if props.text_standard_exponent_rep.is_some() {
         base.text_standard_exponent_rep = strings.intern(
             props
                 .text_standard_exponent_rep
@@ -1341,12 +1381,21 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.text_standard_decimal_separator_defined {
         out.text_standard_decimal_separator_defined = true;
     }
+    if overlay.text_standard_decimal_separator_sibling.is_some() {
+        out.text_standard_decimal_separator_sibling = overlay.text_standard_decimal_separator_sibling;
+    }
     out.text_standard_grouping_separator = overlay.text_standard_grouping_separator;
     if overlay.text_standard_grouping_separator_defined {
         out.text_standard_grouping_separator_defined = true;
     }
+    if overlay.text_standard_grouping_separator_sibling.is_some() {
+        out.text_standard_grouping_separator_sibling = overlay.text_standard_grouping_separator_sibling;
+    }
     if overlay.text_standard_exponent_rep != StringId(0) {
         out.text_standard_exponent_rep = overlay.text_standard_exponent_rep;
+    }
+    if overlay.text_standard_exponent_rep_sibling.is_some() {
+        out.text_standard_exponent_rep_sibling = overlay.text_standard_exponent_rep_sibling;
     }
     if overlay.initiator.is_some() {
         out.initiator = overlay.initiator;

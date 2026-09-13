@@ -1019,21 +1019,30 @@ fn parse_field_text_number(
     {
         return apply_text_number_pattern_numeric(trimmed, pattern);
     }
-    let dec = strings
-        .get(props.text_standard_decimal_separator)
+    let dec = props
+        .resolved_text_standard_decimal_separator
+        .as_deref()
+        .or_else(|| strings.get(props.text_standard_decimal_separator).ok())
         .unwrap_or(".");
     let mut dec_seps = crate::schema::parse_text_standard_separator_list(dec);
     if dec_seps.is_empty() {
         dec_seps.push(".".into());
     }
-    let exponent = strings
-        .get(props.text_standard_exponent_rep)
+    let exponent = props
+        .resolved_text_standard_exponent_rep
+        .as_deref()
+        .or_else(|| strings.get(props.text_standard_exponent_rep).ok())
         .unwrap_or("E")
         .to_string();
     let grouping = props
-        .text_standard_grouping_separator
-        .and_then(|id| strings.get(id).ok())
-        .map(|g| g.to_string());
+        .resolved_text_standard_grouping_separator
+        .clone()
+        .or_else(|| {
+            props
+                .text_standard_grouping_separator
+                .and_then(|id| strings.get(id).ok())
+                .map(|g| g.to_string())
+        });
     let grouping_ref = grouping.as_deref();
     let pad = props
         .text_number_pad_character

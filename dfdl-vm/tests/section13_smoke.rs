@@ -36,6 +36,30 @@ fn section13_text_standard_decimal_separator08() {
 }
 
 #[test]
+fn section13_text_number_p_symbol() {
+    for name in ["textNumberPattern_pSymbol01", "textNumberPattern_pSymbol02"] {
+        match run_named("section13/text_number_props/TextNumberProps.tdml", name) {
+            TestOutcome::Pass => {}
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn section13_text_standard_separator_siblings() {
+    for name in [
+        "textStandardDecimalSeparator05",
+        "textStandardGroupingSeparator05",
+        "textStandardGroupingSeparator08",
+    ] {
+        match run_named("section13/text_number_props/TextNumberProps.tdml", name) {
+            TestOutcome::Pass => {}
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn section13_text_number_exponent01() {
     match run_named(
         "section13/text_number_props/TextNumberProps.tdml",

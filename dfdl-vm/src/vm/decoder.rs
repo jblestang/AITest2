@@ -1333,6 +1333,27 @@ fn value_byte_length(value: &DfdlValue) -> Result<usize> {
     }
 }
 
+fn sibling_string_value(
+    siblings: Option<&BTreeMap<String, SiblingState>>,
+    sib_name: &str,
+) -> Result<alloc::string::String> {
+    let sib_val = siblings
+        .and_then(|m| m.get(sib_name))
+        .map(|state| &state.value)
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("runtime property sibling `{sib_name}` not available"),
+        })?;
+    match sib_val {
+        DfdlValue::String(s) => Ok(s.text.clone()),
+        other => Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "runtime property sibling `{sib_name}` has unsupported type: {other:?}"
+            ),
+        }
+        .into()),
+    }
+}
+
 fn resolve_length_props(
     props: &IrProps,
     siblings: Option<&BTreeMap<String, SiblingState>>,
@@ -1340,28 +1361,51 @@ fn resolve_length_props(
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
 ) -> Result<IrProps> {
-    if props.length_kind != LengthKind::Explicit || props.length.is_some() {
-        return Ok(props.clone());
-    }
-    let Some(sib_id) = props.length_sibling else {
-        return Ok(props.clone());
-    };
-    let sib_name = strings.get(sib_id)?;
-    let sib_val = siblings
-        .and_then(|m| m.get(sib_name))
-        .map(|state| &state.value)
-        .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("length sibling `{sib_name}` not available"),
-        })?;
     let mut resolved = props.clone();
-    resolved.length = Some(length_from_value(sib_val, props.length_sibling_cast_long)?);
-    if kind == ValueKind::Decimal {
-        validate_explicit_decimal_before_decode(kind, &resolved, tunables, strings)?;
-    } else if let Some(len) = resolved.length {
-        if binary_length_validation_applies(kind, resolved.binary_number_rep) {
-            validate_data_length_vm(kind, len, resolved.length_units, resolved.binary_number_rep)?;
+
+    if props.length_kind == LengthKind::Explicit && props.length.is_none() {
+        if let Some(sib_id) = props.length_sibling {
+            let sib_name = strings.get(sib_id)?;
+            let sib_val = siblings
+                .and_then(|m| m.get(sib_name))
+                .map(|state| &state.value)
+                .ok_or_else(|| VmError::InvalidValue {
+                    message: alloc::format!("length sibling `{sib_name}` not available"),
+                })?;
+            resolved.length = Some(length_from_value(sib_val, props.length_sibling_cast_long)?);
+            if kind == ValueKind::Decimal {
+                validate_explicit_decimal_before_decode(kind, &resolved, tunables, strings)?;
+            } else if let Some(len) = resolved.length {
+                if binary_length_validation_applies(kind, resolved.binary_number_rep) {
+                    validate_data_length_vm(
+                        kind,
+                        len,
+                        resolved.length_units,
+                        resolved.binary_number_rep,
+                    )?;
+                }
+            }
         }
     }
+
+    if let Some(sib_id) = props.text_standard_decimal_separator_sibling {
+        let sib_name = strings.get(sib_id)?;
+        resolved.resolved_text_standard_decimal_separator =
+            Some(sibling_string_value(siblings, sib_name)?);
+        resolved.text_standard_decimal_separator_defined = true;
+    }
+    if let Some(sib_id) = props.text_standard_grouping_separator_sibling {
+        let sib_name = strings.get(sib_id)?;
+        resolved.resolved_text_standard_grouping_separator =
+            Some(sibling_string_value(siblings, sib_name)?);
+        resolved.text_standard_grouping_separator_defined = true;
+    }
+    if let Some(sib_id) = props.text_standard_exponent_rep_sibling {
+        let sib_name = strings.get(sib_id)?;
+        resolved.resolved_text_standard_exponent_rep =
+            Some(sibling_string_value(siblings, sib_name)?);
+    }
+
     Ok(resolved)
 }
 

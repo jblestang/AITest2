@@ -35,6 +35,165 @@ fn default_decimal_separators() -> Vec<String> {
 }
 
 /// Parse data against a DFDL text number pattern; returns a canonical numeric string for `parse()` / `parse_float`.
+fn pattern_without_quoted_regions(pattern: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Daffodil `P` (decimal scaling position) virtual point from the positive subpattern.
+fn text_decimal_virtual_point_from_pattern(pattern: &str) -> i32 {
+    let bare = pattern_without_quoted_regions(pattern);
+    if bare.contains('V') {
+        return 0;
+    }
+    if !bare.contains('P') {
+        return 0;
+    }
+    let chars: Vec<char> = bare.chars().collect();
+    let mut p_left = 0usize;
+    let mut digits_left = 0usize;
+    let mut p_right = 0usize;
+    let mut phase = 0u8; // 0=prefix, 1=Ps left, 2=digits, 3=Ps right
+    for c in chars {
+        match phase {
+            0 if c == 'P' => {
+                phase = 1;
+                p_left += 1;
+            }
+            0 if matches!(c, '0' | '#' | '*' | '.' | ',' | 'E' | 'e' | ' ') => {
+                phase = 2;
+                if matches!(c, '0' | '#') {
+                    digits_left += 1;
+                }
+            }
+            1 if c == 'P' => p_left += 1,
+            1 if matches!(c, '0' | '#') => {
+                phase = 2;
+                digits_left += 1;
+            }
+            2 if c == 'P' => {
+                phase = 3;
+                p_right += 1;
+            }
+            2 if matches!(c, '0' | '#') => digits_left += 1,
+            3 if c == 'P' => p_right += 1,
+            _ => {}
+        }
+    }
+    if p_left > 0 && p_right == 0 {
+        (p_left + digits_left) as i32
+    } else if p_right > 0 && p_left == 0 {
+        -(p_right as i32)
+    } else {
+        0
+    }
+}
+
+fn strip_p_from_pattern(pattern: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            out.push('\'');
+            i += 1;
+            while i < chars.len() {
+                out.push(chars[i]);
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        out.push('\'');
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if chars[i] != 'P' {
+            out.push(chars[i]);
+        }
+        i += 1;
+    }
+    out
+}
+
+fn apply_decimal_virtual_point(num: &str, vp: i32) -> String {
+    if vp == 0 {
+        return num.to_string();
+    }
+    let negative = num.starts_with('-');
+    let body = num.trim_start_matches('-');
+    let (mantissa, exp_suffix) = if let Some(idx) = body.find('E').or_else(|| body.find('e')) {
+        (&body[..idx], Some(&body[idx..]))
+    } else {
+        (body, None)
+    };
+    let (int_part, frac_part) = if let Some(dot) = mantissa.find('.') {
+        (&mantissa[..dot], &mantissa[dot + 1..])
+    } else {
+        (mantissa, "")
+    };
+    let mut digits: String = int_part.chars().filter(|c| c.is_ascii_digit()).collect();
+    digits.extend(frac_part.chars().filter(|c| c.is_ascii_digit()));
+    if digits.is_empty() {
+        digits.push('0');
+    }
+    let scaled = if vp > 0 {
+        let vp = vp as usize;
+        if digits.len() <= vp {
+            let zeros = vp - digits.len();
+            format!("0.{}{}", "0".repeat(zeros), digits.trim_end_matches('0'))
+        } else {
+            let split = digits.len() - vp;
+            let (a, b) = digits.split_at(split);
+            let frac = b.trim_end_matches('0');
+            if frac.is_empty() {
+                a.to_string()
+            } else {
+                format!("{a}.{frac}")
+            }
+        }
+    } else {
+        let mul = (-vp) as usize;
+        let trimmed = digits.trim_start_matches('0');
+        let core = if trimmed.is_empty() { "0" } else { trimmed };
+        format!("{core}{}", "0".repeat(mul))
+    };
+    let mut out = if negative {
+        format!("-{scaled}")
+    } else {
+        scaled
+    };
+    if let Some(exp) = exp_suffix {
+        out.push_str(exp);
+    }
+    out
+}
+
 pub(crate) fn parse_standard_text_number(
     input: &str,
     pattern: &str,
@@ -54,15 +213,33 @@ pub(crate) fn parse_standard_text_number(
     };
 
     let positive = subpatterns.first().copied().unwrap_or(pattern);
-    for (idx, sub) in subpatterns.iter().enumerate() {
+    let virtual_point = text_decimal_virtual_point_from_pattern(positive);
+    let match_pattern = if virtual_point != 0 {
+        strip_p_from_pattern(pattern)
+    } else {
+        pattern.to_string()
+    };
+    let match_subs: Vec<&str> = if match_pattern.contains(';') {
+        match_pattern.split(';').collect()
+    } else {
+        vec![match_pattern.as_str()]
+    };
+    let positive_match = match_subs.first().copied().unwrap_or(match_pattern.as_str());
+
+    for (idx, sub) in match_subs.iter().enumerate() {
         let mut scratch = work.clone();
         let result = if idx == 0 {
             match_subpattern(&mut scratch, sub, props, lax, false)
         } else {
-            match_negative_subpattern(&mut scratch, sub, positive, props, lax)
+            match_negative_subpattern(&mut scratch, sub, positive_match, props, lax)
         };
         match result {
-            Ok(num) => return Ok(num),
+            Ok(num) => {
+                if virtual_point != 0 {
+                    return Ok(apply_decimal_virtual_point(&num, virtual_point));
+                }
+                return Ok(num);
+            }
             Err(_) => continue,
         }
     }
@@ -122,7 +299,7 @@ fn match_decimal_separator(
 }
 
 fn is_pattern_digit_slot(c: char) -> bool {
-    matches!(c, '0' | '#' | '*' | '.' | ',' | 'E' | 'e' | 'V' | ' ')
+    matches!(c, '0' | '#' | '*' | '.' | ',' | 'E' | 'e' | 'V' | 'P' | ' ')
 }
 
 fn negative_affixes(pattern: &str) -> (String, String) {
@@ -433,8 +610,8 @@ fn match_subpattern(
                 }
                 i += 1;
             }
-            'V' => {
-                // virtual decimal point — digits before/after split like simple V patterns
+            'V' | 'P' => {
+                // virtual decimal point / scaling position — not present in data
                 i += 1;
             }
             ';' => {
@@ -631,6 +808,28 @@ mod tests {
         };
         let n = parse_standard_text_number("D123", "'C'000;'D'000", &props).unwrap();
         assert_eq!(n, "-123");
+    }
+
+    #[test]
+    fn p_pattern_left() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            decimal_separators: &dec,
+            ..TextNumberFormatProps::default()
+        };
+        let n = parse_standard_text_number("123", "PP000", &props).unwrap();
+        assert_eq!(n, "0.00123");
+    }
+
+    #[test]
+    fn p_pattern_right() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            decimal_separators: &dec,
+            ..TextNumberFormatProps::default()
+        };
+        let n = parse_standard_text_number("123", "000PP", &props).unwrap();
+        assert_eq!(n, "12300");
     }
 
     #[test]

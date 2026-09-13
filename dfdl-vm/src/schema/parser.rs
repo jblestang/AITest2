@@ -1054,11 +1054,22 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_standard_decimal_separator.is_some() {
         base.text_standard_decimal_separator = overlay.text_standard_decimal_separator;
     }
+    if overlay.text_standard_decimal_separator_sibling.is_some() {
+        base.text_standard_decimal_separator_sibling =
+            overlay.text_standard_decimal_separator_sibling;
+    }
     if overlay.text_standard_grouping_separator.is_some() {
         base.text_standard_grouping_separator = overlay.text_standard_grouping_separator;
     }
+    if overlay.text_standard_grouping_separator_sibling.is_some() {
+        base.text_standard_grouping_separator_sibling =
+            overlay.text_standard_grouping_separator_sibling;
+    }
     if overlay.text_standard_exponent_rep.is_some() {
         base.text_standard_exponent_rep = overlay.text_standard_exponent_rep;
+    }
+    if overlay.text_standard_exponent_rep_sibling.is_some() {
+        base.text_standard_exponent_rep_sibling = overlay.text_standard_exponent_rep_sibling;
     }
     if overlay.initiator.is_some() {
         base.initiator = overlay.initiator;
@@ -1684,16 +1695,28 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 });
             }
             "textStandardDecimalSeparator" => {
-                props.text_standard_decimal_separator =
-                    Some(crate::schema::expand_entities_str(value));
+                if let Some((sibling, _)) = parse_sibling_length_expr(value) {
+                    props.text_standard_decimal_separator_sibling = Some(sibling);
+                } else {
+                    props.text_standard_decimal_separator =
+                        Some(crate::schema::expand_entities_str(value));
+                }
             }
             "textStandardGroupingSeparator" => {
-                props.text_standard_grouping_separator =
-                    Some(crate::schema::expand_entities_str(value));
+                if let Some((sibling, _)) = parse_sibling_length_expr(value) {
+                    props.text_standard_grouping_separator_sibling = Some(sibling);
+                } else {
+                    props.text_standard_grouping_separator =
+                        Some(crate::schema::expand_entities_str(value));
+                }
             }
             "textStandardExponentRep" => {
-                props.text_standard_exponent_rep =
-                    Some(crate::schema::expand_entities_str(value));
+                if let Some((sibling, _)) = parse_sibling_length_expr(value) {
+                    props.text_standard_exponent_rep_sibling = Some(sibling);
+                } else {
+                    props.text_standard_exponent_rep =
+                        Some(crate::schema::expand_entities_str(value));
+                }
             }
             "initiator" => {
                 let lit = parse_delimiter_literal(value)?;

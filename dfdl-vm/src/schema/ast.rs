@@ -52,8 +52,12 @@ pub struct DfdlProps {
     pub text_number_pattern: Option<String>,
     pub text_number_check_policy: Option<BinaryNumberCheckPolicy>,
     pub text_standard_decimal_separator: Option<String>,
+    /// Sibling local name when decimal separator is `{ ../ex:name }`.
+    pub text_standard_decimal_separator_sibling: Option<String>,
     pub text_standard_grouping_separator: Option<String>,
+    pub text_standard_grouping_separator_sibling: Option<String>,
     pub text_standard_exponent_rep: Option<String>,
+    pub text_standard_exponent_rep_sibling: Option<String>,
     pub initiator: Option<String>,
     pub terminator: Option<String>,
     pub separator: Option<String>,
