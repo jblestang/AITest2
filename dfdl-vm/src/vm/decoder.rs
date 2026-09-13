@@ -1424,8 +1424,13 @@ fn resolve_length_props(
     }
     if let Some(sib_id) = props.text_standard_exponent_rep_sibling {
         let sib_name = strings.get(sib_id)?;
-        resolved.resolved_text_standard_exponent_rep =
-            Some(sibling_string_value(siblings, sib_name)?);
+        let raw = sibling_string_value(siblings, sib_name)?;
+        crate::schema::validate_text_standard_exponent_rep_literal(&raw).map_err(|detail| {
+            VmError::InvalidValue {
+                message: alloc::format!("Schema Definition Error: {detail}"),
+            }
+        })?;
+        resolved.resolved_text_standard_exponent_rep = Some(raw);
     }
 
     Ok(resolved)

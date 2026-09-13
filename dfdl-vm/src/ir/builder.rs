@@ -9,7 +9,9 @@ use crate::schema::{
     BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, Particle, Representation,
     SchemaDocument, SimpleBase, TypeDef, TypeName, expand_entities_str,
     parse_text_standard_separator_list, validate_length_pattern,
+    validate_text_standard_exponent_rep_literal,
     validate_text_standard_separator_literal,
+    validate_text_standard_special_value_literal,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -812,10 +814,24 @@ fn text_number_pattern_requires_decimal_separator(pattern: &str) -> bool {
             i += 1;
             continue;
         }
-        if !in_quote && chars[i] == '.' {
+        if !in_quote && matches!(chars[i], '.' | 'E' | 'e' | '@') {
             return true;
         }
         i += 1;
+    }
+    false
+}
+
+fn text_number_pattern_requires_exponent(pattern: &str) -> bool {
+    let mut in_quote = false;
+    for c in pattern.chars() {
+        if c == '\'' {
+            in_quote = !in_quote;
+            continue;
+        }
+        if !in_quote && matches!(c, 'E' | 'e') {
+            return true;
+        }
     }
     false
 }
@@ -973,6 +989,39 @@ fn finalize_element_props(
         None
     };
     validate_text_standard_separator_semantics(&ir, pattern_for_sep, strings)?;
+    if ir.text_standard_exponent_rep != StringId(0) && ir.text_standard_exponent_rep_sibling.is_none()
+    {
+        let raw = strings.get(ir.text_standard_exponent_rep).unwrap_or("");
+        if let Some(pat) = pattern_for_sep {
+            if raw.is_empty() && text_number_pattern_requires_exponent(pat) {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: Property textStandardExponentRep cannot be empty".into(),
+                }
+                .into());
+            }
+        }
+        validate_text_standard_exponent_rep_literal(raw).map_err(|msg| {
+            SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {msg}"),
+            }
+        })?;
+    }
+    if ir.text_standard_infinity_rep != StringId(0) {
+        let raw = strings.get(ir.text_standard_infinity_rep).unwrap_or("");
+        validate_text_standard_special_value_literal("textStandardInfinityRep", raw).map_err(
+            |msg| SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {msg}"),
+            },
+        )?;
+    }
+    if ir.text_standard_nan_rep != StringId(0) {
+        let raw = strings.get(ir.text_standard_nan_rep).unwrap_or("");
+        validate_text_standard_special_value_literal("textStandardNaNRep", raw).map_err(|msg| {
+            SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {msg}"),
+            }
+        })?;
+    }
     Ok(ir)
 }
 
@@ -1329,6 +1378,7 @@ fn element_props_for_complex_content(element_props: &DfdlProps) -> DfdlProps {
         encoding: element_props.encoding.clone(),
         encoding_error_policy: element_props.encoding_error_policy,
         separator_suppression_policy: element_props.separator_suppression_policy,
+        ignore_case: element_props.ignore_case,
         ..DfdlProps::default()
     }
 }
@@ -1353,8 +1403,8 @@ fn particle_inherited_for_children(
     inherited.initiator = None;
     inherited.terminator = None;
     inherited.separator = None;
-    // Group ignoreCase applies to group delimiters only; children inherit format defaults.
-    inherited.ignore_case = defaults.ignore_case;
+    // Preserve ancestor `ignoreCase` for descendant parsing; explicit group `ignoreCase`
+    // still overlays via merge_props_full on the group node itself.
     inherited
 }
 
@@ -1548,12 +1598,13 @@ fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     } else if props.text_standard_exponent_rep.is_some() {
-        base.text_standard_exponent_rep = strings.intern(
-            props
-                .text_standard_exponent_rep
-                .as_deref()
-                .unwrap_or("E"),
-        );
+        let raw = props.text_standard_exponent_rep.as_deref().unwrap_or("E");
+        validate_text_standard_exponent_rep_literal(raw).map_err(|msg| {
+            SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {msg}"),
+            }
+        })?;
+        base.text_standard_exponent_rep = strings.intern(raw);
     }
     if props.text_standard_infinity_rep.is_some() {
         base.text_standard_infinity_rep = strings.intern(

@@ -73,6 +73,32 @@ pub fn normalize_delimiter_pattern(raw: &str) -> String {
 }
 
 /// Compile-time validation for `textStandardDecimalSeparator` / `textStandardGroupingSeparator`.
+pub fn validate_text_standard_exponent_rep_literal(raw: &str) -> Result<(), String> {
+    validate_text_standard_separator_literal("textStandardExponentRep", raw)
+}
+
+pub fn validate_text_standard_special_value_literal(
+    prop: &str,
+    raw: &str,
+) -> Result<(), String> {
+    if raw.contains("#r") || raw.contains("#R") {
+        if let Some(idx) = raw.find("%#") {
+            let tail = &raw[idx..];
+            if let Some(end) = tail.find(';') {
+                return Err(format!("Byte Entity {}", &tail[..=end]));
+            }
+        }
+    }
+    for disallowed in ["%NL;", "%LF;", "%WSP;", "%WS;", "%WSP+;", "%WSP*;", "%WS+;"] {
+        if raw.contains(disallowed) {
+            return Err(format!(
+                "{prop} contains disallowed character class(es): {disallowed}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_text_standard_separator_literal(prop: &str, raw: &str) -> Result<(), String> {
     if raw.contains("#r") || raw.contains("#R") {
         if let Some(idx) = raw.find("%#") {

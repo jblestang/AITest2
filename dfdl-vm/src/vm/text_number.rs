@@ -535,7 +535,14 @@ fn is_pattern_digit_slot(c: char) -> bool {
 }
 
 fn is_negative_template_char(c: char) -> bool {
-    matches!(c, '0' | '#' | '.' | ',' | 'E' | 'e' | 'V' | 'P' | ' ' | '+' | '-')
+    matches!(
+        c,
+        '0' | '#' | '.' | ',' | 'E' | 'e' | 'V' | 'P' | ' ' | '+' | '-'
+    )
+}
+
+fn fuzzy_subpattern_slot_char(c: char) -> bool {
+    matches!(c, '0' | '#' | '.' | ',' | 'E' | 'e' | 'V' | 'P' | ' ')
 }
 
 /// Digit/pad template region in a negative subpattern (digit specs are ignored for parsing).
@@ -607,9 +614,7 @@ fn pattern_literals_between(chars: &[char], start: usize, end: usize) -> String 
             i += 2;
             continue;
         }
-        if chars[i] == ' ' || !is_negative_template_char(chars[i]) {
-            out.push(chars[i]);
-        }
+        out.push(chars[i]);
         i += 1;
     }
     out
@@ -650,7 +655,7 @@ fn fuzzy_positive_in_negative(negative: &str, positive: &str) -> Option<(usize, 
                 pi += 2;
                 continue;
             }
-            if is_negative_template_char(pos[pi]) && is_negative_template_char(neg[ni]) {
+            if fuzzy_subpattern_slot_char(pos[pi]) && fuzzy_subpattern_slot_char(neg[ni]) {
                 ni += 1;
                 pi += 1;
                 continue;
@@ -663,6 +668,14 @@ fn fuzzy_positive_in_negative(negative: &str, positive: &str) -> Option<(usize, 
             break;
         }
         if pi == pos.len() {
+            return Some((start, ni));
+        }
+        // Sign suffix affixes on negative subpatterns (e.g. `##0PP+` / `##0PP-`).
+        if pi + 1 == pos.len()
+            && ni + 1 == neg.len()
+            && matches!(pos[pi], '+' | '-')
+            && matches!(neg[ni], '+' | '-')
+        {
             return Some((start, ni));
         }
     }
@@ -882,6 +895,13 @@ fn match_subpattern(
     let mut negative = negative_subpattern;
     let mut saw_decimal = false;
     let mut in_exponent = false;
+    let strict_group_widths = if lax {
+        Vec::new()
+    } else {
+        grouping_segment_slot_counts(pattern)
+    };
+    let mut strict_comma_idx = 0usize;
+    let mut int_digits_at_last_comma = 0usize;
 
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0usize;
@@ -1003,6 +1023,17 @@ fn match_subpattern(
                 i += 1;
             }
             ',' => {
+                if !lax && !in_exponent && !saw_decimal && strict_comma_idx < strict_group_widths.len()
+                {
+                    let since = int_digits.len().saturating_sub(int_digits_at_last_comma);
+                    if since != strict_group_widths[strict_comma_idx] {
+                        return Err(VmError::InvalidValue {
+                            message: "textNumberPattern mismatch".into(),
+                        });
+                    }
+                    strict_comma_idx += 1;
+                    int_digits_at_last_comma = int_digits.len();
+                }
                 skip_ws(bytes, &mut pos, lax);
                 if let Some(grp) = props.grouping_separator {
                     if !grp.is_empty() && text[pos..].starts_with(grp) {
@@ -1216,6 +1247,19 @@ fn apply_scientific_exponent(
     s
 }
 
+fn grouping_segment_slot_counts(pattern: &str) -> Vec<usize> {
+    let bare = pattern_without_quoted_regions(pattern);
+    let int_part = bare
+        .split(['.', 'E', 'e', ';'])
+        .next()
+        .unwrap_or(bare.as_str());
+    int_part
+        .split(',')
+        .map(|seg| seg.chars().filter(|c| matches!(c, '#' | '0')).count())
+        .filter(|&n| n > 0)
+        .collect()
+}
+
 fn normalize_int_digits(digits: &str) -> String {
     let trimmed = digits.trim_start_matches('0');
     if trimmed.is_empty() {
@@ -1260,6 +1304,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number("006.54E9", "000.0#E0", &props).unwrap();
         assert_eq!(n, "6.54E9");
@@ -1287,6 +1332,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let strict_props = TextNumberFormatProps {
             check_policy: BinaryNumberCheckPolicy::Strict,
@@ -1294,6 +1340,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let strict =
             parse_standard_text_number("$5 00", "'$'#0.00", &strict_props).unwrap();
@@ -1313,6 +1360,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number("$5 00", "'$'#0.00", &props).unwrap();
         assert_eq!(n, "5.00");
@@ -1327,6 +1375,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number("$49.99", "'$'##0.00", &props).unwrap();
         assert_eq!(n, "49.99");
@@ -1341,6 +1390,7 @@ mod tests {
             grouping_separator: None,
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number("D123", "'C'000;'D'000", &props).unwrap();
         assert_eq!(n, "-123");
@@ -1360,6 +1410,25 @@ mod tests {
     #[test]
     #[test]
     #[test]
+    fn ppattern_p_on_right() {
+        let dec = vec![".".into()];
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Lax,
+            decimal_separators: &dec,
+            grouping_separator: Some(","),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+            ignore_case: false,
+        };
+        let (pre, suf) = negative_affixes("##0PP-", "##0PP+");
+        assert_eq!(pre, "");
+        assert_eq!(suf, "-");
+        let n =
+            parse_standard_text_number("123-", "##0PP+;##0PP-", &props).unwrap();
+        assert_eq!(n, "-12300");
+    }
+
+    #[test]
     fn tnp09_negative_affix() {
         let dec = vec![".".into()];
         let props = TextNumberFormatProps {
@@ -1368,6 +1437,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let pat = "**######;*/$###### 'is negative!'";
         let n = parse_standard_text_number(
@@ -1388,6 +1458,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number(
             "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx5,000",
@@ -1407,6 +1478,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number("123,123,1234", "#,##,###,####", &props).unwrap();
         assert_eq!(n, "1231231234");
@@ -1421,6 +1493,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number("1.234E+1", "0.###E+0", &props).unwrap();
         assert_eq!(n, "12.34");
@@ -1468,6 +1541,7 @@ mod tests {
             grouping_separator: None,
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number("D123", "'C'000;'D'000", &props).unwrap();
         assert_eq!(n, "-123");
@@ -1481,6 +1555,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number("1988", "0000", &props).unwrap();
         assert_eq!(n, "1988");
@@ -1495,6 +1570,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number(
             "                 12 o'clock",
@@ -1514,6 +1590,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number(
             "                 12 o'clock",
@@ -1546,6 +1623,7 @@ mod tests {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
         };
         let n = parse_standard_text_number(
             "data:                           4,999",
