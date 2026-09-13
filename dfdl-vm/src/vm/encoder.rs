@@ -303,6 +303,7 @@ impl<'a> Encoder<'a> {
                         bit_count,
                         Some(key),
                         field_delim,
+                        parent_props,
                     )
                 }
             }
@@ -337,6 +338,7 @@ impl<'a> Encoder<'a> {
         bit_count: &mut u8,
         field_name: Option<&str>,
         delim_meta: Option<&crate::value::FieldDelimiterMeta>,
+        sep_props: &IrProps,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
@@ -345,15 +347,17 @@ impl<'a> Encoder<'a> {
         let suppressed = trailing_suppressed_count(items, props, self.ctx.strings())?;
         let encode_len = items.len().saturating_sub(suppressed);
         for (idx, item) in items.iter().take(encode_len).enumerate() {
-            if !should_suppress_occurrence_separator(
-                props,
-                props,
-                items,
-                idx,
-                true,
-                self.ctx.strings(),
-            )? {
-                self.write_occurrence_separator(props, out, bit_count, idx, encode_len)?;
+            if sep_props.separator_position != SeparatorPosition::Postfix {
+                if !should_suppress_occurrence_separator(
+                    sep_props,
+                    props,
+                    items,
+                    idx,
+                    true,
+                    self.ctx.strings(),
+                )? {
+                    self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
+                }
             }
             write_alignment(out, bit_count, props)?;
             write_simple(
@@ -368,6 +372,18 @@ impl<'a> Encoder<'a> {
                 delim_meta,
             )
             .map_err(Error::from)?;
+            if sep_props.separator_position == SeparatorPosition::Postfix {
+                if !should_suppress_occurrence_separator(
+                    sep_props,
+                    props,
+                    items,
+                    idx,
+                    false,
+                    self.ctx.strings(),
+                )? {
+                    self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
+                }
+            }
         }
         Ok(())
     }

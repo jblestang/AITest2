@@ -105,7 +105,11 @@ pub fn parse_delimiter_literal_value(raw: &str) -> String {
     {
         return unescaped.trim_end_matches([' ', '\t']).to_string();
     }
-    normalize_delimiter_pattern(&unescaped)
+    let normalized = normalize_delimiter_pattern(&unescaped);
+    if normalized.is_empty() && unescaped.contains('%') {
+        return unescaped.trim().to_string();
+    }
+    normalized
 }
 
 fn delimiter_alt_is_es(alt: &str) -> bool {
