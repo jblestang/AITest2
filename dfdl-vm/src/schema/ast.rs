@@ -87,6 +87,7 @@ pub struct DfdlProps {
     pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
     /// When true, initiator/terminator/separator matching ignores ASCII case.
     pub ignore_case: Option<bool>,
+    pub initiated_content: Option<bool>,
     /// True when a DFDL statement annotation (e.g. `dfdl:assert`) appears on this construct.
     pub has_statement_annotation: bool,
 }

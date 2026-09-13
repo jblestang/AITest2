@@ -387,6 +387,14 @@ fn field_values_to_infoset_nodes(name: &str, value: &DfdlValue) -> Vec<InfosetNo
     }
 }
 
+fn format_float_for_infoset(v: f32) -> String {
+    if v % 1.0 == 0.0 && v.is_finite() {
+        alloc::format!("{v:.1}")
+    } else {
+        v.to_string()
+    }
+}
+
 fn scalar_to_string(value: &DfdlValue) -> String {
     match value {
         DfdlValue::Boolean(v) => v.to_string(),
@@ -397,8 +405,8 @@ fn scalar_to_string(value: &DfdlValue) -> String {
         DfdlValue::UnsignedInt(v) => v.to_string(),
         DfdlValue::UnsignedShort(v) => v.to_string(),
         DfdlValue::UnsignedByte(v) => v.to_string(),
-        DfdlValue::Float(v) => v.to_string(),
-        DfdlValue::Double(v) => v.to_string(),
+        DfdlValue::Float(v) => format_float_for_infoset(*v),
+        DfdlValue::Double(v) => format_float_for_infoset(*v as f32),
         DfdlValue::Decimal(v) => v.clone(),
         DfdlValue::DateTime(v) => v.clone(),
         DfdlValue::String(v) => v.text.clone(),

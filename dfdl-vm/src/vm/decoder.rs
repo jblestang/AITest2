@@ -84,12 +84,26 @@ impl<'a> Decoder<'a> {
                 let mut infix_sep_newline_prefix = Vec::new();
                 for (idx, &child) in children.iter().enumerate() {
                     let child_has_following = self.following_sibling_consumes_input(children, idx);
+                    if idx > 0 {
+                        if let Some(sep_id) = props.separator {
+                            let pat = self.ctx.strings().get(sep_id)?;
+                            if let Some(err) = self.separator_enclosing_delimiter_conflict(
+                                props,
+                                pat,
+                                cursor,
+                                child_stops,
+                            ) {
+                                return Err(err);
+                            }
+                        }
+                    }
                     self.consume_separator(
                         props,
                         cursor,
                         idx,
                         children.len(),
                         &mut infix_sep_newline_prefix,
+                        child_stops,
                     )?;
                     let saved = cursor.clone();
                     let start = cursor.pos;
@@ -127,6 +141,13 @@ impl<'a> Decoder<'a> {
                             insert_child(&mut map, child, child_value, self.ctx.program)?;
                         }
                         Err(e) if is_element_absent(&e) => {
+                            if let Ok(IrNode::Element { props, .. }) =
+                                self.ctx.program.node(child)
+                            {
+                                if props.occurs_min > 0 {
+                                    return Err(e);
+                                }
+                            }
                             *cursor = saved;
                         }
                         Err(e) => return Err(e),
@@ -517,6 +538,13 @@ impl<'a> Decoder<'a> {
                         if let Some(term_id) = props.terminator {
                             let term = self.ctx.strings().get(term_id)?;
                             if !term.is_empty() {
+                                if matches!(
+                                    self.ctx.program.node(*child_id),
+                                    Ok(IrNode::Sequence { .. })
+                                ) {
+                                    // Decode sequence children in the outer stream so separators
+                                    // can detect enclosing terminators (e.g. `$` vs `$$`).
+                                } else {
                                 let bytes = read_until_separator(cursor, term, false, props.ignore_case)?;
                                 if crate::schema::match_delimiter_opts(
                                     &cursor.data[cursor.pos..],
@@ -543,6 +571,7 @@ impl<'a> Decoder<'a> {
                                     inner,
                                     ValueKind::Complex,
                                 ));
+                                }
                             }
                         }
                         if let Some(parent) = parent_sequence {
@@ -581,6 +610,10 @@ impl<'a> Decoder<'a> {
                             }
                         }
                     }
+                    let mut element_stops = stop_sequences.to_vec();
+                    if props.terminator.is_some() || props.separator.is_some() {
+                        element_stops.push(&props);
+                    }
                     let inner = self.decode_node(
                         *child_id,
                         cursor,
@@ -589,7 +622,7 @@ impl<'a> Decoder<'a> {
                         None,
                         content_scope_bytes,
                         pattern_text_frame,
-                        stop_sequences,
+                        &element_stops,
                     )?;
                     self.consume_terminator(&props, cursor)?;
                     Ok(wrap_named(
@@ -736,7 +769,10 @@ impl<'a> Decoder<'a> {
             let pat = self.ctx.strings().get(id)?;
             if !pat.is_empty() && !cursor.consume_delimiter(pat, props.ignore_case) {
                 return Err(VmError::InvalidValue {
-                    message: "initiator mismatch".into(),
+                    message: alloc::format!(
+                        "initiator mismatch: expected `{pat}` at offset {}",
+                        cursor.pos
+                    ),
                 }
                 .into());
             }
@@ -773,12 +809,18 @@ impl<'a> Decoder<'a> {
         index: usize,
         total: usize,
         infix_sep_newline_prefix: &mut Vec<bool>,
+        stop_sequences: &[&IrProps],
     ) -> Result<()> {
         if !should_write_separator(props.separator_position, index, total) {
             return Ok(());
         }
         if let Some(id) = props.separator {
             let pat = self.ctx.strings().get(id)?;
+            if let Some(err) =
+                self.separator_enclosing_delimiter_conflict(props, pat, cursor, stop_sequences)
+            {
+                return Err(err);
+            }
             if crate::schema::is_nl_comma_space_pattern(pat)
                 && props.separator_position == SeparatorPosition::Infix
                 && index > 0
@@ -807,6 +849,72 @@ impl<'a> Decoder<'a> {
             }
         }
         Ok(())
+    }
+
+    fn separator_enclosing_delimiter_conflict(
+        &self,
+        sep_props: &IrProps,
+        separator: &str,
+        cursor: &Cursor<'_>,
+        stop_sequences: &[&IrProps],
+    ) -> Option<Error> {
+        use crate::error::VmError;
+        use crate::schema::SeparatorPosition;
+        let position = match sep_props.separator_position {
+            SeparatorPosition::Prefix => "prefix",
+            SeparatorPosition::Infix => "infix",
+            SeparatorPosition::Postfix => "postfix",
+        };
+        for enc in stop_sequences {
+            let Some(term_id) = enc.terminator else {
+                continue;
+            };
+            let term = self.ctx.strings().get(term_id).ok()?;
+            if term.len() > separator.len()
+                && term.starts_with(separator)
+                && crate::schema::match_delimiter_opts(
+                    &cursor.data[cursor.pos..],
+                    term,
+                    enc.ignore_case,
+                )
+                .is_some()
+            {
+                return Some(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Parse Error. {position} separator. Found enclosing delimiter: '{term}'. during scan for local delimiter(s): '{separator}'. Separator '{separator}' from ex:E1"
+                    ),
+                }
+                .into());
+            }
+        }
+        let sep_n = crate::schema::match_delimiter_opts(
+            &cursor.data[cursor.pos..],
+            separator,
+            sep_props.ignore_case,
+        )?;
+        if sep_n == 0 {
+            return None;
+        }
+        for enc in stop_sequences {
+            let Some(term_id) = enc.terminator else {
+                continue;
+            };
+            let term = self.ctx.strings().get(term_id).ok()?;
+            let term_n = crate::schema::match_delimiter_opts(
+                &cursor.data[cursor.pos..],
+                term,
+                enc.ignore_case,
+            )?;
+            if term_n > sep_n {
+                return Some(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Parse Error. {position} separator. Found enclosing delimiter: '{term}'. during scan for local delimiter(s): '{separator}'. Separator '{separator}' from ex:E1"
+                    ),
+                }
+                .into());
+            }
+        }
+        None
     }
 
     fn following_sibling_consumes_input(&self, children: &[u32], idx: usize) -> bool {

@@ -179,12 +179,13 @@ impl<'a> IrBuilder<'a> {
                 let name = self.strings.intern(&element.name);
                 if let Some(builtin) = BuiltinType::from_xsd(element.type_name.as_str()) {
                     let kind = value_kind_from_builtin(builtin);
-                    let ir_props = finalize_element_props(
+                    let mut ir_props = finalize_element_props(
                         kind,
                         self.merge_props_full(inherited, &element.props, &DfdlProps::default())?,
                         &self.strings,
                         self.tunables,
                     )?;
+                    apply_unsigned_long_flag(&element.type_name, &mut ir_props);
                     validate_implicit_text_length(kind, &ir_props)?;
                     Ok(self.push(IrNode::Element {
                         name,
@@ -249,6 +250,7 @@ impl<'a> IrBuilder<'a> {
                     particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
                 for particle in &sequence.particles {
+                    validate_initiated_content_particle(&sequence.props, particle)?;
                     children.push(self.compile_particle(particle, &child_inherited)?);
                 }
                 Ok(self.push(IrNode::Sequence {
@@ -291,6 +293,7 @@ impl<'a> IrBuilder<'a> {
                     particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
                 for particle in &sequence.particles {
+                    validate_initiated_content_particle(&sequence.props, particle)?;
                     children.push(self.compile_particle(particle, &child_inherited)?);
                 }
                 Ok(self.push(IrNode::Sequence {
@@ -339,6 +342,8 @@ impl<'a> IrBuilder<'a> {
         type_props: &DfdlProps,
         element_props: &DfdlProps,
     ) -> Result<IrProps> {
+        validate_delimiter_props(type_props)?;
+        validate_delimiter_props(element_props)?;
         let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings);
         self.attach_prefix_length(type_props, element_props, &mut ir, 0)?;
         Ok(ir)
@@ -550,6 +555,65 @@ fn finalize_element_props(
         ir.representation = Representation::Text;
     }
     Ok(ir)
+}
+
+fn apply_unsigned_long_flag(type_name: &TypeName, props: &mut IrProps) {
+    let local = type_name.as_str().rsplit(':').next().unwrap_or(type_name.as_str());
+    if matches!(local, "unsignedLong") {
+        props.unsigned_integer = true;
+    }
+}
+
+fn validate_delimiter_at_compile(raw: &str) -> Result<()> {
+    if raw.trim_start().starts_with('{') {
+        return Ok(());
+    }
+    crate::schema::validate_delimiter_property_value(raw).map_err(|msg| {
+        SchemaError::InvalidProperty {
+            message: alloc::format!("Schema Definition Error. {msg}"),
+        }
+        .into()
+    })
+}
+
+fn validate_delimiter_props(props: &DfdlProps) -> Result<()> {
+    for s in [
+        props.initiator.as_deref(),
+        props.separator.as_deref(),
+        props.terminator.as_deref(),
+    ] {
+        if let Some(v) = s {
+            if !v.is_empty() {
+                validate_delimiter_at_compile(v)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_initiated_content_particle(sequence_props: &DfdlProps, particle: &Particle) -> Result<()> {
+    if !sequence_props.initiated_content.unwrap_or(false) {
+        return Ok(());
+    }
+    let Particle::Element(element) = particle else {
+        return Ok(());
+    };
+    let initiator = element.props.initiator.as_deref().unwrap_or("");
+    if initiator.is_empty() {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error. initiatedContent yes requires initiator not defined"
+                .into(),
+        }
+        .into());
+    }
+    if crate::schema::is_zero_length_delimiter(initiator) {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error. initiatedContent yes requires initiator zero length"
+                .into(),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
@@ -902,6 +966,9 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     }
     if let Some(v) = props.ignore_case {
         base.ignore_case = v;
+    }
+    if let Some(v) = props.initiated_content {
+        base.initiated_content = v;
     }
     if let Some(v) = props.text_trim_kind {
         base.text_trim_kind = v;

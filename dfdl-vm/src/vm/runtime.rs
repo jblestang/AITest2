@@ -459,6 +459,7 @@ pub(crate) fn read_binary_scalar(
             return decode_binary_scalar(kind, &bytes, props, strings, None);
         }
         let raw = cursor.read_stream_bits(len, props.bit_order)?;
+        let raw = normalize_bit_field_raw(raw, len, props.byte_order);
         return decode_binary_from_raw_bits(kind, raw, len, props, strings);
     }
 
@@ -1129,12 +1130,14 @@ fn decode_binary_from_raw_bits(
         }
         UnsignedInt => unsigned!(u32, DfdlValue::UnsignedInt),
         Long => {
-            let v = if bit_width == 1 {
-                raw as i64
+            let v = if props.unsigned_integer {
+                raw & bit_mask(bit_width)
+            } else if bit_width == 1 {
+                raw
             } else {
-                sign_extend_u64(raw, bit_width)
+                sign_extend_u64(raw, bit_width) as u64
             };
-            Ok(DfdlValue::Long(v))
+            Ok(DfdlValue::Long(v as i64))
         }
         Float => Ok(DfdlValue::Float(f32::from_bits(raw as u32))),
         Double => Ok(DfdlValue::Double(f64::from_bits(raw))),
@@ -1176,6 +1179,32 @@ fn sign_extend_u64(value: u64, bits: usize) -> i64 {
         (value | (!mask)) as i64
     } else {
         value as i64
+    }
+}
+
+fn bit_mask(width: usize) -> u64 {
+    if width >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    }
+}
+
+fn normalize_bit_field_raw(raw: u64, bit_width: usize, byte_order: ByteOrder) -> u64 {
+    if bit_width == 0 {
+        return 0;
+    }
+    if byte_order == ByteOrder::LittleEndian {
+        let mut bytes = stream_bits_to_bytes(raw, bit_width, ByteOrder::BigEndian);
+        bytes.reverse();
+        let mut v = 0u64;
+        for b in bytes {
+            v = (v << 8) | u64::from(b);
+        }
+        let shift = (8 - (bit_width % 8)) % 8;
+        (v >> shift) & bit_mask(bit_width)
+    } else {
+        raw & bit_mask(bit_width)
     }
 }
 
@@ -2273,8 +2302,7 @@ pub(crate) fn consume_enclosing_delimiter(
                         pat,
                         seq.ignore_case,
                     ) {
-                        let own = non_empty_delimiter_scan_patterns(props, strings)?;
-                        if own.iter().any(|p| p.pat == pat) && n > 0 {
+                        if n > 0 {
                             cursor.advance(n);
                         }
                         return Ok(());
@@ -2908,7 +2936,10 @@ pub(crate) fn read_simple(
         let pat = strings.get(id)?;
         if !pat.is_empty() && !cursor.consume_delimiter(pat, props.ignore_case) {
             return Err(VmError::InvalidValue {
-                message: "initiator mismatch".into(),
+                message: alloc::format!(
+                    "initiator mismatch: expected `{pat}` at offset {}",
+                    cursor.pos
+                ),
             });
         }
     }

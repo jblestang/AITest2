@@ -1039,6 +1039,7 @@ fn daffodil_section12_delimiter_properties_suite() {
         "delims_ignorecase_02",
         "Lesson4_initiators_terminators",
         "ParseSequence4",
+        "ParseSequence5",
     ] {
         assert_named_test_passes(tdml, name);
     }

@@ -92,6 +92,44 @@ pub fn parse_delimiter_literal_value(raw: &str) -> String {
     normalize_delimiter_pattern(&unescaped)
 }
 
+/// Validate initiator/separator/terminator literals at schema compile time.
+pub fn validate_delimiter_property_value(raw: &str) -> Result<(), String> {
+    if raw == "%" {
+        return Err("Invalid DFDL Entity (%) found".into());
+    }
+    let mut i = 0usize;
+    while i < raw.len() {
+        if raw.as_bytes()[i] == b'%' {
+            if let Some(rel) = raw[i..].find(';') {
+                let entity_slice = &raw[i..i + rel + 1];
+                let entity = &raw[i + 1..i + rel];
+                let entity_name = entity.trim_end_matches(['+', '*', '?']);
+                if parse_entity(&format!("%{entity_name};")).is_none() {
+                    return Err(format!("Invalid DFDL Entity ({entity}) found"));
+                }
+                let _ = entity_slice;
+                i += rel + 1;
+            } else {
+                return Err("Invalid DFDL Entity (%) found".into());
+            }
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
+}
+
+/// True when a delimiter pattern is zero-length after entity expansion.
+pub fn is_zero_length_delimiter(raw: &str) -> bool {
+    if raw.is_empty() {
+        return true;
+    }
+    if expand_entities_str(raw).is_empty() {
+        return true;
+    }
+    matches!(match_delimiter_opts(b"x", raw, false), Some(0))
+}
+
 fn ascii_eq_ic(a: u8, b: u8, ignore_case: bool) -> bool {
     if a == b {
         return true;
@@ -239,6 +277,9 @@ pub fn match_delimiter_opts(input: &[u8], pattern: &str, ignore_case: bool) -> O
 
 /// All delimiter/initiator/terminator alternatives for a property value.
 pub fn delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::String> {
+    if pattern.chars().all(|c| c == ',') && pattern.len() > 1 {
+        return alloc::vec![pattern.to_string()];
+    }
     if delimiter_has_top_level_comma(pattern) {
         return split_delimiter_alternatives_comma(pattern);
     }
@@ -1253,5 +1294,26 @@ mod tests {
     fn encode_nl_comma_space_separator_uses_output_new_line() {
         assert_eq!(encode_nl_comma_space_separator(Some("%CR;%LF;"), true), vec![13, 10, 44]);
         assert_eq!(encode_nl_comma_space_separator(Some("%CR;%LF;"), false), vec![44]);
+    }
+
+    #[test]
+    fn parse_sequence5_delim_match() {
+        let data = b"[more[{{((55)),,((66)),,((77))}}]nomore]";
+        assert_eq!(super::match_delimiter_opts(&data[6..], "{{", false), Some(2));
+        assert_eq!(super::match_delimiter_opts(&data[8..], "((", false), Some(2));
+        assert!(super::match_delimiter_opts(&data[9..], "((", false).is_none());
+    }
+
+    #[test]
+    fn dollar_separator_prefix_of_terminator() {
+        let data = b"$$";
+        assert_eq!(super::match_delimiter_opts(data, "$", false), Some(1));
+        assert_eq!(super::match_delimiter_opts(data, "$$", false), Some(2));
+    }
+
+    #[test]
+    fn double_comma_occurrence_separator() {
+        let data = b",,((66))";
+        assert_eq!(super::match_delimiter_opts(data, ",,", false), Some(2));
     }
 }

@@ -33,3 +33,35 @@ fn delims_ignorecase_02() {
 fn parse_sequence4_brace_escaping() {
     assert_named_test_passes("ParseSequence4");
 }
+
+#[test]
+fn parse_sequence5_length_expr() {
+    assert_named_test_passes("ParseSequence5");
+}
+
+#[test]
+#[ignore = "prefix separator vs enclosing $$ conflict not yet detected"]
+fn req_field_missing_prefix() {
+    assert_named_test_passes("ReqFieldMissingAndSepIsPrefixOfTerminator_Prefix");
+}
+
+#[test]
+fn percent_initiator_schema_error() {
+    assert_named_test_passes("percentInitiator");
+}
+
+#[test]
+fn empty_initiator_schema_error() {
+    assert_named_test_passes("emptyInitiator1");
+}
+
+#[test]
+fn parse_sequence5_cursor_steps() {
+    let doc = b"[more[{{((55)),,((66)),,((77))}}]nomore]";
+    let mut pos = 0usize;
+    for (pat, expect) in [("[more[", 6usize), ("{{", 8), ("((", 10)] {
+        let n = dfdl_vm::schema::match_delimiter_opts(&doc[pos..], pat, false).expect("match");
+        pos += n;
+        assert_eq!(pos, expect, "after `{pat}`");
+    }
+}

@@ -211,7 +211,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_global_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
-        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("element", &attrs);
+        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("element", &attrs)?;
         let name = xsd_attrs
             .get("name")
             .cloned()
@@ -315,7 +315,7 @@ impl<'a> XsdParser<'a> {
         inline_name: Option<String>,
         attrs: BTreeMap<String, String>,
     ) -> Result<()> {
-        let (_xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("simpleType", &attrs);
+        let (_xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("simpleType", &attrs)?;
         let name = inline_name.or_else(|| attrs.get("name").cloned());
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
@@ -382,7 +382,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_sequence(&mut self, attrs: BTreeMap<String, String>) -> Result<SequenceDecl> {
-        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("sequence", &attrs);
+        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("sequence", &attrs)?;
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);
@@ -438,7 +438,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_choice(&mut self, attrs: BTreeMap<String, String>) -> Result<ChoiceDecl> {
-        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("choice", &attrs);
+        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("choice", &attrs)?;
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);
@@ -494,7 +494,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_element_decl(&mut self, attrs: BTreeMap<String, String>) -> Result<ElementDecl> {
-        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("element", &attrs);
+        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("element", &attrs)?;
         let is_ref = xsd_attrs.contains_key("ref");
         let name = xsd_attrs
             .get("name")
@@ -1009,6 +1009,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.separator_suppression_policy.is_some() {
         base.separator_suppression_policy = overlay.separator_suppression_policy;
     }
+    if overlay.initiated_content.is_some() {
+        base.initiated_content = overlay.initiated_content;
+    }
     if overlay.ignore_case.is_some() {
         base.ignore_case = overlay.ignore_case;
     }
@@ -1234,7 +1237,7 @@ fn parse_sibling_length_expr(value: &str) -> Option<(String, bool)> {
     None
 }
 
-/// Parses constant DFDL length expressions such as `{ 6 }` or `{1}`.
+/// Parses constant DFDL length expressions such as `{ 6 }`, `{1}`, or `{ 1 + 1 }`.
 fn parse_constant_length_expr(value: &str) -> Option<u64> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
@@ -1249,7 +1252,21 @@ fn parse_constant_length_expr(value: &str) -> Option<u64> {
     {
         return None;
     }
-    inner.parse().ok()
+    if let Ok(v) = inner.parse::<u64>() {
+        return Some(v);
+    }
+    for op in ['+', '-'] {
+        if let Some((lhs, rhs)) = inner.split_once(op) {
+            let a = lhs.trim().parse::<u64>().ok()?;
+            let b = rhs.trim().parse::<u64>().ok()?;
+            return match op {
+                '+' => Some(a.saturating_add(b)),
+                '-' => a.checked_sub(b),
+                _ => None,
+            };
+        }
+    }
+    None
 }
 
 fn local_name_from_qname(qname: &str) -> &str {
@@ -1259,7 +1276,7 @@ fn local_name_from_qname(qname: &str) -> &str {
 fn split_dfdl_attrs(
     element_local: &str,
     attrs: &BTreeMap<String, String>,
-) -> (BTreeMap<String, String>, DfdlProps) {
+) -> Result<(BTreeMap<String, String>, DfdlProps)> {
     let mut xsd = BTreeMap::new();
     let mut dfdl_map = BTreeMap::new();
     for (k, v) in attrs {
@@ -1272,8 +1289,8 @@ fn split_dfdl_attrs(
             xsd.insert(k.clone(), v.clone());
         }
     }
-    let props = props_from_attrs(&dfdl_map).unwrap_or_default();
-    (xsd, props)
+    let props = props_from_attrs(&dfdl_map)?;
+    Ok((xsd, props))
 }
 
 fn is_xsd_local_attr(element: &str, attr: &str) -> bool {
@@ -1318,6 +1335,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "initiator"
             | "terminator"
             | "separator"
+            | "initiatedContent"
             | "outputNewLine"
             | "separatorPosition"
             | "textBooleanTrueRep"
@@ -1596,10 +1614,22 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             }
             "calendarPattern" => props.calendar_pattern = Some(value.clone()),
             "calendarPatternKind" => {}
-            "initiator" => props.initiator = Some(parse_delimiter_literal(value)?),
-            "terminator" => props.terminator = Some(parse_delimiter_literal(value)?),
-            "separator" => props.separator = Some(parse_delimiter_literal(value)?),
+            "initiator" => {
+                let lit = parse_delimiter_literal(value)?;
+                props.initiator = Some(lit);
+            }
+            "terminator" => {
+                let lit = parse_delimiter_literal(value)?;
+                props.terminator = Some(lit);
+            }
+            "separator" => {
+                let lit = parse_delimiter_literal(value)?;
+                props.separator = Some(lit);
+            }
             "outputNewLine" => props.output_new_line = Some(parse_delimiter_literal(value)?),
+            "initiatedContent" => {
+                props.initiated_content = Some(matches!(value.as_str(), "yes" | "true" | "1"));
+            }
             "separatorPosition" => {
                 props.separator_position = Some(match value.as_str() {
                     "infix" => SeparatorPosition::Infix,
@@ -1926,6 +1956,60 @@ mod tests {
     fn parse_constant_length_expression() {
         assert_eq!(parse_constant_length_expr("{ 6 }"), Some(6));
         assert_eq!(parse_constant_length_expr("{1}"), Some(1));
+        assert_eq!(parse_constant_length_expr("{ 1 + 1 }"), Some(2));
         assert_eq!(parse_constant_length_expr("{ ../len }"), None);
+    }
+
+    #[test]
+    fn parse_initiated_content_property() {
+        let mut attrs = BTreeMap::new();
+        attrs.insert("initiatedContent".into(), "yes".into());
+        let props = props_from_attrs(&attrs).expect("props");
+        assert_eq!(props.initiated_content, Some(true));
+        let (xsd, dfdl) =
+            split_dfdl_attrs("sequence", &BTreeMap::from([(
+                "dfdl:initiatedContent".to_string(),
+                "yes".to_string(),
+            )]))
+            .expect("split");
+        assert!(xsd.is_empty());
+        assert_eq!(dfdl.initiated_content, Some(true));
+    }
+
+    #[test]
+    fn initiated_content_yes_rejects_empty_initiator_at_compile() {
+        let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
+           xmlns:ex="http://example.com">
+  <xs:include schemaLocation="/org/apache/daffodil/xsd/DFDLGeneralFormat.dfdl.xsd"/>
+  <dfdl:format ref="ex:GeneralFormat"/>
+  <xs:element name="zeroLengthString">
+    <xs:complexType>
+      <xs:sequence dfdl:initiatedContent="yes">
+        <xs:element name="s1" type="xs:string" dfdl:lengthKind="delimited" dfdl:initiator=""/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"#;
+        let doc = parse_schema(xsd).expect("parse");
+        let el = doc.global_elements.get("zeroLengthString").expect("element");
+        if let TypeDef::Complex { content, .. } = doc.resolve_type(&el.type_name).unwrap() {
+            if let ComplexContent::Sequence(seq) = content {
+                assert_eq!(
+                    seq.props.initiated_content,
+                    Some(true),
+                    "sequence props: {:?}",
+                    seq.props
+                );
+            } else {
+                panic!("expected sequence content");
+            }
+        } else {
+            panic!("expected complex type");
+        }
+        let err = crate::ir::compile_named(&doc, Some("zeroLengthString")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Schema Definition Error"), "{msg}");
+        assert!(msg.contains("initiatedContent"), "{msg}");
     }
 }

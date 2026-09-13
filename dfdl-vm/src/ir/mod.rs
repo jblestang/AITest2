@@ -126,6 +126,9 @@ pub struct IrProps {
     pub nil_value: Option<StringId>,
     pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
     pub ignore_case: bool,
+    pub initiated_content: bool,
+    /// When true, treat Long bit fields as unsigned (xs:unsignedLong).
+    pub unsigned_integer: bool,
 }
 
 impl Default for IrProps {
@@ -181,6 +184,8 @@ impl Default for IrProps {
             nil_value: None,
             separator_suppression_policy: None,
             ignore_case: false,
+            initiated_content: false,
+            unsigned_integer: false,
         }
     }
 }
