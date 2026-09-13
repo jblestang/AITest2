@@ -2082,7 +2082,6 @@ fn should_defer_parent_stop_delimiter(props: &IrProps) -> bool {
     props.initiator.is_some()
 }
 
-/// Infix sequence separators are consumed by the sequence decoder before the next child.
 fn should_defer_infix_sequence_separator(
     seq_props: &IrProps,
     separator_id: StringId,
@@ -2091,6 +2090,20 @@ fn should_defer_infix_sequence_separator(
     seq_props.separator_position == SeparatorPosition::Infix
         && seq_props.separator == Some(separator_id)
         && field_props.terminator.is_none()
+}
+
+fn should_defer_sequence_stop_delimiter_in_field(
+    seq_props: &IrProps,
+    pattern_id: StringId,
+    field_props: &IrProps,
+) -> bool {
+    if field_props.terminator.is_some() {
+        return false;
+    }
+    if Some(pattern_id) == seq_props.terminator {
+        return true;
+    }
+    should_defer_infix_sequence_separator(seq_props, pattern_id, field_props)
 }
 
 /// When decoding a sequence child, skip the infix separator before this index if
@@ -2283,7 +2296,7 @@ fn read_until_any_delimiter(
                 &entry.pat,
                 entry.ignore_case,
             ) {
-                if n > 0 || cursor.pos == start {
+                if n > 0 || (!require_delimiter && cursor.pos == start) {
                     return Ok(cursor.data[start..cursor.pos].to_vec());
                 }
             }
@@ -2339,7 +2352,7 @@ pub(crate) fn consume_enclosing_delimiter(
                         seq.ignore_case,
                     ) {
                         if n > 0 {
-                            if should_defer_infix_sequence_separator(seq, id, props) {
+                            if should_defer_sequence_stop_delimiter_in_field(seq, id, props) {
                                 return Ok(());
                             }
                             cursor.advance(n);

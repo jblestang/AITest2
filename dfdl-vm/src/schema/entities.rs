@@ -1366,6 +1366,16 @@ mod tests {
     }
 
     #[test]
+    fn compound_separator_matches_tab_document() {
+        let pat = "%WSP;%WSP+;+%NL;%WSP*;";
+        // Matches DelimitedTests.tdml lengthKindDelimited_02 document.
+        let sep = b"\t\t+\n\t\t\t\t";
+        assert_eq!(match_delimiter(sep, pat), Some(sep.len()));
+        let doc = b"abcd\t\t+\n\t\t\t\tefg";
+        assert_eq!(match_delimiter(&doc[4..], pat), Some(sep.len()));
+    }
+
+    #[test]
     fn match_wsp_star_nl_terminator() {
         let input = b" \n";
         assert_eq!(match_delimiter(input, "%WSP*;%NL;"), None);
