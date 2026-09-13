@@ -89,6 +89,24 @@ pub fn unescape_dfdl_open_braces(raw: &str) -> String {
     out
 }
 
+/// True when `s` contains two or more `%entity;` tokens (e.g. `%WSP*;%NL;`).
+fn is_compound_dfdl_entity_delimiter(s: &str) -> bool {
+    let mut count = 0usize;
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let Some(rel) = s[i..].find(';') {
+                count += 1;
+                i += rel + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    count >= 2
+}
+
 /// Parse a delimiter literal from an XSD attribute value.
 pub fn parse_delimiter_literal_value(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -104,6 +122,9 @@ pub fn parse_delimiter_literal_value(raw: &str) -> String {
             .any(|c| c.is_ascii_whitespace())
     {
         return unescaped.trim_end_matches([' ', '\t']).to_string();
+    }
+    if is_compound_dfdl_entity_delimiter(&unescaped) {
+        return unescaped.trim().to_string();
     }
     let normalized = normalize_delimiter_pattern(&unescaped);
     if normalized.is_empty() && unescaped.contains('%') {
@@ -1398,6 +1419,18 @@ mod tests {
         let doc = b"cat,dog\r\n,house.";
         let pat = "(?s)cat(\r\n)?,dog(\r\n)?,house.";
         assert_eq!(match_length_pattern(doc, pat), Some(doc.len()));
+    }
+
+    #[test]
+    fn parse_delimiter_literal_preserves_compound_entity_sequences() {
+        assert_eq!(
+            parse_delimiter_literal_value("%WSP*;%NL;"),
+            "%WSP*;%NL;"
+        );
+        assert_eq!(
+            parse_delimiter_literal_value("%WSP;%WSP+;+%NL;%WSP*;"),
+            "%WSP;%WSP+;+%NL;%WSP*;"
+        );
     }
 
     #[test]

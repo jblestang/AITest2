@@ -2336,9 +2336,6 @@ pub(crate) fn consume_enclosing_delimiter(
                 cursor.advance(n);
                 return Ok(());
             }
-            if n == 0 {
-                return Ok(());
-            }
         }
     }
     if !should_defer_parent_stop_delimiter(props) {
@@ -2351,12 +2348,13 @@ pub(crate) fn consume_enclosing_delimiter(
                         pat,
                         seq.ignore_case,
                     ) {
-                        if n > 0 {
-                            if should_defer_sequence_stop_delimiter_in_field(seq, id, props) {
-                                return Ok(());
-                            }
-                            cursor.advance(n);
+                        if n == 0 {
+                            continue;
                         }
+                        if should_defer_sequence_stop_delimiter_in_field(seq, id, props) {
+                            return Ok(());
+                        }
+                        cursor.advance(n);
                         return Ok(());
                     }
                 }

@@ -348,19 +348,9 @@ impl<'a> Decoder<'a> {
             }
             let before_occurrence_sep = cursor.clone();
             if !items.is_empty() {
-                if !self.element_consumes_enclosing_delimiter(node_id, props) {
-                    self.consume_occurrence_separator(parent_sequence, cursor)?;
-                } else if items.last().is_some_and(|v| matches!(v, DfdlValue::Null)) {
-                    self.consume_occurrence_separator(parent_sequence, cursor)?;
-                } else if self.should_skip_empty_complex_delimited_occurrence(
-                    node_id,
-                    props,
-                    parent_sequence,
-                    cursor,
-                    stop_sequences,
-                )? {
-                    self.consume_occurrence_separator(parent_sequence, cursor)?;
-                }
+                // Always try: delimited fields may defer enclosing consume, leaving the
+                // occurrence separator at the cursor; if already consumed, this is a no-op.
+                self.consume_occurrence_separator(parent_sequence, cursor)?;
             }
             let require_delimiter = has_following_sibling;
             let saved = cursor.clone();
