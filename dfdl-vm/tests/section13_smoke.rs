@@ -223,3 +223,23 @@ fn section13_packed_tdml_scan() {
     );
 }
 
+
+#[test]
+fn section13_separator_sde_smoke() {
+    for name in [
+        "textStandardGroupingSeparator03",
+        "textStandardGroupingSeparator04",
+        "textStandardGroupingSeparator07",
+        "textStandardGroupingSeparator09",
+        "textStandardGroupingSeparator10",
+        "textStandardGroupingSeparator12",
+        "textStandardDecimalSeparatorOneOnly1",
+        "textStandardDecimalSeparator16",
+        "textStandardDecimalSeparator17",
+    ] {
+        match run_named("section13/text_number_props/TextNumberProps.tdml", name) {
+            TestOutcome::Pass => {}
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}

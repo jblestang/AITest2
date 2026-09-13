@@ -1341,7 +1341,7 @@ fn sibling_string_value(
         .and_then(|m| m.get(sib_name))
         .map(|state| &state.value)
         .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("runtime property sibling `{sib_name}` not available"),
+            message: alloc::format!("Schema Definition Error: {sib_name} does not exist"),
         })?;
     match sib_val {
         DfdlValue::String(s) => Ok(s.text.clone()),
@@ -1396,8 +1396,14 @@ fn resolve_length_props(
     }
     if let Some(sib_id) = props.text_standard_grouping_separator_sibling {
         let sib_name = strings.get(sib_id)?;
-        resolved.resolved_text_standard_grouping_separator =
-            Some(sibling_string_value(siblings, sib_name)?);
+        let grp = sibling_string_value(siblings, sib_name)?;
+        if grp.chars().count() != 1 {
+            return Err(VmError::InvalidValue {
+                message: "Schema Definition Error: Length of string must be exactly 1 character".into(),
+            }
+            .into());
+        }
+        resolved.resolved_text_standard_grouping_separator = Some(grp);
         resolved.text_standard_grouping_separator_defined = true;
     }
     if let Some(sib_id) = props.text_standard_exponent_rep_sibling {

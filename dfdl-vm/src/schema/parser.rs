@@ -1736,16 +1736,14 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 if let Some((sibling, _)) = parse_sibling_length_expr(value) {
                     props.text_standard_decimal_separator_sibling = Some(sibling);
                 } else {
-                    props.text_standard_decimal_separator =
-                        Some(crate::schema::expand_entities_str(value));
+                    props.text_standard_decimal_separator = Some(value.clone());
                 }
             }
             "textStandardGroupingSeparator" => {
                 if let Some((sibling, _)) = parse_sibling_length_expr(value) {
                     props.text_standard_grouping_separator_sibling = Some(sibling);
                 } else {
-                    props.text_standard_grouping_separator =
-                        Some(crate::schema::expand_entities_str(value));
+                    props.text_standard_grouping_separator = Some(value.clone());
                 }
             }
             "textStandardExponentRep" => {

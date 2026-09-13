@@ -72,6 +72,28 @@ pub fn normalize_delimiter_pattern(raw: &str) -> String {
     expand_entities_str(raw.trim_end_matches([' ', '\t']))
 }
 
+/// Compile-time validation for `textStandardDecimalSeparator` / `textStandardGroupingSeparator`.
+pub fn validate_text_standard_separator_literal(prop: &str, raw: &str) -> Result<(), String> {
+    if raw.contains("#r") || raw.contains("#R") {
+        if let Some(idx) = raw.find("%#") {
+            let tail = &raw[idx..];
+            if let Some(end) = tail.find(';') {
+                return Err(format!("Byte Entity {}", &tail[..=end]));
+            }
+        }
+    }
+    if prop == "textStandardGroupingSeparator" {
+        for disallowed in ["%NL;", "%LF;", "%WSP;", "%WS;"] {
+            if raw.contains(disallowed) {
+                return Err(format!(
+                    "{prop} contains disallowed character class(es): {disallowed}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Parse `textStandardDecimalSeparator` (list of single-character literals, space-separated).
 pub fn parse_text_standard_separator_list(raw: &str) -> alloc::vec::Vec<String> {
     use alloc::string::ToString;

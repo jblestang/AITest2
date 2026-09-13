@@ -7,7 +7,9 @@ use crate::length_validate::{
 };
 use crate::schema::{
     BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, Particle, Representation,
-    SchemaDocument, SimpleBase, TypeDef, TypeName, validate_length_pattern,
+    SchemaDocument, SimpleBase, TypeDef, TypeName, expand_entities_str,
+    parse_text_standard_separator_list, validate_length_pattern,
+    validate_text_standard_separator_literal,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -21,10 +23,13 @@ struct IrBuilder<'a> {
 }
 
 impl<'a> IrBuilder<'a> {
-    fn new(schema: &'a SchemaDocument, tunables: DaffodilTunables) -> Self {
+    fn new(schema: &'a SchemaDocument, tunables: DaffodilTunables) -> Result<Self> {
         let mut strings = StringPool::new();
-        let mut defaults =
-            overlay_dfdl_to_ir(IrProps::default(), &schema.format_defaults.props, &mut strings);
+        let mut defaults = overlay_dfdl_to_ir(
+            IrProps::default(),
+            &schema.format_defaults.props,
+            &mut strings,
+        )?;
         defaults.binary_packed_sign_codes = strings.intern(
             schema
                 .format_defaults
@@ -41,13 +46,13 @@ impl<'a> IrBuilder<'a> {
         {
             defaults.text_standard_exponent_rep = strings.intern("E");
         }
-        Self {
+        Ok(Self {
             schema,
             nodes: Vec::new(),
             strings,
             defaults,
             tunables,
-        }
+        })
     }
 
     fn build(mut self, root_name: &str) -> Result<IrProgram> {
@@ -193,15 +198,23 @@ impl<'a> IrBuilder<'a> {
         }
     }
 
-    fn compile_particle(&mut self, particle: &Particle, inherited: &IrProps) -> Result<u32> {
+    fn compile_particle(
+        &mut self,
+        particle: &Particle,
+        inherited: &IrProps,
+        prior_element_names: &[String],
+    ) -> Result<u32> {
         match particle {
             Particle::Element(element) => {
+                let merged =
+                    self.merge_props_full(inherited, &element.props, &DfdlProps::default())?;
+                validate_text_standard_sibling_order(&merged, prior_element_names, &self.strings)?;
                 let name = self.strings.intern(&element.name);
                 if let Some(builtin) = BuiltinType::from_xsd(element.type_name.as_str()) {
                     let kind = value_kind_from_builtin(builtin);
                     let mut ir_props = finalize_element_props(
                         kind,
-                        self.merge_props_full(inherited, &element.props, &DfdlProps::default())?,
+                        merged,
                         &self.strings,
                         self.tunables,
                     )?;
@@ -214,7 +227,7 @@ impl<'a> IrBuilder<'a> {
                         child: None,
                     }))
                 } else {
-                    let props = self.merge_props_full(inherited, &element.props, &DfdlProps::default())?;
+                    let props = merged;
                     let child = self.compile_type(&element.type_name, &element.props)?;
                     let child_node = self.nodes.get(child as usize).ok_or_else(|| {
                         SchemaError::InvalidProperty {
@@ -269,9 +282,17 @@ impl<'a> IrBuilder<'a> {
                 let child_inherited =
                     particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
+                let mut prior_element_names: Vec<String> = Vec::new();
                 for particle in &sequence.particles {
                     validate_initiated_content_particle(&sequence.props, particle)?;
-                    children.push(self.compile_particle(particle, &child_inherited)?);
+                    children.push(self.compile_particle(
+                        particle,
+                        &child_inherited,
+                        &prior_element_names,
+                    )?);
+                    if let Particle::Element(el) = particle {
+                        prior_element_names.push(el.name.clone());
+                    }
                 }
                 Ok(self.push(IrNode::Sequence {
                     children,
@@ -284,7 +305,7 @@ impl<'a> IrBuilder<'a> {
                     particle_inherited_for_children(&ir_props, &choice.props, &self.defaults);
                 let mut branches = Vec::new();
                 for branch in &choice.branches {
-                    let node = self.compile_particle(branch, &child_inherited)?;
+                    let node = self.compile_particle(branch, &child_inherited, &[])?;
                     let name = branch_name(branch);
                     let initiator = branch_initiator(branch, &mut self.strings);
                     branches.push(ChoiceBranch {
@@ -312,9 +333,17 @@ impl<'a> IrBuilder<'a> {
                 let child_inherited =
                     particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
+                let mut prior_element_names: Vec<String> = Vec::new();
                 for particle in &sequence.particles {
                     validate_initiated_content_particle(&sequence.props, particle)?;
-                    children.push(self.compile_particle(particle, &child_inherited)?);
+                    children.push(self.compile_particle(
+                        particle,
+                        &child_inherited,
+                        &prior_element_names,
+                    )?);
+                    if let Particle::Element(el) = particle {
+                        prior_element_names.push(el.name.clone());
+                    }
                 }
                 Ok(self.push(IrNode::Sequence {
                     children,
@@ -331,7 +360,7 @@ impl<'a> IrBuilder<'a> {
                     particle_inherited_for_children(&ir_props, &choice.props, &self.defaults);
                 let mut branches = Vec::new();
                 for branch in &choice.branches {
-                    let node = self.compile_particle(branch, &child_inherited)?;
+                    let node = self.compile_particle(branch, &child_inherited, &[])?;
                     branches.push(ChoiceBranch {
                         name: self.strings.intern(branch_name(branch)),
                         initiator: branch_initiator(branch, &mut self.strings),
@@ -364,7 +393,7 @@ impl<'a> IrBuilder<'a> {
     ) -> Result<IrProps> {
         validate_delimiter_props(type_props)?;
         validate_delimiter_props(element_props)?;
-        let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings);
+        let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings)?;
         self.attach_prefix_length(type_props, element_props, &mut ir, 0)?;
         Ok(ir)
     }
@@ -450,8 +479,12 @@ impl<'a> IrBuilder<'a> {
             } => (*min_inclusive, *max_inclusive),
             SimpleBase::Builtin(_) => (None, None),
         };
-        let mut prefix_props =
-            merge_dfdl_props(&self.defaults.clone(), props, &DfdlProps::default(), &mut self.strings);
+        let mut prefix_props = merge_dfdl_props(
+            &self.defaults.clone(),
+            props,
+            &DfdlProps::default(),
+            &mut self.strings,
+        )?;
         validate_prefix_length_type(type_name, props, &prefix_props)?;
         if prefix_props.length_kind == LengthKind::Prefixed && depth >= 1 {
             return Err(SchemaError::InvalidProperty {
@@ -665,6 +698,97 @@ fn validate_zoned_text_number_pattern(
     Ok(())
 }
 
+fn validate_text_standard_sibling_order(
+    props: &IrProps,
+    prior_element_names: &[String],
+    strings: &StringPool,
+) -> Result<()> {
+    for sib_id in [
+        props.text_standard_decimal_separator_sibling,
+        props.text_standard_grouping_separator_sibling,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let name = strings.get(sib_id).map_err(|e| SchemaError::InvalidProperty {
+            message: e.to_string(),
+        })?;
+        if !prior_element_names.iter().any(|n| n == name) {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {name} does not exist"),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_text_standard_separator_semantics(
+    ir: &IrProps,
+    pattern: Option<&str>,
+    strings: &StringPool,
+) -> Result<()> {
+    if let Some(pat) = pattern {
+        if text_number_pattern_requires_decimal_separator(pat)
+            && ir.text_standard_decimal_separator_defined
+            && ir.text_standard_decimal_separator_sibling.is_none()
+        {
+            let dec = strings.get(ir.text_standard_decimal_separator).map_err(|e| {
+                SchemaError::InvalidProperty {
+                    message: e.to_string(),
+                }
+            })?;
+            let list = parse_text_standard_separator_list(dec);
+            if list.len() > 1 {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: textStandardDecimalSeparator lists more than one character".into(),
+                }
+                .into());
+            }
+        }
+        if text_number_pattern_requires_grouping_separator(pat)
+            && ir.text_standard_grouping_separator.is_none()
+            && ir.text_standard_grouping_separator_defined
+            && ir.text_standard_grouping_separator_sibling.is_none()
+        {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error: textStandardGroupingSeparator length must be exactly 1".into(),
+            }
+            .into());
+        }
+        if text_number_pattern_requires_grouping_separator(pat)
+            && text_number_pattern_requires_decimal_separator(pat)
+            && ir.text_standard_decimal_separator_defined
+            && ir.text_standard_grouping_separator_defined
+            && ir.text_standard_decimal_separator_sibling.is_none()
+            && ir.text_standard_grouping_separator_sibling.is_none()
+        {
+            let dec = strings.get(ir.text_standard_decimal_separator).map_err(|e| {
+                SchemaError::InvalidProperty {
+                    message: e.to_string(),
+                }
+            })?;
+            let dec_list = parse_text_standard_separator_list(dec);
+            if let Some(gid) = ir.text_standard_grouping_separator {
+                let grp = strings.get(gid).map_err(|e| SchemaError::InvalidProperty {
+                    message: e.to_string(),
+                })?;
+                let g_exp = expand_entities_str(grp);
+                if dec_list.len() == 1
+                    && g_exp.chars().count() == 1
+                    && dec_list[0] == g_exp
+                {
+                    return Err(SchemaError::InvalidProperty {
+                        message: "Schema Definition Error: Non-distinct property textStandardDecimalSeparator and textStandardGroupingSeparator".into(),
+                    }
+                    .into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn text_number_pattern_requires_decimal_separator(pattern: &str) -> bool {
     let mut in_quote = false;
     let chars: Vec<char> = pattern.chars().collect();
@@ -833,6 +957,13 @@ fn finalize_element_props(
             }
         }
     }
+    let pattern_for_sep = if ir.custom_text_number_pattern {
+        ir.text_number_pattern
+            .and_then(|id| strings.get(id).ok())
+    } else {
+        None
+    };
+    validate_text_standard_separator_semantics(&ir, pattern_for_sep, strings)?;
     Ok(ir)
 }
 
@@ -1216,17 +1347,21 @@ fn merge_dfdl_props(
     type_props: &DfdlProps,
     element_props: &DfdlProps,
     strings: &mut StringPool,
-) -> IrProps {
+) -> Result<IrProps> {
     let mut out = base.clone();
-    out = overlay_dfdl_to_ir(out, type_props, strings);
-    out = overlay_dfdl_to_ir(out, element_props, strings);
+    out = overlay_dfdl_to_ir(out, type_props, strings)?;
+    out = overlay_dfdl_to_ir(out, element_props, strings)?;
     if type_props.text_number_pattern.is_some() || element_props.text_number_pattern.is_some() {
         out.custom_text_number_pattern = true;
     }
-    out
+    Ok(out)
 }
 
-fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut StringPool) -> IrProps {
+fn overlay_dfdl_to_ir(
+    mut base: IrProps,
+    props: &DfdlProps,
+    strings: &mut StringPool,
+) -> Result<IrProps> {
     if let Some(v) = props.representation {
         base.representation = v;
     }
@@ -1352,12 +1487,19 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
             .map(|s| strings.intern(s.clone()));
         base.text_standard_decimal_separator_defined = true;
     } else if props.text_standard_decimal_separator.is_some() {
-        base.text_standard_decimal_separator = strings.intern(
-            props
-                .text_standard_decimal_separator
-                .as_deref()
-                .unwrap_or("."),
-        );
+        let raw = props
+            .text_standard_decimal_separator
+            .as_deref()
+            .unwrap_or(".");
+        if let Err(detail) =
+            validate_text_standard_separator_literal("textStandardDecimalSeparator", raw)
+        {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {detail}"),
+            }
+            .into());
+        }
+        base.text_standard_decimal_separator = strings.intern(expand_entities_str(raw));
         base.text_standard_decimal_separator_defined = true;
     }
     if props.text_standard_grouping_separator_sibling.is_some() {
@@ -1367,11 +1509,20 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
             .map(|s| strings.intern(s.clone()));
         base.text_standard_grouping_separator_defined = true;
     } else if props.text_standard_grouping_separator.is_some() {
-        let g = props.text_standard_grouping_separator.as_deref().unwrap_or(",");
+        let raw = props.text_standard_grouping_separator.as_deref().unwrap_or(",");
+        if let Err(detail) =
+            validate_text_standard_separator_literal("textStandardGroupingSeparator", raw)
+        {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {detail}"),
+            }
+            .into());
+        }
+        let g = expand_entities_str(raw);
         base.text_standard_grouping_separator = if g.is_empty() {
             None
         } else {
-            Some(strings.intern(g.to_string()))
+            Some(strings.intern(g))
         };
         base.text_standard_grouping_separator_defined = true;
     }
@@ -1483,7 +1634,7 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.prefix_includes_prefix_length {
         base.prefix_includes_prefix_length = v;
     }
-    base
+    Ok(base)
 }
 
 fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
@@ -1654,7 +1805,7 @@ pub fn compile_named_with_tunables(
         }
     };
 
-    IrBuilder::new(schema, tunables).build(&root_name)
+    IrBuilder::new(schema, tunables)?.build(&root_name)
 }
 
 #[cfg(test)]
