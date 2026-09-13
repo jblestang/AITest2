@@ -247,6 +247,41 @@ pub fn validate_text_string_pad_character(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Compile-time checks for `textStringPadCharacter` (character classes, etc.).
+pub fn validate_text_string_pad_character_compile(raw: &str) -> Result<(), String> {
+    validate_disallowed_char_class_tokens("textStringPadCharacter", raw, &[])?;
+    if (raw.contains("%WSP") || raw.contains("%WS"))
+        && !raw.contains("%WSP;")
+        && !raw.contains("%WS;")
+    {
+        let token = if raw.contains("%WSP") {
+            "%WSP+;"
+        } else {
+            "%WS+;"
+        };
+        return Err(format!(
+            "textStringPadCharacter contains disallowed character class(es): {token}"
+        ));
+    }
+    Ok(())
+}
+
+/// Runtime decode/unparse check for literal whitespace pad (not `%SP;` etc.).
+pub fn validate_text_string_pad_character_runtime(raw: &str) -> Result<(), String> {
+    if !raw.contains('%') && raw.chars().any(|c| c.is_whitespace()) {
+        return Err(
+            "facet-valid NonEmptyStringLiteral property textStringPadCharacter".into(),
+        );
+    }
+    let expanded = expand_entities_str(raw);
+    if expanded.chars().count() != 1 {
+        return Err(
+            "facet-valid NonEmptyStringLiteral property textStringPadCharacter".into(),
+        );
+    }
+    Ok(())
+}
+
 pub fn validate_text_standard_zero_rep_literal(raw: &str) -> Result<(), String> {
     if raw.is_empty() {
         return Ok(());

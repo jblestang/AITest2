@@ -2012,6 +2012,17 @@ pub(crate) fn read_text_scalar(
     use crate::ir::ValueKind::*;
     use crate::value::DfdlValue;
 
+    if matches!(kind, String) {
+        if let Some(id) = props.text_string_pad_character {
+            let raw = strings.get(id)?;
+            if let Err(msg) = crate::schema::validate_text_string_pad_character_runtime(raw) {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("Schema Definition Error: {msg}"),
+                });
+            }
+        }
+    }
+
     if props.length_kind == LengthKind::Pattern {
         if let Some(nil_len) = match_nil_literal_prefix(cursor, props, strings)? {
             cursor.advance(nil_len);
@@ -2232,6 +2243,23 @@ pub(crate) fn write_binary_scalar(
     if props.length_kind == LengthKind::Prefixed {
         let payload = encode_binary_payload_bytes(value, kind, props, strings)?;
         return write_prefixed_bytes(out, bit_count, &payload, props, strings, field_name);
+    }
+
+    if props.length_kind == LengthKind::Delimited {
+        if !is_packed_binary_rep(props.binary_number_rep)
+            && props.binary_number_rep != BinaryNumberRep::Bcd
+            && props.binary_number_rep != BinaryNumberRep::Ibm4690Packed
+        {
+            return Err(VmError::UnsupportedOperation {
+                op: alloc::format!(
+                    "lengthKind `{}` on binary scalar encode",
+                    length_kind_name(props.length_kind)
+                ),
+            });
+        }
+        let payload = encode_binary_payload_bytes(value, kind, props, strings)?;
+        write_byte_aligned(out, bit_count, &payload)?;
+        return Ok(());
     }
 
     if kind == crate::ir::ValueKind::Decimal {
@@ -2815,7 +2843,7 @@ fn apply_min_length_pad(
     if current >= min_len {
         return text.to_string();
     }
-    let pad_char = pad_char_for_kind(props, strings, kind).unwrap_or(" ");
+    let pad_char = pad_char_for_kind(props, strings, kind);
     let pad_ch = pad_char.chars().next().unwrap_or(' ');
     let pad_count = min_len - current;
     match props.text_string_justification {
@@ -2862,7 +2890,7 @@ fn pad_text_field(
     use crate::error::VmError;
     use crate::schema::{LengthUnits, TextStringJustification};
 
-    let pad_char = pad_char_for_kind(props, strings, kind).unwrap_or(" ");
+    let pad_char = pad_char_for_kind(props, strings, kind);
     let pad_byte = pad_char.chars().next().unwrap_or(b' ' as char) as u8;
 
     match units {
@@ -2957,7 +2985,7 @@ fn pad_raw_text_field(
     use crate::schema::{LengthUnits, TextStringJustification};
     use crate::vm::encoding::count_characters;
 
-    let pad_char = pad_char_for_kind(props, strings, kind).unwrap_or(" ");
+    let pad_char = pad_char_for_kind(props, strings, kind);
     let pad_byte = pad_char.chars().next().unwrap_or(b' ' as char) as u8;
 
     match units {
@@ -2996,7 +3024,7 @@ fn pad_raw_text_field(
                 return Ok(raw.to_vec());
             }
             let pad_count = len - current;
-            let pad_bytes = encode_document_text(pad_char, encoding)?;
+            let pad_bytes = encode_document_text(&pad_char, encoding)?;
             let mut out = alloc::vec::Vec::new();
             match props.text_string_justification {
                 TextStringJustification::Right => {
@@ -3772,20 +3800,23 @@ fn pad_char_from_props<'a>(props: &IrProps, strings: &'a StringPool) -> Option<&
         .and_then(|id| strings.get(id).ok())
 }
 
-fn pad_char_for_kind<'a>(
+fn pad_char_for_kind(
     props: &IrProps,
-    strings: &'a StringPool,
+    strings: &StringPool,
     kind: crate::ir::ValueKind,
-) -> Option<&'a str> {
+) -> alloc::string::String {
     use crate::ir::ValueKind::*;
+    use crate::schema::expand_entities_str;
     if matches!(kind, String) {
         if let Some(id) = props.text_string_pad_character {
-            if let Ok(ch) = strings.get(id) {
-                return Some(ch);
+            if let Ok(raw) = strings.get(id) {
+                return expand_entities_str(raw);
             }
         }
     }
     pad_char_from_props(props, strings)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| alloc::string::String::from(" "))
 }
 
 fn trim_text_value<'a>(
@@ -3795,11 +3826,16 @@ fn trim_text_value<'a>(
     props: &IrProps,
     strings: &StringPool,
 ) -> &'a str {
-    trim_numeric_text(
-        input,
-        trim_kind,
-        pad_char_for_kind(props, strings, kind),
-    )
+    match trim_kind {
+        TextTrimKind::None => input,
+        TextTrimKind::Trim => input.trim(),
+        TextTrimKind::Left => input.trim_start(),
+        TextTrimKind::Right => input.trim_end(),
+        TextTrimKind::PadChar => {
+            let pad = pad_char_for_kind(props, strings, kind);
+            trim_pad_char(input, &pad)
+        }
+    }
 }
 
 fn trim_numeric_text<'a>(input: &'a str, kind: TextTrimKind, pad: Option<&str>) -> &'a str {
@@ -4451,7 +4487,10 @@ fn encode_unsigned_binary(
 }
 
 fn binary_payload_width(value: u64, kind: crate::ir::ValueKind, props: &IrProps) -> usize {
-    if props.length_kind == LengthKind::Prefixed {
+    if matches!(
+        props.length_kind,
+        LengthKind::Prefixed | LengthKind::Delimited
+    ) {
         auto_width_for_rep(value, props.binary_number_rep)
     } else {
         type_size(kind)

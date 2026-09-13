@@ -420,6 +420,8 @@ impl<'a> IrBuilder<'a> {
     ) -> Result<IrProps> {
         validate_delimiter_props(type_props)?;
         validate_delimiter_props(element_props)?;
+        validate_text_string_pad_props(type_props)?;
+        validate_text_string_pad_props(element_props)?;
         let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings)?;
         self.attach_prefix_length(type_props, element_props, &mut ir, 0)?;
         Ok(ir)
@@ -1117,6 +1119,18 @@ fn validate_delimiter_props(props: &DfdlProps) -> Result<()> {
             if !v.is_empty() {
                 validate_delimiter_at_compile(prop, v)?;
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_text_string_pad_props(props: &DfdlProps) -> Result<()> {
+    if let Some(raw) = props.text_string_pad_character.as_deref() {
+        if let Err(msg) = crate::schema::validate_text_string_pad_character_compile(raw) {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {msg}"),
+            }
+            .into());
         }
     }
     Ok(())

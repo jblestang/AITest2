@@ -227,17 +227,17 @@ fn daffodil_section13_regression_gate() {
         stats.parse_fail, 0,
         "section13 TDML load errors: {stats:?}"
     );
-    // Baseline (2026-03): text pad/unparse radix, delimited padding, truncate, initiators.
-    // ~478 pass / ~64 fail on full section13 TDML.
+    // Baseline (2026-03): text pad char validation, unparse padding, delimited BCD encode.
+    // ~482 pass / ~60 fail on full section13 TDML.
     assert!(
-        stats.pass >= 478,
-        "section13: expected at least 478 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 482,
+        "section13: expected at least 482 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 64,
+        stats.fail <= 60,
         "section13 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,

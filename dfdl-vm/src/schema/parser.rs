@@ -892,6 +892,17 @@ impl<'a> XsdParser<'a> {
                                     }
                                 })?;
                                 let value = self.read_simple_element_text("property")?;
+                                let prop_local = local_tag(&prop_name);
+                                if prop_local == "textStringPadCharacter"
+                                    && value.chars().any(|c| c.is_whitespace())
+                                {
+                                    return Err(ParseError::InvalidXml {
+                                        message: alloc::format!(
+                                            "Schema Definition Error: property textStringPadCharacter contains whitespace"
+                                        ),
+                                    }
+                                    .into());
+                                }
                                 let mut map = BTreeMap::new();
                                 map.insert(prop_name, value);
                                 props = merge_props(props, props_from_attrs(&map)?);
@@ -927,7 +938,6 @@ impl<'a> XsdParser<'a> {
     fn read_simple_element_text(&mut self, local: &str) -> Result<String> {
         let mut out = String::new();
         loop {
-            self.reader.skip_insignificant_ws()?;
             match self.reader.next_event()? {
                 XmlEvent::EndElement { name } if name.local_name == local => break,
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
@@ -1690,16 +1700,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 })?);
             }
             "textStringPadCharacter" => {
-                if value.chars().any(|c| c.is_whitespace()) {
-                    return Err(ParseError::InvalidXml {
-                        message: alloc::format!(
-                            "Schema Definition Error: facet-valid NonEmptyStringLiteral property textStringPadCharacter contains whitespace"
-                        ),
-                    }
-                    .into());
-                }
-                props.text_string_pad_character =
-                    Some(crate::schema::expand_entities_str(value));
+                props.text_string_pad_character = Some(value.clone());
             }
             "textPadKind" => {
                 props.text_pad_kind = Some(match value.as_str() {
@@ -2311,5 +2312,29 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("Schema Definition Error"), "{msg}");
         assert!(msg.contains("initiatedContent"), "{msg}");
+    }
+
+    #[test]
+    fn property_form_text_string_pad_whitespace_is_sde() {
+        let xsd = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
+           xmlns:ex="http://example.com">
+  <xs:include schemaLocation="/org/apache/daffodil/xsd/DFDLGeneralFormat.dfdl.xsd"/>
+  <dfdl:format ref="ex:GeneralFormat"/>
+  <xs:element name="propertyForm" type="xs:string">
+    <xs:annotation>
+      <xs:appinfo source="http://www.ogf.org/dfdl/">
+        <dfdl:element>
+          <dfdl:property name="textStringPadCharacter"><![CDATA[ ]]></dfdl:property>
+        </dfdl:element>
+      </xs:appinfo>
+    </xs:annotation>
+  </xs:element>
+</xs:schema>"#;
+        let err = parse_schema(xsd).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Schema Definition Error"), "{msg}");
+        assert!(msg.contains("whitespace"), "{msg}");
     }
 }
