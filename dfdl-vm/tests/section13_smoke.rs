@@ -70,7 +70,6 @@ fn section13_packed_hex_and_sign_cases() {
 }
 
 #[test]
-#[ignore = "slow; scans all parser cases in packed.tdml"]
 fn section13_packed_tdml_scan() {
     use dfdl_vm::tdml::{run_parser_test, TestOutcome};
     let text = fs::read_to_string(tdml("section13/packed/packed.tdml")).expect("read packed");

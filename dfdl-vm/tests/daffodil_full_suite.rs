@@ -203,7 +203,7 @@ fn daffodil_section12_length_properties_regression_gate() {
     );
 }
 
-/// CI gate: Section 13 binary/text numbers & nillable (excludes hung `packed/packed.tdml`).
+/// CI gate: Section 13 binary/text numbers, nillable, and packed decimals (full TDML scan).
 #[test]
 fn daffodil_section13_regression_gate() {
     let root = assert_tdml_root().join("section13");
@@ -223,21 +223,22 @@ fn daffodil_section13_regression_gate() {
         }
         run_tdml_file(&path, &mut stats);
     }
-    // zoned.tdml / zoned2.tdml do not parse in our TDML loader yet.
-    assert!(
-        stats.parse_fail <= 2,
-        "section13 unexpected TDML parse errors: {stats:?}"
+    assert_eq!(
+        stats.parse_fail, 0,
+        "section13 TDML load errors: {stats:?}"
     );
+    // Baseline (2026-03): packed.tdml 50/50 parser cases; ISO-8859-1 + EBCDIC document encodings;
+    // ~206 pass / ~336 fail on full section13 TDML (zoned runtime still largely failing).
     assert!(
-        stats.pass >= 83,
-        "section13: expected at least 83 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 206,
+        "section13: expected at least 206 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 371,
-        "section13 unexpected new failures: pass={} fail={} skip={}",
+        stats.fail <= 336,
+        "section13 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip

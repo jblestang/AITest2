@@ -137,4 +137,5 @@ macro_rules! scan_test_skip {
     };
 }
 
-scan_test_skip!(scan_section13, "section13", &["packed/packed.tdml"]);
+scan_test!(scan_section13, "section13");
+scan_test!(scan_section14, "section14");
