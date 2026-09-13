@@ -3606,6 +3606,30 @@ pub(crate) fn should_suppress_decode_infix_separator(
     seq_props.separator_position == SeparatorPosition::Infix && prev_absent_or_empty
 }
 
+/// DFDL disallows `%WSP*;` as the sole terminator on unbounded repeating elements.
+pub(crate) fn validate_unbounded_wsp_star_terminator(
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    if props.occurs_max.is_some() {
+        return Ok(());
+    }
+    let Some(id) = props.terminator else {
+        return Ok(());
+    };
+    let pat = strings.get(id)?;
+    let p = pat.trim();
+    if matches!(p, "%WSP*;" | "%WSP*" | "%WS*;" | "%WS*") {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Schema Definition Error: dfdl:terminator `{pat}` — %WSP*; cannot be used with maxOccurs unbounded"
+            ),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn would_read_empty_delimited_field(
     cursor: &Cursor<'_>,
     props: &IrProps,

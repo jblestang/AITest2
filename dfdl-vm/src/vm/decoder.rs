@@ -3,7 +3,8 @@ use super::runtime::{
     is_suppressible_empty_representation, prefixed_payload_byte_length, read_delimited_bytes,
     read_length_span, read_prefixed_payload, read_simple, read_until_separator,
     should_suppress_decode_infix_separator, validate_explicit_decimal_before_decode,
-    would_read_empty_delimited_field, Cursor, RuntimeConfig, VmContext,
+    validate_unbounded_wsp_star_terminator, would_read_empty_delimited_field, Cursor,
+    RuntimeConfig, VmContext,
 };
 use crate::length_validate::{binary_length_validation_applies, validate_data_length_vm};
 use crate::error::{Error, Result, VmError};
@@ -338,11 +339,24 @@ impl<'a> Decoder<'a> {
         pattern_text_frame: bool,
         stop_sequences: &[&IrProps],
     ) -> Result<DfdlValue> {
+        validate_unbounded_wsp_star_terminator(props, self.ctx.strings())?;
+
         let min = props.occurs_min;
         let max = props.occurs_max.unwrap_or(u64::MAX);
         let mut items = Vec::new();
+        let mut unbounded_iters = 0usize;
 
         while (items.len() as u64) < max {
+            if max == u64::MAX {
+                unbounded_iters += 1;
+                if unbounded_iters > cursor.data.len().saturating_add(8) {
+                    return Err(VmError::InvalidValue {
+                        message: "Parse Error. unbounded repeating element exceeded safe iteration limit"
+                            .into(),
+                    }
+                    .into());
+                }
+            }
             if items.len() as u64 >= min && cursor.is_empty() {
                 break;
             }
