@@ -571,15 +571,16 @@ fn match_negative_subpattern(
     )
 }
 
-fn skip_pad(
+fn skip_pad_chars(
     bytes: &[u8],
     pos: &mut usize,
-    pad: Option<char>,
+    pad: char,
+    pattern_pad: bool,
     lax: bool,
     props: &TextNumberFormatProps<'_>,
     after_decimal: bool,
 ) {
-    if !lax {
+    if !lax && !pattern_pad {
         return;
     }
     loop {
@@ -588,17 +589,50 @@ fn skip_pad(
             break;
         }
         let ch = bytes[*pos] as char;
-        // Leading pad only (integer side of the decimal separator).
-        if !after_decimal && Some(ch) == pad {
+        if Some(ch) == Some(pad) {
             *pos += ch.len_utf8();
             continue;
         }
-        if !after_decimal && pad == Some('0') && bytes[*pos] == b'0' {
+        if !after_decimal && pad == '0' && bytes[*pos] == b'0' {
             *pos += 1;
             continue;
         }
         break;
     }
+}
+
+fn skip_pad(
+    bytes: &[u8],
+    pos: &mut usize,
+    pad: Option<char>,
+    lax: bool,
+    props: &TextNumberFormatProps<'_>,
+    after_decimal: bool,
+) {
+    if let Some(p) = pad {
+        skip_pad_chars(bytes, pos, p, false, lax, props, after_decimal);
+    }
+}
+
+fn parse_quoted_pattern_literal(chars: &[char], i: usize) -> Option<(String, usize)> {
+    if chars.get(i) != Some(&'\'') {
+        return None;
+    }
+    let mut j = i + 1;
+    let mut lit = String::new();
+    while j < chars.len() {
+        if chars[j] == '\'' {
+            if j + 1 < chars.len() && chars[j + 1] == '\'' {
+                lit.push('\'');
+                j += 2;
+                continue;
+            }
+            return Some((lit, j + 1));
+        }
+        lit.push(chars[j]);
+        j += 1;
+    }
+    None
 }
 
 fn match_subpattern(
@@ -627,37 +661,33 @@ fn match_subpattern(
     let mut i = 0usize;
     while i < chars.len() {
         if chars[i] == '\'' {
-            i += 1;
-            let mut lit = String::new();
-            while i < chars.len() {
-                if chars[i] == '\'' {
-                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
-                        lit.push('\'');
-                        i += 2;
-                        continue;
-                    }
-                    break;
+            if let Some((lit, new_i)) = parse_quoted_pattern_literal(&chars, i) {
+                i = new_i;
+                skip_ws(bytes, &mut pos, lax);
+                if text[pos..].starts_with(&lit) {
+                    pos += lit.len();
+                } else if lax || negative {
+                    // lax: quoted literal may be omitted (DFDL-13-052R); also when parsing
+                    // the numeric core after a negative subpattern prefix (hex sign C/D, etc.)
+                } else {
+                    return Err(VmError::InvalidValue {
+                        message: "textNumberPattern mismatch".into(),
+                    });
                 }
-                lit.push(chars[i]);
-                i += 1;
+                continue;
             }
-            if i >= chars.len() {
-                return Err(VmError::InvalidValue {
-                    message: format!("invalid textNumberPattern `{pattern}`"),
-                });
-            }
-            i += 1;
             skip_ws(bytes, &mut pos, lax);
-            if text[pos..].starts_with(&lit) {
-                pos += lit.len();
-            } else if lax || negative {
-                // lax: quoted literal may be omitted (DFDL-13-052R); also when parsing
-                // the numeric core after a negative subpattern prefix (hex sign C/D, etc.)
-            } else {
+            if pos < bytes.len() && bytes[pos] == b'\'' {
+                pos += 1;
+                i += 1;
+                continue;
+            }
+            if !lax {
                 return Err(VmError::InvalidValue {
                     message: "textNumberPattern mismatch".into(),
                 });
             }
+            i += 1;
             continue;
         }
 
@@ -719,8 +749,14 @@ fn match_subpattern(
                 }
             }
             '*' => {
-                skip_pad(bytes, &mut pos, props.pad_character, lax, props, saw_decimal);
-                i += 1;
+                if i + 1 >= chars.len() {
+                    return Err(VmError::InvalidValue {
+                        message: format!("invalid textNumberPattern `{pattern}`"),
+                    });
+                }
+                let esc_pad = chars[i + 1];
+                i += 2;
+                skip_pad_chars(bytes, &mut pos, esc_pad, true, lax, props, saw_decimal);
             }
             '.' => {
                 // Match decimal separator before lax whitespace skip — when the separator is
@@ -1070,6 +1106,26 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    #[test]
+    fn pad_escape_x_pattern() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(","),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number(
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx5,000",
+            "*x#,###",
+            &props,
+        )
+        .unwrap();
+        assert_eq!(n, "5000");
+    }
+
     #[test]
     fn multi_grouping_pattern() {
         let dec = default_decimal_separators();

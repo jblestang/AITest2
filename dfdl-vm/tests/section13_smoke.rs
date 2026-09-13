@@ -52,6 +52,31 @@ fn section13_scientific_and_grouping() {
 }
 
 #[test]
+fn section13_text_number_padding() {
+    for name in [
+        "textNumberPattern_padding01",
+        "textNumberPattern_padding06",
+        "textNumberPattern_padding11",
+    ] {
+        match run_named("section13/text_number_props/TextNumberProps.tdml", name) {
+            TestOutcome::Pass => {}
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn section13_zoned_ebcdic() {
+    match run_named(
+        "section13/zoned/zoned2.tdml",
+        "ZonedEBCDICLeadingOverpunchedSign",
+    ) {
+        TestOutcome::Pass => {}
+        other => panic!("ZonedEBCDICLeadingOverpunchedSign: {other:?}"),
+    }
+}
+
+#[test]
 fn section13_zoned_standard() {
     for name in ["ZonedStandard01", "ZonedStandard02", "ZonedStandard05"] {
         match run_named("section13/zoned/zoned.tdml", name) {

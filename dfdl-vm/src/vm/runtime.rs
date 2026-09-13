@@ -979,7 +979,12 @@ fn apply_text_number_pattern_numeric(
         .chars()
         .filter(|c| matches!(c, '0' | '#'))
         .count();
-    if text.len() != digit_before + digit_after {
+    let (negative, body) = if text.starts_with('-') {
+        (true, &text[1..])
+    } else {
+        (false, text)
+    };
+    if body.len() != digit_before + digit_after {
         return Err(VmError::InvalidValue {
             message: alloc::format!(
                 "textNumberPattern `{pattern}` expected {} digits, got `{text}`",
@@ -987,11 +992,15 @@ fn apply_text_number_pattern_numeric(
             ),
         });
     }
-    Ok(alloc::format!(
+    let mut out = alloc::format!(
         "{}.{}",
-        &text[..digit_before],
-        &text[digit_before..]
-    ))
+        &body[..digit_before],
+        &body[digit_before..]
+    );
+    if negative {
+        out.insert(0, '-');
+    }
+    Ok(out)
 }
 
 fn parse_field_text_number(
@@ -1024,17 +1033,30 @@ fn parse_field_text_number(
             overpunch_location_from_pattern, zoned_to_number, OverpunchLocation,
             TextZonedSignStyle as VmStyle,
         };
-        let style = props.text_zoned_sign_style.unwrap_or(ZStyle::AsciiStandard);
-        let vm_style = match style {
-            ZStyle::AsciiStandard => VmStyle::AsciiStandard,
-            ZStyle::AsciiTranslatedEBCDIC => VmStyle::AsciiTranslatedEBCDIC,
-            ZStyle::AsciiCARealiaModified => VmStyle::AsciiCARealiaModified,
-            ZStyle::AsciiTandemModified => VmStyle::AsciiTandemModified,
+        let enc = strings
+            .get(props.encoding)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let ebcdic = enc.contains("ebcdic");
+        let vm_style = match props.text_zoned_sign_style {
+            None if ebcdic => VmStyle::Ebcdic,
+            None | Some(ZStyle::AsciiStandard) => VmStyle::AsciiStandard,
+            Some(ZStyle::AsciiTranslatedEBCDIC) => VmStyle::AsciiTranslatedEBCDIC,
+            Some(ZStyle::AsciiCARealiaModified) => VmStyle::AsciiCARealiaModified,
+            Some(ZStyle::AsciiTandemModified) => VmStyle::AsciiTandemModified,
         };
         let opl = overpunch_location_from_pattern(raw_pattern);
         if opl != OverpunchLocation::None {
-            text_to_parse = zoned_to_number(trimmed, vm_style, opl).map_err(|_| {
-                unable_parse_from_text(value_kind_type_name(kind), trimmed)
+            text_to_parse = zoned_to_number(trimmed, vm_style, opl).map_err(|e| {
+                let VmError::InvalidValue { message: detail } = e else {
+                    return unable_parse_from_text(value_kind_type_name(kind), trimmed);
+                };
+                VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Parse Error. Unable to parse zoned {} from text: {trimmed}. {detail}",
+                        value_kind_type_name(kind)
+                    ),
+                }
             })?;
         }
     }

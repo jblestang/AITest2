@@ -13,10 +13,38 @@ pub(crate) enum OverpunchLocation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TextZonedSignStyle {
+    /// Default when `textZonedSignStyle` is unset and encoding is EBCDIC.
+    Ebcdic,
     AsciiStandard,
     AsciiTranslatedEBCDIC,
     AsciiCARealiaModified,
     AsciiTandemModified,
+}
+
+const EBCDIC_B0_B9: &str = "^£¥·©§¶¼½¾";
+
+fn convert_from_zoned_ebcdic(digit: char) -> Result<(u8, bool), VmError> {
+    if digit.is_ascii_digit() {
+        return Ok((digit as u8 - b'0', false));
+    }
+    if digit == '{' {
+        return Ok((0, false));
+    }
+    if ('A'..='I').contains(&digit) {
+        return Ok((digit as u8 - b'A' + 1, false));
+    }
+    if digit == '}' {
+        return Ok((0, true));
+    }
+    if ('J'..='R').contains(&digit) {
+        return Ok((digit as u8 - b'J' + 1, true));
+    }
+    if let Some(idx) = EBCDIC_B0_B9.find(digit) {
+        return Ok((idx as u8, true));
+    }
+    Err(VmError::InvalidValue {
+        message: alloc::format!("Invalid zoned digit: {digit}"),
+    })
 }
 
 fn convert_from_ascii_standard(digit: char) -> Result<(u8, bool), VmError> {
@@ -73,6 +101,7 @@ fn decode_overpunch(
     style: TextZonedSignStyle,
 ) -> Result<(u8, bool), VmError> {
     match style {
+        TextZonedSignStyle::Ebcdic => convert_from_zoned_ebcdic(ch),
         TextZonedSignStyle::AsciiStandard => convert_from_ascii_standard(ch),
         TextZonedSignStyle::AsciiTranslatedEBCDIC => convert_from_ascii_translated_ebcdic(ch),
         TextZonedSignStyle::AsciiCARealiaModified => convert_from_ascii_ca_realia_modified(ch),

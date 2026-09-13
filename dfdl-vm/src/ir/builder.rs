@@ -562,6 +562,41 @@ fn text_number_pattern_has_grouping_and_exponent(pattern: &str) -> bool {
     bare.contains('E') && bare.contains(',')
 }
 
+fn count_pad_specifiers(bare: &str) -> Result<usize> {
+    let chars: Vec<char> = bare.chars().collect();
+    let mut i = 0usize;
+    let mut count = 0usize;
+    while i < chars.len() {
+        if chars[i] == '*' {
+            count += 1;
+            if i + 1 >= chars.len() {
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!(
+                        "Schema Definition Error: Invalid textNumberPattern: Malformed pattern \"{bare}\""
+                    ),
+                }
+                .into());
+            }
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    Ok(count)
+}
+
+fn validate_text_number_pad_specifiers(subpattern: &str) -> Result<()> {
+    let bare = text_number_pattern_bare(subpattern);
+    let count = count_pad_specifiers(&bare)?;
+    if count > 1 {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Invalid textNumberPattern: multiple pad specifiers".into(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 fn validate_zoned_text_number_pattern(
     kind: ValueKind,
     pattern: &str,
@@ -751,6 +786,20 @@ fn finalize_element_props(
                     ),
                 }
                 .into());
+            }
+            for sub in pat.split(';') {
+                validate_text_number_pad_specifiers(sub)?;
+            }
+            if ir.text_standard_decimal_separator_defined {
+                let dec = strings.get(ir.text_standard_decimal_separator).unwrap_or("");
+                if dec.is_empty()
+                    && text_number_pattern_requires_decimal_separator(pat)
+                {
+                    return Err(SchemaError::InvalidProperty {
+                        message: "Schema Definition Error: Property textStandardDecimalSeparator cannot be empty".into(),
+                    }
+                    .into());
+                }
             }
             if ir.text_number_rep == crate::schema::TextNumberRep::Zoned {
                 validate_zoned_text_number_pattern(
