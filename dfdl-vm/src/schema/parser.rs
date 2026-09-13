@@ -1077,6 +1077,12 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_standard_exponent_rep_sibling.is_some() {
         base.text_standard_exponent_rep_sibling = overlay.text_standard_exponent_rep_sibling;
     }
+    if overlay.text_standard_infinity_rep.is_some() {
+        base.text_standard_infinity_rep = overlay.text_standard_infinity_rep;
+    }
+    if overlay.text_standard_nan_rep.is_some() {
+        base.text_standard_nan_rep = overlay.text_standard_nan_rep;
+    }
     if overlay.initiator.is_some() {
         base.initiator = overlay.initiator;
     }
@@ -1373,6 +1379,8 @@ fn is_dfdl_property(name: &str) -> bool {
             | "textStandardDecimalSeparator"
             | "textStandardGroupingSeparator"
             | "textStandardExponentRep"
+            | "textStandardInfinityRep"
+            | "textStandardNaNRep"
             | "binaryNumberRep"
             | "binaryPackedSignCodes"
             | "binaryNumberCheckPolicy"
@@ -1753,6 +1761,13 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     props.text_standard_exponent_rep =
                         Some(crate::schema::expand_entities_str(value));
                 }
+            }
+            "textStandardInfinityRep" => {
+                props.text_standard_infinity_rep =
+                    Some(crate::schema::expand_entities_str(value));
+            }
+            "textStandardNaNRep" => {
+                props.text_standard_nan_rep = Some(crate::schema::expand_entities_str(value));
             }
             "initiator" => {
                 let lit = parse_delimiter_literal(value)?;

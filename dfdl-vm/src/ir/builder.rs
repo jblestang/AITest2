@@ -46,6 +46,12 @@ impl<'a> IrBuilder<'a> {
         {
             defaults.text_standard_exponent_rep = strings.intern("E");
         }
+        if defaults.text_standard_infinity_rep == StringId(0) {
+            defaults.text_standard_infinity_rep = strings.intern("Inf");
+        }
+        if defaults.text_standard_nan_rep == StringId(0) {
+            defaults.text_standard_nan_rep = strings.intern("NaN");
+        }
         Ok(Self {
             schema,
             nodes: Vec::new(),
@@ -74,6 +80,7 @@ impl<'a> IrBuilder<'a> {
                 self.tunables,
             )?;
             apply_unsigned_long_flag(&root_element.type_name, &mut props);
+            apply_integer_type_flags(&root_element.type_name, &mut props);
             validate_implicit_text_length(kind, &props)?;
             let name = self.strings.intern(root_name);
             self.push(IrNode::Element {
@@ -100,6 +107,7 @@ impl<'a> IrBuilder<'a> {
                     self.tunables,
                 )?;
                 apply_unsigned_long_flag(&root_element.type_name, &mut ir_props);
+                apply_integer_type_flags(&root_element.type_name, &mut ir_props);
                 apply_restriction_facets(&mut ir_props, base);
                 validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern(root_name);
@@ -219,6 +227,7 @@ impl<'a> IrBuilder<'a> {
                         self.tunables,
                     )?;
                     apply_unsigned_long_flag(&element.type_name, &mut ir_props);
+                    apply_integer_type_flags(&element.type_name, &mut ir_props);
                     validate_implicit_text_length(kind, &ir_props)?;
                     Ok(self.push(IrNode::Element {
                         name,
@@ -974,6 +983,13 @@ fn apply_unsigned_long_flag(type_name: &TypeName, props: &mut IrProps) {
     }
 }
 
+fn apply_integer_type_flags(type_name: &TypeName, props: &mut IrProps) {
+    let local = type_name.as_str().rsplit(':').next().unwrap_or(type_name.as_str());
+    if matches!(local, "nonNegativeInteger") {
+        props.non_negative_integer = true;
+    }
+}
+
 fn validate_delimiter_at_compile(prop: &str, raw: &str) -> Result<()> {
     if raw.trim_start().starts_with('{') {
         return Ok(());
@@ -1539,6 +1555,19 @@ fn overlay_dfdl_to_ir(
                 .unwrap_or("E"),
         );
     }
+    if props.text_standard_infinity_rep.is_some() {
+        base.text_standard_infinity_rep = strings.intern(
+            props
+                .text_standard_infinity_rep
+                .as_deref()
+                .unwrap_or("Inf"),
+        );
+    }
+    if props.text_standard_nan_rep.is_some() {
+        base.text_standard_nan_rep = strings.intern(
+            props.text_standard_nan_rep.as_deref().unwrap_or("NaN"),
+        );
+    }
     if let Some(ref s) = props.initiator {
         if !s.is_empty() {
             base.initiator = Some(strings.intern(s.clone()));
@@ -1717,6 +1746,12 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.text_standard_exponent_rep_sibling.is_some() {
         out.text_standard_exponent_rep_sibling = overlay.text_standard_exponent_rep_sibling;
+    }
+    if overlay.text_standard_infinity_rep != StringId(0) {
+        out.text_standard_infinity_rep = overlay.text_standard_infinity_rep;
+    }
+    if overlay.text_standard_nan_rep != StringId(0) {
+        out.text_standard_nan_rep = overlay.text_standard_nan_rep;
     }
     if overlay.initiator.is_some() {
         out.initiator = overlay.initiator;

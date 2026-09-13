@@ -1390,20 +1390,36 @@ fn resolve_length_props(
 
     if let Some(sib_id) = props.text_standard_decimal_separator_sibling {
         let sib_name = strings.get(sib_id)?;
+        let raw = sibling_string_value(siblings, sib_name)?;
+        crate::schema::validate_text_standard_separator_literal(
+            "textStandardDecimalSeparator",
+            &raw,
+        )
+        .map_err(|detail| VmError::InvalidValue {
+            message: alloc::format!("Schema Definition Error: {detail}"),
+        })?;
         resolved.resolved_text_standard_decimal_separator =
-            Some(sibling_string_value(siblings, sib_name)?);
+            Some(crate::schema::expand_entities_str(&raw));
         resolved.text_standard_decimal_separator_defined = true;
     }
     if let Some(sib_id) = props.text_standard_grouping_separator_sibling {
         let sib_name = strings.get(sib_id)?;
-        let grp = sibling_string_value(siblings, sib_name)?;
-        if grp.chars().count() != 1 {
+        let raw = sibling_string_value(siblings, sib_name)?;
+        crate::schema::validate_text_standard_separator_literal(
+            "textStandardGroupingSeparator",
+            &raw,
+        )
+        .map_err(|detail| VmError::InvalidValue {
+            message: alloc::format!("Schema Definition Error: {detail}"),
+        })?;
+        let expanded = crate::schema::expand_entities_str(&raw);
+        if !raw.contains('%') && expanded.chars().count() != 1 {
             return Err(VmError::InvalidValue {
                 message: "Schema Definition Error: Length of string must be exactly 1 character".into(),
             }
             .into());
         }
-        resolved.resolved_text_standard_grouping_separator = Some(grp);
+        resolved.resolved_text_standard_grouping_separator = Some(expanded);
         resolved.text_standard_grouping_separator_defined = true;
     }
     if let Some(sib_id) = props.text_standard_exponent_rep_sibling {

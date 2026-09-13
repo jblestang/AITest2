@@ -82,14 +82,22 @@ pub fn validate_text_standard_separator_literal(prop: &str, raw: &str) -> Result
             }
         }
     }
-    if prop == "textStandardGroupingSeparator" {
-        for disallowed in ["%NL;", "%LF;", "%WSP;", "%WS;"] {
-            if raw.contains(disallowed) {
-                return Err(format!(
-                    "{prop} contains disallowed character class(es): {disallowed}"
-                ));
-            }
+    for disallowed in ["%NL;", "%LF;", "%WSP;", "%WS;", "%WSP+;", "%WSP*;", "%WS+;"] {
+        if raw.contains(disallowed) {
+            return Err(format!(
+                "{prop} contains disallowed character class(es): {disallowed}"
+            ));
         }
+    }
+    if (prop == "textStandardGroupingSeparator" || prop == "textStandardDecimalSeparator")
+        && (raw.contains("%WSP") || raw.contains("%WS"))
+        && !raw.contains("%WSP;")
+        && !raw.contains("%WS;")
+    {
+        let token = if raw.contains("%WSP") { "%WSP+;" } else { "%WS+;" };
+        return Err(format!(
+            "{prop} contains disallowed character class(es): {token}"
+        ));
     }
     Ok(())
 }

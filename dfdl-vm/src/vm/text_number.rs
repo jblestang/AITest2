@@ -16,6 +16,7 @@ pub(crate) struct TextNumberFormatProps<'a> {
     pub grouping_separator: Option<&'a str>,
     pub exponent_chars: &'a str,
     pub pad_character: Option<char>,
+    pub ignore_case: bool,
 }
 
 impl Default for TextNumberFormatProps<'_> {
@@ -26,8 +27,15 @@ impl Default for TextNumberFormatProps<'_> {
             grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
+            ignore_case: false,
         }
     }
+}
+
+fn slice_starts_with_ignore_case(text: &str, prefix: &str) -> bool {
+    text.len() >= prefix.len()
+        && text.as_bytes()[..prefix.len()]
+            .eq_ignore_ascii_case(prefix.as_bytes())
 }
 
 fn default_decimal_separators() -> Vec<String> {
@@ -408,15 +416,27 @@ pub(crate) fn parse_standard_text_number(
             continue;
         }
         let mut scratch = work.clone();
-        let result = match_subpattern(
-            &mut scratch,
-            sub,
-            props,
-            lax,
-            idx > 0,
-            v_frac,
-            v_int_slots,
-        );
+        let result = if idx > 0 {
+            match_negative_subpattern(
+                &mut scratch,
+                sub,
+                positive_match,
+                props,
+                lax,
+                v_frac,
+                v_int_slots,
+            )
+        } else {
+            match_subpattern(
+                &mut scratch,
+                sub,
+                props,
+                lax,
+                false,
+                v_frac,
+                v_int_slots,
+            )
+        };
         match result {
             Ok(num) => {
                 if p_virtual != 0 {
@@ -514,48 +534,151 @@ fn is_pattern_digit_slot(c: char) -> bool {
     matches!(c, '0' | '#' | '*' | '.' | ',' | 'E' | 'e' | 'V' | 'P' | ' ')
 }
 
-fn negative_affixes(pattern: &str) -> (String, String) {
+fn is_negative_template_char(c: char) -> bool {
+    matches!(c, '0' | '#' | '.' | ',' | 'E' | 'e' | 'V' | 'P' | ' ' | '+' | '-')
+}
+
+/// Digit/pad template region in a negative subpattern (digit specs are ignored for parsing).
+fn negative_template_span(pattern: &str) -> (usize, usize) {
     let chars: Vec<char> = pattern.chars().collect();
-    let mut prefix = String::new();
     let mut i = 0usize;
     while i < chars.len() {
         if chars[i] == '\'' {
-            i += 1;
-            while i < chars.len() {
-                if chars[i] == '\'' {
-                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
-                        prefix.push('\'');
-                        i += 2;
-                        continue;
-                    }
-                    i += 1;
-                    break;
-                }
-                prefix.push(chars[i]);
-                i += 1;
+            if let Some((_, ni)) = parse_quoted_pattern_literal(&chars, i) {
+                i = ni;
+                continue;
             }
-            continue;
-        }
-        if is_pattern_digit_slot(chars[i]) {
             break;
         }
-        prefix.push(chars[i]);
+        if chars[i] == '*' {
+            if i + 1 < chars.len() {
+                i += 2;
+                continue;
+            }
+        }
+        if is_negative_template_char(chars[i]) {
+            break;
+        }
         i += 1;
     }
-    let mut suffix = String::new();
-    let mut j = chars.len();
-    while j > i {
-        let c = chars[j - 1];
-        if c == '\'' {
+    let start = i;
+    while i < chars.len() {
+        if chars[i] == '\'' {
             break;
         }
-        if is_pattern_digit_slot(c) {
-            break;
+        if chars[i] == '*' {
+            if i + 1 < chars.len() {
+                i += 2;
+                continue;
+            }
         }
-        suffix.insert(0, c);
-        j -= 1;
+        if chars[i] == ' ' {
+            let mut j = i;
+            while j < chars.len() && chars[j] == ' ' {
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == '\'' {
+                break;
+            }
+        }
+        if is_negative_template_char(chars[i]) {
+            i += 1;
+            continue;
+        }
+        break;
     }
+    (start, i)
+}
+
+fn pattern_literals_between(chars: &[char], start: usize, end: usize) -> String {
+    let mut out = String::new();
+    let mut i = start;
+    while i < end {
+        if chars[i] == '\'' {
+            if let Some((lit, ni)) = parse_quoted_pattern_literal(chars, i) {
+                out.push_str(&lit);
+                i = ni;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if chars[i] == '*' && i + 1 < end {
+            i += 2;
+            continue;
+        }
+        if chars[i] == ' ' || !is_negative_template_char(chars[i]) {
+            out.push(chars[i]);
+        }
+        i += 1;
+    }
+    out
+}
+
+fn negative_affixes(pattern: &str) -> (String, String) {
+    let chars: Vec<char> = pattern.chars().collect();
+    let (tmpl_start, tmpl_end) = negative_template_span(pattern);
+    let prefix = pattern_literals_between(&chars, 0, tmpl_start);
+    let suffix = pattern_literals_between(&chars, tmpl_end, chars.len());
     (prefix, suffix)
+}
+
+fn pad_char_from_positive_pattern(pattern: &str) -> Option<char> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i + 1 < chars.len() {
+        if chars[i] == '*' && chars[i + 1] != '\'' {
+            return Some(chars[i + 1]);
+        }
+        if is_negative_template_char(chars[i]) || chars[i] == '#' {
+            break;
+        }
+        if chars[i] == '\'' {
+            if let Some((_, ni)) = parse_quoted_pattern_literal(&chars, i) {
+                i = ni;
+                continue;
+            }
+            break;
+        }
+        i += 1;
+    }
+    None
+}
+
+fn match_negative_prefix(
+    text: &str,
+    pos: &mut usize,
+    prefix: &str,
+    positive_pattern: &str,
+    lax: bool,
+) -> Result<(), VmError> {
+    if prefix.is_empty() {
+        return Ok(());
+    }
+    skip_ws(text.as_bytes(), pos, lax);
+    if text[*pos..].starts_with(prefix) {
+        *pos += prefix.len();
+        return Ok(());
+    }
+    let pad = pad_char_from_positive_pattern(positive_pattern);
+    if let Some(pad_ch) = pad {
+        let mut p = *pos;
+        while p < text.len() {
+            let b = text.as_bytes()[p];
+            if b == pad_ch as u8 {
+                p += 1;
+                continue;
+            }
+            break;
+        }
+        if text[p..].starts_with(prefix) {
+            *pos = p + prefix.len();
+            return Ok(());
+        }
+    }
+    Err(VmError::InvalidValue {
+        message: "textNumberPattern mismatch".into(),
+    })
 }
 
 fn match_negative_subpattern(
@@ -571,19 +694,7 @@ fn match_negative_subpattern(
     let bytes = text.as_bytes();
     let mut pos = 0usize;
     skip_ws(bytes, &mut pos, lax);
-    if !prefix.is_empty() {
-        if text[pos..].starts_with(&prefix) {
-            pos += prefix.len();
-        } else if !lax {
-            return Err(VmError::InvalidValue {
-                message: "textNumberPattern mismatch".into(),
-            });
-        } else {
-            return Err(VmError::InvalidValue {
-                message: "textNumberPattern mismatch".into(),
-            });
-        }
-    }
+    match_negative_prefix(text, &mut pos, &prefix, positive_pattern, lax)?;
     let mut end = bytes.len();
     if lax {
         while end > pos && is_ws(bytes[end - 1]) {
@@ -845,8 +956,21 @@ fn match_subpattern(
                 i += 1;
             }
             'E' | 'e' => {
+                skip_ws(bytes, &mut pos, lax);
+                if !props.exponent_chars.is_empty() {
+                    let matched = if props.ignore_case {
+                        slice_starts_with_ignore_case(&text[pos..], props.exponent_chars)
+                    } else {
+                        text[pos..].starts_with(props.exponent_chars)
+                    };
+                    if matched {
+                        pos += props.exponent_chars.len();
+                        in_exponent = true;
+                        i += 1;
+                        continue;
+                    }
+                }
                 if props.exponent_chars.contains(chars[i]) {
-                    skip_ws(bytes, &mut pos, lax);
                     if pos < bytes.len() {
                         let b = bytes[pos];
                         if b == b'E' || b == b'e' || props.exponent_chars.contains(b as char) {
@@ -1175,6 +1299,26 @@ mod tests {
 
     #[test]
     #[test]
+    #[test]
+    fn tnp09_negative_affix() {
+        let dec = vec![".".into()];
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(","),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let pat = "**######;*/$###### 'is negative!'";
+        let n = parse_standard_text_number(
+            "******$123456 is negative!",
+            pat,
+            &props,
+        )
+        .unwrap();
+        assert_eq!(n, "-123456");
+    }
+
     #[test]
     fn pad_escape_x_pattern() {
         let dec = default_decimal_separators();

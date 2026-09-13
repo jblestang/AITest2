@@ -1013,13 +1013,20 @@ fn resolved_text_number_format_parts(
     Option<char>,
     crate::schema::BinaryNumberCheckPolicy,
 ) {
-    let dec = props
-        .resolved_text_standard_decimal_separator
-        .as_deref()
-        .or_else(|| strings.get(props.text_standard_decimal_separator).ok())
-        .unwrap_or(".");
+    let dec = if let Some(r) = props.resolved_text_standard_decimal_separator.as_deref() {
+        r
+    } else if props.text_standard_decimal_separator_defined {
+        strings
+            .get(props.text_standard_decimal_separator)
+            .unwrap_or("")
+    } else {
+        "."
+    };
     let mut dec_seps = crate::schema::parse_text_standard_separator_list(dec);
-    if dec_seps.is_empty() {
+    if dec_seps.is_empty()
+        && !props.text_standard_decimal_separator_defined
+        && props.resolved_text_standard_decimal_separator.is_none()
+    {
         dec_seps.push(".".into());
     }
     let exponent = props
@@ -1083,6 +1090,7 @@ fn read_implicit_numeric_text(
                         grouping_separator: grouping.as_deref(),
                         exponent_chars: &exponent,
                         pad_character: pad,
+                        ignore_case: props.ignore_case,
                     };
                     if let Some(len) = crate::vm::text_number::implicit_text_number_byte_length(
                         &cursor.data[cursor.pos..],
@@ -1146,12 +1154,12 @@ fn parse_field_text_number(
         if opl != OverpunchLocation::None {
             text_to_parse = zoned_to_number(trimmed, vm_style, opl).map_err(|e| {
                 let VmError::InvalidValue { message: detail } = e else {
-                    return unable_parse_from_text(value_kind_type_name(kind), trimmed);
+                    return unable_parse_from_text(type_name_for_parse(kind, props), trimmed);
                 };
                 VmError::InvalidValue {
                     message: alloc::format!(
                         "Parse Error. Unable to parse zoned {} from text: {trimmed}. {detail}",
-                        value_kind_type_name(kind)
+                        type_name_for_parse(kind, props)
                     ),
                 }
             })?;
@@ -1173,10 +1181,11 @@ fn parse_field_text_number(
         grouping_separator: grouping.as_deref(),
         exponent_chars: &exponent,
         pad_character: pad,
+        ignore_case: props.ignore_case,
     };
     if text_to_parse.starts_with('-') {
         let inner = text_number::parse_standard_text_number(&text_to_parse[1..], pattern, &fmt)
-            .map_err(|_| unable_parse_from_text(value_kind_type_name(kind), trimmed))?;
+            .map_err(|_| unable_parse_from_text(type_name_for_parse(kind, props), trimmed))?;
         return Ok(if inner.starts_with('-') {
             inner
         } else {
@@ -1184,7 +1193,65 @@ fn parse_field_text_number(
         });
     }
     text_number::parse_standard_text_number(&text_to_parse, pattern, &fmt).map_err(|_| {
-        unable_parse_from_text(value_kind_type_name(kind), trimmed)
+        unable_parse_from_text(type_name_for_parse(kind, props), trimmed)
+    })
+}
+
+fn type_name_for_parse(kind: crate::ir::ValueKind, props: &IrProps) -> &'static str {
+    value_kind_type_name(kind, Some(props))
+}
+
+fn text_standard_infinity_nan_match(
+    trimmed: &str,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Option<&'static str> {
+    let inf = strings
+        .get(props.text_standard_infinity_rep)
+        .unwrap_or("Inf");
+    let nan = strings.get(props.text_standard_nan_rep).unwrap_or("NaN");
+    let ic = props.ignore_case;
+    let eq = |a: &str, b: &str| {
+        if ic {
+            a.eq_ignore_ascii_case(b)
+        } else {
+            a == b
+        }
+    };
+    if eq(trimmed, nan) {
+        return Some("NaN");
+    }
+    if eq(trimmed, inf) {
+        return Some("INF");
+    }
+    if trimmed.starts_with('-') {
+        let rest = trimmed.trim_start_matches('-');
+        if eq(rest, inf) {
+            return Some("-INF");
+        }
+    }
+    None
+}
+
+pub(crate) fn reject_text_standard_special_for_integer(
+    trimmed: &str,
+    props: &IrProps,
+    strings: &StringPool,
+    type_name: &str,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    let Some(special) = text_standard_infinity_nan_match(trimmed, props, strings) else {
+        return Ok(());
+    };
+    let detail = if special == "NaN" {
+        "NaN"
+    } else {
+        "Infinity"
+    };
+    Err(VmError::InvalidValue {
+        message: alloc::format!(
+            "Parse Error. {detail} value out of range for type {type_name}"
+        ),
     })
 }
 
@@ -1197,6 +1264,9 @@ fn text_number_for_parse<'a>(
     use crate::ir::ValueKind;
     if !matches!(kind, ValueKind::Float | ValueKind::Double | ValueKind::Decimal) {
         return Ok(trimmed.into());
+    }
+    if let Some(special) = text_standard_infinity_nan_match(trimmed, props, strings) {
+        return Ok(special.into());
     }
     parse_field_text_number(trimmed, kind, props, strings)
 }
@@ -1928,9 +1998,23 @@ pub(crate) fn read_text_scalar(
     match kind {
         Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
         Byte => parse_int_typed_with_base(trimmed, "xs:byte", base).map(DfdlValue::Byte),
-        UnsignedByte => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedByte),
+        UnsignedByte => {
+            let num = if base == 10 && props.custom_text_number_pattern {
+                parse_field_text_number(trimmed, kind, props, strings)?
+            } else {
+                trimmed.to_string()
+            };
+            parse_unsigned_radix(&num, base).map(DfdlValue::UnsignedByte)
+        }
         Short => parse_int_typed_with_base(trimmed, "xs:short", base).map(DfdlValue::Short),
-        UnsignedShort => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedShort),
+        UnsignedShort => {
+            let num = if base == 10 && props.custom_text_number_pattern {
+                parse_field_text_number(trimmed, kind, props, strings)?
+            } else {
+                trimmed.to_string()
+            };
+            parse_unsigned_radix(&num, base).map(DfdlValue::UnsignedShort)
+        }
         Int => {
             let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
@@ -1945,10 +2029,19 @@ pub(crate) fn read_text_scalar(
             } else {
                 trimmed.to_string()
             };
-            parse_unbounded_integer_decimal(&num, base, false).map(DfdlValue::Integer)
+            parse_unbounded_integer_decimal(&num, base, props.non_negative_integer)
+                .map(DfdlValue::Integer)
         }
-        UnsignedInt => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedInt),
+        UnsignedInt => {
+            let num = if base == 10 && props.custom_text_number_pattern {
+                parse_field_text_number(trimmed, kind, props, strings)?
+            } else {
+                trimmed.to_string()
+            };
+            parse_unsigned_radix(&num, base).map(DfdlValue::UnsignedInt)
+        }
         Long => {
+            reject_text_standard_special_for_integer(trimmed, props, strings, "xs:long")?;
             if props.unsigned_integer {
                 let v = parse_unsigned_radix_typed(trimmed, "xs:unsignedLong", base)?;
                 Ok(DfdlValue::UnsignedLong(v))
@@ -3336,7 +3429,7 @@ fn parse_out_of_range(type_name: &str, decimal_value: &str) -> crate::error::VmE
     }
 }
 
-fn value_kind_type_name(kind: crate::ir::ValueKind) -> &'static str {
+fn value_kind_type_name(kind: crate::ir::ValueKind, props: Option<&IrProps>) -> &'static str {
     use crate::ir::ValueKind;
     match kind {
         ValueKind::Byte => "xs:byte",
@@ -3346,7 +3439,13 @@ fn value_kind_type_name(kind: crate::ir::ValueKind) -> &'static str {
         ValueKind::UnsignedByte => "xs:unsignedByte",
         ValueKind::UnsignedShort => "xs:unsignedShort",
         ValueKind::UnsignedInt => "xs:unsignedInt",
-        ValueKind::Integer => "xs:integer",
+        ValueKind::Integer => {
+            if props.is_some_and(|p| p.non_negative_integer) {
+                "xs:nonNegativeInteger"
+            } else {
+                "xs:integer"
+            }
+        }
         ValueKind::Float => "xs:float",
         ValueKind::Double => "xs:double",
         ValueKind::Decimal => "xs:decimal",
@@ -3428,6 +3527,11 @@ fn decimal_from_sign_magnitude(sign: i64, abs: u128) -> alloc::string::String {
 }
 
 fn parse_unbounded_integer_decimal(s: &str, base: u32, non_negative: bool) -> Result<alloc::string::String, crate::error::VmError> {
+    let type_name = if non_negative {
+        "xs:nonNegativeInteger"
+    } else {
+        "xs:integer"
+    };
     if base != 10 {
         let trimmed = s.trim();
         if trimmed.is_empty() {
@@ -3449,13 +3553,13 @@ fn parse_unbounded_integer_decimal(s: &str, base: u32, non_negative: bool) -> Re
         })?;
         return Ok(abs.to_string());
     }
-    let (sign, digits) = split_sign_digits(s)?;
+    let (sign, digits) = split_sign_digits(s)
+        .map_err(|_| unable_parse_from_text(type_name, s))?;
     if non_negative && sign < 0 {
-        return Err(crate::error::VmError::InvalidValue {
-            message: alloc::format!("invalid integer `{s}`"),
-        });
+        return Err(unable_parse_from_text(type_name, s));
     }
-    let abs = parse_u128_radix(digits, base)?;
+    let abs = parse_u128_radix(digits, base)
+        .map_err(|_| unable_parse_from_text(type_name, s))?;
     Ok(decimal_from_sign_magnitude(sign, abs))
 }
 
@@ -3523,7 +3627,10 @@ where
 
 fn parse_unsigned_radix_typed(s: &str, type_name: &str, base: u32) -> Result<u64, crate::error::VmError> {
     let trimmed = s.trim();
-    if trimmed.starts_with('-') || trimmed.starts_with('+') {
+    if trimmed.starts_with('-') {
+        return Err(parse_out_of_range(type_name, trimmed));
+    }
+    if trimmed.starts_with('+') {
         return Err(crate::error::VmError::InvalidValue {
             message: alloc::format!("invalid integer `{s}`"),
         });
@@ -3544,9 +3651,14 @@ fn parse_unsigned_radix_typed(s: &str, type_name: &str, base: u32) -> Result<u64
 }
 
 fn parse_float(s: &str) -> Result<f64, crate::error::VmError> {
-    s.parse().map_err(|_| crate::error::VmError::InvalidValue {
-        message: alloc::format!("invalid float `{s}`"),
-    })
+    match s {
+        "INF" | "Inf" | "Infinity" => Ok(f64::INFINITY),
+        "-INF" | "-Inf" | "-Infinity" => Ok(f64::NEG_INFINITY),
+        "NaN" => Ok(f64::NAN),
+        _ => s.parse().map_err(|_| crate::error::VmError::InvalidValue {
+            message: alloc::format!("invalid float `{s}`"),
+        }),
+    }
 }
 
 fn decode_hex(s: &str) -> Result<Vec<u8>, crate::error::VmError> {

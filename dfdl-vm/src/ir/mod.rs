@@ -114,6 +114,8 @@ pub struct IrProps {
     pub text_standard_grouping_separator_sibling: Option<StringId>,
     pub text_standard_exponent_rep: StringId,
     pub text_standard_exponent_rep_sibling: Option<StringId>,
+    pub text_standard_infinity_rep: StringId,
+    pub text_standard_nan_rep: StringId,
     /// Runtime-resolved separator literals (from `{ ../sibling }` expressions).
     pub resolved_text_standard_decimal_separator: Option<alloc::string::String>,
     pub resolved_text_standard_grouping_separator: Option<alloc::string::String>,
@@ -153,6 +155,8 @@ pub struct IrProps {
     pub initiated_content: bool,
     /// When true, treat Long bit fields as unsigned (xs:unsignedLong).
     pub unsigned_integer: bool,
+    /// xs:nonNegativeInteger (unbounded, non-negative).
+    pub non_negative_integer: bool,
 }
 
 impl Default for IrProps {
@@ -190,6 +194,8 @@ impl Default for IrProps {
             text_standard_decimal_separator_sibling: None,
             text_standard_exponent_rep: StringId(0),
             text_standard_exponent_rep_sibling: None,
+            text_standard_infinity_rep: StringId(0),
+            text_standard_nan_rep: StringId(0),
             resolved_text_standard_decimal_separator: None,
             resolved_text_standard_grouping_separator: None,
             resolved_text_standard_exponent_rep: None,
@@ -229,6 +235,7 @@ impl Default for IrProps {
             ignore_case: false,
             initiated_content: false,
             unsigned_integer: false,
+            non_negative_integer: false,
         }
     }
 }
