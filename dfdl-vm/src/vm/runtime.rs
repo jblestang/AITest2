@@ -1056,14 +1056,8 @@ fn parse_field_text_number(
         exponent_chars: &exponent,
         pad_character: pad,
     };
-    text_number::parse_standard_text_number(trimmed, pattern, &fmt).map_err(|e| {
-        if matches!(kind, ValueKind::Int | ValueKind::Short | ValueKind::Long | ValueKind::Byte) {
-            VmError::InvalidValue {
-                message: alloc::format!("Parse Error. xs:int {trimmed}"),
-            }
-        } else {
-            e
-        }
+    text_number::parse_standard_text_number(trimmed, pattern, &fmt).map_err(|_| {
+        unable_parse_from_text(value_kind_type_name(kind), trimmed)
     })
 }
 
@@ -1811,11 +1805,15 @@ pub(crate) fn read_text_scalar(
         Short => parse_int_typed_with_base(trimmed, "xs:short", base).map(DfdlValue::Short),
         UnsignedShort => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedShort),
         Int => {
-            let num = parse_field_text_number(trimmed, kind, props, strings)?;
+            let num = if base == 10 {
+                parse_field_text_number(trimmed, kind, props, strings)?
+            } else {
+                trimmed.to_string()
+            };
             parse_int_typed_with_base(&num, "xs:int", base).map(DfdlValue::Int)
         }
         Integer => {
-            let num = if props.custom_text_number_pattern {
+            let num = if base == 10 && props.custom_text_number_pattern {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
                 trimmed.to_string()
@@ -3211,6 +3209,30 @@ fn parse_out_of_range(type_name: &str, decimal_value: &str) -> crate::error::VmE
     }
 }
 
+fn value_kind_type_name(kind: crate::ir::ValueKind) -> &'static str {
+    use crate::ir::ValueKind;
+    match kind {
+        ValueKind::Byte => "xs:byte",
+        ValueKind::Short => "xs:short",
+        ValueKind::Int => "xs:int",
+        ValueKind::Long => "xs:long",
+        ValueKind::UnsignedByte => "xs:unsignedByte",
+        ValueKind::UnsignedShort => "xs:unsignedShort",
+        ValueKind::UnsignedInt => "xs:unsignedInt",
+        ValueKind::Integer => "xs:integer",
+        ValueKind::Float => "xs:float",
+        ValueKind::Double => "xs:double",
+        ValueKind::Decimal => "xs:decimal",
+        _ => "xs:string",
+    }
+}
+
+fn unable_parse_from_text(type_name: &str, text: &str) -> crate::error::VmError {
+    crate::error::VmError::InvalidValue {
+        message: alloc::format!("Parse Error. Unable to parse {type_name} from text: {text}"),
+    }
+}
+
 fn split_sign_digits(s: &str) -> Result<(i64, &str), crate::error::VmError> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -3233,6 +3255,43 @@ fn parse_u128_radix(digits: &str, base: u32) -> Result<u128, crate::error::VmErr
     })
 }
 
+fn parse_non_base10_signed_i64(s: &str, type_name: &str, base: u32) -> Result<i64, crate::error::VmError> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err(crate::error::VmError::InvalidValue {
+            message: alloc::format!("Parse Error. Unable to parse {type_name} from empty string"),
+        });
+    }
+    if trimmed.starts_with('+') || trimmed.starts_with('-') {
+        return Err(crate::error::VmError::InvalidValue {
+            message: alloc::format!(
+                "Parse Error. Unable to parse {type_name} from base-{base} text with leading sign: {trimmed}"
+            ),
+        });
+    }
+    let abs = u128::from_str_radix(trimmed, base).map_err(|_| crate::error::VmError::InvalidValue {
+        message: alloc::format!(
+            "Parse Error. Unable to parse {type_name} from base-{base} text due to invalid characters: {trimmed}"
+        ),
+    })?;
+    let sign = 1i64;
+    let decimal = abs.to_string();
+    let (min_abs, max_abs): (u128, u128) = match type_name {
+        "xs:byte" => (128, 127),
+        "xs:short" => (32768, 32767),
+        "xs:int" => (2147483648, 2147483647),
+        "xs:long" => (9223372036854775808, 9223372036854775807),
+        _ => (0, u128::MAX),
+    };
+    if abs > max_abs {
+        return Err(parse_out_of_range(type_name, &decimal));
+    }
+    if sign < 0 && abs > min_abs {
+        return Err(parse_out_of_range(type_name, &decimal));
+    }
+    Ok(abs as i64)
+}
+
 fn decimal_from_sign_magnitude(sign: i64, abs: u128) -> alloc::string::String {
     if sign < 0 {
         alloc::format!("-{abs}")
@@ -3242,6 +3301,27 @@ fn decimal_from_sign_magnitude(sign: i64, abs: u128) -> alloc::string::String {
 }
 
 fn parse_unbounded_integer_decimal(s: &str, base: u32, non_negative: bool) -> Result<alloc::string::String, crate::error::VmError> {
+    if base != 10 {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Err(crate::error::VmError::InvalidValue {
+                message: "Parse Error. Unable to parse xs:integer from empty string".into(),
+            });
+        }
+        if trimmed.starts_with('+') || trimmed.starts_with('-') {
+            return Err(crate::error::VmError::InvalidValue {
+                message: alloc::format!(
+                    "Parse Error. Unable to parse xs:integer from base-{base} text with leading sign: {trimmed}"
+                ),
+            });
+        }
+        let abs = u128::from_str_radix(trimmed, base).map_err(|_| crate::error::VmError::InvalidValue {
+            message: alloc::format!(
+                "Parse Error. Unable to parse xs:integer from base-{base} text due to invalid characters: {trimmed}"
+            ),
+        })?;
+        return Ok(abs.to_string());
+    }
     let (sign, digits) = split_sign_digits(s)?;
     if non_negative && sign < 0 {
         return Err(crate::error::VmError::InvalidValue {
@@ -3257,6 +3337,9 @@ fn parse_int_typed_with_base_i64(
     type_name: &str,
     base: u32,
 ) -> Result<i64, crate::error::VmError> {
+    if base != 10 {
+        return parse_non_base10_signed_i64(s, type_name, base);
+    }
     let (sign, digits) = split_sign_digits(s)?;
     let abs = parse_u128_radix(digits, base)?;
     let decimal = decimal_from_sign_magnitude(sign, abs);

@@ -625,6 +625,15 @@ fn finalize_element_props(
     {
         ir.representation = Representation::Text;
     }
+    if !matches!(ir.text_standard_base, 2 | 8 | 10 | 16) {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: For property textStandardBase, value must be 2, 8, 10, or 16. Found: {}",
+                ir.text_standard_base
+            ),
+        }
+        .into());
+    }
     if ir.text_standard_base != 10
         && matches!(kind, ValueKind::Float | ValueKind::Double | ValueKind::Decimal)
     {

@@ -79,6 +79,30 @@ fn section13_literal_character_text_01() {
 }
 
 #[test]
+fn section13_pv_vpatterns() {
+    for name in ["vpattern_01", "vpattern_05", "ppattern_02"] {
+        match run_named("section13/zoned/pv.tdml", name) {
+            TestOutcome::Pass => {}
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn section13_text_standard_base_errors() {
+    for name in [
+        "base2_invalid_char_err",
+        "non_base_10_empty_string_err",
+        "unsupported_base_err",
+    ] {
+        match run_named("section13/text_number_props/TextStandardBase.tdml", name) {
+            TestOutcome::Pass => {}
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn section13_text_standard_base_max_samples() {
     for name in ["base2_long_max", "base16_int_max", "base16_ulong_max"] {
         match run_named("section13/text_number_props/TextStandardBase.tdml", name) {

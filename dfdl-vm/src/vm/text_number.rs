@@ -61,6 +61,59 @@ fn pattern_without_quoted_regions(pattern: &str) -> String {
     out
 }
 
+fn digit_slots_before_v(pattern: &str) -> usize {
+    let bare = pattern_without_quoted_regions(pattern);
+    let Some(v_idx) = bare.find('V') else {
+        return 0;
+    };
+    bare[..v_idx]
+        .chars()
+        .filter(|c| matches!(c, '0' | '#'))
+        .count()
+}
+
+fn v_fraction_digit_count(pattern: &str) -> usize {
+    let bare = pattern_without_quoted_regions(pattern);
+    let Some(v_idx) = bare.find('V') else {
+        return 0;
+    };
+    bare[v_idx + 1..]
+        .chars()
+        .filter(|c| matches!(c, '0' | '#'))
+        .count()
+}
+
+fn strip_v_from_pattern(pattern: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            out.push('\'');
+            i += 1;
+            while i < chars.len() {
+                out.push(chars[i]);
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        out.push('\'');
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if chars[i] != 'V' {
+            out.push(chars[i]);
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Daffodil `P` (decimal scaling position) virtual point from the positive subpattern.
 fn text_decimal_virtual_point_from_pattern(pattern: &str) -> i32 {
     let bare = pattern_without_quoted_regions(pattern);
@@ -213,8 +266,16 @@ pub(crate) fn parse_standard_text_number(
     };
 
     let positive = subpatterns.first().copied().unwrap_or(pattern);
-    let virtual_point = text_decimal_virtual_point_from_pattern(positive);
-    let match_pattern = if virtual_point != 0 {
+    let v_frac = v_fraction_digit_count(positive);
+    let v_int_slots = digit_slots_before_v(positive);
+    let p_virtual = if v_frac > 0 {
+        0
+    } else {
+        text_decimal_virtual_point_from_pattern(positive)
+    };
+    let match_pattern = if v_frac > 0 {
+        strip_v_from_pattern(pattern)
+    } else if p_virtual != 0 {
         strip_p_from_pattern(pattern)
     } else {
         pattern.to_string()
@@ -227,16 +288,27 @@ pub(crate) fn parse_standard_text_number(
     let positive_match = match_subs.first().copied().unwrap_or(match_pattern.as_str());
 
     for (idx, sub) in match_subs.iter().enumerate() {
+        if idx > 0 && sub.is_empty() {
+            continue;
+        }
         let mut scratch = work.clone();
         let result = if idx == 0 {
-            match_subpattern(&mut scratch, sub, props, lax, false)
+            match_subpattern(&mut scratch, sub, props, lax, false, v_frac, v_int_slots)
         } else {
-            match_negative_subpattern(&mut scratch, sub, positive_match, props, lax)
+            match_negative_subpattern(
+                &mut scratch,
+                sub,
+                positive_match,
+                props,
+                lax,
+                v_frac,
+                v_int_slots,
+            )
         };
         match result {
             Ok(num) => {
-                if virtual_point != 0 {
-                    return Ok(apply_decimal_virtual_point(&num, virtual_point));
+                if p_virtual != 0 {
+                    return Ok(apply_decimal_virtual_point(&num, p_virtual));
                 }
                 return Ok(num);
             }
@@ -244,8 +316,36 @@ pub(crate) fn parse_standard_text_number(
         }
     }
 
+    // Optional negative subpattern (pattern ends with ';' only): negate positive match.
+    if subpatterns.len() >= 2
+        && subpatterns.get(1).is_some_and(|s| s.is_empty())
+        && work.starts_with('-')
+    {
+        let mut scratch = work[1..].to_string();
+        if let Ok(num) = match_subpattern(
+            &mut scratch,
+            positive_match,
+            props,
+            lax,
+            false,
+            v_frac,
+            v_int_slots,
+        ) {
+            let out = if p_virtual != 0 {
+                apply_decimal_virtual_point(&num, p_virtual)
+            } else {
+                num
+            };
+            return Ok(if out.starts_with('-') {
+                out
+            } else {
+                format!("-{out}")
+            });
+        }
+    }
+
     Err(VmError::InvalidValue {
-        message: format!("Parse Error. xs:int {input}"),
+        message: format!("Parse Error. Unable to parse number from text: {input}"),
     })
 }
 
@@ -352,6 +452,8 @@ fn match_negative_subpattern(
     positive_pattern: &str,
     props: &TextNumberFormatProps<'_>,
     lax: bool,
+    v_frac_digits: usize,
+    v_int_slots: usize,
 ) -> Result<String, VmError> {
     let (prefix, suffix) = negative_affixes(negative_pattern);
     let bytes = text.as_bytes();
@@ -397,7 +499,15 @@ fn match_negative_subpattern(
     }
     let core = text[pos..end].to_string();
     let mut inner = core;
-    match_subpattern(&mut inner, positive_pattern, props, lax, true)
+    match_subpattern(
+        &mut inner,
+        positive_pattern,
+        props,
+        lax,
+        true,
+        v_frac_digits,
+        v_int_slots,
+    )
 }
 
 fn skip_pad(
@@ -436,9 +546,14 @@ fn match_subpattern(
     props: &TextNumberFormatProps<'_>,
     lax: bool,
     negative_subpattern: bool,
+    v_frac_digits: usize,
+    v_int_slots: usize,
 ) -> Result<String, VmError> {
     let bytes = text.as_bytes();
     let mut pos = 0usize;
+    if lax && !negative_subpattern && pos < bytes.len() && bytes[pos] == b'+' {
+        pos += 1;
+    }
     let mut int_digits = String::new();
     let mut frac_digits = String::new();
     let mut exponent: Option<String> = None;
@@ -655,6 +770,20 @@ fn match_subpattern(
         }
     }
 
+    if v_frac_digits > 0 && frac_digits.is_empty() {
+        let total_slots = v_int_slots + v_frac_digits;
+        if lax && total_slots > 0 && int_digits.len() < total_slots {
+            let pad_len = total_slots - int_digits.len();
+            int_digits.insert_str(0, &"0".repeat(pad_len));
+        }
+        if int_digits.len() >= v_frac_digits {
+            let split_at = int_digits.len() - v_frac_digits;
+            frac_digits = int_digits[split_at..].to_string();
+            int_digits.truncate(split_at);
+            saw_decimal = true;
+        }
+    }
+
     let int_norm = normalize_int_digits(&int_digits);
     let mut out = if saw_decimal || !frac_digits.is_empty() {
         if frac_digits.is_empty() {
@@ -819,6 +948,25 @@ mod tests {
         };
         let n = parse_standard_text_number("123", "PP000", &props).unwrap();
         assert_eq!(n, "0.00123");
+    }
+
+    #[test]
+    fn v_pattern_money() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            decimal_separators: &dec,
+            ..TextNumberFormatProps::default()
+        };
+        let n =
+            parse_standard_text_number("999999999", "######0V00;-######0V00", &props).unwrap();
+        assert_eq!(n, "9999999.99");
+        let n2 = parse_standard_text_number(
+            "[999]",
+            "[######0V00];(######0V00)",
+            &props,
+        )
+        .unwrap();
+        assert_eq!(n2, "9.99");
     }
 
     #[test]
