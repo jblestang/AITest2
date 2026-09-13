@@ -80,6 +80,7 @@ pub struct DfdlProps {
     pub output_value_calc_sibling: Option<String>,
     pub text_string_justification: Option<TextStringJustification>,
     pub text_number_justification: Option<TextNumberJustification>,
+    pub text_standard_base: Option<u32>,
     pub nillable: Option<bool>,
     pub nil_kind: Option<NilKind>,
     /// Expanded nil literal (e.g. `%ES;` → empty string, or `nil`).
@@ -151,6 +152,7 @@ pub enum EncodingErrorPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NilKind {
     LiteralValue,
+    LiteralCharacter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +203,7 @@ pub enum TextStringJustification {
 pub enum TextNumberJustification {
     Left,
     Right,
+    Center,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

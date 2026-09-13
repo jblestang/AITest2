@@ -3,6 +3,34 @@ use crate::schema::EncodingErrorPolicy;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HexCharsetOrder {
+    MostSignificantByteFirst,
+    LeastSignificantByteFirst,
+}
+
+const HEX_CHARSET_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+
+/// Expand binary bytes (from a hex charset read) into the corresponding digit string.
+pub(crate) fn hex_charset_payload_to_text(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(HEX_CHARSET_DIGITS[(b >> 4) as usize] as char);
+        s.push(HEX_CHARSET_DIGITS[(b & 0x0f) as usize] as char);
+    }
+    s
+}
+
+pub(crate) fn hex_charset_order(name: &str) -> Option<HexCharsetOrder> {
+    if eq_ascii_ignore_case(name, "X-DFDL-HEX-MSBF") {
+        Some(HexCharsetOrder::MostSignificantByteFirst)
+    } else if eq_ascii_ignore_case(name, "X-DFDL-HEX-LSBF") {
+        Some(HexCharsetOrder::LeastSignificantByteFirst)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn normalize_encoding_name(name: &str) -> Option<&'static str> {
     if eq_ascii_ignore_case(name, "utf-16be") || eq_ascii_ignore_case(name, "utf_16be") {
         Some("utf-16be")

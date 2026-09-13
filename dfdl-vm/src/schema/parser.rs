@@ -1129,6 +1129,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_number_justification.is_some() {
         base.text_number_justification = overlay.text_number_justification;
     }
+    if overlay.text_standard_base.is_some() {
+        base.text_standard_base = overlay.text_standard_base;
+    }
     if overlay.has_statement_annotation {
         base.has_statement_annotation = true;
     }
@@ -1325,6 +1328,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "textPadKind"
             | "textStringJustification"
             | "textNumberJustification"
+            | "textStandardBase"
             | "binaryNumberRep"
             | "binaryCalendarRep"
             | "binaryFloatRep"
@@ -1459,6 +1463,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             "nilKind" => {
                 props.nil_kind = Some(match value.as_str() {
                     "literalValue" => NilKind::LiteralValue,
+                    "literalCharacter" => NilKind::LiteralCharacter,
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!("unknown nilKind `{other}`"),
@@ -1530,6 +1535,13 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.text_number_pad_character =
                     Some(crate::schema::expand_entities_str(value));
             }
+            "textStandardBase" => {
+                props.text_standard_base = Some(value.parse().map_err(|_| {
+                    ParseError::InvalidXml {
+                        message: alloc::format!("invalid textStandardBase `{value}`"),
+                    }
+                })?);
+            }
             "textStringPadCharacter" => {
                 props.text_string_pad_character =
                     Some(crate::schema::expand_entities_str(value));
@@ -1552,6 +1564,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.text_number_justification = Some(match value.as_str() {
                     "left" => TextNumberJustification::Left,
                     "right" => TextNumberJustification::Right,
+                    "center" => TextNumberJustification::Center,
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!("unknown textNumberJustification `{other}`"),

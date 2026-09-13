@@ -1,6 +1,7 @@
 use super::encoding::{
     character_span_byte_length, count_characters, decode_text_bytes, encode_document_text,
-    normalize_encoding_name, read_character_bytes, read_one_utf8_char,
+    hex_charset_order, hex_charset_payload_to_text, HexCharsetOrder, normalize_encoding_name,
+    read_character_bytes, read_one_utf8_char,
 };
 use crate::length_validate::{
     validate_data_length_vm, validate_decimal_data_length_vm,
@@ -252,6 +253,43 @@ impl<'a> Cursor<'a> {
         }
         Some((n, alt))
     }
+
+    /// Read `binary_byte_len` bytes from a DFDL hex charset (4 bits per hex digit).
+    pub(crate) fn read_hex_charset_bytes(
+        &mut self,
+        binary_byte_len: usize,
+        order: HexCharsetOrder,
+    ) -> Result<Vec<u8>, crate::error::VmError> {
+        use crate::error::VmError;
+        let bit_order = match order {
+            HexCharsetOrder::MostSignificantByteFirst => BitOrder::MostSignificantBitFirst,
+            HexCharsetOrder::LeastSignificantByteFirst => BitOrder::LeastSignificantBitFirst,
+        };
+        let mut out = Vec::with_capacity(binary_byte_len);
+        for _ in 0..binary_byte_len {
+            let hi = self.read_hex_nibble(bit_order)?;
+            let lo = self.read_hex_nibble(bit_order)?;
+            if hi > 0x0f || lo > 0x0f {
+                return Err(VmError::InvalidValue {
+                    message: "invalid hex charset code unit".into(),
+                });
+            }
+            out.push((hi << 4) | lo);
+        }
+        Ok(out)
+    }
+
+    fn read_hex_nibble(&mut self, bit_order: BitOrder) -> Result<u8, crate::error::VmError> {
+        let mut v = 0u8;
+        for i in 0..4 {
+            let bit = self.read_stream_bit(bit_order)? as u8;
+            match bit_order {
+                BitOrder::MostSignificantBitFirst => v = (v << 1) | bit,
+                BitOrder::LeastSignificantBitFirst => v |= bit << i,
+            }
+        }
+        Ok(v)
+    }
 }
 
 pub(crate) fn encode_absolute_bit_index(out: &[u8], bit_count: u8) -> usize {
@@ -493,8 +531,11 @@ pub(crate) fn read_binary_scalar(
         });
     }
 
+    let encoding = encoding_name(props, strings)?;
     let bytes = if size == 0 {
         Vec::new()
+    } else if let Some(order) = hex_charset_order(encoding) {
+        cursor.read_hex_charset_bytes(size, order)?
     } else {
         cursor.read_bytes(size).ok_or(VmError::UnexpectedEof)?
     };
@@ -1299,7 +1340,13 @@ fn decode_binary_bytes(
 }
 
 fn nil_literal<'a>(props: &'a IrProps, strings: &'a StringPool) -> Result<Option<&'a str>, crate::error::VmError> {
-    if !props.nillable || props.nil_kind != Some(NilKind::LiteralValue) {
+    if !props.nillable {
+        return Ok(None);
+    }
+    if !matches!(
+        props.nil_kind,
+        Some(NilKind::LiteralValue) | Some(NilKind::LiteralCharacter)
+    ) {
         return Ok(None);
     }
     props
@@ -1309,7 +1356,27 @@ fn nil_literal<'a>(props: &'a IrProps, strings: &'a StringPool) -> Result<Option
 }
 
 fn text_matches_nil_literal(text: &str, props: &IrProps, strings: &StringPool) -> Result<bool, crate::error::VmError> {
-    Ok(nil_literal(props, strings)?.is_some_and(|nil| text == nil))
+    let Some(nil) = nil_literal(props, strings)? else {
+        return Ok(false);
+    };
+    if props.nil_kind == Some(NilKind::LiteralCharacter) {
+        if nil.is_empty() {
+            return Ok(text.is_empty());
+        }
+        let nil_char = nil.chars().next().unwrap_or('\0');
+        let ignore_case = props.ignore_case;
+        return Ok(
+            !text.is_empty()
+                && text.chars().all(|c| {
+                    if ignore_case {
+                        c.eq_ignore_ascii_case(&nil_char)
+                    } else {
+                        c == nil_char
+                    }
+                }),
+        );
+    }
+    Ok(text == nil)
 }
 
 fn match_nil_literal_prefix(
@@ -1434,26 +1501,28 @@ pub(crate) fn read_text_scalar(
         }
     };
 
-    let text = decode_text_bytes(
-        &raw,
-        encoding_name(props, strings)?,
-        props.encoding_error_policy,
-    )?;
+    let enc = encoding_name(props, strings)?;
+    let text = if hex_charset_order(enc).is_some() {
+        hex_charset_payload_to_text(&raw)
+    } else {
+        decode_text_bytes(&raw, enc, props.encoding_error_policy)?
+    };
     let trimmed = trim_text_value(&text, kind, props.text_trim_kind, props, strings);
 
     if text_matches_nil_literal(trimmed, props, strings)? {
         return Ok(DfdlValue::Null);
     }
 
+    let base = props.text_standard_base;
     match kind {
         Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
-        Byte => parse_int(trimmed).map(DfdlValue::Byte),
-        UnsignedByte => parse_int(trimmed).map(DfdlValue::UnsignedByte),
-        Short => parse_int(trimmed).map(DfdlValue::Short),
-        UnsignedShort => parse_int(trimmed).map(DfdlValue::UnsignedShort),
-        Int => parse_int_typed(trimmed, "xs:int").map(DfdlValue::Int),
-        UnsignedInt => parse_int(trimmed).map(DfdlValue::UnsignedInt),
-        Long => parse_int(trimmed).map(DfdlValue::Long),
+        Byte => parse_int_typed_with_base(trimmed, "xs:byte", base).map(DfdlValue::Byte),
+        UnsignedByte => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedByte),
+        Short => parse_int_typed_with_base(trimmed, "xs:short", base).map(DfdlValue::Short),
+        UnsignedShort => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedShort),
+        Int => parse_int_typed_with_base(trimmed, "xs:int", base).map(DfdlValue::Int),
+        UnsignedInt => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedInt),
+        Long => parse_int_typed_with_base(trimmed, "xs:long", base).map(DfdlValue::Long),
         Float => parse_float(trimmed).map(|v| DfdlValue::Float(v as f32)),
         Double => parse_float(trimmed).map(DfdlValue::Double),
         Decimal => Ok(DfdlValue::Decimal(trimmed.into())),
@@ -2198,6 +2267,21 @@ pub(crate) fn read_length_span(
     use crate::error::VmError;
     match units {
         LengthUnits::Bytes => {
+            if let Some(order) = hex_charset_order(encoding) {
+                let needed_bits = len.saturating_mul(8);
+                let available_bits = cursor
+                    .data
+                    .len()
+                    .saturating_mul(8)
+                    .saturating_sub(cursor.absolute_bit_index());
+                if available_bits < needed_bits {
+                    if allow_short_read {
+                        return Ok(Vec::new());
+                    }
+                    return Err(insufficient_data_bits_error(needed_bits, available_bits));
+                }
+                return cursor.read_hex_charset_bytes(len, order);
+            }
             if cursor.bit_count != 0 {
                 return Err(VmError::InvalidValue {
                     message: "unaligned byte read".into(),
@@ -2776,21 +2860,94 @@ fn trim_pad_char<'a>(input: &'a str, pad: &str) -> &'a str {
     &input[start..end]
 }
 
-fn parse_int<T: core::str::FromStr>(s: &str) -> Result<T, crate::error::VmError> {
-    s.parse().map_err(|_| crate::error::VmError::InvalidValue {
-        message: alloc::format!("invalid integer `{s}`"),
-    })
+fn parse_int_with_base<T>(s: &str, base: u32) -> Result<T, crate::error::VmError>
+where
+    T: core::str::FromStr,
+{
+    if base == 10 {
+        s.parse().map_err(|_| crate::error::VmError::InvalidValue {
+            message: alloc::format!("invalid integer `{s}`"),
+        })
+    } else {
+        parse_radix_int(s, base)
+    }
 }
 
-fn parse_int_typed<T: core::str::FromStr>(s: &str, type_name: &str) -> Result<T, crate::error::VmError> {
+fn parse_int_typed_with_base<T>(s: &str, type_name: &str, base: u32) -> Result<T, crate::error::VmError>
+where
+    T: core::str::FromStr,
+{
     if s.is_empty() {
         return Err(crate::error::VmError::InvalidValue {
             message: "Parse Error. empty string".into(),
         });
     }
-    s.parse().map_err(|_| crate::error::VmError::InvalidValue {
-        message: alloc::format!("Parse Error. {type_name} {s}"),
-    })
+    if base == 10 {
+        s.parse().map_err(|_| crate::error::VmError::InvalidValue {
+            message: alloc::format!("Parse Error. {type_name} {s}"),
+        })
+    } else {
+        parse_radix_int(s, base).map_err(|_| crate::error::VmError::InvalidValue {
+            message: alloc::format!("Parse Error. {type_name} {s}"),
+        })
+    }
+}
+
+fn parse_radix_int<T>(s: &str, base: u32) -> Result<T, crate::error::VmError>
+where
+    T: core::str::FromStr,
+{
+    let trimmed = s.trim();
+    let (sign, digits) = if trimmed.starts_with('-') {
+        (-1i64, &trimmed[1..])
+    } else if trimmed.starts_with('+') {
+        (1, &trimmed[1..])
+    } else {
+        (1, trimmed)
+    };
+    let unsigned = u64::from_str_radix(digits, base).map_err(|_| {
+        crate::error::VmError::InvalidValue {
+            message: alloc::format!("invalid integer `{s}`"),
+        }
+    })?;
+    let signed = if sign < 0 {
+        -(unsigned as i64)
+    } else {
+        unsigned as i64
+    };
+    signed
+        .to_string()
+        .parse::<T>()
+        .map_err(|_| crate::error::VmError::InvalidValue {
+            message: alloc::format!("invalid integer `{s}`"),
+        })
+}
+
+fn parse_unsigned_radix<T>(s: &str, base: u32) -> Result<T, crate::error::VmError>
+where
+    T: core::str::FromStr,
+{
+    let trimmed = s.trim();
+    if trimmed.starts_with('-') || trimmed.starts_with('+') {
+        return Err(crate::error::VmError::InvalidValue {
+            message: alloc::format!("invalid integer `{s}`"),
+        });
+    }
+    if base == 10 {
+        trimmed.parse().map_err(|_| crate::error::VmError::InvalidValue {
+            message: alloc::format!("invalid integer `{s}`"),
+        })
+    } else {
+        u64::from_str_radix(trimmed, base)
+            .map_err(|_| crate::error::VmError::InvalidValue {
+                message: alloc::format!("invalid integer `{s}`"),
+            })?
+            .to_string()
+            .parse()
+            .map_err(|_| crate::error::VmError::InvalidValue {
+                message: alloc::format!("invalid integer `{s}`"),
+            })
+    }
 }
 
 fn parse_float(s: &str) -> Result<f64, crate::error::VmError> {
@@ -3619,6 +3776,16 @@ fn write_text_prefix_field(
                         TextNumberJustification::Left => {
                             padded.extend(iter::repeat(pad).take(pad_count));
                         }
+                        TextNumberJustification::Center => {
+                            let left = pad_count / 2;
+                            let right = pad_count - left;
+                            for _ in 0..left {
+                                padded.insert(0, pad);
+                            }
+                            for _ in 0..right {
+                                padded.push(pad);
+                            }
+                        }
                     }
                     write_byte_aligned(out, bit_count, padded.as_bytes())?;
                 }
@@ -3631,6 +3798,20 @@ fn write_text_prefix_field(
                             }
                             TextNumberJustification::Left => {
                                 padded.push(pad);
+                            }
+                            TextNumberJustification::Center => {
+                                let current =
+                                    count_characters(padded.as_bytes(), encoding, EncodingErrorPolicy::Error)?;
+                                let pad_count = len.saturating_sub(current);
+                                let left = pad_count / 2;
+                                let right = pad_count - left;
+                                for _ in 0..left {
+                                    padded.insert(0, pad);
+                                }
+                                for _ in 0..right {
+                                    padded.push(pad);
+                                }
+                                break;
                             }
                         }
                     }
@@ -3912,15 +4093,16 @@ pub(crate) fn default_value_for(
     use crate::value::DfdlValue;
 
     let raw = props.default_value.and_then(|id| strings.get(id).ok())?;
+    let base = props.text_standard_base;
     match kind {
         Boolean => parse_text_boolean(raw, props, strings).ok().map(DfdlValue::Boolean),
-        Byte => parse_int(raw).ok().map(DfdlValue::Byte),
-        UnsignedByte => parse_int(raw).ok().map(DfdlValue::UnsignedByte),
-        Short => parse_int(raw).ok().map(DfdlValue::Short),
-        UnsignedShort => parse_int(raw).ok().map(DfdlValue::UnsignedShort),
-        Int => parse_int(raw).ok().map(DfdlValue::Int),
-        UnsignedInt => parse_int(raw).ok().map(DfdlValue::UnsignedInt),
-        Long => parse_int(raw).ok().map(DfdlValue::Long),
+        Byte => parse_int_with_base(raw, base).ok().map(DfdlValue::Byte),
+        UnsignedByte => parse_unsigned_radix(raw, base).ok().map(DfdlValue::UnsignedByte),
+        Short => parse_int_with_base(raw, base).ok().map(DfdlValue::Short),
+        UnsignedShort => parse_unsigned_radix(raw, base).ok().map(DfdlValue::UnsignedShort),
+        Int => parse_int_with_base(raw, base).ok().map(DfdlValue::Int),
+        UnsignedInt => parse_unsigned_radix(raw, base).ok().map(DfdlValue::UnsignedInt),
+        Long => parse_int_with_base(raw, base).ok().map(DfdlValue::Long),
         Float => parse_float(raw).ok().map(|v| DfdlValue::Float(v as f32)),
         Double => parse_float(raw).ok().map(DfdlValue::Double),
         Decimal => Some(DfdlValue::Decimal(raw.into())),
