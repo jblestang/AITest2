@@ -222,6 +222,9 @@ impl<'a> XsdParser<'a> {
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &xsd_attrs);
+        if xsd_attrs.get("nillable").is_some_and(|v| v == "true") {
+            props.nillable = Some(true);
+        }
 
         let type_name = if let Some(t) = xsd_attrs.get("type") {
             TypeName::new(normalize_qname(t))
@@ -1645,7 +1648,8 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 });
             }
             "nilValue" => {
-                props.nil_value = Some(crate::schema::expand_entities_str(value));
+                // Keep the raw list; entities are expanded per-alternative at runtime.
+                props.nil_value = Some(value.clone());
             }
             "separatorSuppressionPolicy" => {
                 props.separator_suppression_policy = Some(match value.as_str() {

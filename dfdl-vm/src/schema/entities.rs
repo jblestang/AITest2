@@ -786,6 +786,14 @@ fn split_whitespace_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<all
         .collect()
 }
 
+/// Alternatives in a `dfdl:nilValue` property (whitespace-separated tokens / entities).
+pub fn nil_value_alternatives(raw: &str) -> alloc::vec::Vec<alloc::string::String> {
+    if let Some(alts) = split_entity_and_literal_alternatives(raw) {
+        return alts;
+    }
+    split_whitespace_delimiter_alternatives(raw)
+}
+
 /// Split `%NL; . !`-style lists: whitespace between `%...;` entities and literal tokens.
 fn split_entity_and_literal_alternatives(pattern: &str) -> Option<alloc::vec::Vec<alloc::string::String>> {
     if !pattern.contains('%') || !pattern.contains(' ') {

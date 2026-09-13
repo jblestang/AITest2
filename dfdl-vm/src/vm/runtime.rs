@@ -1057,14 +1057,20 @@ fn apply_text_number_pattern_numeric(
     } else {
         (false, text)
     };
-    if body.len() != digit_before + digit_after {
+    let total_digits = digit_before + digit_after;
+    let mut body_owned = body.to_string();
+    if body_owned.len() < total_digits {
+        let pad = total_digits - body_owned.len();
+        body_owned = alloc::format!("{}{body_owned}", "0".repeat(pad));
+    } else if body_owned.len() > total_digits {
         return Err(VmError::InvalidValue {
             message: alloc::format!(
                 "textNumberPattern `{pattern}` expected {} digits, got `{text}`",
-                digit_before + digit_after
+                total_digits
             ),
         });
     }
+    let body = body_owned.as_str();
     let mut out = alloc::format!(
         "{}.{}",
         &body[..digit_before],
@@ -1221,6 +1227,21 @@ fn parse_field_text_number(
         return Ok(trimmed.into());
     };
     let raw_pattern = strings.get(pat_id)?;
+    if props.text_number_rep == crate::schema::TextNumberRep::Zoned {
+        if matches!(kind, ValueKind::Float | ValueKind::Double) {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Schema Definition Error: textNumberRep=\"zoned\" cannot be used with xs:{}",
+                    if kind == ValueKind::Float {
+                        "float"
+                    } else {
+                        "double"
+                    }
+                ),
+            });
+        }
+        crate::vm::zoned_text::validate_zoned_pattern_characters(raw_pattern)?;
+    }
     let pattern_owned = if props.text_number_rep == crate::schema::TextNumberRep::Zoned {
         crate::vm::zoned_text::strip_zoned_plus_markers(raw_pattern)
     } else {
@@ -1997,7 +2018,10 @@ fn decode_binary_bytes(
     }
 }
 
-fn nil_literal<'a>(props: &'a IrProps, strings: &'a StringPool) -> Result<Option<&'a str>, crate::error::VmError> {
+fn nil_value_alternatives<'a>(
+    props: &'a IrProps,
+    strings: &'a StringPool,
+) -> Result<Option<alloc::vec::Vec<alloc::string::String>>, crate::error::VmError> {
     if !props.nillable {
         return Ok(None);
     }
@@ -2007,34 +2031,68 @@ fn nil_literal<'a>(props: &'a IrProps, strings: &'a StringPool) -> Result<Option
     ) {
         return Ok(None);
     }
-    props
-        .nil_value
-        .map(|id| strings.get(id).map(|s| s as &str))
-        .transpose()
+    let Some(id) = props.nil_value else {
+        return Ok(None);
+    };
+    let raw = strings.get(id)?;
+    Ok(Some(crate::schema::nil_value_alternatives(raw)))
+}
+
+fn nil_first_alternative(props: &IrProps, strings: &StringPool) -> Result<Option<alloc::string::String>, crate::error::VmError> {
+    Ok(nil_value_alternatives(props, strings)?
+        .and_then(|alts| alts.into_iter().next()))
+}
+
+fn nil_unparse_bytes(
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    let Some(alts) = nil_value_alternatives(props, strings)? else {
+        return Ok(alloc::vec::Vec::new());
+    };
+    let first = alts.first().map(|s| s.as_str()).unwrap_or("");
+    Ok(crate::schema::expand_entities(first))
 }
 
 fn text_matches_nil_literal(text: &str, props: &IrProps, strings: &StringPool) -> Result<bool, crate::error::VmError> {
-    let Some(nil) = nil_literal(props, strings)? else {
+    let Some(alts) = nil_value_alternatives(props, strings)? else {
         return Ok(false);
     };
     if props.nil_kind == Some(NilKind::LiteralCharacter) {
-        if nil.is_empty() {
-            return Ok(text.is_empty());
+        if alts.iter().any(|a| a.is_empty()) && text.is_empty() {
+            return Ok(true);
         }
-        let nil_char = nil.chars().next().unwrap_or('\0');
-        let ignore_case = props.ignore_case;
-        return Ok(
-            !text.is_empty()
-                && text.chars().all(|c| {
-                    if ignore_case {
-                        c.eq_ignore_ascii_case(&nil_char)
-                    } else {
-                        c == nil_char
+        if let Some(nil) = alts.first() {
+            if nil.is_empty() {
+                return Ok(text.is_empty());
+            }
+        }
+        if !alts.is_empty() {
+            for alt in alts {
+                if alt.is_empty() {
+                    if text.is_empty() {
+                        return Ok(true);
                     }
-                }),
-        );
+                    continue;
+                }
+                let nil_char = alt.chars().next().unwrap_or('\0');
+                if alt.len() == nil_char.len_utf8()
+                    && !text.is_empty()
+                    && text.chars().all(|c| {
+                        if props.ignore_case {
+                            c.eq_ignore_ascii_case(&nil_char)
+                        } else {
+                            c == nil_char
+                        }
+                    })
+                {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
     }
-    Ok(text == nil)
+    Ok(alts.iter().any(|alt| text == alt.as_str()))
 }
 
 fn match_nil_literal_prefix(
@@ -2042,18 +2100,20 @@ fn match_nil_literal_prefix(
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<Option<usize>, crate::error::VmError> {
-    let Some(nil) = nil_literal(props, strings)? else {
+    let Some(alts) = nil_value_alternatives(props, strings)? else {
         return Ok(None);
     };
-    if nil.is_empty() {
-        return Ok(None);
+    let mut best: Option<usize> = None;
+    for alt in alts {
+        let bytes = crate::schema::expand_entities(&alt);
+        if cursor.data[cursor.pos..].starts_with(&bytes) {
+            let len = bytes.len();
+            if best.map(|prev| len > prev).unwrap_or(true) {
+                best = Some(len);
+            }
+        }
     }
-    let encoded = encode_document_text(nil, encoding_name(props, strings)?)?;
-    if cursor.data[cursor.pos..].starts_with(&encoded) {
-        Ok(Some(encoded.len()))
-    } else {
-        Ok(None)
-    }
+    Ok(best)
 }
 
 fn pattern_allows_zero_length_match(
@@ -2100,7 +2160,7 @@ pub(crate) fn read_text_scalar(
             cursor.advance(nil_len);
             return Ok(DfdlValue::Null);
         }
-        if nil_literal(props, strings)?.is_some_and(|nil| nil.is_empty())
+        if nil_first_alternative(props, strings)?.is_some_and(|nil| nil.is_empty())
             && pattern_allows_zero_length_match(cursor, props, strings)?
         {
             return Ok(DfdlValue::Null);
@@ -2777,8 +2837,7 @@ pub(crate) fn write_text_scalar(
     use crate::value::DfdlValue;
 
     if matches!(value, DfdlValue::Null) {
-        let nil_text = nil_literal(props, strings)?.unwrap_or("");
-        let payload = encode_document_text(nil_text, encoding_name(props, strings)?)?;
+        let payload = nil_unparse_bytes(props, strings)?;
         write_byte_aligned(out, bit_count, &payload)?;
         return Ok(());
     }
@@ -3539,7 +3598,9 @@ pub(crate) fn is_suppressible_empty_representation(
     strings: &StringPool,
 ) -> Result<bool, crate::error::VmError> {
     match value {
-        crate::value::DfdlValue::Null => Ok(nil_literal(props, strings)?.is_some_and(|nil| nil.is_empty())),
+        crate::value::DfdlValue::Null => {
+            Ok(nil_first_alternative(props, strings)?.is_some_and(|nil| nil.is_empty()))
+        }
         crate::value::DfdlValue::String(text) if text.text.is_empty() => Ok(true),
         _ => Ok(false),
     }

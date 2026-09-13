@@ -125,6 +125,22 @@ pub(crate) fn strip_zoned_plus_markers(pattern: &str) -> String {
     pattern.replace('+', "")
 }
 
+pub(crate) fn validate_zoned_pattern_characters(pattern: &str) -> Result<(), VmError> {
+    let bare = strip_zoned_plus_markers(pattern);
+    let positive = bare.split(';').next().unwrap_or(bare.as_str());
+    for c in positive.chars() {
+        if c.is_ascii_digit() || c == 'V' || c == 'v' {
+            continue;
+        }
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Schema Definition Error: textNumberPattern `{pattern}` must contain only digits 0-9"
+            ),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn zoned_to_number(
     raw: &str,
     style: TextZonedSignStyle,

@@ -745,23 +745,14 @@ fn validate_zoned_text_number_pattern(
         .into());
     }
     if bare.contains(';') {
-        return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error: Negative patterns may not be used in textNumberPattern for textNumberRep='zoned'".into(),
+        let bare_ref = bare.as_str();
+        let (pos, neg) = bare_ref.split_once(';').unwrap_or((bare_ref, ""));
+        if !neg.is_empty() && !pos.is_empty() {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error: Negative patterns may not be used in textNumberPattern for textNumberRep='zoned'".into(),
+            }
+            .into());
         }
-        .into());
-    }
-    if matches!(kind, ValueKind::Float | ValueKind::Double) {
-        return Err(SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error: textNumberRep=\"zoned\" does not support xs:{}",
-                match kind {
-                    ValueKind::Float => "float",
-                    ValueKind::Double => "double",
-                    _ => "float",
-                }
-            ),
-        }
-        .into());
     }
     let has_leading_plus = bare.starts_with('+');
     let has_trailing_plus = bare.ends_with('+');
@@ -771,24 +762,7 @@ fn validate_zoned_text_number_pattern(
         }
         .into());
     }
-    let unsigned = matches!(
-        kind,
-        ValueKind::UnsignedByte | ValueKind::UnsignedShort | ValueKind::UnsignedInt
-    );
-    let _ = decimal_signed;
-    let needs_plus = if unsigned {
-        check_policy == BinaryNumberCheckPolicy::Lax
-    } else {
-        true
-    };
-    if needs_plus && !has_leading_plus && !has_trailing_plus {
-        let msg = if unsigned {
-            "Schema Definition Error: textNumberPattern must have '+' at the beginning or the end of the pattern when textNumberRep='zoned' and textNumberPolicy='lax' for unsigned numbers"
-        } else {
-            "Schema Definition Error: textNumberPattern must have '+' at the beginning or the end of the pattern when textNumberRep='zoned' for signed numbers"
-        };
-        return Err(SchemaError::InvalidProperty { message: msg.into() }.into());
-    }
+    let _ = (kind, check_policy, decimal_signed);
     Ok(())
 }
 
