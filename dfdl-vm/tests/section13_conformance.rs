@@ -122,6 +122,9 @@ fn daffodil_section13_regression_suite() {
         "packedCharset03",
         "DelimitedPackedIntSeq",
         "DelimitedPackedDecSeq",
+        "DelimitedBCDIntSeq",
+        "DelimitedBCDDecSeq",
+        "DelimitedIBM4690IntSeq",
         "bcdCharset01",
         "bcdCharset02",
     ]);

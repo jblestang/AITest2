@@ -364,7 +364,27 @@ impl<'a> Decoder<'a> {
                 pattern_text_frame,
                 stop_sequences,
             ) {
-                Ok(v) => items.push(v),
+                Ok(v) => {
+                    if max == u64::MAX
+                        && props.representation == Representation::Binary
+                        && props.length_kind == LengthKind::Delimited
+                        && cursor.pos == saved.pos
+                        && !cursor.is_frame_consumed()
+                    {
+                        if (items.len() as u64) >= min {
+                            *cursor = before_occurrence_sep;
+                            break;
+                        }
+                        return Err(VmError::InvalidValue {
+                            message: alloc::format!(
+                                "repeating element made no progress at byte offset {}",
+                                saved.pos
+                            ),
+                        }
+                        .into());
+                    }
+                    items.push(v);
+                }
                 Err(e) => {
                     if (items.len() as u64) >= min {
                         *cursor = if items.is_empty() {

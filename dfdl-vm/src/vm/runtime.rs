@@ -2399,6 +2399,11 @@ fn read_until_any_delimiter(
                 &entry.pat,
                 entry.ignore_case,
             ) {
+                // Ignore zero-width delimiter matches while scanning (prevents infinite
+                // empty reads on binary delimited fields); empty fields still work via n > 0.
+                if n == 0 {
+                    continue;
+                }
                 if n > 0 || (!require_delimiter && cursor.pos == start) {
                     return Ok(cursor.data[start..cursor.pos].to_vec());
                 }
@@ -3150,6 +3155,11 @@ fn defer_delimited_enclosing_consume(
     stop_sequences: &[&IrProps],
 ) -> Result<bool, crate::error::VmError> {
     use crate::value::DfdlValue;
+    if props.representation == Representation::Binary {
+        // Binary delimited scalars must always consume the enclosing delimiter so
+        // unbounded sequences advance (BCD/4690/packed hex); text may still defer.
+        return Ok(false);
+    }
     if matches!(value, DfdlValue::Null) {
         return Ok(false);
     }

@@ -56,20 +56,10 @@ fn packed_tdml_timing_breakdown() {
 
     let mut slowest: Vec<(Duration, String)> = Vec::new();
     let t_all = Instant::now();
-    const HANG_CASES: &[&str] = &[
-        "DelimitedBCDIntSeq",
-        "DelimitedBCDDecSeq",
-        "DelimitedIBM4690IntSeq",
-        "DelimitedIBM4690DecSeq",
-    ];
     for test in &suite.tests {
         let t = Instant::now();
         eprintln!(">> start {}", test.name);
         let _ = std::io::Write::flush(&mut std::io::stderr());
-        if HANG_CASES.contains(&test.name.as_str()) {
-            eprintln!(">> skip (known infinite loop until BCD/4690 delimited seq is fixed)");
-            continue;
-        }
         let _ = run_parser_test(&suite, test).expect("run");
         let elapsed = t.elapsed();
         eprintln!(">> done {} in {elapsed:?}", test.name);
@@ -119,15 +109,13 @@ fn packed_delimited_bcd_int_seq_decode_only() {
         .iter()
         .find(|t| t.name == "DelimitedBCDIntSeq")
         .expect("case");
+    let xsd = suite.schemas.get(&test.model).unwrap().xsd.clone();
+    let schema = parse_schema(&xsd).expect("schema");
+    let spec =
+        DfdlSpec::from_schema_root_with_tunables(schema, Some(&test.root), Default::default())
+            .expect("compile");
+    let doc = &test.documents[0].data;
     let t = Instant::now();
-    let r = run_parser_test_with_options(
-        &suite,
-        test,
-        ParserTestRunOptions {
-            verify_round_trip: false,
-            ..Default::default()
-        },
-    )
-    .expect("run");
-    eprintln!("decode-only {:?} in {:?}", r.outcome, t.elapsed());
+    let decoded = spec.decoder().decode(doc).expect("decode");
+    eprintln!("decode ok in {:?}, value: {:?}", t.elapsed(), decoded);
 }
