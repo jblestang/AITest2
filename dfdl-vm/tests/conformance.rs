@@ -21,6 +21,15 @@ macro_rules! daffodil_delimiter_tdml {
     };
 }
 
+macro_rules! daffodil_length_properties_tdml {
+    ($file:literal) => {
+        include_str!(concat!(
+            "../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/length_properties/",
+            $file
+        ))
+    };
+}
+
 fn assert_named_unparser_test_passes(tdml: &str, test_name: &str) {
     let suite = parse_tdml(tdml).expect("parse tdml");
     let test = suite
@@ -1043,6 +1052,60 @@ fn daffodil_section12_delimiter_properties_suite() {
         "ReqFieldMissingAndSepIsPrefixOfTerminator_Prefix",
         "ReqFieldMissingAndSepIsPrefixOfTerminator_Infix",
         "ReqFieldMissingAndSepIsPrefixOfTerminator_Postfix",
+    ] {
+        assert_named_test_passes(tdml, name);
+    }
+}
+
+/// Section 12 length_properties regression subset (parser cases that pass today).
+#[test]
+fn daffodil_section12_length_properties_suite() {
+    let tdml = daffodil_length_properties_tdml!("LengthProperties.tdml");
+    for name in [
+        "LengthProp_leftover1",
+        "LengthProp_floatBits",
+        "LengthProp_leftover3",
+        "LengthProp_bits_bool",
+        "LengthProp_bits_bool_false",
+        "LengthProp_bits_01",
+        "LengthProp_bits_02",
+        "LengthProp_sequenceByLength",
+        "LengthProp_02",
+        "LengthProp_charVsBytes",
+        "LengthProp_charVsBytes2",
+        "LengthProp_tooShortFailure",
+        "LengthProp_04",
+        "LengthProp_05",
+        "LengthProp_byteLength",
+        "LengthProp_byteLength2",
+        "LengthProp_longByteLength",
+        "LengthProp_byteLength_UTF16",
+        "LengthProp_byteLength_UTF16fail",
+        "LengthProp_lengthExpression1",
+        "OneBit1",
+        "bitUnsignedLong3",
+        "bitUnsignedLong4",
+        "bitUnsignedLong5",
+        "bitUCombo",
+        "bitUCombo2",
+        "bitShort",
+        "bitShort2",
+        "bitShort3",
+        "bitInt",
+        "bitInteger",
+        "bitLong",
+        "bitByte",
+        "bitShortImplicit",
+        "bitIntImplicit",
+        "lengthGreaterThanEight1",
+        "lengthGreaterThanEight2",
+        "lengthGreaterThanEight3",
+        "bitsRepresentedAsText1",
+        "bitsRepresentedAsText2",
+        "twoByteBigEndian",
+        "ThreeBit1",
+        "twoByteLittleEndian",
+        "seqBit1",
     ] {
         assert_named_test_passes(tdml, name);
     }

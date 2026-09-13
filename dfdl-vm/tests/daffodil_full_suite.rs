@@ -168,3 +168,35 @@ fn daffodil_section12_delimiter_properties_progress_gate() {
         stats.pass
     );
 }
+
+/// CI gate: Section 12 length_properties (explicit/bit length cases).
+#[test]
+fn daffodil_section12_length_properties_regression_gate() {
+    let root = assert_tdml_root().join("section12/length_properties");
+    let mut files = Vec::new();
+    collect_tdml_files(&root, &mut files);
+    assert!(!files.is_empty(), "section12/length_properties TDML missing");
+
+    let mut stats = SectionStats::default();
+    for path in files {
+        run_tdml_file(&path, &mut stats);
+    }
+    assert_eq!(
+        stats.parse_fail, 0,
+        "length_properties parse errors: {stats:?}"
+    );
+    assert!(
+        stats.pass >= 44,
+        "length_properties: expected at least 44 passing cases, got pass={} fail={} skip={}",
+        stats.pass,
+        stats.fail,
+        stats.skip
+    );
+    assert!(
+        stats.fail <= 16,
+        "length_properties regressions: pass={} fail={} skip={}",
+        stats.pass,
+        stats.fail,
+        stats.skip
+    );
+}
