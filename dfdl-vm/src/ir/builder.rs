@@ -33,11 +33,6 @@ impl<'a> IrBuilder<'a> {
                 .as_deref()
                 .unwrap_or("C D F C"),
         );
-        if strings.get(defaults.text_standard_decimal_separator).is_err()
-            || strings.get(defaults.text_standard_decimal_separator).ok().is_some_and(|s| s.is_empty())
-        {
-            defaults.text_standard_decimal_separator = strings.intern(".");
-        }
         if strings.get(defaults.text_standard_exponent_rep).is_err()
             || strings
                 .get(defaults.text_standard_exponent_rep)
@@ -525,6 +520,28 @@ fn validate_float_double_bit_length(kind: ValueKind, length: u64, units: LengthU
     validate_float_double_bit_length_schema(kind, length, units).map_err(Into::into)
 }
 
+fn text_number_pattern_requires_decimal_separator(pattern: &str) -> bool {
+    let mut in_quote = false;
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            if in_quote && i + 1 < chars.len() && chars[i + 1] == '\'' {
+                i += 2;
+                continue;
+            }
+            in_quote = !in_quote;
+            i += 1;
+            continue;
+        }
+        if !in_quote && chars[i] == '.' {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 fn finalize_element_props(
     kind: ValueKind,
     mut ir: IrProps,
@@ -585,6 +602,21 @@ fn finalize_element_props(
         )
     {
         ir.representation = Representation::Text;
+    }
+    if ir.custom_text_number_pattern {
+        if let Some(id) = ir.text_number_pattern {
+            let pat = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
+                message: e.to_string(),
+            })?;
+            if text_number_pattern_requires_decimal_separator(pat)
+                && !ir.text_standard_decimal_separator_defined
+            {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: Property textStandardDecimalSeparator is not defined".into(),
+                }
+                .into());
+            }
+        }
     }
     Ok(ir)
 }
@@ -1097,6 +1129,7 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
                 .as_deref()
                 .unwrap_or("."),
         );
+        base.text_standard_decimal_separator_defined = true;
     }
     if props.text_standard_grouping_separator.is_some() {
         let g = props.text_standard_grouping_separator.as_deref().unwrap_or(",");
@@ -1271,6 +1304,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.text_number_check_policy = overlay.text_number_check_policy;
     if overlay.text_standard_decimal_separator != StringId(0) {
         out.text_standard_decimal_separator = overlay.text_standard_decimal_separator;
+    }
+    if overlay.text_standard_decimal_separator_defined {
+        out.text_standard_decimal_separator_defined = true;
     }
     out.text_standard_grouping_separator = overlay.text_standard_grouping_separator;
     if overlay.text_standard_exponent_rep != StringId(0) {

@@ -12,8 +12,8 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone)]
 pub(crate) struct TextNumberFormatProps<'a> {
     pub check_policy: BinaryNumberCheckPolicy,
-    pub decimal_separators: &'a [char],
-    pub grouping_separator: Option<char>,
+    pub decimal_separators: &'a [String],
+    pub grouping_separator: Option<&'a str>,
     pub exponent_chars: &'a str,
     pub pad_character: Option<char>,
 }
@@ -22,12 +22,16 @@ impl Default for TextNumberFormatProps<'_> {
     fn default() -> Self {
         Self {
             check_policy: BinaryNumberCheckPolicy::Lax,
-            decimal_separators: &['.'],
-            grouping_separator: Some(','),
+            decimal_separators: &[],
+            grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
         }
     }
+}
+
+fn default_decimal_separators() -> Vec<String> {
+    vec![".".into()]
 }
 
 /// Parse data against a DFDL text number pattern; returns a canonical numeric string for `parse()` / `parse_float`.
@@ -49,9 +53,15 @@ pub(crate) fn parse_standard_text_number(
         vec![pattern]
     };
 
+    let positive = subpatterns.first().copied().unwrap_or(pattern);
     for (idx, sub) in subpatterns.iter().enumerate() {
         let mut scratch = work.clone();
-        match match_subpattern(&mut scratch, sub, props, lax, idx > 0) {
+        let result = if idx == 0 {
+            match_subpattern(&mut scratch, sub, props, lax, false)
+        } else {
+            match_negative_subpattern(&mut scratch, sub, positive, props, lax)
+        };
+        match result {
             Ok(num) => return Ok(num),
             Err(_) => continue,
         }
@@ -82,8 +92,11 @@ fn skip_ws_respecting_decimal_sep(
     props: &TextNumberFormatProps<'_>,
 ) {
     while *pos < bytes.len() && is_ws(bytes[*pos]) {
-        let ch = bytes[*pos] as char;
-        if props.decimal_separators.contains(&ch) {
+        if props
+            .decimal_separators
+            .iter()
+            .any(|ds| bytes[*pos..].starts_with(ds.as_bytes()))
+        {
             break;
         }
         *pos += 1;
@@ -95,21 +108,119 @@ fn match_decimal_separator(
     pos: &mut usize,
     props: &TextNumberFormatProps<'_>,
 ) -> bool {
-    for dec in props.decimal_separators {
-        let ds = dec.to_string();
-        if *pos + ds.len() <= bytes.len() {
-            let slice = core::str::from_utf8(&bytes[*pos..*pos + ds.len()]).ok();
-            if slice == Some(ds.as_str()) {
-                *pos += ds.len();
-                return true;
-            }
-        }
-        if *dec == '.' && *pos < bytes.len() && bytes[*pos] == b'.' {
-            *pos += 1;
+    for ds in props.decimal_separators {
+        if *pos + ds.len() <= bytes.len() && bytes[*pos..].starts_with(ds.as_bytes()) {
+            *pos += ds.len();
             return true;
         }
     }
+    if *pos < bytes.len() && bytes[*pos] == b'.' {
+        *pos += 1;
+        return true;
+    }
     false
+}
+
+fn is_pattern_digit_slot(c: char) -> bool {
+    matches!(c, '0' | '#' | '*' | '.' | ',' | 'E' | 'e' | 'V' | ' ')
+}
+
+fn negative_affixes(pattern: &str) -> (String, String) {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut prefix = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        prefix.push('\'');
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                prefix.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if is_pattern_digit_slot(chars[i]) {
+            break;
+        }
+        prefix.push(chars[i]);
+        i += 1;
+    }
+    let mut suffix = String::new();
+    let mut j = chars.len();
+    while j > i {
+        let c = chars[j - 1];
+        if c == '\'' {
+            break;
+        }
+        if is_pattern_digit_slot(c) {
+            break;
+        }
+        suffix.insert(0, c);
+        j -= 1;
+    }
+    (prefix, suffix)
+}
+
+fn match_negative_subpattern(
+    text: &mut String,
+    negative_pattern: &str,
+    positive_pattern: &str,
+    props: &TextNumberFormatProps<'_>,
+    lax: bool,
+) -> Result<String, VmError> {
+    let (prefix, suffix) = negative_affixes(negative_pattern);
+    let bytes = text.as_bytes();
+    let mut pos = 0usize;
+    skip_ws(bytes, &mut pos, lax);
+    if !prefix.is_empty() {
+        if text[pos..].starts_with(&prefix) {
+            pos += prefix.len();
+        } else if !lax {
+            return Err(VmError::InvalidValue {
+                message: "textNumberPattern mismatch".into(),
+            });
+        } else {
+            return Err(VmError::InvalidValue {
+                message: "textNumberPattern mismatch".into(),
+            });
+        }
+    }
+    let mut end = bytes.len();
+    if lax {
+        while end > pos && is_ws(bytes[end - 1]) {
+            end -= 1;
+        }
+    }
+    if !suffix.is_empty() {
+        let sl = suffix.len();
+        if end >= sl && &text[end - sl..end] == suffix.as_str() {
+            end -= sl;
+        } else if !lax {
+            return Err(VmError::InvalidValue {
+                message: "textNumberPattern mismatch".into(),
+            });
+        } else {
+            return Err(VmError::InvalidValue {
+                message: "textNumberPattern mismatch".into(),
+            });
+        }
+    }
+    if pos > end {
+        return Err(VmError::InvalidValue {
+            message: "textNumberPattern mismatch".into(),
+        });
+    }
+    let core = text[pos..end].to_string();
+    let mut inner = core;
+    match_subpattern(&mut inner, positive_pattern, props, lax, true)
 }
 
 fn skip_pad(
@@ -185,8 +296,9 @@ fn match_subpattern(
             skip_ws(bytes, &mut pos, lax);
             if text[pos..].starts_with(&lit) {
                 pos += lit.len();
-            } else if lax {
-                // lax: quoted literal may be omitted (DFDL-13-052R)
+            } else if lax || negative {
+                // lax: quoted literal may be omitted (DFDL-13-052R); also when parsing
+                // the numeric core after a negative subpattern prefix (hex sign C/D, etc.)
             } else {
                 return Err(VmError::InvalidValue {
                     message: "textNumberPattern mismatch".into(),
@@ -219,11 +331,6 @@ fn match_subpattern(
                 }
                 let digit_count = pos - start;
                 if digit_count < min_digits && !lax {
-                    return Err(VmError::InvalidValue {
-                        message: "textNumberPattern mismatch".into(),
-                    });
-                }
-                if digit_count > max_digits && !lax {
                     return Err(VmError::InvalidValue {
                         message: "textNumberPattern mismatch".into(),
                     });
@@ -266,9 +373,13 @@ fn match_subpattern(
             }
             ',' => {
                 skip_ws(bytes, &mut pos, lax);
-                if props.grouping_separator == Some(',') {
-                    if pos < bytes.len() && bytes[pos] == b',' {
-                        pos += 1;
+                if let Some(grp) = props.grouping_separator {
+                    if !grp.is_empty() && text[pos..].starts_with(grp) {
+                        pos += grp.len();
+                    } else if !lax {
+                        return Err(VmError::InvalidValue {
+                            message: "textNumberPattern mismatch".into(),
+                        });
                     }
                 }
                 i += 1;
@@ -407,25 +518,33 @@ mod tests {
 
     #[test]
     fn lax_pattern_with_spaces() {
-        let props = TextNumberFormatProps::default();
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            decimal_separators: &dec,
+            ..TextNumberFormatProps::default()
+        };
         let n = parse_standard_text_number("           0052    ", "    0000    ", &props).unwrap();
         assert_eq!(n, "52");
     }
 
     #[test]
     fn exponent_pattern() {
-        let props = TextNumberFormatProps::default();
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            decimal_separators: &dec,
+            ..TextNumberFormatProps::default()
+        };
         let n = parse_standard_text_number("006.54E9", "000.0#E0", &props).unwrap();
         assert_eq!(n, "6.54E9");
     }
 
     #[test]
     fn strict_pad_exponent_pattern() {
-        let dec = ['.'];
+        let dec = default_decimal_separators();
         let props = TextNumberFormatProps {
             check_policy: BinaryNumberCheckPolicy::Strict,
             decimal_separators: &dec,
-            grouping_separator: Some(','),
+            grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
         };
@@ -435,7 +554,11 @@ mod tests {
 
     #[test]
     fn lax_optional_quoted_prefix() {
-        let props = TextNumberFormatProps::default();
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            decimal_separators: &dec,
+            ..TextNumberFormatProps::default()
+        };
         let n = parse_standard_text_number("1234", "'$'0000", &props).unwrap();
         assert_eq!(n, "1234");
         let n2 = parse_standard_text_number("1234", "'optional:'0000", &props).unwrap();
@@ -444,18 +567,18 @@ mod tests {
 
     #[test]
     fn lax_space_decimal_separator() {
-        let dec = [' '];
+        let dec = vec![" ".into()];
         let lax_props = TextNumberFormatProps {
             check_policy: BinaryNumberCheckPolicy::Lax,
             decimal_separators: &dec,
-            grouping_separator: Some(','),
+            grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
         };
         let strict_props = TextNumberFormatProps {
             check_policy: BinaryNumberCheckPolicy::Strict,
             decimal_separators: &dec,
-            grouping_separator: Some(','),
+            grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
         };
@@ -470,11 +593,11 @@ mod tests {
 
     #[test]
     fn space_decimal_separator() {
-        let dec = [' '];
+        let dec = vec![" ".into()];
         let props = TextNumberFormatProps {
             check_policy: BinaryNumberCheckPolicy::Strict,
             decimal_separators: &dec,
-            grouping_separator: Some(','),
+            grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
         };
@@ -484,11 +607,11 @@ mod tests {
 
     #[test]
     fn quoted_dollar_float() {
-        let dec = ['.'];
+        let dec = default_decimal_separators();
         let props = TextNumberFormatProps {
             check_policy: BinaryNumberCheckPolicy::Strict,
             decimal_separators: &dec,
-            grouping_separator: Some(','),
+            grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
         };
@@ -496,12 +619,40 @@ mod tests {
         assert_eq!(n, "49.99");
     }
 
-    fn strict_four_zeros() {
-        let dec = ['.'];
+    #[test]
+    fn hex_charset_sign_pattern() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Lax,
+            decimal_separators: &dec,
+            grouping_separator: None,
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number("D123", "'C'000;'D'000", &props).unwrap();
+        assert_eq!(n, "-123");
+    }
+
+    #[test]
+    fn hex_charset_sign_pattern_strict() {
+        let dec = default_decimal_separators();
         let props = TextNumberFormatProps {
             check_policy: BinaryNumberCheckPolicy::Strict,
             decimal_separators: &dec,
-            grouping_separator: Some(','),
+            grouping_separator: None,
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number("D123", "'C'000;'D'000", &props).unwrap();
+        assert_eq!(n, "-123");
+    }
+
+    fn strict_four_zeros() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(","),
             exponent_chars: "E",
             pad_character: Some('0'),
         };

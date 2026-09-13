@@ -103,6 +103,8 @@ pub struct IrProps {
     pub text_number_pattern: Option<StringId>,
     pub text_number_check_policy: BinaryNumberCheckPolicy,
     pub text_standard_decimal_separator: StringId,
+    /// Set when `textStandardDecimalSeparator` was present on merged DFDL props.
+    pub text_standard_decimal_separator_defined: bool,
     pub text_standard_grouping_separator: Option<StringId>,
     pub text_standard_exponent_rep: StringId,
     /// Element/type declared `textNumberPattern` (not only the format default).
@@ -171,6 +173,7 @@ impl Default for IrProps {
             text_number_pattern: None,
             text_number_check_policy: BinaryNumberCheckPolicy::Lax,
             text_standard_decimal_separator: StringId(0),
+            text_standard_decimal_separator_defined: false,
             text_standard_exponent_rep: StringId(0),
             text_standard_grouping_separator: None,
             custom_text_number_pattern: false,

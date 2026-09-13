@@ -72,6 +72,23 @@ pub fn normalize_delimiter_pattern(raw: &str) -> String {
     expand_entities_str(raw.trim_end_matches([' ', '\t']))
 }
 
+/// Parse `textStandardDecimalSeparator` (list of single-character literals, space-separated).
+pub fn parse_text_standard_separator_list(raw: &str) -> alloc::vec::Vec<String> {
+    use alloc::string::ToString;
+    use alloc::vec::Vec;
+    let expanded = expand_entities_str(raw);
+    if expanded.is_empty() {
+        return Vec::new();
+    }
+    let tokens: Vec<&str> = expanded.split_whitespace().collect();
+    if tokens.len() > 1 {
+        tokens.into_iter().map(|t| t.to_string()).collect()
+    } else {
+        // One separator token (may be a single space/tab from `%SP;`).
+        vec![expanded]
+    }
+}
+
 /// Unescape DFDL `{`/`{{` open-brace escape sequences in a single delimiter token.
 pub fn unescape_dfdl_open_braces(raw: &str) -> String {
     let mut out = String::new();

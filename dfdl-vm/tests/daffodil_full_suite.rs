@@ -227,17 +227,17 @@ fn daffodil_section13_regression_gate() {
         stats.parse_fail, 0,
         "section13 TDML load errors: {stats:?}"
     );
-    // Baseline (2026-03): packed 50/50; text number lax decimal-separator + float infoset compare;
-    // ~249 pass / ~293 fail on full section13 TDML (zoned runtime still largely failing).
+    // Baseline (2026-03): grouping/decimal-separator lists, negative subpattern affixes, SDE checks;
+    // ~256 pass / ~286 fail on full section13 TDML (zoned runtime still largely failing).
     assert!(
-        stats.pass >= 249,
-        "section13: expected at least 249 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 256,
+        "section13: expected at least 256 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 293,
+        stats.fail <= 286,
         "section13 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,

@@ -1022,9 +1022,9 @@ fn parse_field_text_number(
     let dec = strings
         .get(props.text_standard_decimal_separator)
         .unwrap_or(".");
-    let mut dec_seps: alloc::vec::Vec<char> = dec.chars().collect();
+    let mut dec_seps = crate::schema::parse_text_standard_separator_list(dec);
     if dec_seps.is_empty() {
-        dec_seps.push('.');
+        dec_seps.push(".".into());
     }
     let exponent = strings
         .get(props.text_standard_exponent_rep)
@@ -1033,7 +1033,8 @@ fn parse_field_text_number(
     let grouping = props
         .text_standard_grouping_separator
         .and_then(|id| strings.get(id).ok())
-        .and_then(|g| g.chars().next());
+        .map(|g| g.to_string());
+    let grouping_ref = grouping.as_deref();
     let pad = props
         .text_number_pad_character
         .and_then(|id| strings.get(id).ok())
@@ -1042,7 +1043,7 @@ fn parse_field_text_number(
     let fmt = text_number::TextNumberFormatProps {
         check_policy: props.text_number_check_policy,
         decimal_separators: &dec_seps,
-        grouping_separator: grouping,
+        grouping_separator: grouping_ref,
         exponent_chars: &exponent,
         pad_character: pad,
     };
