@@ -42,6 +42,8 @@ fn section_key(path: &Path) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+const SECTION13_SKIP_FILES: &[&str] = &["packed/packed.tdml"];
+
 fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
     let Ok(tdml) = fs::read_to_string(path) else {
         stats.parse_fail += 1;
@@ -195,6 +197,47 @@ fn daffodil_section12_length_properties_regression_gate() {
     assert!(
         stats.fail <= 16,
         "length_properties regressions: pass={} fail={} skip={}",
+        stats.pass,
+        stats.fail,
+        stats.skip
+    );
+}
+
+/// CI gate: Section 13 binary/text numbers & nillable (excludes hung `packed/packed.tdml`).
+#[test]
+fn daffodil_section13_regression_gate() {
+    let root = assert_tdml_root().join("section13");
+    let mut files = Vec::new();
+    collect_tdml_files(&root, &mut files);
+    assert!(!files.is_empty(), "section13 TDML missing");
+
+    let mut stats = SectionStats::default();
+    for path in files {
+        let relp = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if SECTION13_SKIP_FILES.iter().any(|s| *s == relp) {
+            continue;
+        }
+        run_tdml_file(&path, &mut stats);
+    }
+    // zoned.tdml / zoned2.tdml do not parse in our TDML loader yet.
+    assert!(
+        stats.parse_fail <= 2,
+        "section13 unexpected TDML parse errors: {stats:?}"
+    );
+    assert!(
+        stats.pass >= 83,
+        "section13: expected at least 83 passing cases, got pass={} fail={} skip={}",
+        stats.pass,
+        stats.fail,
+        stats.skip
+    );
+    assert!(
+        stats.fail <= 371,
+        "section13 unexpected new failures: pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip

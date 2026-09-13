@@ -65,6 +65,7 @@ let v2 = dec.decode(input_b)?;
 | `dfdl:format` defaults, nil handling, separator suppression | ✅ |
 | Daffodil Section 12 lengthKind conformance (305 TDML cases) | ✅ |
 | Daffodil Section 12 length_properties (44/60 parser cases gated) | ✅ subset |
+| Daffodil Section 13 binary/text numbers & nillable (83 cases gated) | ✅ subset |
 | Other Daffodil sections (section00–31, etc.) | 🚧 in progress |
 
 ## Daffodil conformance
@@ -81,13 +82,16 @@ cargo test -p dfdl-vm daffodil_section12_length_kind_regression_gate
 # CI gate: Section 12 length_properties (≥44 passing parser cases)
 cargo test -p dfdl-vm daffodil_section12_length_properties_regression_gate
 
+# CI gate: Section 13 (≥83 passing parser/unparser cases; skips hung packed.tdml)
+cargo test -p dfdl-vm daffodil_section13_regression_gate
+
 # Baseline report across all sections (slow, optional)
 cargo test -p dfdl-vm daffodil_full_suite_report -- --ignored --nocapture
 ```
 
 **Sections in vendored corpus:** `section00`, `02`, `05`, `06`, `07`, `08`, `10`, `11`, `12`, `13`, `14`, `15`, `16`, `17`, `23`, `24`, `31`, plus `charsets`, `extensions`, `infoset`, `layers`, `udf`, `unparser`, `usertests`.
 
-Implementation proceeds section-by-section; `lengthKind` is complete. `length_properties` is partially gated (44 passing cases). Next targets: remaining length_properties cases, `section12` alignment/delimiter properties, then `section05` simple types, `section13` binary, etc.
+Implementation proceeds section-by-section; `lengthKind` is complete. `length_properties` and `section13` are partially gated. Next targets: remaining length_properties cases, `packed` decimal (VM hang), `section12` alignment/delimiter properties, `section05` simple types, etc.
 
 The crate uses `#![no_std]` with `extern crate alloc`. It has **zero required dependencies**.
 

@@ -21,6 +21,10 @@ fn collect_tdml(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn scan_dir(rel: &str) -> (usize, usize, usize, usize, Vec<String>) {
+    scan_dir_skipping(rel, &[])
+}
+
+fn scan_dir_skipping(rel: &str, skip_rel_paths: &[&str]) -> (usize, usize, usize, usize, Vec<String>) {
     let dir = Path::new(TDML_ROOT).join(rel);
     let mut files = Vec::new();
     collect_tdml(&dir, &mut files);
@@ -31,6 +35,15 @@ fn scan_dir(rel: &str) -> (usize, usize, usize, usize, Vec<String>) {
     let mut parse_fail = 0usize;
     let mut samples = Vec::new();
     for path in files {
+        let file_rel = path
+            .strip_prefix(&dir)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if skip_rel_paths.iter().any(|s| *s == file_rel) {
+            eprintln!("  skip {file_rel} (excluded from scan)");
+            continue;
+        }
         let Ok(tdml) = fs::read_to_string(&path) else {
             parse_fail += 1;
             continue;
@@ -107,3 +120,21 @@ macro_rules! scan_test {
 scan_test!(scan_section12_delimiter_properties, "section12/delimiter_properties");
 scan_test!(scan_section12_length_properties, "section12/length_properties");
 scan_test!(scan_section12_aligned_data, "section12/aligned_data");
+macro_rules! scan_test_skip {
+    ($name:ident, $dir:literal, $skip:expr) => {
+        #[test]
+        #[ignore]
+        fn $name() {
+            let (pass, fail, skip, parse_fail, samples) = scan_dir_skipping($dir, $skip);
+            eprintln!(
+                "\n=== {} === pass={pass} fail={fail} skip={skip} parse_fail={parse_fail}",
+                $dir
+            );
+            for s in &samples {
+                eprintln!("  {s}");
+            }
+        }
+    };
+}
+
+scan_test_skip!(scan_section13, "section13", &["packed/packed.tdml"]);
