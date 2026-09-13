@@ -2,7 +2,8 @@ use super::runtime::{write_alignment, write_byte_aligned, write_framed_payload, 
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
-    encode_delimiter, encode_delimiter_by_alt, encode_sequence_separator, LengthKind, LengthUnits,
+    encode_delimiter, encode_delimiter_by_alt, encode_property_delimiter, encode_sequence_separator,
+    LengthKind, LengthUnits,
     OutputValueCalc, SeparatorPosition,
 };
 use crate::value::DfdlValue;
@@ -396,9 +397,12 @@ impl<'a> Encoder<'a> {
         if let Some(id) = props.initiator {
             let pat = self.ctx.strings().get(id)?;
             if !pat.is_empty() {
+                let output_nl = props
+                    .output_new_line
+                    .and_then(|id| self.ctx.strings().get(id).ok());
                 let bytes = match alt {
                     Some(a) => encode_delimiter_by_alt(pat, a),
-                    None => encode_delimiter(pat),
+                    None => encode_property_delimiter(pat, output_nl),
                 };
                 write_byte_aligned(out, bit_count, &bytes).map_err(Error::from)?;
             }
@@ -416,9 +420,12 @@ impl<'a> Encoder<'a> {
         if let Some(id) = props.terminator {
             let pat = self.ctx.strings().get(id)?;
             if !pat.is_empty() {
+                let output_nl = props
+                    .output_new_line
+                    .and_then(|id| self.ctx.strings().get(id).ok());
                 let bytes = match alt {
                     Some(a) => encode_delimiter_by_alt(pat, a),
-                    None => encode_delimiter(pat),
+                    None => encode_property_delimiter(pat, output_nl),
                 };
                 write_byte_aligned(out, bit_count, &bytes).map_err(Error::from)?;
             }
@@ -458,12 +465,12 @@ impl<'a> Encoder<'a> {
             .map(|id| self.ctx.strings().get(id))
             .transpose()?
             .map(|s| s as &str);
-        write_byte_aligned(
-            out,
-            bit_count,
-            &encode_sequence_separator(pat, output_new_line, newline_prefix),
-        )
-        .map_err(Error::from)
+        let bytes = if crate::schema::is_nl_comma_space_pattern(pat) {
+            encode_sequence_separator(pat, output_new_line, newline_prefix)
+        } else {
+            encode_property_delimiter(pat, output_new_line)
+        };
+        write_byte_aligned(out, bit_count, &bytes).map_err(Error::from)
     }
 
     fn write_occurrence_separator(
@@ -664,7 +671,7 @@ fn should_emit_separator(
         SeparatorPosition::Prefix => index < total,
         SeparatorPosition::Infix => index > 0,
         SeparatorPosition::Postfix if occurrences => index < total,
-        SeparatorPosition::Postfix => index + 1 < total,
+        SeparatorPosition::Postfix => index > 0 && index < total,
     }
 }
 
@@ -714,9 +721,15 @@ mod tests {
             3,
             true,
         ));
-        assert!(!should_emit_separator(
+        assert!(should_emit_separator(
             SeparatorPosition::Postfix,
             2,
+            3,
+            false,
+        ));
+        assert!(!should_emit_separator(
+            SeparatorPosition::Postfix,
+            3,
             3,
             false,
         ));

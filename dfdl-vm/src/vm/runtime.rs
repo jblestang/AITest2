@@ -9,7 +9,8 @@ use crate::length_validate::{
 };
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
-    encode_delimiter, encode_delimiter_by_alt, match_length_pattern, BinaryNumberRep, BitOrder,
+    encode_delimiter, encode_delimiter_by_alt, encode_property_delimiter, match_length_pattern,
+    BinaryNumberRep, BitOrder,
     ByteOrder,
     EncodingErrorPolicy, LengthKind, LengthUnits, NilKind, Representation, SeparatorPosition,
     SeparatorSuppressionPolicy, TextNumberJustification, TextTrimKind,
@@ -3826,9 +3827,12 @@ pub(crate) fn write_simple(
     if let Some(id) = props.initiator {
         let pat = strings.get(id)?;
         if !pat.is_empty() {
+            let output_nl = props
+                .output_new_line
+                .and_then(|id| strings.get(id).ok());
             let bytes = match delim_meta.and_then(|m| m.initiator_alt) {
                 Some(a) => encode_delimiter_by_alt(pat, a),
-                None => encode_delimiter(pat),
+                None => encode_property_delimiter(pat, output_nl),
             };
             write_byte_aligned(out, bit_count, &bytes)?;
         }
@@ -3851,9 +3855,12 @@ pub(crate) fn write_simple(
     if let Some(id) = props.terminator {
         let pat = strings.get(id)?;
         if !pat.is_empty() {
+            let output_nl = props
+                .output_new_line
+                .and_then(|id| strings.get(id).ok());
             let bytes = match delim_meta.and_then(|m| m.terminator_alt) {
                 Some(a) => encode_delimiter_by_alt(pat, a),
-                None => encode_delimiter(pat),
+                None => encode_property_delimiter(pat, output_nl),
             };
             write_byte_aligned(out, bit_count, &bytes)?;
         }

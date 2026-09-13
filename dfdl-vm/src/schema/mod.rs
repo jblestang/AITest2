@@ -6,7 +6,8 @@ mod resolver;
 pub use ast::*;
 pub use entities::{
     encode_delimiter, encode_delimiter_by_alt, encode_nl_comma_space_separator,
-    encode_sequence_separator, expand_entities, match_delimiter_with_alt,
+    encode_property_delimiter, encode_sequence_separator, expand_entities, match_delimiter_with_alt,
+    validate_delimiter_es_restriction,
     expand_entities_str, is_nl_comma_space_pattern, match_delimiter, match_delimiter_opts,
     match_length_pattern, match_nl_comma_space_separator_with_flag, match_pattern,
     normalize_delimiter_pattern, parse_delimiter_literal_value, unescape_dfdl_open_braces,

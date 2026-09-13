@@ -39,7 +39,12 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
     if let Some(end) = rest.find(';') {
         let name = &rest[..end];
         let consumed = 1 + end + 1;
-        let value = match name {
+        let quantifier = name.chars().last().filter(|c| *c == '+' || *c == '*' || *c == '?');
+        let entity_name = match quantifier {
+            Some(_) => name.trim_end_matches(['+', '*', '?']),
+            None => name,
+        };
+        let value = match entity_name {
             "ES" => vec![],
             "NUL" => vec![0],
             "NL" => vec![b'\n'],
@@ -47,7 +52,10 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
             "LF" => vec![b'\n'],
             "SP" => vec![b' '],
             "HT" => vec![b'\t'],
-            "WSP" | "WS" => vec![b' '], // canonical whitespace for entity expansion
+            "WSP" | "WS" => match quantifier {
+                Some('*') | Some('?') => vec![],
+                _ => vec![b' '],
+            },
             other if other.starts_with("#r") => {
                 let hex = &other[2..];
                 u8::from_str_radix(hex, 16).ok().map(|b| vec![b])?
@@ -89,7 +97,39 @@ pub fn parse_delimiter_literal_value(raw: &str) -> String {
     } else {
         unescape_dfdl_open_braces(trimmed)
     };
+    // Keep `%...;` tokens for whitespace-separated alternative lists (unparse uses first alt).
+    if unescaped.contains('%')
+        && unescaped
+            .chars()
+            .any(|c| c.is_ascii_whitespace())
+    {
+        return unescaped.trim_end_matches([' ', '\t']).to_string();
+    }
     normalize_delimiter_pattern(&unescaped)
+}
+
+fn delimiter_alt_is_es(alt: &str) -> bool {
+    alt.trim() == "%ES;"
+}
+
+/// Reject `%ES;` in separator/terminator alternative lists (DFDL-6-046R).
+pub fn validate_delimiter_es_restriction(prop: &str, raw: &str) -> Result<(), String> {
+    if prop == "initiator" {
+        return Ok(());
+    }
+    let has_es = delimiter_alternatives(raw)
+        .iter()
+        .any(|alt| delimiter_alt_is_es(alt));
+    if !has_es {
+        return Ok(());
+    }
+    Err(match prop {
+        "terminator" => {
+            "dfdl:terminator cannot own ES".into()
+        }
+        "separator" => "Separator contains disallowed ES".into(),
+        _ => "delimiter contains disallowed ES".into(),
+    })
 }
 
 /// Validate initiator/separator/terminator literals at schema compile time.
@@ -318,6 +358,9 @@ pub fn delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::S
         }
         return out;
     }
+    if let Some(alts) = split_entity_and_literal_alternatives(pattern) {
+        return alts;
+    }
     if should_split_whitespace_alternatives(pattern) {
         return split_whitespace_delimiter_alternatives(pattern);
     }
@@ -433,6 +476,66 @@ fn split_whitespace_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<all
         .collect()
 }
 
+/// Split `%NL; . !`-style lists: whitespace between `%...;` entities and literal tokens.
+fn split_entity_and_literal_alternatives(pattern: &str) -> Option<alloc::vec::Vec<alloc::string::String>> {
+    if !pattern.contains('%') || !pattern.contains(' ') {
+        return None;
+    }
+    let bytes = pattern.as_bytes();
+    let mut alts = alloc::vec::Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let start = i;
+        if bytes[i] == b'%' {
+            if let Some(rel) = pattern[i..].find(';') {
+                i += rel + 1;
+            } else {
+                return None;
+            }
+        } else {
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+        }
+        let token = pattern[start..i].trim();
+        if !token.is_empty() {
+            alts.push(unescape_dfdl_delimiter_alt(token));
+        }
+    }
+    if alts.len() > 1 {
+        Some(alts)
+    } else {
+        None
+    }
+}
+
+/// Encode the first alternative of a DFDL delimiter property (unparse default).
+pub fn encode_property_delimiter(pattern: &str, output_new_line: Option<&str>) -> Vec<u8> {
+    if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
+        return vec![b','];
+    }
+    let alts = delimiter_alternatives(pattern);
+    if alts.is_empty() {
+        return Vec::new();
+    }
+    let first = &alts[0];
+    if first.is_empty() {
+        return Vec::new();
+    }
+    if first == "%NL;" || first == "\n" {
+        if let Some(onl) = output_new_line {
+            return encode_delimiter(onl);
+        }
+    }
+    encode_delimiter(first)
+}
+
 /// Encode one alternative from a multi-alternative delimiter property value.
 pub fn encode_delimiter_by_alt(pattern: &str, alt_index: u8) -> Vec<u8> {
     let alts = delimiter_alternatives(pattern);
@@ -450,16 +553,7 @@ pub fn encode_delimiter(pattern: &str) -> Vec<u8> {
     }
     let alts = delimiter_alternatives(pattern);
     if alts.len() > 1 {
-        if alts.iter().any(|alt| alt == ",") {
-            return vec![b','];
-        }
-        for alt in &alts {
-            let bytes = encode_delimiter(alt);
-            if !bytes.is_empty() {
-                return bytes;
-            }
-        }
-        return encode_delimiter(&alts[0]);
+        return encode_property_delimiter(pattern, None);
     }
     let pat = pattern;
     if delimiter_has_top_level_comma(pat) {
@@ -546,6 +640,10 @@ fn minimal_encode_segment(segment: &str) -> Vec<u8> {
     };
     if seg.is_empty() {
         return Vec::new();
+    }
+    // Single-character whitespace-separated alternatives are literal delimiters, not regex quantifiers.
+    if seg.len() == 1 {
+        return vec![seg.as_bytes()[0]];
     }
     if seg.starts_with("%WSP") || seg.starts_with("%WS") {
         let q = seg.as_bytes().last().copied();
@@ -1353,5 +1451,22 @@ mod tests {
     fn double_comma_occurrence_separator() {
         let data = b",,((66))";
         assert_eq!(super::match_delimiter_opts(data, ",,", false), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod alt_split_tests {
+    use super::*;
+    #[test]
+    fn entity_whitespace_alts() {
+        assert_eq!(
+            parse_delimiter_literal_value("%NL; . !"),
+            "%NL; . !"
+        );
+        let alts = delimiter_alternatives("%NL; . !");
+        assert_eq!(alts, vec!["%NL;", ".", "!"]);
+        assert_eq!(encode_delimiter("? . !"), vec![b'?']);
+        assert_eq!(encode_property_delimiter("%ES; %NL; !", None), Vec::<u8>::new());
+        assert_eq!(encode_property_delimiter("%WSP+; * )", None), vec![b' ']);
     }
 }

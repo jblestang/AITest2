@@ -564,27 +564,34 @@ fn apply_unsigned_long_flag(type_name: &TypeName, props: &mut IrProps) {
     }
 }
 
-fn validate_delimiter_at_compile(raw: &str) -> Result<()> {
+fn validate_delimiter_at_compile(prop: &str, raw: &str) -> Result<()> {
     if raw.trim_start().starts_with('{') {
         return Ok(());
     }
-    crate::schema::validate_delimiter_property_value(raw).map_err(|msg| {
-        SchemaError::InvalidProperty {
+    if let Err(msg) = crate::schema::validate_delimiter_property_value(raw) {
+        return Err(SchemaError::InvalidProperty {
             message: alloc::format!("Schema Definition Error. {msg}"),
         }
-        .into()
-    })
+        .into());
+    }
+    if let Err(msg) = crate::schema::validate_delimiter_es_restriction(prop, raw) {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!("Schema Definition Error. {msg}"),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 fn validate_delimiter_props(props: &DfdlProps) -> Result<()> {
-    for s in [
-        props.initiator.as_deref(),
-        props.separator.as_deref(),
-        props.terminator.as_deref(),
+    for (prop, s) in [
+        ("initiator", props.initiator.as_deref()),
+        ("separator", props.separator.as_deref()),
+        ("terminator", props.terminator.as_deref()),
     ] {
         if let Some(v) = s {
             if !v.is_empty() {
-                validate_delimiter_at_compile(v)?;
+                validate_delimiter_at_compile(prop, v)?;
             }
         }
     }
