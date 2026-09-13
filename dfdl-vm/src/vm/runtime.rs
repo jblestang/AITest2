@@ -1218,6 +1218,20 @@ fn parse_field_text_number(
         text_number::parse_standard_text_number(&text_to_parse, pattern, &fmt)
     };
     if let Ok(v) = parse_result {
+        if props.text_standard_zero_rep_defined {
+            let raw = strings
+                .get(props.text_standard_zero_rep)
+                .unwrap_or("");
+            if crate::schema::parse_text_standard_zero_rep_list(raw).is_empty()
+                && !trimmed.is_empty()
+                && trimmed.chars().all(|c| c.is_ascii_alphabetic())
+            {
+                return Err(unable_parse_from_text(
+                    type_name_for_parse(kind, props),
+                    trimmed,
+                ));
+            }
+        }
         if matches!(
             kind,
             crate::ir::ValueKind::Int

@@ -1666,7 +1666,7 @@ fn overlay_dfdl_to_ir(
             }
         })?;
         base.text_standard_zero_rep = strings.intern(raw);
-        base.text_standard_zero_rep_defined = !raw.is_empty();
+        base.text_standard_zero_rep_defined = true;
     }
     if props.text_standard_infinity_rep.is_some() {
         let raw = props
