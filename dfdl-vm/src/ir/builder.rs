@@ -1592,6 +1592,17 @@ fn overlay_dfdl_to_ir(
     if let Some(v) = props.text_number_rep {
         base.text_number_rep = v;
     }
+    if let Some(v) = props.text_number_rounding {
+        base.text_number_rounding = v;
+    }
+    if props.text_number_rounding_increment.is_some() {
+        let raw = props.text_number_rounding_increment.as_deref().unwrap_or("0");
+        base.text_number_rounding_increment = strings.intern(raw);
+        base.text_number_rounding_increment_defined = true;
+    }
+    if let Some(v) = props.text_number_rounding_mode {
+        base.text_number_rounding_mode = v;
+    }
     if props.text_zoned_sign_style.is_some() {
         base.text_zoned_sign_style = props.text_zoned_sign_style;
     }

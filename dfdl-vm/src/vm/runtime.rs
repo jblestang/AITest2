@@ -2388,6 +2388,77 @@ fn scalar_to_raw_bits(
     }
 }
 
+fn format_field_text_number(
+    text: &str,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::ir::ValueKind;
+    use crate::schema::TextNumberRep;
+    use crate::vm::text_number_format::{format_standard_text_number, TextNumberRoundingProps};
+
+    if props.text_number_rep != TextNumberRep::Standard || props.text_standard_base != 10 {
+        return Ok(text.to_string());
+    }
+    if !matches!(
+        kind,
+        ValueKind::Byte
+            | ValueKind::Short
+            | ValueKind::Int
+            | ValueKind::Long
+            | ValueKind::Integer
+            | ValueKind::UnsignedByte
+            | ValueKind::UnsignedShort
+            | ValueKind::UnsignedInt
+            | ValueKind::Float
+            | ValueKind::Double
+            | ValueKind::Decimal
+    ) {
+        return Ok(text.to_string());
+    }
+    let Some(pat_id) = props.text_number_pattern else {
+        return Ok(text.to_string());
+    };
+    let raw_pattern = strings.get(pat_id)?;
+    let pattern_owned = if props.text_number_rep == TextNumberRep::Zoned {
+        crate::vm::zoned_text::strip_zoned_plus_markers(raw_pattern)
+    } else {
+        raw_pattern.to_string()
+    };
+    let pattern = pattern_owned.as_str();
+    if pattern.contains('V')
+        && !pattern.contains('E')
+        && !pattern.contains('e')
+        && !pattern.contains('\'')
+        && !pattern.contains(';')
+    {
+        return Ok(text.to_string());
+    }
+    let (dec_seps, grouping, exponent, pad, check_policy) =
+        resolved_text_number_format_parts(props, strings);
+    let fmt = crate::vm::text_number::TextNumberFormatProps {
+        check_policy,
+        decimal_separators: &dec_seps,
+        grouping_separator: grouping.as_deref(),
+        exponent_chars: &exponent,
+        pad_character: pad,
+        ignore_case: props.ignore_case,
+    };
+    let increment_owned = if props.text_number_rounding_increment_defined {
+        strings.get(props.text_number_rounding_increment)?.to_string()
+    } else {
+        alloc::string::String::from("0")
+    };
+    let rounding = TextNumberRoundingProps {
+        rounding: props.text_number_rounding,
+        mode: props.text_number_rounding_mode,
+        increment: increment_owned.as_str(),
+    };
+    format_standard_text_number(text, pattern, &fmt, rounding)
+}
+
 pub(crate) fn write_text_scalar(
     out: &mut alloc::vec::Vec<u8>,
     bit_count: &mut u8,
@@ -2432,6 +2503,7 @@ pub(crate) fn write_text_scalar(
         (Short, DfdlValue::Short(v)) => alloc::format!("{v}"),
         (UnsignedShort, DfdlValue::UnsignedShort(v)) => alloc::format!("{v}"),
         (Int, DfdlValue::Int(v)) => alloc::format!("{v}"),
+        (Integer, DfdlValue::Integer(v)) => v.clone(),
         (UnsignedInt, DfdlValue::UnsignedInt(v)) => alloc::format!("{v}"),
         (Long, DfdlValue::Long(v)) => alloc::format!("{v}"),
         (Float, DfdlValue::Float(v)) => alloc::format!("{v}"),
@@ -2447,6 +2519,7 @@ pub(crate) fn write_text_scalar(
         }
     };
 
+    let text = format_field_text_number(&text, kind, props, strings)?;
     let text_before_pad = text.clone();
     let text = apply_min_length_pad(&text, props, strings, kind);
 

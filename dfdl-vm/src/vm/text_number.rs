@@ -43,7 +43,7 @@ fn default_decimal_separators() -> Vec<String> {
 }
 
 /// Parse data against a DFDL text number pattern; returns a canonical numeric string for `parse()` / `parse_float`.
-fn pattern_without_quoted_regions(pattern: &str) -> String {
+pub(crate) fn pattern_without_quoted_regions(pattern: &str) -> String {
     let mut out = String::new();
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0usize;

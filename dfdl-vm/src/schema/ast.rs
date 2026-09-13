@@ -63,6 +63,9 @@ pub struct DfdlProps {
     pub text_standard_infinity_rep: Option<String>,
     pub text_standard_nan_rep: Option<String>,
     pub text_standard_zero_rep: Option<String>,
+    pub text_number_rounding: Option<TextNumberRounding>,
+    pub text_number_rounding_increment: Option<String>,
+    pub text_number_rounding_mode: Option<TextNumberRoundingMode>,
     pub initiator: Option<String>,
     pub terminator: Option<String>,
     pub separator: Option<String>,
@@ -241,6 +244,26 @@ pub enum TextNumberRep {
     #[default]
     Standard,
     Zoned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextNumberRounding {
+    #[default]
+    Pattern,
+    Explicit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextNumberRoundingMode {
+    RoundCeiling,
+    RoundFloor,
+    RoundDown,
+    RoundUp,
+    #[default]
+    RoundHalfEven,
+    RoundHalfDown,
+    RoundHalfUp,
+    RoundUnnecessary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

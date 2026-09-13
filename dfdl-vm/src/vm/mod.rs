@@ -3,6 +3,7 @@ pub(crate) mod encoding;
 mod encoder;
 pub(crate) mod packed_decimal;
 pub(crate) mod text_number;
+pub(crate) mod text_number_format;
 pub(crate) mod zoned_text;
 mod runtime;
 

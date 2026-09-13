@@ -1054,6 +1054,15 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_number_rep.is_some() {
         base.text_number_rep = overlay.text_number_rep;
     }
+    if overlay.text_number_rounding.is_some() {
+        base.text_number_rounding = overlay.text_number_rounding;
+    }
+    if overlay.text_number_rounding_increment.is_some() {
+        base.text_number_rounding_increment = overlay.text_number_rounding_increment;
+    }
+    if overlay.text_number_rounding_mode.is_some() {
+        base.text_number_rounding_mode = overlay.text_number_rounding_mode;
+    }
     if overlay.text_zoned_sign_style.is_some() {
         base.text_zoned_sign_style = overlay.text_zoned_sign_style;
     }
@@ -1395,6 +1404,9 @@ fn is_dfdl_property(name: &str) -> bool {
             | "calendarPattern"
             | "calendarPatternKind"
             | "textNumberPattern"
+            | "textNumberRounding"
+            | "textNumberRoundingIncrement"
+            | "textNumberRoundingMode"
             | "initiator"
             | "terminator"
             | "separator"
@@ -1773,6 +1785,39 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             }
             "textStandardZeroRep" => {
                 props.text_standard_zero_rep = Some(value.clone());
+            }
+            "textNumberRounding" => {
+                props.text_number_rounding = Some(match value.as_str() {
+                    "pattern" => crate::schema::TextNumberRounding::Pattern,
+                    "explicit" => crate::schema::TextNumberRounding::Explicit,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown textNumberRounding `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "textNumberRoundingIncrement" => {
+                props.text_number_rounding_increment = Some(value.clone());
+            }
+            "textNumberRoundingMode" => {
+                props.text_number_rounding_mode = Some(match value.as_str() {
+                    "roundCeiling" => crate::schema::TextNumberRoundingMode::RoundCeiling,
+                    "roundFloor" => crate::schema::TextNumberRoundingMode::RoundFloor,
+                    "roundDown" => crate::schema::TextNumberRoundingMode::RoundDown,
+                    "roundUp" => crate::schema::TextNumberRoundingMode::RoundUp,
+                    "roundHalfEven" => crate::schema::TextNumberRoundingMode::RoundHalfEven,
+                    "roundHalfDown" => crate::schema::TextNumberRoundingMode::RoundHalfDown,
+                    "roundHalfUp" => crate::schema::TextNumberRoundingMode::RoundHalfUp,
+                    "roundUnnecessary" => crate::schema::TextNumberRoundingMode::RoundUnnecessary,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown textNumberRoundingMode `{other}`"),
+                        }
+                        .into())
+                    }
+                });
             }
             "initiator" => {
                 let lit = parse_delimiter_literal(value)?;
