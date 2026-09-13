@@ -5,7 +5,8 @@ use super::encoding::{
 };
 use super::text_number;
 use super::packed_decimal::{
-    bcd_to_digit_string, digits_to_u64, ibm4690_to_digit_string, packed_to_digit_string,
+    bcd_to_digit_string, digits_to_u64, encode_ibm4690_magnitude, encode_packed_bcd_magnitude,
+    ibm4690_to_digit_string, packed_to_digit_string,
     PackedSignCodes,
 };
 use crate::schema::BinaryNumberCheckPolicy;
@@ -728,11 +729,13 @@ fn decode_decimal_binary(
         }
         BinaryNumberRep::Ibm4690Packed => {
             let (negative, digits) = ibm4690_to_digit_string(bytes, le)?;
+            validate_decimal_parse_sign(negative, props)?;
             signed_magnitude_to_dfdl(negative, &digits, crate::ir::ValueKind::Decimal, vp)
         }
         BinaryNumberRep::PackedBcd => {
             let codes = packed_sign_codes(props, strings)?;
             let (negative, digits) = packed_to_digit_string(bytes, le, &codes)?;
+            validate_decimal_parse_sign(negative, props)?;
             signed_magnitude_to_dfdl(negative, &digits, crate::ir::ValueKind::Decimal, vp)
         }
     }
@@ -746,6 +749,75 @@ fn format_virtual_decimal(value: u64, virtual_point: u32) -> alloc::string::Stri
     let whole = value / scale;
     let frac = value % scale;
     alloc::format!("{whole}.{frac:0width$}", width = virtual_point as usize)
+}
+
+fn validate_decimal_parse_sign(
+    negative: bool,
+    props: &IrProps,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    if !negative {
+        return Ok(());
+    }
+    if !props.decimal_signed {
+        let rep = match props.binary_number_rep {
+            BinaryNumberRep::Binary => "Binary",
+            BinaryNumberRep::PackedBcd | BinaryNumberRep::Ibm4690Packed => "Packed binary",
+            BinaryNumberRep::Bcd => "BCD",
+        };
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Parse Error: {rep} negative value when decimalSigned=\"no\""
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_decimal_unparse_sign(
+    negative: bool,
+    props: &IrProps,
+    field_name: Option<&str>,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    if !negative {
+        return Ok(());
+    }
+    let label = field_name.unwrap_or("value");
+    if !props.decimal_signed {
+        let rep = match props.binary_number_rep {
+            BinaryNumberRep::Binary => "Binary",
+            BinaryNumberRep::PackedBcd | BinaryNumberRep::Ibm4690Packed => "Packed binary",
+            BinaryNumberRep::Bcd => "BCD",
+        };
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Unparse Error: {rep} negative value when decimalSigned=\"no\""
+            ),
+        });
+    }
+    if props.binary_number_rep == BinaryNumberRep::Bcd {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Signed bcd only positive values allowed. {label} cannot be negative"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn parse_virtual_decimal_signed(
+    text: &str,
+    virtual_point: u32,
+) -> Result<(bool, u64), crate::error::VmError> {
+    let trimmed = text.trim();
+    let negative = trimmed.starts_with('-');
+    let body = if negative {
+        trimmed.trim_start_matches('-').trim()
+    } else {
+        trimmed
+    };
+    parse_virtual_decimal(body, virtual_point).map(|mag| (negative, mag))
 }
 
 fn parse_virtual_decimal(text: &str, virtual_point: u32) -> Result<u64, crate::error::VmError> {
@@ -2110,6 +2182,12 @@ pub(crate) fn read_text_scalar(
         return Ok(DfdlValue::Null);
     }
 
+    if trimmed.is_empty() {
+        if let Some(v) = default_value_for(kind, props, strings) {
+            return Ok(v);
+        }
+    }
+
     let base = props.text_standard_base;
     match kind {
         Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
@@ -2201,6 +2279,19 @@ pub(crate) fn read_text_scalar(
     }
 }
 
+pub(crate) fn parse_xs_boolean_lexical(
+    trimmed: &str,
+) -> Result<bool, crate::error::VmError> {
+    use crate::error::VmError;
+    match trimmed {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        _ => Err(VmError::InvalidValue {
+            message: "Must be one of 0, 1, true, or false".into(),
+        }),
+    }
+}
+
 fn parse_text_boolean(
     trimmed: &str,
     props: &IrProps,
@@ -2241,7 +2332,7 @@ pub(crate) fn write_binary_scalar(
     use crate::value::DfdlValue;
 
     if props.length_kind == LengthKind::Prefixed {
-        let payload = encode_binary_payload_bytes(value, kind, props, strings)?;
+        let payload = encode_binary_payload_bytes(value, kind, props, strings, field_name)?;
         return write_prefixed_bytes(out, bit_count, &payload, props, strings, field_name);
     }
 
@@ -2257,7 +2348,7 @@ pub(crate) fn write_binary_scalar(
                 ),
             });
         }
-        let payload = encode_binary_payload_bytes(value, kind, props, strings)?;
+        let payload = encode_binary_payload_bytes(value, kind, props, strings, field_name)?;
         write_byte_aligned(out, bit_count, &payload)?;
         return Ok(());
     }
@@ -2314,8 +2405,15 @@ pub(crate) fn write_binary_scalar(
         (Float, DfdlValue::Float(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
         (Double, DfdlValue::Double(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
         (Decimal, DfdlValue::Decimal(v)) => {
-            let raw = parse_virtual_decimal(v, props.binary_decimal_virtual_point)?;
-            bytes = stream_bits_to_bytes(raw, size.saturating_mul(8), props.byte_order);
+            let (negative, raw) =
+                parse_virtual_decimal_signed(v, props.binary_decimal_virtual_point)?;
+            validate_decimal_unparse_sign(negative, props, field_name)?;
+            let signed_raw = if negative && props.decimal_signed {
+                (raw as i64).wrapping_neg() as u64
+            } else {
+                raw
+            };
+            bytes = stream_bits_to_bytes(signed_raw, size.saturating_mul(8), props.byte_order);
         }
         (expected, _) => {
             return Err(VmError::TypeMismatch {
@@ -4417,6 +4515,7 @@ fn encode_binary_payload_bytes(
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
+    field_name: Option<&str>,
 ) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -4433,28 +4532,33 @@ fn encode_binary_payload_bytes(
         }
         (HexBinary, DfdlValue::HexBinary(v)) => Ok(v.clone()),
         (Boolean, DfdlValue::Boolean(v)) => Ok(alloc::vec![u8::from(*v)]),
-        (Byte, DfdlValue::Byte(v)) => encode_integer_binary(*v as i64, kind, props, le),
+        (Byte, DfdlValue::Byte(v)) => {
+            encode_integer_binary(*v as i64, kind, props, le, strings)
+        }
         (UnsignedByte, DfdlValue::UnsignedByte(v)) => {
-            encode_unsigned_binary(*v as u64, kind, props, le)
+            encode_unsigned_binary(*v as u64, kind, props, le, strings)
         }
-        (Short, DfdlValue::Short(v)) => encode_integer_binary(*v as i64, kind, props, le),
+        (Short, DfdlValue::Short(v)) => {
+            encode_integer_binary(*v as i64, kind, props, le, strings)
+        }
         (UnsignedShort, DfdlValue::UnsignedShort(v)) => {
-            encode_unsigned_binary(*v as u64, kind, props, le)
+            encode_unsigned_binary(*v as u64, kind, props, le, strings)
         }
-        (Int, DfdlValue::Int(v)) => encode_integer_binary(*v as i64, kind, props, le),
+        (Int, DfdlValue::Int(v)) => encode_integer_binary(*v as i64, kind, props, le, strings),
         (UnsignedInt, DfdlValue::UnsignedInt(v)) => {
-            encode_unsigned_binary(*v as u64, kind, props, le)
+            encode_unsigned_binary(*v as u64, kind, props, le, strings)
         }
-        (Long, DfdlValue::Long(v)) => encode_integer_binary(*v, kind, props, le),
+        (Long, DfdlValue::Long(v)) => encode_integer_binary(*v, kind, props, le, strings),
         (Float, DfdlValue::Float(v)) => {
-            encode_unsigned_binary(*v as u64, kind, props, le)
+            encode_unsigned_binary(*v as u64, kind, props, le, strings)
         }
         (Double, DfdlValue::Double(v)) => {
-            encode_unsigned_binary(*v as u64, kind, props, le)
+            encode_unsigned_binary(*v as u64, kind, props, le, strings)
         }
         (Decimal, DfdlValue::Decimal(v)) => {
-            let raw = parse_virtual_decimal(v, props.binary_decimal_virtual_point)?;
-            encode_unsigned_binary(raw, kind, props, le)
+            let (negative, raw) = parse_virtual_decimal_signed(v, props.binary_decimal_virtual_point)?;
+            validate_decimal_unparse_sign(negative, props, field_name)?;
+            encode_signed_magnitude_binary(raw, negative, kind, props, le, strings)
         }
         (DateTime, DfdlValue::DateTime(v)) => encode_binary_datetime(v, props, strings),
         (expected, _) => Err(VmError::TypeMismatch {
@@ -4468,12 +4572,20 @@ fn encode_integer_binary(
     kind: crate::ir::ValueKind,
     props: &IrProps,
     le: bool,
+    strings: &StringPool,
 ) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
     if props.binary_number_rep == BinaryNumberRep::Binary {
         let width = binary_payload_width(value.unsigned_abs(), kind, props);
         return Ok(int_bytes(value, width, le));
     }
-    encode_unsigned_binary(value.unsigned_abs(), kind, props, le)
+    encode_signed_magnitude_binary(
+        value.unsigned_abs(),
+        value < 0,
+        kind,
+        props,
+        le,
+        strings,
+    )
 }
 
 fn encode_unsigned_binary(
@@ -4481,9 +4593,39 @@ fn encode_unsigned_binary(
     kind: crate::ir::ValueKind,
     props: &IrProps,
     le: bool,
+    strings: &StringPool,
 ) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
-    let width = binary_payload_width(value, kind, props);
-    encode_binary_number_u64(value, props.binary_number_rep, width, le)
+    encode_signed_magnitude_binary(value, false, kind, props, le, strings)
+}
+
+fn encode_signed_magnitude_binary(
+    magnitude: u64,
+    negative: bool,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    le: bool,
+    strings: &StringPool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    let width = binary_payload_width(magnitude, kind, props);
+    match props.binary_number_rep {
+        BinaryNumberRep::Binary => Ok(int_bytes(
+            if negative {
+                -(magnitude as i64)
+            } else {
+                magnitude as i64
+            },
+            width,
+            le,
+        )),
+        BinaryNumberRep::Bcd => u64_to_bcd_bytes(magnitude, width, le),
+        BinaryNumberRep::PackedBcd => {
+            let codes = packed_sign_codes(props, strings)?;
+            encode_packed_bcd_magnitude(magnitude, negative, width, le, &codes)
+        }
+        BinaryNumberRep::Ibm4690Packed => {
+            encode_ibm4690_magnitude(magnitude, negative, width, le)
+        }
+    }
 }
 
 fn binary_payload_width(value: u64, kind: crate::ir::ValueKind, props: &IrProps) -> usize {
@@ -4516,6 +4658,7 @@ fn auto_width_for_rep(value: u64, rep: BinaryNumberRep) -> usize {
     }
 }
 
+
 fn encode_binary_number_u64(
     value: u64,
     rep: BinaryNumberRep,
@@ -4524,10 +4667,12 @@ fn encode_binary_number_u64(
 ) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
     match rep {
         BinaryNumberRep::Binary => Ok(int_bytes(value as i64, width, le)),
-        BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed => {
-            u64_to_bcd_bytes(value, width, le)
+        BinaryNumberRep::Bcd => u64_to_bcd_bytes(value, width, le),
+        BinaryNumberRep::Ibm4690Packed => encode_ibm4690_magnitude(value, false, width, le),
+        BinaryNumberRep::PackedBcd => {
+            let codes = PackedSignCodes::parse("C D F C", BinaryNumberCheckPolicy::Lax)?;
+            encode_packed_bcd_magnitude(value, false, width, le, &codes)
         }
-        BinaryNumberRep::PackedBcd => u64_to_packed_bcd_bytes(value, width, le),
     }
 }
 

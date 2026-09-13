@@ -901,6 +901,19 @@ fn finalize_element_props(
     validate_packed_binary_properties_schema(kind, &ir, strings)?;
     validate_prefixed_character_encoding(kind, &ir, strings)?;
     validate_end_of_parent(kind, &ir)?;
+    if kind == ValueKind::Boolean {
+        if let Some(id) = ir.default_value {
+            let raw = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
+                message: e.to_string(),
+            })?;
+            if !matches!(raw, "true" | "false" | "0" | "1") {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: Invalid value constraint value".into(),
+                }
+                .into());
+            }
+        }
+    }
     if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed)
         && ir.length.is_none()
         && ir.length_sibling.is_none()
@@ -1866,8 +1879,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.binary_calendar_rep = overlay.binary_calendar_rep;
     out.binary_float_rep = overlay.binary_float_rep;
     out.binary_decimal_virtual_point = overlay.binary_decimal_virtual_point;
-    // decimal_signed comes from the resolved simple type; the element wrapper overlay
-    // carries schema defaults and must not clobber type-derived decimalSigned.
+    out.decimal_signed = overlay.decimal_signed;
     out.calendar_pattern = overlay.calendar_pattern;
     if overlay.text_number_pattern.is_some() {
         out.text_number_pattern = overlay.text_number_pattern;

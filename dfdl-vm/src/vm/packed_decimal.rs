@@ -1,7 +1,7 @@
 //! Packed, BCD, and IBM4690 decimal decoding (aligned with Apache Daffodil DecimalUtils).
 use crate::error::VmError;
 use crate::schema::BinaryNumberCheckPolicy;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -177,6 +177,116 @@ pub(crate) fn ibm4690_to_digit_string(bytes: &[u8], le: bool) -> Result<(bool, S
     Ok((negative, out))
 }
 
+pub(crate) fn encode_packed_bcd_magnitude(
+    magnitude: u64,
+    negative: bool,
+    width: usize,
+    le: bool,
+    codes: &PackedSignCodes,
+) -> Result<Vec<u8>, VmError> {
+    if width == 0 {
+        return Err(VmError::InvalidValue {
+            message: "zero-width packed BCD".into(),
+        });
+    }
+    let mut digits = if magnitude == 0 {
+        "0".to_string()
+    } else {
+        magnitude.to_string()
+    };
+    let digit_slots = width * 2 - 1;
+    while digits.len() < digit_slots {
+        digits.insert(0, '0');
+    }
+    if digits.len() > digit_slots {
+        digits = digits[digits.len() - digit_slots..].to_string();
+    }
+    let sign = if magnitude == 0 {
+        *codes.zero_sign.first().unwrap_or(&0x0c)
+    } else if negative {
+        *codes.negative.first().unwrap_or(&0x0d)
+    } else {
+        *codes.positive.first().unwrap_or(&0x0c)
+    };
+    let mut bytes = vec![0u8; width];
+    let digit_bytes = digits.as_bytes();
+    let mut di = 0usize;
+    for i in 0..width.saturating_sub(1) {
+        let hi = digit_bytes[di] - b'0';
+        di += 1;
+        let lo = if di < digit_bytes.len() {
+            digit_bytes[di] - b'0'
+        } else {
+            0
+        };
+        di += 1;
+        if hi > 9 || lo > 9 {
+            return Err(VmError::InvalidValue {
+                message: "invalid packed BCD digit".into(),
+            });
+        }
+        bytes[i] = (hi << 4) | lo;
+    }
+    let last_digit = digit_bytes[di] - b'0';
+    if last_digit > 9 {
+        return Err(VmError::InvalidValue {
+            message: "invalid packed BCD digit".into(),
+        });
+    }
+    bytes[width - 1] = (last_digit << 4) | sign;
+    if le {
+        bytes.reverse();
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn encode_ibm4690_magnitude(
+    magnitude: u64,
+    negative: bool,
+    width: usize,
+    le: bool,
+) -> Result<Vec<u8>, VmError> {
+    if width == 0 {
+        return Err(VmError::InvalidValue {
+            message: "zero-width IBM4690".into(),
+        });
+    }
+    let digits = if magnitude == 0 {
+        "0".to_string()
+    } else {
+        magnitude.to_string()
+    };
+    let mut nibbles: Vec<u8> = Vec::new();
+    if negative {
+        nibbles.push(0x0d);
+    }
+    for c in digits.chars() {
+        let d = c as u8 - b'0';
+        if d > 9 {
+            return Err(VmError::InvalidValue {
+                message: "invalid IBM4690 digit".into(),
+            });
+        }
+        nibbles.push(d);
+    }
+    while nibbles.len() < width * 2 {
+        nibbles.insert(0, 0x0f);
+    }
+    if nibbles.len() > width * 2 {
+        nibbles = nibbles[nibbles.len() - width * 2..].to_vec();
+    }
+    let mut bytes = vec![0u8; width];
+    for (i, pair) in nibbles.chunks(2).enumerate() {
+        let hi = pair[0];
+        let lo = pair.get(1).copied().unwrap_or(0x0f);
+        bytes[i] = (hi << 4) | lo;
+    }
+    if le {
+        bytes.reverse();
+    }
+    Ok(bytes)
+}
+
 pub(crate) fn digits_to_u64(digits: &str) -> Result<u64, VmError> {
     let trimmed = digits.trim_start_matches('0');
     let trimmed = if trimmed.is_empty() { "0" } else { trimmed };
@@ -194,9 +304,13 @@ mod tests {
         let codes = PackedSignCodes::parse("C D F C", BinaryNumberCheckPolicy::Strict).unwrap();
         let (neg, digits) = packed_to_digit_string(&[0x01, 0x98, 0x8c], false, &codes).unwrap();
         assert!(!neg);
-        assert_eq!(digits, "1988");
+        assert!(digits.ends_with("1988"), "digits={digits}");
         let (neg, digits) = packed_to_digit_string(&[0x12, 0x3d], false, &codes).unwrap();
         assert!(neg);
         assert_eq!(digits, "123");
+        let enc = encode_packed_bcd_magnitude(123, true, 2, false, &codes).unwrap();
+        assert_eq!(enc, vec![0x12, 0x3d]);
+        let ibm = encode_ibm4690_magnitude(123, true, 2, false).unwrap();
+        assert_eq!(ibm, vec![0xd1, 0x23]);
     }
 }

@@ -133,7 +133,7 @@ impl<'a> Decoder<'a> {
                             should_suppress_decode_infix_separator(props, cp, prev_absent_or_empty)
                         })
                         .unwrap_or(false);
-                    let sep_alt = if suppress_sep {
+                    let sep_alt = if suppress_sep || !self.particle_consumes_input(child) {
                         None
                     } else {
                         self.consume_separator(
@@ -1221,8 +1221,22 @@ fn eval_input_value_calc(
     if let InputValueCalc::Constant(v) = calc {
         return constant_input_value(kind, v);
     }
+    if calc == InputValueCalc::BooleanFromSibling {
+        if kind != ValueKind::Boolean {
+            return Err(VmError::InvalidValue {
+                message: "xs:boolean inputValueCalc requires xs:boolean element".into(),
+            }
+            .into());
+        }
+        let sib = sibling_state(props, siblings, strings)?;
+        let text = dfdl_value_text(&sib.value);
+        return super::runtime::parse_xs_boolean_lexical(text)
+            .map(DfdlValue::Boolean)
+            .map_err(Into::into);
+    }
     let len = match calc {
         InputValueCalc::Constant(_) => unreachable!("handled above"),
+        InputValueCalc::BooleanFromSibling => unreachable!("handled above"),
         InputValueCalc::ContentLengthSelf(units) | InputValueCalc::ValueLengthSelf(units) => {
             let byte_len = content_scope_bytes.unwrap_or_else(|| cursor.remaining());
             length_in_units(byte_len, units)?
@@ -1291,6 +1305,20 @@ fn constant_input_value(kind: ValueKind, value: i64) -> Result<DfdlValue> {
         }),
     }
     .map_err(Into::into)
+}
+
+fn dfdl_value_text(value: &DfdlValue) -> &str {
+    match value {
+        DfdlValue::String(v) => &v.text,
+        DfdlValue::Boolean(v) => {
+            if *v {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        _ => "",
+    }
 }
 
 fn sibling_state<'a>(

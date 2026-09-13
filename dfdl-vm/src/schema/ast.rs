@@ -206,6 +206,7 @@ pub enum InputValueCalc {
     ValueLengthSelf(LengthUnits),
     ContentLengthSibling(LengthUnits),
     ValueLengthSibling(LengthUnits),
+    BooleanFromSibling,
 }
 
 /// Narrow support for `dfdl:outputValueCalc` used on encode/unparse.

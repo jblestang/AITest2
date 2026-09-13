@@ -537,10 +537,16 @@ impl<'a> XsdParser<'a> {
             props = self.parse_inline_content(props, &["complexType", "simpleType", "annotation"])?;
             let inline = self.parse_inline_type()?;
             self.expect_end_local("element")?;
+            let mut props = self.finalize_props(merge_props(props, inline.1));
+            if let Some(ref d) = default_value {
+                if props.default_value.is_none() {
+                    props.default_value = Some(d.clone());
+                }
+            }
             return Ok(ElementDecl {
                 name,
                 type_name: inline.0,
-                props: self.finalize_props(merge_props(props, inline.1)),
+                props,
                 particle: None,
                 default_value,
             });
@@ -554,6 +560,11 @@ impl<'a> XsdParser<'a> {
             self.expect_end_local("element")?;
         }
 
+        if let Some(ref d) = default_value {
+            if props.default_value.is_none() {
+                props.default_value = Some(d.clone());
+            }
+        }
         Ok(ElementDecl {
             name,
             type_name,
@@ -1313,6 +1324,10 @@ fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>
                 InputValueCalc::ValueLengthSibling(units),
                 Some(local_name_from_qname(name).to_string()),
             ))
+        }
+        ("xs:boolean", sib) => {
+            let name = sib.strip_prefix("../")?;
+            Some((InputValueCalc::BooleanFromSibling, Some(local_name_from_qname(name).to_string())))
         }
         _ => None,
     }

@@ -600,6 +600,13 @@ pub fn match_delimiter_with_alt(
     if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
         return match_nl_comma_space_separator(input).map(|n| (n, 0));
     }
+    if delimiter_has_top_level_comma(pattern) {
+        if let Some(n) = match_delimiter_compound(input, pattern, ignore_case) {
+            if n > 0 {
+                return Some((n, 0));
+            }
+        }
+    }
     let mut alts = delimiter_alternatives(pattern);
     if alts.len() > 1 {
         alts.sort_by_key(|b| core::cmp::Reverse(b.len()));
@@ -622,6 +629,13 @@ pub fn match_delimiter_opts(input: &[u8], pattern: &str, ignore_case: bool) -> O
     }
     if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
         return match_nl_comma_space_separator(input);
+    }
+    if delimiter_has_top_level_comma(pattern) {
+        if let Some(n) = match_delimiter_compound(input, pattern, ignore_case) {
+            if n > 0 {
+                return Some(n);
+            }
+        }
     }
     let mut alts = delimiter_alternatives(pattern);
     if alts.len() > 1 {
