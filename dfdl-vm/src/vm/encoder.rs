@@ -1,4 +1,8 @@
-use super::runtime::{write_alignment, write_byte_aligned, write_framed_payload, write_simple, validate_explicit_decimal_before_encode, trailing_suppressed_count, should_suppress_occurrence_separator, RuntimeConfig, VmContext};
+use super::runtime::{
+    nil_unparse_bytes_for_encode, write_alignment, write_byte_aligned, write_framed_payload,
+    write_simple, validate_explicit_decimal_before_encode, trailing_suppressed_count,
+    should_suppress_occurrence_separator, RuntimeConfig, VmContext,
+};
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
@@ -114,6 +118,9 @@ impl<'a> Encoder<'a> {
                 props,
                 child,
             } => {
+                if matches!(value, DfdlValue::Null) {
+                    return self.encode_nil_element(*kind, props, out, bit_count);
+                }
                 if let Some(child_id) = child {
                     let name_str = self.ctx.strings().get(*name)?;
                     let field = match value.field(name_str) {
@@ -183,7 +190,14 @@ impl<'a> Encoder<'a> {
             }
             let mut payload = Vec::new();
             let mut payload_bit_count = 0u8;
-            self.encode_node(child_id, item, &mut payload, &mut payload_bit_count)?;
+            if matches!(item, DfdlValue::Null) {
+                let nil_bytes =
+                    nil_unparse_bytes_for_encode(props, self.ctx.strings()).map_err(Error::from)?;
+                write_byte_aligned(&mut payload, &mut payload_bit_count, &nil_bytes)
+                    .map_err(Error::from)?;
+            } else {
+                self.encode_node(child_id, item, &mut payload, &mut payload_bit_count)?;
+            }
             write_framed_payload(
                 out,
                 bit_count,
@@ -272,10 +286,17 @@ impl<'a> Encoder<'a> {
                     &self.ctx.program.tunables,
                     self.ctx.strings(),
                 )?;
+                if matches!(&value, DfdlValue::Null) {
+                    return self.encode_nil_element(*kind, props, out, bit_count);
+                }
                 if let Some(child_id) = child {
-                    let field = match value.field(key) {
-                        Some(inner) => inner,
-                        None => &value,
+                    let field = if matches!(&value, DfdlValue::Null) {
+                        &value
+                    } else {
+                        match value.field(key) {
+                            Some(inner) => inner,
+                            None => &value,
+                        }
                     };
                     if needs_length_frame(&resolved) {
                         self.encode_framed_element(
@@ -519,6 +540,21 @@ impl<'a> Encoder<'a> {
             write_byte_aligned(out, bit_count, &encode_delimiter(self.ctx.strings().get(id)?))
                 .map_err(Error::from)?;
         }
+        Ok(())
+    }
+
+    fn encode_nil_element(
+        &self,
+        _kind: crate::ir::ValueKind,
+        props: &IrProps,
+        out: &mut Vec<u8>,
+        bit_count: &mut u8,
+    ) -> Result<()> {
+        write_alignment(out, bit_count, props).map_err(Error::from)?;
+        self.write_initiator(props, out, bit_count, None)?;
+        let payload = nil_unparse_bytes_for_encode(props, self.ctx.strings()).map_err(Error::from)?;
+        write_byte_aligned(out, bit_count, &payload).map_err(Error::from)?;
+        self.write_terminator(props, out, bit_count, None)?;
         Ok(())
     }
 }

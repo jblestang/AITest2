@@ -1240,6 +1240,7 @@ fn parse_field_text_number(
                 ),
             });
         }
+        crate::vm::zoned_text::validate_zoned_text_number_pattern_runtime(raw_pattern, kind)?;
         crate::vm::zoned_text::validate_zoned_pattern_characters(raw_pattern)?;
     }
     let pattern_owned = if props.text_number_rep == crate::schema::TextNumberRep::Zoned {
@@ -2043,6 +2044,45 @@ fn nil_first_alternative(props: &IrProps, strings: &StringPool) -> Result<Option
         .and_then(|alts| alts.into_iter().next()))
 }
 
+fn nil_character_repeat_count(props: &IrProps) -> Result<usize, crate::error::VmError> {
+    use crate::error::VmError;
+    match props.length_kind {
+        LengthKind::Explicit | LengthKind::Fixed => {
+            let len = props.length.ok_or(VmError::InvalidValue {
+                message: "explicit/fixed nil field missing length".into(),
+            })? as usize;
+            Ok(match props.length_units {
+                LengthUnits::Bytes | LengthUnits::Characters => len,
+                LengthUnits::Bits => len.div_ceil(8),
+            })
+        }
+        _ => Ok(1),
+    }
+}
+
+fn expand_nil_alternative(
+    alt: &str,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    let trimmed = alt.trim();
+    if trimmed == "%NL;" {
+        if let Some(id) = props.output_new_line {
+            if let Ok(onl) = strings.get(id) {
+                return Ok(crate::schema::expand_entities(onl));
+            }
+        }
+    }
+    Ok(crate::schema::expand_entities(trimmed))
+}
+
+pub(crate) fn nil_unparse_bytes_for_encode(
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    nil_unparse_bytes(props, strings)
+}
+
 fn nil_unparse_bytes(
     props: &IrProps,
     strings: &StringPool,
@@ -2051,7 +2091,19 @@ fn nil_unparse_bytes(
         return Ok(alloc::vec::Vec::new());
     };
     let first = alts.first().map(|s| s.as_str()).unwrap_or("");
-    Ok(crate::schema::expand_entities(first))
+    if props.nil_kind == Some(NilKind::LiteralCharacter) {
+        let unit = expand_nil_alternative(first, props, strings)?;
+        if unit.is_empty() {
+            return Ok(alloc::vec::Vec::new());
+        }
+        let repeat = nil_character_repeat_count(props)?;
+        let mut out = alloc::vec::Vec::with_capacity(unit.len().saturating_mul(repeat));
+        for _ in 0..repeat {
+            out.extend_from_slice(&unit);
+        }
+        return Ok(out);
+    }
+    expand_nil_alternative(first, props, strings)
 }
 
 fn text_matches_nil_literal(text: &str, props: &IrProps, strings: &StringPool) -> Result<bool, crate::error::VmError> {

@@ -57,7 +57,11 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
                 Some('*') | Some('?') => vec![],
                 _ => vec![b' '],
             },
-            other if other.starts_with("#r") => {
+            other if other.starts_with("#x") || other.starts_with("#X") => {
+                let hex = &other[2..];
+                u8::from_str_radix(hex, 16).ok().map(|b| vec![b])?
+            }
+            other if other.starts_with("#r") || other.starts_with("#R") => {
                 let hex = &other[2..];
                 u8::from_str_radix(hex, 16).ok().map(|b| vec![b])?
             }

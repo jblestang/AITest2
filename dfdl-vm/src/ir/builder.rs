@@ -744,16 +744,6 @@ fn validate_zoned_text_number_pattern(
         }
         .into());
     }
-    if bare.contains(';') {
-        let bare_ref = bare.as_str();
-        let (pos, neg) = bare_ref.split_once(';').unwrap_or((bare_ref, ""));
-        if !neg.is_empty() && !pos.is_empty() {
-            return Err(SchemaError::InvalidProperty {
-                message: "Schema Definition Error: Negative patterns may not be used in textNumberPattern for textNumberRep='zoned'".into(),
-            }
-            .into());
-        }
-    }
     let has_leading_plus = bare.starts_with('+');
     let has_trailing_plus = bare.ends_with('+');
     if has_leading_plus && has_trailing_plus {
@@ -1000,7 +990,7 @@ fn finalize_element_props(
                     ir.decimal_signed,
                 )?;
             }
-            if pat.starts_with(';') {
+            if pat.starts_with(';') && ir.text_number_rep != crate::schema::TextNumberRep::Zoned {
                 return Err(SchemaError::InvalidProperty {
                     message: "Schema Definition Error: The positive part of the dfdl:textNumberPattern is required. The dfdl:textNumberPattern cannot begin with ';'.".into(),
                 }

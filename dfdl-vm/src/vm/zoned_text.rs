@@ -125,6 +125,57 @@ pub(crate) fn strip_zoned_plus_markers(pattern: &str) -> String {
     pattern.replace('+', "")
 }
 
+pub(crate) fn validate_zoned_text_number_pattern_runtime(
+    pattern: &str,
+    kind: crate::ir::ValueKind,
+) -> Result<(), VmError> {
+    use crate::ir::ValueKind;
+    let positive = pattern.split(';').next().unwrap_or(pattern);
+    if positive.contains('@') {
+        return Err(VmError::InvalidValue {
+            message: "Schema Definition Error: The '@' symbol may not be used in textNumberPattern for textNumberRep='zoned'".into(),
+        });
+    }
+    if positive.contains('E') {
+        return Err(VmError::InvalidValue {
+            message: "Schema Definition Error: The 'E' symbol may not be used in textNumberPattern for textNumberRep='zoned'".into(),
+        });
+    }
+    if pattern.contains(';') {
+        let (_, neg) = pattern.split_once(';').unwrap_or((pattern, ""));
+        if !neg.is_empty() {
+            return Err(VmError::InvalidValue {
+                message: "Schema Definition Error: Negative patterns may not be used in textNumberPattern for textNumberRep='zoned'".into(),
+            });
+        }
+    }
+    let stripped = strip_zoned_plus_markers(pattern);
+    let has_leading = pattern.starts_with('+');
+    let has_trailing = pattern.ends_with('+') || stripped.ends_with('+');
+    if has_leading && has_trailing {
+        return Err(VmError::InvalidValue {
+            message: "Schema Definition Error: The textNumberPattern may either begin or end with a '+', not both.".into(),
+        });
+    }
+    if matches!(kind, ValueKind::Float | ValueKind::Double) {
+        return Ok(());
+    }
+    if !has_leading && !has_trailing {
+        let msg = if matches!(
+            kind,
+            ValueKind::UnsignedByte | ValueKind::UnsignedShort | ValueKind::UnsignedInt
+        ) {
+            "Schema Definition Error: textNumberPattern must have '+' at the beginning or the end of the pattern when textNumberRep='zoned' for unsigned numbers"
+        } else {
+            "Schema Definition Error: textNumberPattern must have '+' at the beginning or the end of the pattern when textNumberRep='zoned' for signed numbers"
+        };
+        return Err(VmError::InvalidValue {
+            message: msg.into(),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_zoned_pattern_characters(pattern: &str) -> Result<(), VmError> {
     let bare = strip_zoned_plus_markers(pattern);
     let positive = bare.split(';').next().unwrap_or(bare.as_str());
