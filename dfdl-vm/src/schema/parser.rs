@@ -1045,6 +1045,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.calendar_pattern.is_some() {
         base.calendar_pattern = overlay.calendar_pattern;
     }
+    if overlay.text_number_pattern.is_some() {
+        base.text_number_pattern = overlay.text_number_pattern;
+    }
     if overlay.initiator.is_some() {
         base.initiator = overlay.initiator;
     }
@@ -1344,6 +1347,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "decimalSigned"
             | "calendarPattern"
             | "calendarPatternKind"
+            | "textNumberPattern"
             | "initiator"
             | "terminator"
             | "separator"
@@ -1650,6 +1654,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             }
             "calendarPattern" => props.calendar_pattern = Some(value.clone()),
             "calendarPatternKind" => {}
+            "textNumberPattern" => props.text_number_pattern = Some(value.clone()),
             "initiator" => {
                 let lit = parse_delimiter_literal(value)?;
                 props.initiator = Some(lit);

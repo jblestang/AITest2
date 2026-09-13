@@ -49,6 +49,7 @@ pub struct DfdlProps {
     pub binary_decimal_virtual_point: Option<u32>,
     pub decimal_signed: Option<bool>,
     pub calendar_pattern: Option<String>,
+    pub text_number_pattern: Option<String>,
     pub initiator: Option<String>,
     pub terminator: Option<String>,
     pub separator: Option<String>,

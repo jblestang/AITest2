@@ -1358,7 +1358,7 @@ fn resolve_length_props(
     if kind == ValueKind::Decimal {
         validate_explicit_decimal_before_decode(kind, &resolved, tunables)?;
     } else if let Some(len) = resolved.length {
-        validate_data_length_vm(kind, len, resolved.length_units)?;
+        validate_data_length_vm(kind, len, resolved.length_units, resolved.binary_number_rep)?;
     }
     Ok(resolved)
 }

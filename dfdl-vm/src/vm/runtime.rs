@@ -640,7 +640,7 @@ fn signed_magnitude_to_dfdl(
         match kind {
             UnsignedByte | UnsignedShort | UnsignedInt => {
                 return Err(VmError::InvalidValue {
-                    message: alloc::format!("negative value for unsigned type"),
+                    message: "out of range for type".into(),
                 });
             }
             _ => {}
@@ -654,22 +654,22 @@ fn signed_magnitude_to_dfdl(
     macro_rules! signed {
         ($t:ty, $cons:expr) => {{
             <$t>::try_from(signed_i64).map($cons).map_err(|_| VmError::InvalidValue {
-                message: alloc::format!("value `{signed_i64}` out of range"),
+                message: "out of range for type".into(),
             })
         }};
     }
     match kind {
         Byte => signed!(i8, DfdlValue::Byte),
         UnsignedByte => u8::try_from(abs).map(DfdlValue::UnsignedByte).map_err(|_| VmError::InvalidValue {
-            message: alloc::format!("value `{abs}` out of range"),
+            message: "out of range for type".into(),
         }),
         Short => signed!(i16, DfdlValue::Short),
         UnsignedShort => u16::try_from(abs).map(DfdlValue::UnsignedShort).map_err(|_| VmError::InvalidValue {
-            message: alloc::format!("value `{abs}` out of range"),
+            message: "out of range for type".into(),
         }),
         Int => signed!(i32, DfdlValue::Int),
         UnsignedInt => u32::try_from(abs).map(DfdlValue::UnsignedInt).map_err(|_| VmError::InvalidValue {
-            message: alloc::format!("value `{abs}` out of range"),
+            message: "out of range for type".into(),
         }),
         Long => signed!(i64, DfdlValue::Long),
         other => Err(VmError::TypeMismatch {
@@ -825,25 +825,97 @@ fn format_calendar_pattern(
         fields.insert(c, field);
         i += width;
     }
-    let year = fields.get(&'y').ok_or_else(|| VmError::InvalidValue {
+    let year = expand_calendar_year(fields.get(&'y').ok_or_else(|| VmError::InvalidValue {
         message: alloc::format!("calendar `{pattern}` missing year"),
-    })?;
+    })?)?;
     let month = fields.get(&'M').ok_or_else(|| VmError::InvalidValue {
         message: alloc::format!("calendar `{pattern}` missing month"),
     })?;
     let day = fields.get(&'d').ok_or_else(|| VmError::InvalidValue {
         message: alloc::format!("calendar `{pattern}` missing day"),
     })?;
-    let hour = fields.get(&'H').ok_or_else(|| VmError::InvalidValue {
-        message: alloc::format!("calendar `{pattern}` missing hour"),
-    })?;
-    let minute = fields.get(&'m').ok_or_else(|| VmError::InvalidValue {
-        message: alloc::format!("calendar `{pattern}` missing minute"),
-    })?;
-    let second = fields.get(&'s').ok_or_else(|| VmError::InvalidValue {
-        message: alloc::format!("calendar `{pattern}` missing second"),
-    })?;
-    Ok(alloc::format!("{year}-{month}-{day}T{hour}:{minute}:{second}"))
+    if fields.contains_key(&'H') {
+        let hour = fields.get(&'H').ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing hour"),
+        })?;
+        let minute = fields.get(&'m').ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing minute"),
+        })?;
+        let second = fields.get(&'s').ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing second"),
+        })?;
+        return Ok(alloc::format!("{year}-{month}-{day}T{hour}:{minute}:{second}"));
+    }
+    Ok(alloc::format!("{year}-{month}-{day}"))
+}
+
+fn apply_text_number_pattern_numeric(
+    text: &str,
+    pattern: &str,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+    if !pattern.contains('V') {
+        return Ok(text.into());
+    }
+    let mut parts = pattern.split('V');
+    let before = parts.next().unwrap_or("");
+    let after = parts.next().unwrap_or("");
+    if parts.next().is_some() {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("unsupported textNumberPattern `{pattern}`"),
+        });
+    }
+    let digit_before = before
+        .chars()
+        .filter(|c| matches!(c, '0' | '#'))
+        .count();
+    let digit_after = after
+        .chars()
+        .filter(|c| matches!(c, '0' | '#'))
+        .count();
+    if text.len() != digit_before + digit_after {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "textNumberPattern `{pattern}` expected {} digits, got `{text}`",
+                digit_before + digit_after
+            ),
+        });
+    }
+    Ok(alloc::format!(
+        "{}.{}",
+        &text[..digit_before],
+        &text[digit_before..]
+    ))
+}
+
+fn text_number_for_parse<'a>(
+    trimmed: &'a str,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::ir::ValueKind;
+    if !matches!(kind, ValueKind::Float | ValueKind::Double | ValueKind::Decimal) {
+        return Ok(trimmed.into());
+    }
+    if let Some(pat_id) = props.text_number_pattern {
+        let pattern = strings.get(pat_id)?;
+        return apply_text_number_pattern_numeric(trimmed, pattern);
+    }
+    Ok(trimmed.into())
+}
+
+fn expand_calendar_year(y: &str) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+    if y.len() == 2 {
+        let yy: u32 = y.parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid calendar year `{y}`"),
+        })?;
+        // Daffodil default `calendarCenturyStart` is 53 (see DFDLGeneralFormat).
+        let full = if yy >= 53 { 1900 + yy } else { 2000 + yy };
+        return Ok(alloc::format!("{full:04}"));
+    }
+    Ok(y.into())
 }
 
 fn encode_binary_datetime(
@@ -877,9 +949,10 @@ fn datetime_to_calendar_digits(
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
 
-    let (date, time) = value.split_once('T').ok_or(VmError::InvalidValue {
-        message: alloc::format!("invalid dateTime `{value}`"),
-    })?;
+    let (date, time) = match value.split_once('T') {
+        Some((d, t)) => (d, t),
+        None => (value, "00:00:00"),
+    };
     let (year, month, day) = parse_date_parts(date)?;
     let (hour, minute, second) = parse_time_parts(time)?;
     let mut out = alloc::string::String::new();
@@ -1056,10 +1129,18 @@ fn decode_packed_bcd_number(
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    use crate::error::VmError;
     let le = props.byte_order == ByteOrder::LittleEndian;
     let codes = packed_sign_codes(props, strings)?;
     let (negative, digits) = packed_to_digit_string(bytes, le, &codes)?;
-    signed_magnitude_to_dfdl(negative, &digits, kind, 0)
+    signed_magnitude_to_dfdl(negative, &digits, kind, 0).map_err(|e| match e {
+        VmError::InvalidValue { message } if message == "out of range for type" => {
+            VmError::InvalidValue {
+                message: alloc::format!("Error in packed data: \n{message}"),
+            }
+        }
+        other => other,
+    })
 }
 
 fn binary_bit_length(
@@ -1077,7 +1158,7 @@ fn binary_bit_length(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
             })?;
-            validate_data_length_vm(kind, len, LengthUnits::Bits)?;
+            validate_data_length_vm(kind, len, LengthUnits::Bits, props.binary_number_rep)?;
             Ok(len as usize)
         }
         LengthKind::Pattern => {
@@ -1111,7 +1192,7 @@ fn binary_byte_length(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
             })?;
-            validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
+            validate_data_length_vm(kind, len, LengthUnits::Bytes, props.binary_number_rep)?;
             Ok(len as usize)
         }
         LengthKind::Pattern => {
@@ -1543,10 +1624,25 @@ pub(crate) fn read_text_scalar(
                 parse_int_typed_with_base(trimmed, "xs:long", base).map(DfdlValue::Long)
             }
         }
-        Float => parse_float(trimmed).map(|v| DfdlValue::Float(v as f32)),
-        Double => parse_float(trimmed).map(DfdlValue::Double),
-        Decimal => Ok(DfdlValue::Decimal(trimmed.into())),
-        DateTime | Time => Ok(DfdlValue::DateTime(trimmed.into())),
+        Float => {
+            let num = text_number_for_parse(trimmed, kind, props, strings)?;
+            parse_float(&num).map(|v| DfdlValue::Float(v as f32))
+        }
+        Double => {
+            let num = text_number_for_parse(trimmed, kind, props, strings)?;
+            parse_float(&num).map(DfdlValue::Double)
+        }
+        Decimal => {
+            let num = text_number_for_parse(trimmed, kind, props, strings)?;
+            Ok(DfdlValue::Decimal(num.into()))
+        }
+        DateTime | Time => {
+            if let Some(pat_id) = props.calendar_pattern {
+                let pattern = strings.get(pat_id)?;
+                return Ok(DfdlValue::DateTime(format_calendar_pattern(trimmed, pattern)?));
+            }
+            Ok(DfdlValue::DateTime(trimmed.into()))
+        }
         String => {
             let sv = if props.encoding_error_policy == crate::schema::EncodingErrorPolicy::Replace
                 && trimmed == text
@@ -1623,10 +1719,8 @@ pub(crate) fn write_binary_scalar(
     let size = match props.length_kind {
         LengthKind::Fixed => {
             let len = props.length.unwrap_or(type_size(kind) as u64);
-            if kind != crate::ir::ValueKind::Decimal {
-                validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
-                validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
-            }
+            validate_data_length_vm(kind, len, LengthUnits::Bytes, props.binary_number_rep)?;
+            validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
             len as usize
         }
         LengthKind::Implicit => type_size(kind),
@@ -1634,10 +1728,8 @@ pub(crate) fn write_binary_scalar(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
             })?;
-            if kind != crate::ir::ValueKind::Decimal {
-                validate_data_length_vm(kind, len, LengthUnits::Bytes)?;
-                validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
-            }
+            validate_data_length_vm(kind, len, LengthUnits::Bytes, props.binary_number_rep)?;
+            validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
             len as usize
         }
         LengthKind::Pattern | LengthKind::EndOfParent | LengthKind::Delimited => {
@@ -1713,7 +1805,7 @@ fn binary_encode_bit_length(
                     Some(LengthUnits::Bits),
                 )?;
             } else {
-                validate_data_length_vm(kind, len, LengthUnits::Bits)?;
+                validate_data_length_vm(kind, len, LengthUnits::Bits, props.binary_number_rep)?;
                 validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bits, tunables)?;
             }
             Ok(len as usize)

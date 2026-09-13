@@ -1,6 +1,17 @@
 use crate::error::{SchemaError, VmError};
 use crate::ir::ValueKind;
-use crate::schema::LengthUnits;
+use crate::schema::{BinaryNumberRep, LengthUnits};
+
+/// Packed/BCD/IBM4690 lengths are digit-oriented; skip xs:int-style bit caps.
+pub fn binary_length_validation_applies(kind: ValueKind, rep: BinaryNumberRep) -> bool {
+    if kind == ValueKind::Decimal {
+        return false;
+    }
+    !matches!(
+        rep,
+        BinaryNumberRep::PackedBcd | BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed
+    )
+}
 
 /// Daffodil tunables affecting compile-time validation (from TDML `defineConfig`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,12 +128,16 @@ fn validate_data_length_inner(
     kind: ValueKind,
     length: u64,
     units: LengthUnits,
+    rep: BinaryNumberRep,
 ) -> Result<(), (u64, u64)> {
     let Some(max_bits) = max_bits_for_kind(kind) else {
         return Ok(());
     };
     if length == 0 {
         return Err((0, max_bits));
+    }
+    if !binary_length_validation_applies(kind, rep) {
+        return Ok(());
     }
     let bit_length = match units {
         LengthUnits::Bits => length,
@@ -339,8 +354,9 @@ pub fn validate_data_length_vm(
     kind: ValueKind,
     length: u64,
     units: LengthUnits,
+    rep: BinaryNumberRep,
 ) -> Result<(), VmError> {
-    validate_data_length_inner(kind, length, units).map_err(|(bit_length, max_bits)| {
+    validate_data_length_inner(kind, length, units, rep).map_err(|(bit_length, max_bits)| {
         VmError::InvalidValue {
             message: daffodil_length_error(kind, bit_length, max_bits, true),
         }
@@ -352,8 +368,9 @@ pub fn validate_data_length_schema(
     kind: ValueKind,
     length: u64,
     units: LengthUnits,
+    rep: BinaryNumberRep,
 ) -> Result<(), SchemaError> {
-    validate_data_length_inner(kind, length, units).map_err(|(bit_length, max_bits)| {
+    validate_data_length_inner(kind, length, units, rep).map_err(|(bit_length, max_bits)| {
         SchemaError::InvalidProperty {
             message: daffodil_length_error(kind, bit_length, max_bits, false),
         }
@@ -409,7 +426,13 @@ mod tests {
 
     #[test]
     fn rejects_long_bit_length_over_64() {
-        let err = validate_data_length_vm(ValueKind::Long, 128, LengthUnits::Bits).unwrap_err();
+        let err = validate_data_length_vm(
+            ValueKind::Long,
+            128,
+            LengthUnits::Bits,
+            BinaryNumberRep::Binary,
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("128 out of range"));
         assert!(msg.contains("between 1 and 64"));
@@ -419,13 +442,25 @@ mod tests {
     #[test]
     fn rejects_unsigned_long_byte_length_over_8_bytes() {
         let err =
-            validate_data_length_schema(ValueKind::Long, 16, LengthUnits::Bytes).unwrap_err();
+            validate_data_length_schema(
+                ValueKind::Long,
+                16,
+                LengthUnits::Bytes,
+                BinaryNumberRep::Binary,
+            )
+            .unwrap_err();
         assert!(err.to_string().contains("128 out of range"));
     }
 
     #[test]
     fn zero_bit_length_schema_message_matches_daffodil() {
-        let err = validate_data_length_schema(ValueKind::UnsignedInt, 0, LengthUnits::Bits).unwrap_err();
+        let err = validate_data_length_schema(
+            ValueKind::UnsignedInt,
+            0,
+            LengthUnits::Bits,
+            BinaryNumberRep::Binary,
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("Schema Definition Error"));
         assert!(msg.contains("unsigned binary integer"));

@@ -1,7 +1,8 @@
 use super::{ChoiceBranch, IrNode, IrProgram, IrPrefixLength, IrProps, StringId, StringPool, ValueKind};
 use crate::error::{Result, SchemaError};
 use crate::length_validate::{
-    validate_data_length_schema, validate_float_double_bit_length_schema,
+    binary_length_validation_applies, validate_data_length_schema,
+    validate_float_double_bit_length_schema,
     validate_signed_one_bit_length_schema, DaffodilTunables,
 };
 use crate::schema::{
@@ -463,7 +464,12 @@ impl<'a> IrBuilder<'a> {
             .into());
         }
         if let Some(len) = prefix_props.length {
-            validate_data_length_schema(kind, len, prefix_props.length_units)?;
+            validate_data_length_schema(
+                kind,
+                len,
+                prefix_props.length_units,
+                prefix_props.binary_number_rep,
+            )?;
         }
         Ok(IrPrefixLength {
             kind,
@@ -513,6 +519,7 @@ fn finalize_element_props(
     tunables: DaffodilTunables,
 ) -> Result<IrProps> {
     validate_binary_delimited(kind, &ir)?;
+    validate_bcd_signed_integer_type(kind, &ir)?;
     validate_prefixed_character_encoding(kind, &ir, strings)?;
     validate_end_of_parent(kind, &ir)?;
     if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed)
@@ -530,8 +537,8 @@ fn finalize_element_props(
         if let Some(len) = ir.length {
             validate_float_double_bit_length(kind, len, ir.length_units)?;
             if ir.representation == Representation::Binary {
-                if kind != ValueKind::Decimal {
-                    validate_data_length_schema(kind, len, ir.length_units)?;
+                if binary_length_validation_applies(kind, ir.binary_number_rep) {
+                    validate_data_length_schema(kind, len, ir.length_units, ir.binary_number_rep)?;
                     validate_signed_one_bit_length_schema(kind, len, ir.length_units, &tunables)?;
                 }
             }
@@ -632,6 +639,28 @@ fn validate_initiated_content_particle(sequence_props: &DfdlProps, particle: &Pa
         .into());
     }
     Ok(())
+}
+
+fn validate_bcd_signed_integer_type(kind: ValueKind, props: &IrProps) -> Result<()> {
+    if props.representation != Representation::Binary {
+        return Ok(());
+    }
+    if props.binary_number_rep != crate::schema::BinaryNumberRep::Bcd {
+        return Ok(());
+    }
+    let type_name = match kind {
+        ValueKind::Byte => "byte",
+        ValueKind::Short => "short",
+        ValueKind::Int => "int",
+        ValueKind::Long => "long",
+        _ => return Ok(()),
+    };
+    Err(SchemaError::InvalidProperty {
+        message: alloc::format!(
+            "Schema Definition Error. {type_name} is not an allowed type for bcd binary values"
+        ),
+    }
+    .into())
 }
 
 fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
@@ -1034,6 +1063,12 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if props.text_number_pattern.is_some() {
+        base.text_number_pattern = props
+            .text_number_pattern
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
     if let Some(ref s) = props.initiator {
         if !s.is_empty() {
             base.initiator = Some(strings.intern(s.clone()));
@@ -1185,6 +1220,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     // decimal_signed comes from the resolved simple type; the element wrapper overlay
     // carries schema defaults and must not clobber type-derived decimalSigned.
     out.calendar_pattern = overlay.calendar_pattern;
+    if overlay.text_number_pattern.is_some() {
+        out.text_number_pattern = overlay.text_number_pattern;
+    }
     if overlay.initiator.is_some() {
         out.initiator = overlay.initiator;
     }
