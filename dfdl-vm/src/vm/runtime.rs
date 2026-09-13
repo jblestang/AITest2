@@ -1003,6 +1003,103 @@ fn apply_text_number_pattern_numeric(
     Ok(out)
 }
 
+fn resolved_text_number_format_parts(
+    props: &IrProps,
+    strings: &StringPool,
+) -> (
+    alloc::vec::Vec<alloc::string::String>,
+    Option<alloc::string::String>,
+    alloc::string::String,
+    Option<char>,
+    crate::schema::BinaryNumberCheckPolicy,
+) {
+    let dec = props
+        .resolved_text_standard_decimal_separator
+        .as_deref()
+        .or_else(|| strings.get(props.text_standard_decimal_separator).ok())
+        .unwrap_or(".");
+    let mut dec_seps = crate::schema::parse_text_standard_separator_list(dec);
+    if dec_seps.is_empty() {
+        dec_seps.push(".".into());
+    }
+    let exponent = props
+        .resolved_text_standard_exponent_rep
+        .as_deref()
+        .or_else(|| strings.get(props.text_standard_exponent_rep).ok())
+        .unwrap_or("E")
+        .to_string();
+    let grouping = props
+        .resolved_text_standard_grouping_separator
+        .clone()
+        .or_else(|| {
+            props
+                .text_standard_grouping_separator
+                .and_then(|id| strings.get(id).ok())
+                .map(|g| g.to_string())
+        });
+    let pad = props
+        .text_number_pad_character
+        .and_then(|id| strings.get(id).ok())
+        .and_then(|p| p.chars().next())
+        .or(Some('0'));
+    (
+        dec_seps,
+        grouping,
+        exponent,
+        pad,
+        props.text_number_check_policy,
+    )
+}
+
+fn text_number_pattern_needs_full_span(pattern: &str) -> bool {
+    if pattern.contains('*') || pattern.contains(';') || pattern.contains('\'') {
+        return true;
+    }
+    pattern.chars().any(|c| {
+        c.is_ascii_alphabetic() && c != 'E' && c != 'e' && c != 'V' && c != 'P'
+    })
+}
+
+fn read_implicit_numeric_text(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+) -> alloc::vec::Vec<u8> {
+    if props.custom_text_number_pattern {
+        if let Some(pat_id) = props.text_number_pattern {
+            if let Ok(raw_pattern) = strings.get(pat_id) {
+                let pattern_owned = if props.text_number_rep == crate::schema::TextNumberRep::Zoned {
+                    crate::vm::zoned_text::strip_zoned_plus_markers(raw_pattern)
+                } else {
+                    raw_pattern.to_string()
+                };
+                let pattern = pattern_owned.as_str();
+                if text_number_pattern_needs_full_span(pattern) {
+                    let (dec_seps, grouping, exponent, pad, check_policy) =
+                        resolved_text_number_format_parts(props, strings);
+                    let fmt = crate::vm::text_number::TextNumberFormatProps {
+                        check_policy,
+                        decimal_separators: &dec_seps,
+                        grouping_separator: grouping.as_deref(),
+                        exponent_chars: &exponent,
+                        pad_character: pad,
+                    };
+                    if let Some(len) = crate::vm::text_number::implicit_text_number_byte_length(
+                        &cursor.data[cursor.pos..],
+                        pattern,
+                        &fmt,
+                    ) {
+                        let start = cursor.pos;
+                        cursor.pos += len;
+                        return cursor.data[start..cursor.pos].to_vec();
+                    }
+                }
+            }
+        }
+    }
+    read_numeric_token(cursor)
+}
+
 fn parse_field_text_number(
     trimmed: &str,
     kind: crate::ir::ValueKind,
@@ -1068,40 +1165,12 @@ fn parse_field_text_number(
     {
         return apply_text_number_pattern_numeric(&text_to_parse, pattern);
     }
-    let dec = props
-        .resolved_text_standard_decimal_separator
-        .as_deref()
-        .or_else(|| strings.get(props.text_standard_decimal_separator).ok())
-        .unwrap_or(".");
-    let mut dec_seps = crate::schema::parse_text_standard_separator_list(dec);
-    if dec_seps.is_empty() {
-        dec_seps.push(".".into());
-    }
-    let exponent = props
-        .resolved_text_standard_exponent_rep
-        .as_deref()
-        .or_else(|| strings.get(props.text_standard_exponent_rep).ok())
-        .unwrap_or("E")
-        .to_string();
-    let grouping = props
-        .resolved_text_standard_grouping_separator
-        .clone()
-        .or_else(|| {
-            props
-                .text_standard_grouping_separator
-                .and_then(|id| strings.get(id).ok())
-                .map(|g| g.to_string())
-        });
-    let grouping_ref = grouping.as_deref();
-    let pad = props
-        .text_number_pad_character
-        .and_then(|id| strings.get(id).ok())
-        .and_then(|p| p.chars().next())
-        .or(Some('0'));
+    let (dec_seps, grouping, exponent, pad, check_policy) =
+        resolved_text_number_format_parts(props, strings);
     let fmt = text_number::TextNumberFormatProps {
-        check_policy: props.text_number_check_policy,
+        check_policy,
         decimal_separators: &dec_seps,
-        grouping_separator: grouping_ref,
+        grouping_separator: grouping.as_deref(),
         exponent_chars: &exponent,
         pad_character: pad,
     };
@@ -1830,7 +1899,7 @@ pub(crate) fn read_text_scalar(
         }
         LengthKind::Implicit => {
             if is_numeric_text_kind(kind) {
-                read_numeric_token(cursor)
+                read_implicit_numeric_text(cursor, props, strings)
             } else {
                 read_until_delimiters(cursor, props, strings, false, stop_sequences)?
             }
@@ -3112,7 +3181,7 @@ fn read_prefix_field_payload(
         }
         LengthKind::Implicit => {
             if props.representation == Representation::Text {
-                Ok(read_numeric_token(cursor))
+                Ok(read_implicit_numeric_text(cursor, props, strings))
             } else if props.length_units == LengthUnits::Bits {
                 let len = binary_bit_length(cursor, kind, props, strings)?;
                 cursor.read_stream_bits_as_bytes(len, props.bit_order)

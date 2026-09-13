@@ -289,6 +289,58 @@ fn strip_unquoted_substr(s: &str, sub: &str) -> String {
     out
 }
 
+/// XSD attribute values encode a pattern apostrophe as `''`; normalize to one `'` outside ICU quotes.
+fn expand_pattern_doubled_apostrophes(pattern: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    let mut in_quote = false;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            if in_quote {
+                if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                    out.push('\'');
+                    i += 2;
+                    continue;
+                }
+                in_quote = false;
+                out.push('\'');
+                i += 1;
+                continue;
+            }
+            if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                out.push('\'');
+                i += 2;
+                continue;
+            }
+            in_quote = true;
+            out.push('\'');
+            i += 1;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Shortest prefix of `data` that fully matches `pattern` under `props`, if any.
+pub(crate) fn implicit_text_number_byte_length(
+    data: &[u8],
+    pattern: &str,
+    props: &TextNumberFormatProps<'_>,
+) -> Option<usize> {
+    for end in 1..=data.len() {
+        let Ok(text) = core::str::from_utf8(&data[..end]) else {
+            continue;
+        };
+        if parse_standard_text_number(text, pattern, props).is_ok() {
+            return Some(end);
+        }
+    }
+    None
+}
+
 pub(crate) fn parse_standard_text_number(
     input: &str,
     pattern: &str,
@@ -300,6 +352,9 @@ pub(crate) fn parse_standard_text_number(
     } else {
         input.to_string()
     };
+
+    let pattern = expand_pattern_doubled_apostrophes(pattern);
+    let pattern = pattern.as_str();
 
     let pattern_has_grouping = strip_unquoted_char(pattern, ',').len() < pattern.len();
     let (work, pattern_owned) = if pattern_has_grouping {
@@ -353,19 +408,15 @@ pub(crate) fn parse_standard_text_number(
             continue;
         }
         let mut scratch = work.clone();
-        let result = if idx == 0 {
-            match_subpattern(&mut scratch, sub, props, lax, false, v_frac, v_int_slots)
-        } else {
-            match_negative_subpattern(
-                &mut scratch,
-                sub,
-                positive_match,
-                props,
-                lax,
-                v_frac,
-                v_int_slots,
-            )
-        };
+        let result = match_subpattern(
+            &mut scratch,
+            sub,
+            props,
+            lax,
+            idx > 0,
+            v_frac,
+            v_int_slots,
+        );
         match result {
             Ok(num) => {
                 if p_virtual != 0 {
@@ -584,7 +635,11 @@ fn skip_pad_chars(
         return;
     }
     loop {
-        skip_ws_respecting_decimal_sep(bytes, pos, props);
+        // Do not skip generic whitespace when consuming pattern pad (`*x`); that space may be
+        // a required literal before a suffix (e.g. `#*> right`).
+        if !pattern_pad {
+            skip_ws_respecting_decimal_sep(bytes, pos, props);
+        }
         if *pos >= bytes.len() {
             break;
         }
@@ -923,6 +978,19 @@ fn match_subpattern(
 
     if let Some(exp) = exponent {
         if !exp.is_empty() {
+            let bare = pattern_without_quoted_regions(pattern);
+            if saw_decimal
+                || !frac_digits.is_empty()
+                || bare.contains('E')
+                || bare.contains('e')
+            {
+                let exp_sign = if exp_negative { "-" } else { "" };
+                let mut sci = format!("{out}E{exp_sign}{exp}");
+                if negative && !sci.starts_with('-') {
+                    sci.insert(0, '-');
+                }
+                return Ok(sci);
+            }
             return Ok(apply_scientific_exponent(&out, &exp, exp_negative, negative));
         }
     }
@@ -1212,5 +1280,82 @@ mod tests {
         };
         let n = parse_standard_text_number("1988", "0000", &props).unwrap();
         assert_eq!(n, "1988");
+    }
+
+    #[test]
+    fn xsd_doubled_apostrophe_in_pattern() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(","),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number(
+            "                 12 o'clock",
+            "* #0 o''clock",
+            &props,
+        )
+        .unwrap();
+        assert_eq!(n, "12");
+    }
+
+    #[test]
+    fn strict_padding_suffix_literals() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(","),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number(
+            "                 12 o'clock",
+            "* #0 o'clock",
+            &props,
+        )
+        .unwrap();
+        assert_eq!(n, "12");
+        let n2 = parse_standard_text_number(
+            "4>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> right",
+            "#*> right",
+            &props,
+        );
+        assert_eq!(n2.as_deref(), Ok("4"), "padding08 got {n2:?}");
+        let n3 = parse_standard_text_number(
+            "8 Items$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$",
+            "# Items*$",
+            &props,
+        )
+        .unwrap();
+        assert_eq!(n3, "8");
+    }
+
+    #[test]
+    fn strict_data_prefix_negative() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(","),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number(
+            "data:                           4,999",
+            "data:* #,###",
+            &props,
+        )
+        .unwrap();
+        assert_eq!(n, "4999");
+        let n2 = parse_standard_text_number(
+            "(data:                           4,999)",
+            "data:* #,###;(data:* #,###)",
+            &props,
+        )
+        .unwrap();
+        assert_eq!(n2, "-4999");
     }
 }

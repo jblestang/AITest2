@@ -55,7 +55,12 @@ fn section13_scientific_and_grouping() {
 fn section13_text_number_padding() {
     for name in [
         "textNumberPattern_padding01",
+        "textNumberPattern_padding05",
         "textNumberPattern_padding06",
+        "textNumberPattern_padding07",
+        "textNumberPattern_padding08",
+        "textNumberPattern_padding09",
+        "textNumberPattern_paddingCombo01",
         "textNumberPattern_padding11",
     ] {
         match run_named("section13/text_number_props/TextNumberProps.tdml", name) {
@@ -217,3 +222,4 @@ fn section13_packed_tdml_scan() {
         "packed.tdml: expected all parser cases to pass, got pass={pass} fail={fail}"
     );
 }
+
