@@ -983,16 +983,43 @@ fn finalize_element_props(
                 }
             }
             if ir.text_number_rep == crate::schema::TextNumberRep::Zoned {
+                if matches!(kind, ValueKind::Float | ValueKind::Double) {
+                    return Err(SchemaError::InvalidProperty {
+                        message: alloc::format!(
+                            "Schema Definition Error: textNumberRep=\"zoned\" cannot be used with {}",
+                            value_kind_type_name(kind)
+                        ),
+                    }
+                    .into());
+                }
                 validate_zoned_text_number_pattern(
                     kind,
                     pat,
                     ir.text_number_check_policy,
                     ir.decimal_signed,
                 )?;
+                if let Err(e) = crate::vm::zoned_text::validate_zoned_v_in_pattern(pat) {
+                    return Err(SchemaError::InvalidProperty {
+                        message: match e {
+                            crate::error::VmError::InvalidValue { message } => message,
+                            _ => "invalid zoned textNumberPattern".into(),
+                        },
+                    }
+                    .into());
+                }
+                if pat.contains('V') && kind != ValueKind::Decimal {
+                    return Err(SchemaError::InvalidProperty {
+                        message: alloc::format!(
+                            "Schema Definition Error: The dfdl:textNumberPattern has a virtual decimal point 'V' or decimal scaling 'P' and dfdl:textNumberRep='zoned'. The type must be xs:decimal but was: {}",
+                            value_kind_type_name(kind)
+                        ),
+                    }
+                    .into());
+                }
             }
             if pat.starts_with(';') && ir.text_number_rep != crate::schema::TextNumberRep::Zoned {
                 return Err(SchemaError::InvalidProperty {
-                    message: "Schema Definition Error: The positive part of the dfdl:textNumberPattern is required. The dfdl:textNumberPattern cannot begin with ';'.".into(),
+                    message: "Schema Definition Error: The positive part of the dfdl:textNumberPattern is mandatory. The dfdl:textNumberPattern cannot begin with ';'.".into(),
                 }
                 .into());
             }

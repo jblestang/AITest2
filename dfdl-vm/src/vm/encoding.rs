@@ -55,24 +55,40 @@ pub(crate) fn normalize_encoding_name(name: &str) -> Option<&'static str> {
     }
 }
 
-/// IBM Code Page 037 (ebcdic-cp-us): EBCDIC byte → ASCII/Latin-1 byte for decode.
-const EBCDIC037_TO_BYTE: [u8; 256] = [
-    0x00, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
-    0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
-    0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
-    0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
-    0x20, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x2E, 0x3C, 0x28, 0x2B, 0x3F,
-    0x26, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x21, 0x24, 0x2A, 0x29, 0x3B, 0x5E,
-    0x2D, 0x2F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x7C, 0x2C, 0x25, 0x5F, 0x3E, 0x3F,
-    0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x60, 0x3A, 0x23, 0x40, 0x27, 0x3D, 0x22,
-    0x3F, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
-    0x3F, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78,
-    0x3F, 0x7E, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x79, 0x7A, 0x3F, 0x3F, 0x3F, 0x5B, 0x3F, 0x3F,
-    0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x5D, 0x3F, 0x3F,
-    0x7B, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
-    0x7D, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
-    0x5C, 0x3F, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
-    0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
+/// IBM037 (ebcdic-cp-us): EBCDIC byte → Unicode character (matches Daffodil BitsCharsetIBM037).
+const EBCDIC037_DECODE: [char; 256] = [
+    '\u{0000}', '\u{0001}', '\u{0002}', '\u{0003}', '\u{009C}', '\u{0009}', '\u{0086}', '\u{007F}',
+    '\u{0097}', '\u{008D}', '\u{008E}', '\u{000B}', '\u{000C}', '\u{000D}', '\u{000E}', '\u{000F}',
+    '\u{0010}', '\u{0011}', '\u{0012}', '\u{0013}', '\u{009D}', '\u{0085}', '\u{0008}', '\u{0087}',
+    '\u{0018}', '\u{0019}', '\u{0092}', '\u{008F}', '\u{001C}', '\u{001D}', '\u{001E}', '\u{001F}',
+    '\u{0080}', '\u{0081}', '\u{0082}', '\u{0083}', '\u{0084}', '\u{000A}', '\u{0017}', '\u{001B}',
+    '\u{0088}', '\u{0089}', '\u{008A}', '\u{008B}', '\u{008C}', '\u{0005}', '\u{0006}', '\u{0007}',
+    '\u{0090}', '\u{0091}', '\u{0016}', '\u{0093}', '\u{0094}', '\u{0095}', '\u{0096}', '\u{0004}',
+    '\u{0098}', '\u{0099}', '\u{009A}', '\u{009B}', '\u{0014}', '\u{0015}', '\u{009E}', '\u{001A}',
+    ' ', '\u{00A0}', '\u{00E2}', '\u{00E4}', '\u{00E0}', '\u{00E1}', '\u{00E3}', '\u{00E5}',
+    '\u{00E7}', '\u{00F1}', '\u{00A2}', '.', '<', '(', '+', '|',
+    '&', '\u{00E9}', '\u{00EA}', '\u{00EB}', '\u{00E8}', '\u{00ED}', '\u{00EE}', '\u{00EF}',
+    '\u{00EC}', '\u{00DF}', '!', '$', '*', ')', ';', '\u{00AC}',
+    '-', '/', '\u{00C2}', '\u{00C4}', '\u{00C0}', '\u{00C1}', '\u{00C3}', '\u{00C5}',
+    '\u{00C7}', '\u{00D1}', '\u{00A6}', ',', '%', '_', '>', '?',
+    '\u{00F8}', '\u{00C9}', '\u{00CA}', '\u{00CB}', '\u{00C8}', '\u{00CD}', '\u{00CE}', '\u{00CF}',
+    '\u{00CC}', '`', ':', '#', '@', '\'', '=', '"',
+    '\u{00D8}', 'a', 'b', 'c', 'd', 'e', 'f', 'g',
+    'h', 'i', '\u{00AB}', '\u{00BB}', '\u{00F0}', '\u{00FD}', '\u{00FE}', '\u{00B1}',
+    '\u{00B0}', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
+    'q', 'r', '\u{00AA}', '\u{00BA}', '\u{00E6}', '\u{00B8}', '\u{00C6}', '\u{00A4}',
+    '\u{00B5}', '~', 's', 't', 'u', 'v', 'w', 'x',
+    'y', 'z', '\u{00A1}', '\u{00BF}', '\u{00D0}', '\u{00DD}', '\u{00DE}', '\u{00AE}',
+    '^', '\u{00A3}', '\u{00A5}', '\u{00B7}', '\u{00A9}', '\u{00A7}', '\u{00B6}', '\u{00BC}',
+    '\u{00BD}', '\u{00BE}', '[', ']', '\u{00AF}', '\u{00A8}', '\u{00B4}', '\u{00D7}',
+    '{', 'A', 'B', 'C', 'D', 'E', 'F', 'G',
+    'H', 'I', '\u{00AD}', '\u{00F4}', '\u{00F6}', '\u{00F2}', '\u{00F3}', '\u{00F5}',
+    '}', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
+    'Q', 'R', '\u{00B9}', '\u{00FB}', '\u{00FC}', '\u{00F9}', '\u{00FA}', '\u{00FF}',
+    '\\', '\u{00F7}', 'S', 'T', 'U', 'V', 'W', 'X',
+    'Y', 'Z', '\u{00B2}', '\u{00D4}', '\u{00D6}', '\u{00D2}', '\u{00D3}', '\u{00D5}',
+    '0', '1', '2', '3', '4', '5', '6', '7',
+    '8', '9', '\u{00B3}', '\u{00DB}', '\u{00DC}', '\u{00D9}', '\u{00DA}', '\u{009F}',
 ];
 
 /// ASCII (0..127) → EBCDIC CP037; `0xFF` = not representable.
@@ -110,7 +126,7 @@ fn encode_ebcdic_cp_us(text: &str) -> Result<Vec<u8>, VmError> {
 fn decode_ebcdic_cp_us(bytes: &[u8]) -> String {
     bytes
         .iter()
-        .map(|&b| EBCDIC037_TO_BYTE[b as usize] as char)
+        .map(|&b| EBCDIC037_DECODE[b as usize])
         .collect()
 }
 
@@ -440,5 +456,19 @@ mod tests {
         let bytes = encode_ebcdic_cp_us("y876543012").unwrap();
         assert_eq!(bytes, [0xA8, 0xF8, 0xF7, 0xF6, 0xF5, 0xF4, 0xF3, 0xF0, 0xF1, 0xF2]);
         assert_eq!(decode_ebcdic_cp_us(&bytes), "y876543012");
+    }
+
+    #[test]
+    fn ebcdic_cp_us_b5_overpunch_char() {
+        let bytes = [0xB5, 0xF8, 0xF7, 0xF6, 0xF5, 0xF4, 0xF3, 0xF0, 0xF1, 0xF2];
+        let text = decode_ebcdic_cp_us(&bytes);
+        let first = text.chars().next().unwrap();
+        assert_eq!(first as u32, 0x00A7, "expected section sign, got U+{:04X}", first as u32);
+        use crate::vm::zoned_text::{
+            zoned_to_number, OverpunchLocation, TextZonedSignStyle,
+        };
+        let num = zoned_to_number(&text, TextZonedSignStyle::Ebcdic, OverpunchLocation::Start)
+            .unwrap();
+        assert_eq!(num, "-5876543012");
     }
 }

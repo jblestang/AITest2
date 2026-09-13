@@ -1057,6 +1057,13 @@ fn apply_text_number_pattern_numeric(
     } else {
         (false, text)
     };
+    if body.chars().any(|c| !c.is_ascii_digit()) {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Parse Error. Unable to parse xs:decimal from text: {text}"
+            ),
+        });
+    }
     let total_digits = digit_before + digit_after;
     let mut body_owned = body.to_string();
     if body_owned.len() < total_digits {
@@ -1240,7 +1247,11 @@ fn parse_field_text_number(
                 ),
             });
         }
-        crate::vm::zoned_text::validate_zoned_text_number_pattern_runtime(raw_pattern, kind)?;
+        crate::vm::zoned_text::validate_zoned_text_number_pattern_runtime(
+            raw_pattern,
+            kind,
+            props.text_number_check_policy,
+        )?;
         crate::vm::zoned_text::validate_zoned_pattern_characters(raw_pattern)?;
     }
     let pattern_owned = if props.text_number_rep == crate::schema::TextNumberRep::Zoned {

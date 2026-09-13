@@ -93,6 +93,17 @@ fn section13_zoned_ebcdic() {
 }
 
 #[test]
+fn section13_zoned_ebcdic_b5() {
+    match run_named(
+        "section13/zoned/zoned2.tdml",
+        "ZonedEBCDICLeadingOverpunchedSign_B5",
+    ) {
+        TestOutcome::Pass => {}
+        other => panic!("ZonedEBCDICLeadingOverpunchedSign_B5: {other:?}"),
+    }
+}
+
+#[test]
 fn section13_zoned_standard() {
     for name in ["ZonedStandard01", "ZonedStandard02", "ZonedStandard05"] {
         match run_named("section13/zoned/zoned.tdml", name) {
