@@ -7,7 +7,7 @@ use super::runtime::{
 };
 use crate::length_validate::{binary_length_validation_applies, validate_data_length_vm};
 use crate::error::{Error, Result, VmError};
-use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
+use crate::ir::{IrNode, IrProgram, IrProps, StringId, ValueKind};
 use crate::schema::{match_length_pattern, InputValueCalc, LengthKind, LengthUnits, Representation, SeparatorPosition};
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
@@ -1431,6 +1431,79 @@ fn resolve_length_props(
             }
         })?;
         resolved.resolved_text_standard_exponent_rep = Some(raw);
+        resolved.text_standard_exponent_rep_defined = true;
+    }
+
+    let mut distinct: alloc::vec::Vec<(&str, alloc::string::String)> = alloc::vec::Vec::new();
+    if resolved.text_standard_decimal_separator_defined {
+        let raw = resolved
+            .resolved_text_standard_decimal_separator
+            .clone()
+            .or_else(|| {
+                strings
+                    .get(resolved.text_standard_decimal_separator)
+                    .ok()
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        distinct.push(("textStandardDecimalSeparator", raw));
+    }
+    if resolved.text_standard_grouping_separator_defined {
+        let raw = resolved
+            .resolved_text_standard_grouping_separator
+            .clone()
+            .or_else(|| {
+                resolved
+                    .text_standard_grouping_separator
+                    .and_then(|id| strings.get(id).ok().map(str::to_string))
+            })
+            .unwrap_or_default();
+        distinct.push(("textStandardGroupingSeparator", raw));
+    }
+    if resolved.text_standard_exponent_rep_defined {
+        let raw = resolved
+            .resolved_text_standard_exponent_rep
+            .clone()
+            .or_else(|| {
+                strings
+                    .get(resolved.text_standard_exponent_rep)
+                    .ok()
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        distinct.push(("textStandardExponentRep", raw));
+    }
+    if resolved.text_standard_infinity_rep != StringId(0) {
+        let raw = strings
+            .get(resolved.text_standard_infinity_rep)
+            .unwrap_or("")
+            .to_string();
+        distinct.push(("textStandardInfinityRep", raw));
+    }
+    if resolved.text_standard_nan_rep != StringId(0) {
+        let raw = strings
+            .get(resolved.text_standard_nan_rep)
+            .unwrap_or("")
+            .to_string();
+        distinct.push(("textStandardNaNRep", raw));
+    }
+    if resolved.text_standard_zero_rep_defined {
+        let raw = strings
+            .get(resolved.text_standard_zero_rep)
+            .unwrap_or("")
+            .to_string();
+        distinct.push(("textStandardZeroRep", raw));
+    }
+    if distinct.len() >= 2 {
+        let refs: alloc::vec::Vec<(&str, &str)> = distinct
+            .iter()
+            .map(|(n, s)| (*n, s.as_str()))
+            .collect();
+        crate::schema::validate_text_standard_distinct_values(&refs).map_err(|msg| {
+            VmError::InvalidValue {
+                message: alloc::format!("Schema Definition Error: {msg}"),
+            }
+        })?;
     }
 
     Ok(resolved)

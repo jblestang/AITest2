@@ -72,6 +72,94 @@ pub fn normalize_delimiter_pattern(raw: &str) -> String {
     expand_entities_str(raw.trim_end_matches([' ', '\t']))
 }
 
+/// Validate `%entity;` references in a DFDL property literal.
+pub fn validate_dfdl_entities_in_property(raw: &str) -> Result<(), String> {
+    if raw == "%" {
+        return Err("Invalid DFDL Entity (%) found".into());
+    }
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let Some(rel) = raw[i..].find(';') {
+                let entity = &raw[i + 1..i + rel];
+                let entity_name = entity.trim_end_matches(['+', '*', '?']);
+                if parse_entity(&format!("%{entity_name};")).is_none() {
+                    return Err(format!("Invalid DFDL Entity ({entity}) found"));
+                }
+                i += rel + 1;
+            } else {
+                let tail = &raw[i + 1..];
+                if tail.is_empty() {
+                    return Err("Invalid DFDL Entity (%) found".into());
+                }
+                return Err(format!("Invalid DFDL Entity ({tail}) found"));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
+}
+
+fn reject_byte_entities_text_standard(raw: &str) -> Result<(), String> {
+    let mut i = 0usize;
+    while i < raw.len() {
+        if raw.as_bytes()[i] == b'%' {
+            if let Some(rel) = raw[i..].find(';') {
+                let entity = &raw[i + 1..i + rel];
+                let entity_name = entity.trim_end_matches(['+', '*', '?']);
+                if entity_name.starts_with("#r") || entity_name.starts_with("#R") {
+                    let full = &raw[i..=i + rel];
+                    return Err(format!("DFDL Byte Entity ({full}) not allowed"));
+                }
+                i += rel + 1;
+            } else {
+                return Ok(());
+            }
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
+}
+
+fn char_class_tokens(raw: &str) -> alloc::vec::Vec<&str> {
+    let parts: alloc::vec::Vec<&str> = raw.split_whitespace().collect();
+    if parts.len() > 1 {
+        parts
+    } else {
+        alloc::vec![raw]
+    }
+}
+
+fn validate_disallowed_char_class_tokens(
+    prop: &str,
+    raw: &str,
+    extra_disallowed: &[&str],
+) -> Result<(), String> {
+    const DISALLOWED: [&str; 8] = [
+        "%NL;",
+        "%LF;",
+        "%WSP;",
+        "%WS;",
+        "%WSP+;",
+        "%WSP*;",
+        "%WS+;",
+        "%ES;",
+    ];
+    for token in char_class_tokens(raw) {
+        for dis in DISALLOWED.iter().chain(extra_disallowed.iter()) {
+            if token == *dis {
+                return Err(format!(
+                    "{prop} contains disallowed character class(es): {dis}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Compile-time validation for `textStandardDecimalSeparator` / `textStandardGroupingSeparator`.
 pub fn validate_text_standard_exponent_rep_literal(raw: &str) -> Result<(), String> {
     validate_text_standard_separator_literal("textStandardExponentRep", raw)
@@ -81,40 +169,15 @@ pub fn validate_text_standard_special_value_literal(
     prop: &str,
     raw: &str,
 ) -> Result<(), String> {
-    if raw.contains("#r") || raw.contains("#R") {
-        if let Some(idx) = raw.find("%#") {
-            let tail = &raw[idx..];
-            if let Some(end) = tail.find(';') {
-                return Err(format!("Byte Entity {}", &tail[..=end]));
-            }
-        }
-    }
-    for disallowed in ["%NL;", "%LF;", "%WSP;", "%WS;", "%WSP+;", "%WSP*;", "%WS+;"] {
-        if raw.contains(disallowed) {
-            return Err(format!(
-                "{prop} contains disallowed character class(es): {disallowed}"
-            ));
-        }
-    }
+    validate_dfdl_entities_in_property(raw)?;
+    validate_disallowed_char_class_tokens(prop, raw, &[])?;
     Ok(())
 }
 
 pub fn validate_text_standard_separator_literal(prop: &str, raw: &str) -> Result<(), String> {
-    if raw.contains("#r") || raw.contains("#R") {
-        if let Some(idx) = raw.find("%#") {
-            let tail = &raw[idx..];
-            if let Some(end) = tail.find(';') {
-                return Err(format!("Byte Entity {}", &tail[..=end]));
-            }
-        }
-    }
-    for disallowed in ["%NL;", "%LF;", "%WSP;", "%WS;", "%WSP+;", "%WSP*;", "%WS+;"] {
-        if raw.contains(disallowed) {
-            return Err(format!(
-                "{prop} contains disallowed character class(es): {disallowed}"
-            ));
-        }
-    }
+    validate_dfdl_entities_in_property(raw)?;
+    reject_byte_entities_text_standard(raw)?;
+    validate_disallowed_char_class_tokens(prop, raw, &[])?;
     if (prop == "textStandardGroupingSeparator" || prop == "textStandardDecimalSeparator")
         && (raw.contains("%WSP") || raw.contains("%WS"))
         && !raw.contains("%WSP;")
@@ -126,6 +189,32 @@ pub fn validate_text_standard_separator_literal(prop: &str, raw: &str) -> Result
         ));
     }
     Ok(())
+}
+
+/// DFDL-13-061.1R — text standard property values must be distinct.
+pub fn validate_text_standard_distinct_values(entries: &[(&str, &str)]) -> Result<(), String> {
+    use alloc::collections::BTreeMap;
+    let mut by_value: BTreeMap<alloc::string::String, alloc::vec::Vec<&str>> = BTreeMap::new();
+    for (prop, raw) in entries {
+        let key = expand_entities_str(raw);
+        by_value.entry(key).or_default().push(prop);
+    }
+    let mut conflict: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
+    for props in by_value.values() {
+        if props.len() > 1 {
+            for p in props {
+                if !conflict.contains(p) {
+                    conflict.push(p);
+                }
+            }
+        }
+    }
+    if conflict.is_empty() {
+        return Ok(());
+    }
+    conflict.sort_unstable();
+    let names = conflict.join(", ");
+    Err(format!("Non-distinct property values for {names}"))
 }
 
 /// Parse `textStandardDecimalSeparator` (list of single-character literals, space-separated).
@@ -145,19 +234,15 @@ pub fn validate_text_standard_zero_rep_literal(raw: &str) -> Result<(), String> 
     if raw.is_empty() {
         return Ok(());
     }
-    if raw.contains("#r") || raw.contains("#R") {
-        if let Some(idx) = raw.find("%#") {
-            let tail = &raw[idx..];
-            if let Some(end) = tail.find(';') {
-                return Err(format!("Byte Entity {}", &tail[..=end]));
+    validate_dfdl_entities_in_property(raw)?;
+    reject_byte_entities_text_standard(raw)?;
+    for token in char_class_tokens(raw) {
+        for dis in ["%NL;", "%LF;"] {
+            if token == dis {
+                return Err(format!(
+                    "textStandardZeroRep contains disallowed character class(es): {dis}"
+                ));
             }
-        }
-    }
-    for disallowed in ["%NL;", "%LF;"] {
-        if raw.contains(disallowed) {
-            return Err(format!(
-                "textStandardZeroRep contains disallowed character class(es): {disallowed}"
-            ));
         }
     }
     Ok(())

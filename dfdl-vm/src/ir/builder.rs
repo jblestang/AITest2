@@ -10,6 +10,7 @@ use crate::schema::{
     SchemaDocument, SimpleBase, TypeDef, TypeName, expand_entities_str,
     parse_text_standard_separator_list, parse_text_standard_zero_rep_list,
     validate_length_pattern,
+    validate_text_standard_distinct_values,
     validate_text_standard_exponent_rep_literal,
     validate_text_standard_separator_literal,
     validate_text_standard_special_value_literal,
@@ -49,6 +50,14 @@ impl<'a> IrBuilder<'a> {
                 .is_some_and(|s| s.is_empty())
         {
             defaults.text_standard_exponent_rep = strings.intern("E");
+        }
+        if schema
+            .format_defaults
+            .props
+            .text_standard_exponent_rep
+            .is_some()
+        {
+            defaults.text_standard_exponent_rep_defined = true;
         }
         if defaults.text_standard_infinity_rep == StringId(0) {
             defaults.text_standard_infinity_rep = strings.intern("Inf");
@@ -609,8 +618,67 @@ fn text_number_pattern_bare(pattern: &str) -> String {
 }
 
 fn text_number_pattern_has_grouping_and_exponent(pattern: &str) -> bool {
-    let bare = text_number_pattern_bare(pattern);
-    bare.contains('E') && bare.contains(',')
+    text_number_pattern_requires_grouping_separator(pattern)
+        && text_number_pattern_requires_exponent(pattern)
+}
+
+fn validate_text_number_pattern_unquoted_special(pattern: &str) -> Result<()> {
+    for sub in pattern.split(';') {
+        let bare = text_number_pattern_bare(sub);
+        if bare.contains('_') {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: Invalid textNumberPattern: unquoted special character in pattern `{pattern}`"
+                ),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn text_standard_distinct_entries(
+    ir: &IrProps,
+    strings: &StringPool,
+) -> Result<Vec<(&'static str, alloc::string::String)>> {
+    let mut entries = Vec::new();
+    if ir.text_standard_decimal_separator_defined
+        && ir.text_standard_decimal_separator_sibling.is_none()
+    {
+        let raw = strings.get(ir.text_standard_decimal_separator).map_err(|e| {
+            SchemaError::InvalidProperty {
+                message: e.to_string(),
+            }
+        })?;
+        entries.push(("textStandardDecimalSeparator", raw.to_string()));
+    }
+    if ir.text_standard_grouping_separator_defined
+        && ir.text_standard_grouping_separator_sibling.is_none()
+    {
+        if let Some(gid) = ir.text_standard_grouping_separator {
+            let raw = strings.get(gid).map_err(|e| SchemaError::InvalidProperty {
+                message: e.to_string(),
+            })?;
+            entries.push(("textStandardGroupingSeparator", raw.to_string()));
+        }
+    }
+    if ir.text_standard_exponent_rep_defined && ir.text_standard_exponent_rep_sibling.is_none() {
+        let raw = strings.get(ir.text_standard_exponent_rep).unwrap_or("");
+        entries.push(("textStandardExponentRep", raw.to_string()));
+    }
+    if ir.text_standard_infinity_rep != StringId(0) {
+        let raw = strings.get(ir.text_standard_infinity_rep).unwrap_or("");
+        entries.push(("textStandardInfinityRep", raw.to_string()));
+    }
+    if ir.text_standard_nan_rep != StringId(0) {
+        let raw = strings.get(ir.text_standard_nan_rep).unwrap_or("");
+        entries.push(("textStandardNaNRep", raw.to_string()));
+    }
+    if ir.text_standard_zero_rep_defined {
+        let raw = strings.get(ir.text_standard_zero_rep).unwrap_or("");
+        entries.push(("textStandardZeroRep", raw.to_string()));
+    }
+    Ok(entries)
 }
 
 fn count_pad_specifiers(bare: &str) -> Result<usize> {
@@ -946,6 +1014,7 @@ fn finalize_element_props(
             for sub in pat.split(';') {
                 validate_text_number_pad_specifiers(sub)?;
             }
+            validate_text_number_pattern_unquoted_special(pat)?;
             if ir.text_standard_decimal_separator_defined {
                 let dec = strings.get(ir.text_standard_decimal_separator).unwrap_or("");
                 if dec.is_empty()
@@ -996,6 +1065,27 @@ fn finalize_element_props(
         None
     };
     validate_text_standard_separator_semantics(&ir, pattern_for_sep, strings)?;
+    if matches!(kind, ValueKind::Float | ValueKind::Double)
+        && ir.text_number_rep == crate::schema::TextNumberRep::Standard
+        && ir.representation == Representation::Text
+        && !ir.text_standard_exponent_rep_defined
+        && ir.text_standard_exponent_rep_sibling.is_none()
+    {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Property textStandardExponentRep is not defined.".into(),
+        }
+        .into());
+    }
+    let distinct_entries = text_standard_distinct_entries(&ir, strings)?;
+    if distinct_entries.len() >= 2 {
+        let refs: Vec<(&str, &str)> = distinct_entries
+            .iter()
+            .map(|(name, raw)| (*name, raw.as_str()))
+            .collect();
+        validate_text_standard_distinct_values(&refs).map_err(|msg| SchemaError::InvalidProperty {
+            message: alloc::format!("Schema Definition Error: {msg}"),
+        })?;
+    }
     if ir.text_standard_exponent_rep_defined
         && ir.text_standard_exponent_rep_sibling.is_none()
         && !strings.get(ir.text_standard_exponent_rep).unwrap_or("").is_empty()
