@@ -25,6 +25,28 @@ fn run_named(tdml_rel: &str, case_name: &str) -> TestOutcome {
 }
 
 #[test]
+fn section13_text_standard_decimal_separator08() {
+    match run_named(
+        "section13/text_number_props/TextNumberProps.tdml",
+        "textStandardDecimalSeparator08",
+    ) {
+        TestOutcome::Pass => {}
+        other => panic!("textStandardDecimalSeparator08: {other:?}"),
+    }
+}
+
+#[test]
+fn section13_text_number_exponent01() {
+    match run_named(
+        "section13/text_number_props/TextNumberProps.tdml",
+        "textNumberPattern_exponent01",
+    ) {
+        TestOutcome::Pass => {}
+        other => panic!("textNumberPattern_exponent01: {other:?}"),
+    }
+}
+
+#[test]
 fn section13_literal_character_text_01() {
     match run_named("section13/nillable/literal-character-nils.tdml", "text_01") {
         TestOutcome::Pass => {}

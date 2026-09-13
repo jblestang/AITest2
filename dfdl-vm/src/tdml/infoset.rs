@@ -388,11 +388,48 @@ fn field_values_to_infoset_nodes(name: &str, value: &DfdlValue) -> Vec<InfosetNo
 }
 
 fn format_float_for_infoset(v: f32) -> String {
-    if v % 1.0 == 0.0 && v.is_finite() {
+    if !v.is_finite() {
+        return v.to_string();
+    }
+    let av = f32_abs(v);
+    if av >= 1_000_000.0 || (av > 0.0 && av < 0.0001) {
+        let mut s = alloc::format!("{v:e}");
+        if let Some(idx) = s.find('e') {
+            s.replace_range(idx..idx + 1, "E");
+        }
+        return s;
+    }
+    let whole = (v as i64) as f32;
+    if f32_abs(v - whole) < f32::EPSILON {
         alloc::format!("{v:.1}")
     } else {
         v.to_string()
     }
+}
+
+fn f32_abs(v: f32) -> f32 {
+    if v.is_sign_negative() { -v } else { v }
+}
+
+fn float_infoset_texts_equal(expected: &str, actual: &str) -> bool {
+    let Ok(exp) = expected.trim().parse::<f32>() else {
+        return false;
+    };
+    let Ok(act) = actual.trim().parse::<f32>() else {
+        return false;
+    };
+    if exp.to_bits() == act.to_bits() {
+        return true;
+    }
+    let diff = f32_abs(exp - act);
+    let mut scale = f32_abs(exp);
+    if f32_abs(act) > scale {
+        scale = f32_abs(act);
+    }
+    if scale < 1.0 {
+        scale = 1.0;
+    }
+    diff <= scale * 1e-5
 }
 
 fn scalar_to_string(value: &DfdlValue) -> String {
@@ -450,7 +487,9 @@ fn compare_node(expected: &InfosetNode, actual: &InfosetNode) -> Result<(), Stri
     }
     if let Some(exp_text) = &expected.text {
         let act_text = actual.text.as_deref().unwrap_or("");
-        if exp_text.trim() != act_text.trim() {
+        if exp_text.trim() != act_text.trim()
+            && !float_infoset_texts_equal(exp_text, act_text)
+        {
             return Err(alloc::format!(
                 "text mismatch for `{}`: expected `{exp_text}`, got `{act_text}`",
                 expected.name

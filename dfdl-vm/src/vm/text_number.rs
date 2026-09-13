@@ -75,21 +75,66 @@ fn skip_ws(bytes: &[u8], pos: &mut usize, lax: bool) {
     }
 }
 
-fn skip_pad(bytes: &[u8], pos: &mut usize, pad: Option<char>, lax: bool) {
+/// Lax whitespace skip that must not consume a configured decimal separator (e.g. `%SP;`).
+fn skip_ws_respecting_decimal_sep(
+    bytes: &[u8],
+    pos: &mut usize,
+    props: &TextNumberFormatProps<'_>,
+) {
+    while *pos < bytes.len() && is_ws(bytes[*pos]) {
+        let ch = bytes[*pos] as char;
+        if props.decimal_separators.contains(&ch) {
+            break;
+        }
+        *pos += 1;
+    }
+}
+
+fn match_decimal_separator(
+    bytes: &[u8],
+    pos: &mut usize,
+    props: &TextNumberFormatProps<'_>,
+) -> bool {
+    for dec in props.decimal_separators {
+        let ds = dec.to_string();
+        if *pos + ds.len() <= bytes.len() {
+            let slice = core::str::from_utf8(&bytes[*pos..*pos + ds.len()]).ok();
+            if slice == Some(ds.as_str()) {
+                *pos += ds.len();
+                return true;
+            }
+        }
+        if *dec == '.' && *pos < bytes.len() && bytes[*pos] == b'.' {
+            *pos += 1;
+            return true;
+        }
+    }
+    false
+}
+
+fn skip_pad(
+    bytes: &[u8],
+    pos: &mut usize,
+    pad: Option<char>,
+    lax: bool,
+    props: &TextNumberFormatProps<'_>,
+    after_decimal: bool,
+) {
     if !lax {
         return;
     }
     loop {
-        skip_ws(bytes, pos, true);
+        skip_ws_respecting_decimal_sep(bytes, pos, props);
         if *pos >= bytes.len() {
             break;
         }
         let ch = bytes[*pos] as char;
-        if Some(ch) == pad {
+        // Leading pad only (integer side of the decimal separator).
+        if !after_decimal && Some(ch) == pad {
             *pos += ch.len_utf8();
             continue;
         }
-        if pad == Some('0') && bytes[*pos] == b'0' {
+        if !after_decimal && pad == Some('0') && bytes[*pos] == b'0' {
             *pos += 1;
             continue;
         }
@@ -118,8 +163,17 @@ fn match_subpattern(
     while i < chars.len() {
         if chars[i] == '\'' {
             i += 1;
-            let start = i;
-            while i < chars.len() && chars[i] != '\'' {
+            let mut lit = String::new();
+            while i < chars.len() {
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        lit.push('\'');
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                lit.push(chars[i]);
                 i += 1;
             }
             if i >= chars.len() {
@@ -127,43 +181,36 @@ fn match_subpattern(
                     message: format!("invalid textNumberPattern `{pattern}`"),
                 });
             }
-            let lit: String = chars[start..i].iter().collect();
             i += 1;
             skip_ws(bytes, &mut pos, lax);
-            if !text[pos..].starts_with(&lit) {
+            if text[pos..].starts_with(&lit) {
+                pos += lit.len();
+            } else if lax {
+                // lax: quoted literal may be omitted (DFDL-13-052R)
+            } else {
                 return Err(VmError::InvalidValue {
                     message: "textNumberPattern mismatch".into(),
                 });
             }
-            pos += lit.len();
             continue;
         }
 
         match chars[i] {
             '0' | '#' => {
                 let mut j = i;
-                let mut min_digits = 0usize;
                 let mut max_digits = 0usize;
                 while j < chars.len() && matches!(chars[j], '0' | '#') {
-                    if chars[j] == '0' {
-                        min_digits += 1;
-                    }
                     max_digits += 1;
                     j += 1;
                 }
                 i = j;
+                // DFDL/ICU parse: digit characters in the data are always recognized (0 vs # affects unparse only).
+                let min_digits = 0usize;
 
-                skip_pad(bytes, &mut pos, props.pad_character, lax);
+                skip_pad(bytes, &mut pos, props.pad_character, lax, props, saw_decimal);
                 if !in_exponent && !saw_decimal {
-                    for dec in props.decimal_separators {
-                        let ds = dec.to_string();
-                        if text[pos..].starts_with(&ds)
-                            || (*dec == '.' && pos < bytes.len() && bytes[pos] == b'.')
-                        {
-                            pos += ds.len().max(1);
-                            saw_decimal = true;
-                            break;
-                        }
+                    if match_decimal_separator(bytes, &mut pos, props) {
+                        saw_decimal = true;
                     }
                 }
                 let start = pos;
@@ -196,28 +243,24 @@ fn match_subpattern(
                 }
             }
             '*' => {
-                skip_pad(bytes, &mut pos, props.pad_character, lax);
+                skip_pad(bytes, &mut pos, props.pad_character, lax, props, saw_decimal);
                 i += 1;
             }
             '.' => {
-                if !props.decimal_separators.iter().any(|&d| d == '.') {
-                    // pattern dot when decimal sep is custom — treat as literal below
+                // Match decimal separator before lax whitespace skip — when the separator is
+                // space (or other WS), skip_ws would consume it and break parsing (DFDL-13-053R).
+                let mut matched = match_decimal_separator(bytes, &mut pos, props);
+                if !matched && lax {
+                    skip_ws_respecting_decimal_sep(bytes, &mut pos, props);
+                    matched = match_decimal_separator(bytes, &mut pos, props);
                 }
-                skip_ws(bytes, &mut pos, lax);
-                let dec = props.decimal_separators.first().copied().unwrap_or('.');
-                if pos < bytes.len() {
-                    let ch = bytes[pos] as char;
-                    if ch == dec || ch == '.' {
-                        pos += ch.len_utf8();
-                        saw_decimal = true;
-                        i += 1;
-                        continue;
-                    }
-                }
-                if !lax {
+                if !matched && !lax {
                     return Err(VmError::InvalidValue {
                         message: "textNumberPattern mismatch".into(),
                     });
+                }
+                if matched {
+                    saw_decimal = true;
                 }
                 i += 1;
             }
@@ -377,6 +420,82 @@ mod tests {
     }
 
     #[test]
+    fn strict_pad_exponent_pattern() {
+        let dec = ['.'];
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(','),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number("006.54E9", "000.0#E0", &props).unwrap();
+        assert_eq!(n, "6.54E9");
+    }
+
+    #[test]
+    fn lax_optional_quoted_prefix() {
+        let props = TextNumberFormatProps::default();
+        let n = parse_standard_text_number("1234", "'$'0000", &props).unwrap();
+        assert_eq!(n, "1234");
+        let n2 = parse_standard_text_number("1234", "'optional:'0000", &props).unwrap();
+        assert_eq!(n2, "1234");
+    }
+
+    #[test]
+    fn lax_space_decimal_separator() {
+        let dec = [' '];
+        let lax_props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Lax,
+            decimal_separators: &dec,
+            grouping_separator: Some(','),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let strict_props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(','),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let strict =
+            parse_standard_text_number("$5 00", "'$'#0.00", &strict_props).unwrap();
+        assert_eq!(strict, "5.00", "strict baseline got `{strict}`");
+        let n = parse_standard_text_number("$5 00", "'$'#0.00", &lax_props).unwrap();
+        assert_eq!(n, "5.00", "lax parse got `{n}` (strict=`{strict}`)");
+        let n2 = parse_standard_text_number("$5 50", "'$'#0.00", &lax_props).unwrap();
+        assert_eq!(n2, "5.50", "lax parse got `{n2}`");
+    }
+
+    #[test]
+    fn space_decimal_separator() {
+        let dec = [' '];
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(','),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number("$5 00", "'$'#0.00", &props).unwrap();
+        assert_eq!(n, "5.00");
+    }
+
+    #[test]
+    fn quoted_dollar_float() {
+        let dec = ['.'];
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(','),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number("$49.99", "'$'##0.00", &props).unwrap();
+        assert_eq!(n, "49.99");
+    }
+
     fn strict_four_zeros() {
         let dec = ['.'];
         let props = TextNumberFormatProps {

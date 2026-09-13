@@ -3086,8 +3086,18 @@ fn read_numeric_token(cursor: &mut Cursor<'_>) -> Vec<u8> {
             cursor.advance(1);
         }
     }
-    while cursor.pos < cursor.data.len() && cursor.data[cursor.pos].is_ascii_digit() {
-        cursor.advance(1);
+    while cursor.pos < cursor.data.len() {
+        let b = cursor.data[cursor.pos];
+        if b.is_ascii_digit() || b == b'.' || b == b',' || b == b'e' || b == b'E' {
+            cursor.advance(1);
+        } else if (b == b'+' || b == b'-')
+            && cursor.pos > start
+            && matches!(cursor.data[cursor.pos - 1], b'e' | b'E')
+        {
+            cursor.advance(1);
+        } else {
+            break;
+        }
     }
     cursor.data[start..cursor.pos].to_vec()
 }
