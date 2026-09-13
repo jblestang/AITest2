@@ -92,8 +92,8 @@ fn section13_packed_tdml_scan() {
         }
     }
     eprintln!("packed.tdml: pass={pass} fail={fail}");
-    assert!(
-        pass >= 25,
-        "packed.tdml: expected at least 25 passing parser cases, got pass={pass} fail={fail}"
+    assert_eq!(
+        fail, 0,
+        "packed.tdml: expected all parser cases to pass, got pass={pass} fail={fail}"
     );
 }
