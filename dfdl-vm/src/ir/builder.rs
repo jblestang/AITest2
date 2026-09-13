@@ -520,6 +520,28 @@ fn validate_float_double_bit_length(kind: ValueKind, length: u64, units: LengthU
     validate_float_double_bit_length_schema(kind, length, units).map_err(Into::into)
 }
 
+fn text_number_pattern_requires_grouping_separator(pattern: &str) -> bool {
+    let mut in_quote = false;
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            if in_quote && i + 1 < chars.len() && chars[i + 1] == '\'' {
+                i += 2;
+                continue;
+            }
+            in_quote = !in_quote;
+            i += 1;
+            continue;
+        }
+        if !in_quote && chars[i] == ',' {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 fn text_number_pattern_requires_decimal_separator(pattern: &str) -> bool {
     let mut in_quote = false;
     let chars: Vec<char> = pattern.chars().collect();
@@ -613,6 +635,14 @@ fn finalize_element_props(
             {
                 return Err(SchemaError::InvalidProperty {
                     message: "Schema Definition Error: Property textStandardDecimalSeparator is not defined".into(),
+                }
+                .into());
+            }
+            if text_number_pattern_requires_grouping_separator(pat)
+                && !ir.text_standard_grouping_separator_defined
+            {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: Property textStandardGroupingSeparator is not defined".into(),
                 }
                 .into());
             }
@@ -782,6 +812,7 @@ fn value_kind_type_name(kind: ValueKind) -> &'static str {
         ValueKind::Byte => "xs:byte",
         ValueKind::Short => "xs:short",
         ValueKind::Int => "xs:int",
+        ValueKind::Integer => "xs:integer",
         ValueKind::Long => "xs:long",
         ValueKind::UnsignedByte => "xs:unsignedByte",
         ValueKind::UnsignedShort => "xs:unsignedShort",
@@ -936,10 +967,11 @@ fn value_kind_from_builtin(builtin: BuiltinType) -> ValueKind {
     match builtin {
         BuiltinType::Boolean => ValueKind::Boolean,
         BuiltinType::Int => ValueKind::Int,
+        BuiltinType::Integer | BuiltinType::NonNegativeInteger => ValueKind::Integer,
         BuiltinType::Long => ValueKind::Long,
         BuiltinType::Short => ValueKind::Short,
         BuiltinType::Byte => ValueKind::Byte,
-        BuiltinType::UnsignedInt | BuiltinType::NonNegativeInteger => ValueKind::UnsignedInt,
+        BuiltinType::UnsignedInt => ValueKind::UnsignedInt,
         BuiltinType::UnsignedShort => ValueKind::UnsignedShort,
         BuiltinType::UnsignedByte => ValueKind::UnsignedByte,
         BuiltinType::Float => ValueKind::Float,
@@ -1138,6 +1170,7 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
         } else {
             Some(strings.intern(g.to_string()))
         };
+        base.text_standard_grouping_separator_defined = true;
     }
     if props.text_standard_exponent_rep.is_some() {
         base.text_standard_exponent_rep = strings.intern(
@@ -1309,6 +1342,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
         out.text_standard_decimal_separator_defined = true;
     }
     out.text_standard_grouping_separator = overlay.text_standard_grouping_separator;
+    if overlay.text_standard_grouping_separator_defined {
+        out.text_standard_grouping_separator_defined = true;
+    }
     if overlay.text_standard_exponent_rep != StringId(0) {
         out.text_standard_exponent_rep = overlay.text_standard_exponent_rep;
     }

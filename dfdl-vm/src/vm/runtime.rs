@@ -481,7 +481,7 @@ pub(crate) fn type_size(kind: crate::ir::ValueKind) -> usize {
         Short | UnsignedShort => 2,
         Int | UnsignedInt | Float => 4,
         Long | Double => 8,
-        String | HexBinary | Decimal | DateTime | Time | Complex => 0,
+        String | HexBinary | Decimal | DateTime | Time | Complex | Integer => 0,
     }
 }
 
@@ -1445,6 +1445,7 @@ fn decode_binary_from_raw_bits(
             Ok(DfdlValue::Int(v))
         }
         UnsignedInt => Ok(DfdlValue::UnsignedInt((raw & bit_mask(bit_width)) as u32)),
+        Integer => Ok(DfdlValue::Integer(raw.to_string())),
         Long => {
             let v = if props.unsigned_integer {
                 raw & bit_mask(bit_width)
@@ -1585,6 +1586,19 @@ fn decode_binary_bytes(
             }
         }
         UnsignedInt => Ok(DfdlValue::UnsignedInt(int!(u32))),
+        Integer => {
+            if bit_width == Some(1) {
+                Ok(DfdlValue::Integer(
+                    (decode_unsigned_binary_bytes(bytes, le) as i64).to_string(),
+                ))
+            } else if let Some(bits) = bit_width {
+                Ok(DfdlValue::Integer(
+                    sign_extend_u64(decode_unsigned_binary_bytes(bytes, le), bits).to_string(),
+                ))
+            } else {
+                Ok(DfdlValue::Integer(int!(i64).to_string()))
+            }
+        }
         Long => {
             if bit_width == Some(1) {
                 Ok(DfdlValue::Long(decode_unsigned_binary_bytes(bytes, le) as i64))
@@ -1791,10 +1805,19 @@ pub(crate) fn read_text_scalar(
             let num = parse_field_text_number(trimmed, kind, props, strings)?;
             parse_int_typed_with_base(&num, "xs:int", base).map(DfdlValue::Int)
         }
+        Integer => {
+            let num = if props.custom_text_number_pattern {
+                parse_field_text_number(trimmed, kind, props, strings)?
+            } else {
+                trimmed.to_string()
+            };
+            parse_unbounded_integer_decimal(&num, base, false).map(DfdlValue::Integer)
+        }
         UnsignedInt => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedInt),
         Long => {
             if props.unsigned_integer {
-                parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedLong)
+                let v = parse_unsigned_radix_typed(trimmed, "xs:unsignedLong", base)?;
+                Ok(DfdlValue::UnsignedLong(v))
             } else {
                 parse_int_typed_with_base(trimmed, "xs:long", base).map(DfdlValue::Long)
             }
@@ -3074,7 +3097,8 @@ fn is_numeric_text_kind(kind: crate::ir::ValueKind) -> bool {
     use crate::ir::ValueKind::*;
     matches!(
         kind,
-        Byte | UnsignedByte | Short | UnsignedShort | Int | UnsignedInt | Long | Float | Double
+        Byte | UnsignedByte | Short | UnsignedShort | Int | Integer | UnsignedInt | Long | Float
+            | Double
             | Decimal
     )
 }
@@ -3164,94 +3188,140 @@ fn trim_pad_char<'a>(input: &'a str, pad: &str) -> &'a str {
     &input[start..end]
 }
 
-fn parse_int_with_base<T>(s: &str, base: u32) -> Result<T, crate::error::VmError>
+fn parse_int_with_base<T>(s: &str, type_name: &str, base: u32) -> Result<T, crate::error::VmError>
 where
-    T: core::str::FromStr,
+    T: TryFrom<i64>,
+    <T as TryFrom<i64>>::Error: core::fmt::Debug,
 {
-    if base == 10 {
-        s.parse().map_err(|_| crate::error::VmError::InvalidValue {
-            message: alloc::format!("invalid integer `{s}`"),
-        })
+    parse_int_typed_with_base(s, type_name, base)
+}
+
+fn parse_out_of_range(type_name: &str, decimal_value: &str) -> crate::error::VmError {
+    crate::error::VmError::InvalidValue {
+        message: alloc::format!("Parse Error. out of range. {type_name} {decimal_value}"),
+    }
+}
+
+fn split_sign_digits(s: &str) -> Result<(i64, &str), crate::error::VmError> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err(crate::error::VmError::InvalidValue {
+            message: "Parse Error. empty string".into(),
+        });
+    }
+    Ok(if trimmed.starts_with('-') {
+        (-1, &trimmed[1..])
+    } else if trimmed.starts_with('+') {
+        (1, &trimmed[1..])
     } else {
-        parse_radix_int(s, base)
+        (1, trimmed)
+    })
+}
+
+fn parse_u128_radix(digits: &str, base: u32) -> Result<u128, crate::error::VmError> {
+    u128::from_str_radix(digits, base).map_err(|_| crate::error::VmError::InvalidValue {
+        message: alloc::format!("invalid integer `{digits}`"),
+    })
+}
+
+fn decimal_from_sign_magnitude(sign: i64, abs: u128) -> alloc::string::String {
+    if sign < 0 {
+        alloc::format!("-{abs}")
+    } else {
+        abs.to_string()
+    }
+}
+
+fn parse_unbounded_integer_decimal(s: &str, base: u32, non_negative: bool) -> Result<alloc::string::String, crate::error::VmError> {
+    let (sign, digits) = split_sign_digits(s)?;
+    if non_negative && sign < 0 {
+        return Err(crate::error::VmError::InvalidValue {
+            message: alloc::format!("invalid integer `{s}`"),
+        });
+    }
+    let abs = parse_u128_radix(digits, base)?;
+    Ok(decimal_from_sign_magnitude(sign, abs))
+}
+
+fn parse_int_typed_with_base_i64(
+    s: &str,
+    type_name: &str,
+    base: u32,
+) -> Result<i64, crate::error::VmError> {
+    let (sign, digits) = split_sign_digits(s)?;
+    let abs = parse_u128_radix(digits, base)?;
+    let decimal = decimal_from_sign_magnitude(sign, abs);
+    let (min_abs, max_abs): (u128, u128) = match type_name {
+        "xs:byte" => (128, 127),
+        "xs:short" => (32768, 32767),
+        "xs:int" => (2147483648, 2147483647),
+        "xs:long" => (9223372036854775808, 9223372036854775807),
+        _ => (0, u128::MAX),
+    };
+    if sign >= 0 && abs > max_abs {
+        return Err(parse_out_of_range(type_name, &decimal));
+    }
+    if sign < 0 && abs > min_abs {
+        return Err(parse_out_of_range(type_name, &decimal));
+    }
+    if sign < 0 {
+        Ok(-(abs as i64))
+    } else {
+        Ok(abs as i64)
     }
 }
 
 fn parse_int_typed_with_base<T>(s: &str, type_name: &str, base: u32) -> Result<T, crate::error::VmError>
 where
-    T: core::str::FromStr,
+    T: TryFrom<i64>,
+    <T as TryFrom<i64>>::Error: core::fmt::Debug,
 {
-    if s.is_empty() {
-        return Err(crate::error::VmError::InvalidValue {
-            message: "Parse Error. empty string".into(),
-        });
-    }
-    if base == 10 {
-        s.parse().map_err(|_| crate::error::VmError::InvalidValue {
-            message: alloc::format!("Parse Error. {type_name} {s}"),
-        })
-    } else {
-        parse_radix_int(s, base).map_err(|_| crate::error::VmError::InvalidValue {
-            message: alloc::format!("Parse Error. {type_name} {s}"),
-        })
-    }
-}
-
-fn parse_radix_int<T>(s: &str, base: u32) -> Result<T, crate::error::VmError>
-where
-    T: core::str::FromStr,
-{
-    let trimmed = s.trim();
-    let (sign, digits) = if trimmed.starts_with('-') {
-        (-1i64, &trimmed[1..])
-    } else if trimmed.starts_with('+') {
-        (1, &trimmed[1..])
-    } else {
-        (1, trimmed)
-    };
-    let unsigned = u64::from_str_radix(digits, base).map_err(|_| {
-        crate::error::VmError::InvalidValue {
-            message: alloc::format!("invalid integer `{s}`"),
-        }
-    })?;
-    let signed = if sign < 0 {
-        -(unsigned as i64)
-    } else {
-        unsigned as i64
-    };
-    signed
-        .to_string()
-        .parse::<T>()
-        .map_err(|_| crate::error::VmError::InvalidValue {
-            message: alloc::format!("invalid integer `{s}`"),
-        })
+    let v = parse_int_typed_with_base_i64(s, type_name, base)?;
+    T::try_from(v).map_err(|_| {
+        let (sign, digits) = split_sign_digits(s).unwrap_or((1, ""));
+        let abs = parse_u128_radix(digits, base).unwrap_or(0);
+        parse_out_of_range(type_name, &decimal_from_sign_magnitude(sign, abs))
+    })
 }
 
 fn parse_unsigned_radix<T>(s: &str, base: u32) -> Result<T, crate::error::VmError>
 where
-    T: core::str::FromStr,
+    T: TryFrom<u64>,
+    <T as TryFrom<u64>>::Error: core::fmt::Debug,
 {
+    let type_name = match core::mem::size_of::<T>() {
+        1 => "xs:unsignedByte",
+        2 => "xs:unsignedShort",
+        4 => "xs:unsignedInt",
+        8 => "xs:unsignedLong",
+        _ => "xs:unsignedInt",
+    };
+    let v = parse_unsigned_radix_typed(s, type_name, base)?;
+    T::try_from(v).map_err(|_| crate::error::VmError::InvalidValue {
+        message: alloc::format!("invalid integer `{s}`"),
+    })
+}
+
+fn parse_unsigned_radix_typed(s: &str, type_name: &str, base: u32) -> Result<u64, crate::error::VmError> {
     let trimmed = s.trim();
     if trimmed.starts_with('-') || trimmed.starts_with('+') {
         return Err(crate::error::VmError::InvalidValue {
             message: alloc::format!("invalid integer `{s}`"),
         });
     }
-    if base == 10 {
-        trimmed.parse().map_err(|_| crate::error::VmError::InvalidValue {
-            message: alloc::format!("invalid integer `{s}`"),
-        })
-    } else {
-        u64::from_str_radix(trimmed, base)
-            .map_err(|_| crate::error::VmError::InvalidValue {
-                message: alloc::format!("invalid integer `{s}`"),
-            })?
-            .to_string()
-            .parse()
-            .map_err(|_| crate::error::VmError::InvalidValue {
-                message: alloc::format!("invalid integer `{s}`"),
-            })
+    let abs = parse_u128_radix(trimmed, base)?;
+    let decimal = abs.to_string();
+    let max = match type_name {
+        "xs:unsignedByte" => u8::MAX as u128,
+        "xs:unsignedShort" => u16::MAX as u128,
+        "xs:unsignedInt" => u32::MAX as u128,
+        "xs:unsignedLong" => u64::MAX as u128,
+        _ => u128::MAX,
+    };
+    if abs > max {
+        return Err(parse_out_of_range(type_name, &decimal));
     }
+    u64::try_from(abs).map_err(|_| parse_out_of_range(type_name, &decimal))
 }
 
 fn parse_float(s: &str) -> Result<f64, crate::error::VmError> {
@@ -4405,13 +4475,16 @@ pub(crate) fn default_value_for(
     let base = props.text_standard_base;
     match kind {
         Boolean => parse_text_boolean(raw, props, strings).ok().map(DfdlValue::Boolean),
-        Byte => parse_int_with_base(raw, base).ok().map(DfdlValue::Byte),
+        Byte => parse_int_with_base(raw, "xs:byte", base).ok().map(DfdlValue::Byte),
         UnsignedByte => parse_unsigned_radix(raw, base).ok().map(DfdlValue::UnsignedByte),
-        Short => parse_int_with_base(raw, base).ok().map(DfdlValue::Short),
+        Short => parse_int_with_base(raw, "xs:short", base).ok().map(DfdlValue::Short),
         UnsignedShort => parse_unsigned_radix(raw, base).ok().map(DfdlValue::UnsignedShort),
-        Int => parse_int_with_base(raw, base).ok().map(DfdlValue::Int),
+        Int => parse_int_with_base(raw, "xs:int", base).ok().map(DfdlValue::Int),
+        Integer => parse_unbounded_integer_decimal(raw, base, false)
+            .ok()
+            .map(DfdlValue::Integer),
         UnsignedInt => parse_unsigned_radix(raw, base).ok().map(DfdlValue::UnsignedInt),
-        Long => parse_int_with_base(raw, base).ok().map(DfdlValue::Long),
+        Long => parse_int_with_base(raw, "xs:long", base).ok().map(DfdlValue::Long),
         Float => parse_float(raw).ok().map(|v| DfdlValue::Float(v as f32)),
         Double => parse_float(raw).ok().map(DfdlValue::Double),
         Decimal => Some(DfdlValue::Decimal(raw.into())),

@@ -289,6 +289,7 @@ pub enum BuiltinType {
     UnsignedInt,
     UnsignedShort,
     UnsignedByte,
+    Integer,
     NonNegativeInteger,
     Float,
     Double,
@@ -302,7 +303,7 @@ pub enum BuiltinType {
 impl BuiltinType {
     pub fn from_xsd(name: &str) -> Option<Self> {
         match name {
-            "xs:integer" | "integer" => Some(BuiltinType::Long),
+            "xs:integer" | "integer" => Some(BuiltinType::Integer),
             "xs:string" | "string" => Some(BuiltinType::String),
             "xs:int" | "int" => Some(BuiltinType::Int),
             "xs:long" | "long" => Some(BuiltinType::Long),
@@ -329,6 +330,7 @@ impl BuiltinType {
         match self {
             BuiltinType::String => "xs:string",
             BuiltinType::Int => "xs:int",
+            BuiltinType::Integer => "xs:integer",
             BuiltinType::Long => "xs:long",
             BuiltinType::Short => "xs:short",
             BuiltinType::Byte => "xs:byte",

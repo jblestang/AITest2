@@ -78,6 +78,8 @@ pub enum DfdlValue {
     Null,
     Boolean(bool),
     Int(i32),
+    /// Unbounded integer (`xs:integer`, large `xs:nonNegativeInteger`) as decimal digits.
+    Integer(String),
     Long(i64),
     UnsignedLong(u64),
     Short(i16),

@@ -174,6 +174,7 @@ fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, Strin
             .parse::<i32>()
             .map(DfdlValue::Int)
             .map_err(|e| e.to_string()),
+        ValueKind::Integer => Ok(DfdlValue::Integer(trimmed.to_string())),
         ValueKind::Long => trimmed
             .parse::<i64>()
             .map(DfdlValue::Long)
@@ -436,6 +437,7 @@ fn scalar_to_string(value: &DfdlValue) -> String {
     match value {
         DfdlValue::Boolean(v) => v.to_string(),
         DfdlValue::Int(v) => v.to_string(),
+        DfdlValue::Integer(v) => v.clone(),
         DfdlValue::Long(v) => v.to_string(),
         DfdlValue::UnsignedLong(v) => v.to_string(),
         DfdlValue::Short(v) => v.to_string(),

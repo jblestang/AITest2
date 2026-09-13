@@ -51,6 +51,7 @@ pub struct ChoiceBranch {
 pub enum ValueKind {
     Boolean,
     Int,
+    Integer,
     Long,
     Short,
     Byte,
@@ -106,6 +107,7 @@ pub struct IrProps {
     /// Set when `textStandardDecimalSeparator` was present on merged DFDL props.
     pub text_standard_decimal_separator_defined: bool,
     pub text_standard_grouping_separator: Option<StringId>,
+    pub text_standard_grouping_separator_defined: bool,
     pub text_standard_exponent_rep: StringId,
     /// Element/type declared `textNumberPattern` (not only the format default).
     pub custom_text_number_pattern: bool,
@@ -176,6 +178,7 @@ impl Default for IrProps {
             text_standard_decimal_separator_defined: false,
             text_standard_exponent_rep: StringId(0),
             text_standard_grouping_separator: None,
+            text_standard_grouping_separator_defined: false,
             custom_text_number_pattern: false,
             initiator: None,
             terminator: None,
