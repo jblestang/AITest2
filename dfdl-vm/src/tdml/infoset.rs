@@ -163,8 +163,12 @@ fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, Strin
             .map(DfdlValue::Boolean)
             .map_err(|_| alloc::format!("invalid boolean `{trimmed}`")),
         ValueKind::Byte => trimmed
-            .parse::<i8>()
-            .map(DfdlValue::Byte)
+            .parse::<i64>()
+            .map(|v| {
+                i8::try_from(v)
+                    .map(DfdlValue::Byte)
+                    .unwrap_or(DfdlValue::Long(v))
+            })
             .map_err(|e| e.to_string()),
         ValueKind::Short => trimmed
             .parse::<i16>()

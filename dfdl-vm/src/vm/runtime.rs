@@ -21,7 +21,8 @@ use crate::schema::{
     BinaryNumberRep, BitOrder,
     ByteOrder,
     EncodingErrorPolicy, LengthKind, LengthUnits, NilKind, Representation, SeparatorPosition,
-    SeparatorSuppressionPolicy, TextNumberJustification, TextTrimKind,
+    SeparatorSuppressionPolicy, TextNumberJustification, TextNumberRep, TextPadKind,
+    TextStringJustification, TextTrimKind,
 };
 use alloc::string::ToString;
 use alloc::vec;
@@ -2388,6 +2389,173 @@ fn scalar_to_raw_bits(
     }
 }
 
+fn format_u128_radix_lower(mut n: u128, base: u32) -> alloc::string::String {
+    if n == 0 {
+        return alloc::string::String::from("0");
+    }
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut buf = [0u8; 128];
+    let mut i = buf.len();
+    while n > 0 {
+        i -= 1;
+        buf[i] = DIGITS[(n % base as u128) as usize];
+        n /= base as u128;
+    }
+    alloc::string::String::from_utf8_lossy(&buf[i..]).into_owned()
+}
+
+fn format_text_standard_radix_unparse(
+    value: &crate::value::DfdlValue,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::ir::ValueKind;
+    use crate::value::DfdlValue;
+
+    let base = props.text_standard_base;
+    let (negative, magnitude) = match (kind, value) {
+        (ValueKind::Byte, DfdlValue::Byte(v)) => (*v < 0, (*v as i64).unsigned_abs() as u128),
+        (ValueKind::Byte, DfdlValue::Long(v)) => {
+            if *v < 0 {
+                (true, v.unsigned_abs() as u128)
+            } else {
+                (false, *v as u128)
+            }
+        }
+        (ValueKind::Short, DfdlValue::Short(v)) => (*v < 0, (*v as i64).unsigned_abs() as u128),
+        (ValueKind::Int, DfdlValue::Int(v)) => (*v < 0, (*v as i64).unsigned_abs() as u128),
+        (ValueKind::Long, DfdlValue::Long(v)) => (*v < 0, v.unsigned_abs() as u128),
+        (ValueKind::Integer, DfdlValue::Integer(s)) => {
+            let trimmed = s.trim();
+            if trimmed.starts_with('-') {
+                (true, trimmed[1..].parse::<u128>().unwrap_or(0))
+            } else {
+                (false, trimmed.parse::<u128>().unwrap_or(0))
+            }
+        }
+        (ValueKind::UnsignedByte, DfdlValue::UnsignedByte(v)) => (false, *v as u128),
+        (ValueKind::UnsignedShort, DfdlValue::UnsignedShort(v)) => (false, *v as u128),
+        (ValueKind::UnsignedInt, DfdlValue::UnsignedInt(v)) => (false, *v as u128),
+        (other, _) => {
+            return Err(VmError::TypeMismatch {
+                expected: alloc::format!("{other:?}"),
+            });
+        }
+    };
+
+    if negative {
+        if props.non_negative_integer {
+            let raw = match value {
+                DfdlValue::Integer(s) => s.clone(),
+                DfdlValue::Long(v) => alloc::format!("{v}"),
+                DfdlValue::Int(v) => alloc::format!("{v}"),
+                DfdlValue::Byte(v) => alloc::format!("{v}"),
+                DfdlValue::Short(v) => alloc::format!("{v}"),
+                _ => alloc::format!("-{magnitude}"),
+            };
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Unparse Error: value `{raw}` out of range for type xs:nonNegativeInteger"
+                ),
+            });
+        }
+        let display = match value {
+            DfdlValue::Int(v) => alloc::format!("{v}"),
+            DfdlValue::Long(v) => alloc::format!("{v}"),
+            DfdlValue::Byte(v) => alloc::format!("{v}"),
+            DfdlValue::Short(v) => alloc::format!("{v}"),
+            DfdlValue::Integer(s) => s.clone(),
+            _ => alloc::format!("-{magnitude}"),
+        };
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Unparse Error: Unable to unparse negative value `{display}` when textStandardBase=\"{base}\""
+            ),
+        });
+    }
+
+    Ok(format_u128_radix_lower(magnitude, base))
+}
+
+fn truncate_string_for_explicit_length(
+    text: &str,
+    len: usize,
+    units: LengthUnits,
+    encoding: &str,
+    props: &IrProps,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::vm::encoding::count_characters;
+
+    let too_long = match units {
+        LengthUnits::Bytes => text.len() > len,
+        LengthUnits::Characters => {
+            count_characters(text.as_bytes(), encoding, EncodingErrorPolicy::Error)? > len
+        }
+        LengthUnits::Bits => text.as_bytes().len() * 8 > len,
+    };
+    if !too_long {
+        return Ok(text.to_string());
+    }
+    if !props.truncate_specified_length_string {
+        return Err(VmError::InvalidValue {
+            message: "text value too long for explicit length".into(),
+        });
+    }
+    match props.text_string_justification {
+        TextStringJustification::Center => Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Unparse Error: dfdl:textStringJustification=\"center\" cannot be used with dfdl:truncateSpecifiedLengthString=\"yes\" when truncation is required"
+            ),
+        }),
+        TextStringJustification::Left => {
+            let out = match units {
+                LengthUnits::Bytes => {
+                    if text.len() <= len {
+                        text.to_string()
+                    } else {
+                        text[..len].to_string()
+                    }
+                }
+                LengthUnits::Characters => {
+                    let mut out = alloc::string::String::new();
+                    for (idx, ch) in text.chars().enumerate() {
+                        if idx >= len {
+                            break;
+                        }
+                        out.push(ch);
+                    }
+                    out
+                }
+                LengthUnits::Bits => text.to_string(),
+            };
+            Ok(out)
+        }
+        TextStringJustification::Right => {
+            let out = match units {
+                LengthUnits::Bytes => {
+                    if text.len() <= len {
+                        text.to_string()
+                    } else {
+                        text[text.len() - len..].to_string()
+                    }
+                }
+                LengthUnits::Characters => {
+                    let chars: Vec<char> = text.chars().collect();
+                    if chars.len() <= len {
+                        text.to_string()
+                    } else {
+                        chars[chars.len() - len..].iter().collect()
+                    }
+                }
+                LengthUnits::Bits => text.to_string(),
+            };
+            Ok(out)
+        }
+    }
+}
+
 fn format_field_text_number(
     text: &str,
     kind: crate::ir::ValueKind,
@@ -2494,7 +2662,24 @@ pub(crate) fn write_text_scalar(
         _ => None,
     };
 
-    let text = match (kind, value) {
+    let numeric_radix = props.text_number_rep == TextNumberRep::Standard
+        && props.text_standard_base != 10
+        && matches!(
+            kind,
+            ValueKind::Byte
+                | ValueKind::Short
+                | ValueKind::Int
+                | ValueKind::Long
+                | ValueKind::Integer
+                | ValueKind::UnsignedByte
+                | ValueKind::UnsignedShort
+                | ValueKind::UnsignedInt
+        );
+
+    let text = if numeric_radix {
+        format_text_standard_radix_unparse(value, kind, props)?
+    } else {
+        match (kind, value) {
         (Boolean, DfdlValue::Boolean(v)) => {
             if *v {
                 match props.text_boolean_true_rep {
@@ -2527,9 +2712,14 @@ pub(crate) fn write_text_scalar(
                 expected: alloc::format!("{expected:?}"),
             });
         }
+    }
     };
 
-    let text = format_field_text_number(&text, kind, props, strings)?;
+    let text = if numeric_radix {
+        text
+    } else {
+        format_field_text_number(&text, kind, props, strings)?
+    };
     let text_before_pad = text.clone();
     let text = apply_min_length_pad(&text, props, strings, kind);
 
@@ -2570,6 +2760,18 @@ pub(crate) fn write_text_scalar(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "fixed/explicit text missing length".into(),
             })? as usize;
+            if props.length_units == LengthUnits::Bits {
+                let encoded = encode_document_text(&text, encoding)?;
+                write_bits_from_stream(out, bit_count, &encoded, len, props.bit_order)?;
+                return Ok(());
+            }
+            let text = truncate_string_for_explicit_length(
+                &text,
+                len,
+                props.length_units,
+                encoding,
+                props,
+            )?;
             pad_text_field(&text, len, props.length_units, props, strings, kind, encoding)?
         }
         LengthKind::Delimited | LengthKind::Pattern | LengthKind::Implicit | LengthKind::EndOfParent => {
@@ -2597,10 +2799,18 @@ fn apply_min_length_pad(
     let Some(min_len) = props.min_length else {
         return text.to_string();
     };
+    if props.text_pad_kind != TextPadKind::PadChar {
+        return text.to_string();
+    }
     if kind != ValueKind::String {
         return text.to_string();
     }
-    let min_len = min_len as usize;
+    let mut min_len = min_len as usize;
+    if matches!(props.length_kind, LengthKind::Fixed | LengthKind::Explicit) {
+        if let Some(explicit) = props.length {
+            min_len = min_len.min(explicit as usize);
+        }
+    }
     let current = text.chars().count();
     if current >= min_len {
         return text.to_string();
@@ -2618,8 +2828,8 @@ fn apply_min_length_pad(
             out
         }
         TextStringJustification::Center => {
-            let left = pad_count / 2;
-            let right = pad_count - left;
+            let right = pad_count / 2;
+            let left = pad_count - right;
             let mut out = alloc::string::String::new();
             for _ in 0..left {
                 out.push(pad_ch);
@@ -2659,8 +2869,23 @@ fn pad_text_field(
         LengthUnits::Bytes => {
             let mut bytes = text.as_bytes().to_vec();
             if bytes.len() > len {
-                bytes.truncate(len);
-                return Ok(bytes);
+                if props.truncate_specified_length_string {
+                    bytes = match props.text_string_justification {
+                        TextStringJustification::Center => {
+                            return Err(VmError::InvalidValue {
+                                message: alloc::format!(
+                                    "Unparse Error: dfdl:textStringJustification=\"center\" cannot be used with dfdl:truncateSpecifiedLengthString=\"yes\" when truncation is required"
+                                ),
+                            });
+                        }
+                        TextStringJustification::Left => bytes[..len].to_vec(),
+                        TextStringJustification::Right => bytes[bytes.len() - len..].to_vec(),
+                    };
+                } else {
+                    return Err(VmError::InvalidValue {
+                        message: "text value too long for explicit length".into(),
+                    });
+                }
             }
             let pad_count = len - bytes.len();
             match props.text_string_justification {
@@ -2668,8 +2893,8 @@ fn pad_text_field(
                     bytes.splice(0..0, iter::repeat(pad_byte).take(pad_count));
                 }
                 TextStringJustification::Center => {
-                    let left = pad_count / 2;
-                    let right = pad_count - left;
+                    let right = pad_count / 2;
+                    let left = pad_count - right;
                     bytes.splice(0..0, iter::repeat(pad_byte).take(left));
                     bytes.extend(iter::repeat(pad_byte).take(right));
                 }
@@ -2696,8 +2921,8 @@ fn pad_text_field(
                     }
                 }
                 TextStringJustification::Center => {
-                    let left = pad_count / 2;
-                    let right = pad_count - left;
+                    let right = pad_count / 2;
+                    let left = pad_count - right;
                     for _ in 0..left {
                         padded.insert_str(0, &pad_str);
                     }
@@ -4898,6 +5123,7 @@ pub(crate) fn coerce_value_for_kind(
             message: alloc::format!("value `{v}` out of range for byte"),
         })?),
         (Byte, v @ DfdlValue::Byte(_)) => v.clone(),
+        (Byte, v @ DfdlValue::Long(_)) => v.clone(),
         (UnsignedByte, DfdlValue::Int(v)) => DfdlValue::UnsignedByte(u8::try_from(*v).map_err(
             |_| VmError::InvalidValue {
                 message: alloc::format!("value `{v}` out of range for unsignedByte"),

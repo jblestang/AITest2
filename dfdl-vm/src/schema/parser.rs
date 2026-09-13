@@ -1091,6 +1091,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_trim_kind.is_some() {
         base.text_trim_kind = overlay.text_trim_kind;
     }
+    if overlay.text_pad_kind.is_some() {
+        base.text_pad_kind = overlay.text_pad_kind;
+    }
     if overlay.truncate_specified_length_string.is_some() {
         base.truncate_specified_length_string = overlay.truncate_specified_length_string;
     }
@@ -1690,7 +1693,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 if value.chars().any(|c| c.is_whitespace()) {
                     return Err(ParseError::InvalidXml {
                         message: alloc::format!(
-                            "Schema Definition Error: facet-valid NonEmptyStringLiteral property textStringPadCharacter"
+                            "Schema Definition Error: facet-valid NonEmptyStringLiteral property textStringPadCharacter contains whitespace"
                         ),
                     }
                     .into());
@@ -1698,7 +1701,18 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.text_string_pad_character =
                     Some(crate::schema::expand_entities_str(value));
             }
-            "textPadKind" => {}
+            "textPadKind" => {
+                props.text_pad_kind = Some(match value.as_str() {
+                    "none" => crate::schema::TextPadKind::None,
+                    "padChar" => crate::schema::TextPadKind::PadChar,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown textPadKind `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
             "textStringJustification" => {
                 props.text_string_justification = Some(match value.as_str() {
                     "left" => TextStringJustification::Left,

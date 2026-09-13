@@ -6,8 +6,8 @@ use crate::schema::{
     BinaryFloatRep, BinaryNumberCheckPolicy, BinaryNumberRep, BitOrder, ByteOrder,
     EncodingErrorPolicy, InputValueCalc,
     LengthKind, LengthUnits, NilKind, OutputValueCalc, Representation, SeparatorPosition,
-    SeparatorSuppressionPolicy, SequenceKind, TextNumberJustification, TextStringJustification,
-    TextTrimKind,
+    SeparatorSuppressionPolicy, SequenceKind, TextNumberJustification, TextPadKind,
+    TextStringJustification, TextTrimKind,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -90,6 +90,7 @@ pub struct IrProps {
     pub encoding: StringId,
     pub encoding_error_policy: EncodingErrorPolicy,
     pub text_trim_kind: TextTrimKind,
+    pub text_pad_kind: TextPadKind,
     pub truncate_specified_length_string: bool,
     pub text_number_pad_character: Option<StringId>,
     pub text_string_pad_character: Option<StringId>,
@@ -181,6 +182,7 @@ impl Default for IrProps {
             encoding: StringId(0),
             encoding_error_policy: EncodingErrorPolicy::Error,
             text_trim_kind: TextTrimKind::None,
+            text_pad_kind: TextPadKind::PadChar,
             truncate_specified_length_string: false,
             text_number_pad_character: None,
             text_string_pad_character: None,

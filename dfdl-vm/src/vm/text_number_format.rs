@@ -793,9 +793,16 @@ fn format_mantissa_pattern(
                     chunk.extend_from_slice(&int_digits[int_idx..]);
                     out.push_str(&format_grouped_integer(&chunk, pattern, grp_sep));
                     int_idx = int_digits.len();
-                    out.push_str(dec_sep);
-                    saw_decimal = true;
+                    if needs_fraction_display(d, min_frac) {
+                        out.push_str(dec_sep);
+                        saw_decimal = true;
+                    }
                     i = dot_at + 1;
+                    if !needs_fraction_display(d, min_frac) {
+                        while i < chars.len() && matches!(chars[i], '0' | '#') {
+                            i += 1;
+                        }
+                    }
                     continue;
                 }
                 if saw_decimal {

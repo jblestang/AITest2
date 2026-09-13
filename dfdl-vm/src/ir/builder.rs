@@ -1537,6 +1537,9 @@ fn overlay_dfdl_to_ir(
     if let Some(v) = props.text_trim_kind {
         base.text_trim_kind = v;
     }
+    if let Some(v) = props.text_pad_kind {
+        base.text_pad_kind = v;
+    }
     if let Some(v) = props.truncate_specified_length_string {
         base.truncate_specified_length_string = v;
     }
@@ -1840,6 +1843,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.separator_suppression_policy = overlay.separator_suppression_policy;
     out.ignore_case = overlay.ignore_case;
     out.text_trim_kind = overlay.text_trim_kind;
+    out.text_pad_kind = overlay.text_pad_kind;
     out.text_number_pad_character = overlay.text_number_pad_character;
     out.text_string_pad_character = overlay.text_string_pad_character;
     out.binary_number_rep = overlay.binary_number_rep;

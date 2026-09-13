@@ -35,6 +35,7 @@ pub struct DfdlProps {
     pub encoding: Option<String>,
     pub encoding_error_policy: Option<EncodingErrorPolicy>,
     pub text_trim_kind: Option<TextTrimKind>,
+    pub text_pad_kind: Option<TextPadKind>,
     /// When false, explicit-length fields may leave unconsumed data in their frame.
     pub truncate_specified_length_string: Option<bool>,
     /// Expanded pad character for numeric text (`dfdl:textNumberPadCharacter`).
@@ -188,6 +189,12 @@ pub enum TextTrimKind {
     Left,
     Right,
     /// Trim pad characters (typically `%SP;`) from both ends.
+    PadChar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextPadKind {
+    None,
     PadChar,
 }
 
