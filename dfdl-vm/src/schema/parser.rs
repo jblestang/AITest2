@@ -1048,6 +1048,18 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_number_pattern.is_some() {
         base.text_number_pattern = overlay.text_number_pattern;
     }
+    if overlay.text_number_check_policy.is_some() {
+        base.text_number_check_policy = overlay.text_number_check_policy;
+    }
+    if overlay.text_standard_decimal_separator.is_some() {
+        base.text_standard_decimal_separator = overlay.text_standard_decimal_separator;
+    }
+    if overlay.text_standard_grouping_separator.is_some() {
+        base.text_standard_grouping_separator = overlay.text_standard_grouping_separator;
+    }
+    if overlay.text_standard_exponent_rep.is_some() {
+        base.text_standard_exponent_rep = overlay.text_standard_exponent_rep;
+    }
     if overlay.initiator.is_some() {
         base.initiator = overlay.initiator;
     }
@@ -1338,6 +1350,10 @@ fn is_dfdl_property(name: &str) -> bool {
             | "textStringJustification"
             | "textNumberJustification"
             | "textStandardBase"
+            | "textNumberCheckPolicy"
+            | "textStandardDecimalSeparator"
+            | "textStandardGroupingSeparator"
+            | "textStandardExponentRep"
             | "binaryNumberRep"
             | "binaryPackedSignCodes"
             | "binaryNumberCheckPolicy"
@@ -1655,6 +1671,30 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             "calendarPattern" => props.calendar_pattern = Some(value.clone()),
             "calendarPatternKind" => {}
             "textNumberPattern" => props.text_number_pattern = Some(value.clone()),
+            "textNumberCheckPolicy" => {
+                props.text_number_check_policy = Some(match value.as_str() {
+                    "strict" => crate::schema::BinaryNumberCheckPolicy::Strict,
+                    "lax" => crate::schema::BinaryNumberCheckPolicy::Lax,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown textNumberCheckPolicy `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "textStandardDecimalSeparator" => {
+                props.text_standard_decimal_separator =
+                    Some(crate::schema::expand_entities_str(value));
+            }
+            "textStandardGroupingSeparator" => {
+                props.text_standard_grouping_separator =
+                    Some(crate::schema::expand_entities_str(value));
+            }
+            "textStandardExponentRep" => {
+                props.text_standard_exponent_rep =
+                    Some(crate::schema::expand_entities_str(value));
+            }
             "initiator" => {
                 let lit = parse_delimiter_literal(value)?;
                 props.initiator = Some(lit);

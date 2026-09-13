@@ -3,6 +3,7 @@ use super::encoding::{
     hex_charset_order, hex_charset_payload_to_text, HexCharsetOrder, normalize_encoding_name,
     read_character_bytes, read_one_utf8_char,
 };
+use super::text_number;
 use super::packed_decimal::{
     bcd_to_digit_string, digits_to_u64, ibm4690_to_digit_string, packed_to_digit_string,
     PackedSignCodes,
@@ -993,6 +994,69 @@ fn apply_text_number_pattern_numeric(
     ))
 }
 
+fn parse_field_text_number(
+    trimmed: &str,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::ir::ValueKind;
+    use crate::error::VmError;
+    if !props.custom_text_number_pattern {
+        if props.text_standard_base != 10 {
+            return Ok(trimmed.into());
+        }
+    }
+    let Some(pat_id) = props.text_number_pattern else {
+        return Ok(trimmed.into());
+    };
+    let pattern = strings.get(pat_id)?;
+    if pattern.contains('V')
+        && !pattern.contains('E')
+        && !pattern.contains('e')
+        && !pattern.contains('\'')
+        && !pattern.contains(';')
+    {
+        return apply_text_number_pattern_numeric(trimmed, pattern);
+    }
+    let dec = strings
+        .get(props.text_standard_decimal_separator)
+        .unwrap_or(".");
+    let mut dec_seps: alloc::vec::Vec<char> = dec.chars().collect();
+    if dec_seps.is_empty() {
+        dec_seps.push('.');
+    }
+    let exponent = strings
+        .get(props.text_standard_exponent_rep)
+        .unwrap_or("E")
+        .to_string();
+    let grouping = props
+        .text_standard_grouping_separator
+        .and_then(|id| strings.get(id).ok())
+        .and_then(|g| g.chars().next());
+    let pad = props
+        .text_number_pad_character
+        .and_then(|id| strings.get(id).ok())
+        .and_then(|p| p.chars().next())
+        .or(Some('0'));
+    let fmt = text_number::TextNumberFormatProps {
+        check_policy: props.text_number_check_policy,
+        decimal_separators: &dec_seps,
+        grouping_separator: grouping,
+        exponent_chars: &exponent,
+        pad_character: pad,
+    };
+    text_number::parse_standard_text_number(trimmed, pattern, &fmt).map_err(|e| {
+        if matches!(kind, ValueKind::Int | ValueKind::Short | ValueKind::Long | ValueKind::Byte) {
+            VmError::InvalidValue {
+                message: alloc::format!("Parse Error. xs:int {trimmed}"),
+            }
+        } else {
+            e
+        }
+    })
+}
+
 fn text_number_for_parse<'a>(
     trimmed: &'a str,
     kind: crate::ir::ValueKind,
@@ -1003,11 +1067,7 @@ fn text_number_for_parse<'a>(
     if !matches!(kind, ValueKind::Float | ValueKind::Double | ValueKind::Decimal) {
         return Ok(trimmed.into());
     }
-    if let Some(pat_id) = props.text_number_pattern {
-        let pattern = strings.get(pat_id)?;
-        return apply_text_number_pattern_numeric(trimmed, pattern);
-    }
-    Ok(trimmed.into())
+    parse_field_text_number(trimmed, kind, props, strings)
 }
 
 fn expand_calendar_year(y: &str) -> Result<alloc::string::String, crate::error::VmError> {
@@ -1727,16 +1787,7 @@ pub(crate) fn read_text_scalar(
         Short => parse_int_typed_with_base(trimmed, "xs:short", base).map(DfdlValue::Short),
         UnsignedShort => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedShort),
         Int => {
-            let num = if let Some(pat_id) = props.text_number_pattern {
-                let pattern = strings.get(pat_id)?;
-                if pattern.contains('\'') {
-                    apply_text_number_pattern_numeric(trimmed, pattern)?
-                } else {
-                    trimmed.into()
-                }
-            } else {
-                trimmed.into()
-            };
+            let num = parse_field_text_number(trimmed, kind, props, strings)?;
             parse_int_typed_with_base(&num, "xs:int", base).map(DfdlValue::Int)
         }
         UnsignedInt => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedInt),

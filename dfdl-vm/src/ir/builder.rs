@@ -33,6 +33,19 @@ impl<'a> IrBuilder<'a> {
                 .as_deref()
                 .unwrap_or("C D F C"),
         );
+        if strings.get(defaults.text_standard_decimal_separator).is_err()
+            || strings.get(defaults.text_standard_decimal_separator).ok().is_some_and(|s| s.is_empty())
+        {
+            defaults.text_standard_decimal_separator = strings.intern(".");
+        }
+        if strings.get(defaults.text_standard_exponent_rep).is_err()
+            || strings
+                .get(defaults.text_standard_exponent_rep)
+                .ok()
+                .is_some_and(|s| s.is_empty())
+        {
+            defaults.text_standard_exponent_rep = strings.intern("E");
+        }
         Self {
             schema,
             nodes: Vec::new(),
@@ -957,7 +970,11 @@ fn merge_dfdl_props(
 ) -> IrProps {
     let mut out = base.clone();
     out = overlay_dfdl_to_ir(out, type_props, strings);
-    overlay_dfdl_to_ir(out, element_props, strings)
+    out = overlay_dfdl_to_ir(out, element_props, strings);
+    if type_props.text_number_pattern.is_some() || element_props.text_number_pattern.is_some() {
+        out.custom_text_number_pattern = true;
+    }
+    out
 }
 
 fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut StringPool) -> IrProps {
@@ -1069,6 +1086,33 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
             .text_number_pattern
             .as_ref()
             .map(|s| strings.intern(s.clone()));
+    }
+    if let Some(v) = props.text_number_check_policy {
+        base.text_number_check_policy = v;
+    }
+    if props.text_standard_decimal_separator.is_some() {
+        base.text_standard_decimal_separator = strings.intern(
+            props
+                .text_standard_decimal_separator
+                .as_deref()
+                .unwrap_or("."),
+        );
+    }
+    if props.text_standard_grouping_separator.is_some() {
+        let g = props.text_standard_grouping_separator.as_deref().unwrap_or(",");
+        base.text_standard_grouping_separator = if g.is_empty() {
+            None
+        } else {
+            Some(strings.intern(g.to_string()))
+        };
+    }
+    if props.text_standard_exponent_rep.is_some() {
+        base.text_standard_exponent_rep = strings.intern(
+            props
+                .text_standard_exponent_rep
+                .as_deref()
+                .unwrap_or("E"),
+        );
     }
     if let Some(ref s) = props.initiator {
         if !s.is_empty() {
@@ -1223,6 +1267,14 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.calendar_pattern = overlay.calendar_pattern;
     if overlay.text_number_pattern.is_some() {
         out.text_number_pattern = overlay.text_number_pattern;
+    }
+    out.text_number_check_policy = overlay.text_number_check_policy;
+    if overlay.text_standard_decimal_separator != StringId(0) {
+        out.text_standard_decimal_separator = overlay.text_standard_decimal_separator;
+    }
+    out.text_standard_grouping_separator = overlay.text_standard_grouping_separator;
+    if overlay.text_standard_exponent_rep != StringId(0) {
+        out.text_standard_exponent_rep = overlay.text_standard_exponent_rep;
     }
     if overlay.initiator.is_some() {
         out.initiator = overlay.initiator;
