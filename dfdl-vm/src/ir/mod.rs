@@ -3,7 +3,8 @@ mod builder;
 pub use builder::{compile, compile_named, compile_named_with_tunables};
 use crate::error::VmError;
 use crate::schema::{
-    BinaryFloatRep, BinaryNumberRep, BitOrder, ByteOrder, EncodingErrorPolicy, InputValueCalc,
+    BinaryFloatRep, BinaryNumberCheckPolicy, BinaryNumberRep, BitOrder, ByteOrder,
+    EncodingErrorPolicy, InputValueCalc,
     LengthKind, LengthUnits, NilKind, OutputValueCalc, Representation, SeparatorPosition,
     SeparatorSuppressionPolicy, SequenceKind, TextNumberJustification, TextStringJustification,
     TextTrimKind,
@@ -92,6 +93,8 @@ pub struct IrProps {
     pub text_number_pad_character: Option<StringId>,
     pub text_string_pad_character: Option<StringId>,
     pub binary_number_rep: BinaryNumberRep,
+    pub binary_packed_sign_codes: StringId,
+    pub binary_number_check_policy: BinaryNumberCheckPolicy,
     pub binary_calendar_rep: BinaryNumberRep,
     pub binary_float_rep: BinaryFloatRep,
     pub binary_decimal_virtual_point: u32,
@@ -151,6 +154,8 @@ impl Default for IrProps {
             text_number_pad_character: None,
             text_string_pad_character: None,
             binary_number_rep: BinaryNumberRep::Binary,
+            binary_packed_sign_codes: StringId(0),
+            binary_number_check_policy: BinaryNumberCheckPolicy::Lax,
             binary_calendar_rep: BinaryNumberRep::Binary,
             binary_float_rep: BinaryFloatRep::Ieee,
             binary_decimal_virtual_point: 0,

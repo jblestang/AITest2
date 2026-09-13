@@ -3,6 +3,11 @@ use super::encoding::{
     hex_charset_order, hex_charset_payload_to_text, HexCharsetOrder, normalize_encoding_name,
     read_character_bytes, read_one_utf8_char,
 };
+use super::packed_decimal::{
+    bcd_to_digit_string, digits_to_u64, ibm4690_to_digit_string, packed_to_digit_string,
+    PackedSignCodes,
+};
+use crate::schema::BinaryNumberCheckPolicy;
 use crate::length_validate::{
     validate_data_length_vm, validate_decimal_data_length_vm,
     validate_decimal_signed_one_bit_length_vm, validate_signed_one_bit_length_vm,
@@ -554,12 +559,7 @@ fn decode_binary_scalar(
     use crate::value::DfdlValue;
 
     if kind == ValueKind::Decimal {
-        let le = props.byte_order == ByteOrder::LittleEndian;
-        let value = binary_payload_to_u64(props.binary_number_rep, bytes, le)?;
-        return Ok(DfdlValue::Decimal(format_virtual_decimal(
-            value,
-            props.binary_decimal_virtual_point,
-        )));
+        return decode_decimal_binary(bytes, props, strings);
     }
     if kind == ValueKind::DateTime {
         return decode_binary_datetime(bytes, props, strings);
@@ -569,13 +569,15 @@ fn decode_binary_scalar(
         BinaryNumberRep::Binary => {
             decode_binary_bytes(kind, bytes, props.byte_order == ByteOrder::LittleEndian, bit_width)
         }
-        BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed => {
-            decode_bcd_number(kind, bytes, props.byte_order == ByteOrder::LittleEndian)
-        }
-        BinaryNumberRep::PackedBcd => {
-            decode_packed_bcd_number(kind, bytes, props.byte_order == ByteOrder::LittleEndian)
-        }
+        BinaryNumberRep::Bcd => decode_bcd_number(kind, bytes, props),
+        BinaryNumberRep::Ibm4690Packed => decode_ibm4690_number(kind, bytes, props),
+        BinaryNumberRep::PackedBcd => decode_packed_bcd_number(kind, bytes, props, strings),
     }
+}
+
+fn packed_sign_codes(props: &IrProps, strings: &StringPool) -> Result<PackedSignCodes, crate::error::VmError> {
+    let spec = strings.get(props.binary_packed_sign_codes)?;
+    PackedSignCodes::parse(spec, props.binary_number_check_policy)
 }
 
 fn binary_payload_to_u64(
@@ -585,8 +587,14 @@ fn binary_payload_to_u64(
 ) -> Result<u64, crate::error::VmError> {
     match rep {
         BinaryNumberRep::Binary => Ok(decode_unsigned_binary_bytes(bytes, le)),
-        BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed => bcd_bytes_to_u64(bytes, le),
-        BinaryNumberRep::PackedBcd => packed_bcd_bytes_to_u64(bytes, le),
+        BinaryNumberRep::Bcd => digits_to_u64(&bcd_to_digit_string(bytes, le)?),
+        BinaryNumberRep::Ibm4690Packed => {
+            let (_neg, digits) = ibm4690_to_digit_string(bytes, le)?;
+            digits_to_u64(&digits)
+        }
+        BinaryNumberRep::PackedBcd => Err(crate::error::VmError::InvalidValue {
+            message: "packed decimal requires sign codes".into(),
+        }),
     }
 }
 
@@ -605,73 +613,97 @@ fn decode_unsigned_binary_bytes(bytes: &[u8], le: bool) -> u64 {
 }
 
 fn bcd_bytes_to_u64(bytes: &[u8], le: bool) -> Result<u64, crate::error::VmError> {
-    use crate::error::VmError;
-    let ordered = order_bytes(bytes, le);
-    let mut value = 0u64;
-    for b in ordered {
-        let hi = (b >> 4) & 0x0f;
-        let lo = b & 0x0f;
-        if hi > 9 || lo > 9 {
-            return Err(VmError::InvalidValue {
-                message: alloc::format!("invalid BCD byte `0x{b:02x}`"),
-            });
-        }
-        value = value
-            .checked_mul(100)
-            .and_then(|v| v.checked_add(hi as u64 * 10 + lo as u64))
-            .ok_or(VmError::InvalidValue {
-                message: "BCD value overflow".into(),
-            })?;
-    }
-    Ok(value)
+    digits_to_u64(&bcd_to_digit_string(bytes, le)?)
 }
 
-fn packed_bcd_bytes_to_u64(bytes: &[u8], le: bool) -> Result<u64, crate::error::VmError> {
+fn signed_magnitude_to_dfdl(
+    negative: bool,
+    digits: &str,
+    kind: crate::ir::ValueKind,
+    virtual_point: u32,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
-    if bytes.is_empty() {
-        return Err(VmError::InvalidValue {
-            message: "empty packed BCD".into(),
-        });
-    }
-    let ordered = order_bytes(bytes, le);
-    let mut value = 0u64;
-    for (i, b) in ordered.iter().enumerate() {
-        let hi = (b >> 4) & 0x0f;
-        let lo = b & 0x0f;
-        if i + 1 == ordered.len() {
-            if hi > 9 {
-                return Err(VmError::InvalidValue {
-                    message: alloc::format!("invalid packed BCD digit `0x{hi:x}`"),
-                });
-            }
-            value = value
-                .checked_mul(10)
-                .and_then(|v| v.checked_add(hi as u64))
-                .ok_or(VmError::InvalidValue {
-                    message: "packed BCD value overflow".into(),
-                })?;
+    use crate::ir::ValueKind::*;
+    use crate::value::DfdlValue;
+
+    let abs = digits_to_u64(digits)?;
+    if kind == Decimal {
+        let body = format_virtual_decimal(abs, virtual_point);
+        let text = if negative {
+            alloc::format!("-{body}")
         } else {
-            if hi > 9 || lo > 9 {
+            body
+        };
+        return Ok(DfdlValue::Decimal(text.into()));
+    }
+    if negative {
+        match kind {
+            UnsignedByte | UnsignedShort | UnsignedInt => {
                 return Err(VmError::InvalidValue {
-                    message: alloc::format!("invalid packed BCD byte `0x{b:02x}`"),
+                    message: alloc::format!("negative value for unsigned type"),
                 });
             }
-            value = value
-                .checked_mul(100)
-                .and_then(|v| v.checked_add(hi as u64 * 10 + lo as u64))
-                .ok_or(VmError::InvalidValue {
-                    message: "packed BCD value overflow".into(),
-                })?;
+            _ => {}
         }
     }
-    Ok(value)
+    let signed_i64 = if negative {
+        -(abs as i64)
+    } else {
+        abs as i64
+    };
+    macro_rules! signed {
+        ($t:ty, $cons:expr) => {{
+            <$t>::try_from(signed_i64).map($cons).map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("value `{signed_i64}` out of range"),
+            })
+        }};
+    }
+    match kind {
+        Byte => signed!(i8, DfdlValue::Byte),
+        UnsignedByte => u8::try_from(abs).map(DfdlValue::UnsignedByte).map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("value `{abs}` out of range"),
+        }),
+        Short => signed!(i16, DfdlValue::Short),
+        UnsignedShort => u16::try_from(abs).map(DfdlValue::UnsignedShort).map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("value `{abs}` out of range"),
+        }),
+        Int => signed!(i32, DfdlValue::Int),
+        UnsignedInt => u32::try_from(abs).map(DfdlValue::UnsignedInt).map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("value `{abs}` out of range"),
+        }),
+        Long => signed!(i64, DfdlValue::Long),
+        other => Err(VmError::TypeMismatch {
+            expected: alloc::format!("decimal digits for `{other:?}`"),
+        }),
+    }
 }
 
-fn order_bytes(bytes: &[u8], le: bool) -> Vec<u8> {
-    if le {
-        bytes.iter().copied().rev().collect()
-    } else {
-        bytes.to_vec()
+fn decode_decimal_binary(
+    bytes: &[u8],
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    use crate::value::DfdlValue;
+    let le = props.byte_order == ByteOrder::LittleEndian;
+    let vp = props.binary_decimal_virtual_point;
+    match props.binary_number_rep {
+        BinaryNumberRep::Binary => Ok(DfdlValue::Decimal(format_virtual_decimal(
+            decode_unsigned_binary_bytes(bytes, le),
+            vp,
+        ))),
+        BinaryNumberRep::Bcd => {
+            let digits = bcd_to_digit_string(bytes, le)?;
+            signed_magnitude_to_dfdl(false, &digits, crate::ir::ValueKind::Decimal, vp)
+        }
+        BinaryNumberRep::Ibm4690Packed => {
+            let (negative, digits) = ibm4690_to_digit_string(bytes, le)?;
+            signed_magnitude_to_dfdl(negative, &digits, crate::ir::ValueKind::Decimal, vp)
+        }
+        BinaryNumberRep::PackedBcd => {
+            let codes = packed_sign_codes(props, strings)?;
+            let (negative, digits) = packed_to_digit_string(bytes, le, &codes)?;
+            signed_magnitude_to_dfdl(negative, &digits, crate::ir::ValueKind::Decimal, vp)
+        }
     }
 }
 
@@ -718,25 +750,14 @@ fn parse_virtual_decimal(text: &str, virtual_point: u32) -> Result<u64, crate::e
 }
 
 fn bcd_digit_string(bytes: &[u8], le: bool) -> alloc::string::String {
-    let mut out = alloc::string::String::new();
-    for b in order_bytes(bytes, le) {
-        out.push(char::from(b'0' + ((b >> 4) & 0x0f) as u8));
-        out.push(char::from(b'0' + (b & 0x0f) as u8));
-    }
-    out
+    bcd_to_digit_string(bytes, le).unwrap_or_default()
 }
 
-fn packed_digit_string(bytes: &[u8], le: bool) -> alloc::string::String {
-    let ordered = order_bytes(bytes, le);
-    let mut out = alloc::string::String::new();
-    for (i, b) in ordered.iter().enumerate() {
-        let hi = (b >> 4) & 0x0f;
-        out.push(char::from(b'0' + hi as u8));
-        if i + 1 < ordered.len() {
-            let lo = b & 0x0f;
-            out.push(char::from(b'0' + lo as u8));
-        }
-    }
+fn packed_digit_string(bytes: &[u8], le: bool, codes: &PackedSignCodes) -> alloc::string::String {
+    let Ok((_neg, digits)) = packed_to_digit_string(bytes, le, codes) else {
+        return alloc::string::String::new();
+    };
+    let mut out = digits;
     while out.starts_with('0') && out.len() > 1 {
         out.remove(0);
     }
@@ -754,8 +775,15 @@ fn decode_binary_datetime(
     let le = props.byte_order == ByteOrder::LittleEndian;
     let rep = props.binary_calendar_rep;
     let digits = match rep {
-        BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed => bcd_digit_string(bytes, le),
-        BinaryNumberRep::PackedBcd => packed_digit_string(bytes, le),
+        BinaryNumberRep::Bcd => bcd_digit_string(bytes, le),
+        BinaryNumberRep::Ibm4690Packed => ibm4690_to_digit_string(bytes, le)
+            .map(|(_n, d)| d)
+            .unwrap_or_default(),
+        BinaryNumberRep::PackedBcd => {
+            packed_digit_string(bytes, le, &packed_sign_codes(props, strings).unwrap_or_else(|_| {
+                PackedSignCodes::parse("C D F C", BinaryNumberCheckPolicy::Lax).unwrap()
+            }))
+        }
         BinaryNumberRep::Binary => {
             return Err(VmError::InvalidValue {
                 message: "binary dateTime requires BCD representation".into(),
@@ -1005,47 +1033,33 @@ fn digits_to_packed_bcd_bytes(
 fn decode_bcd_number(
     kind: crate::ir::ValueKind,
     bytes: &[u8],
-    le: bool,
+    props: &IrProps,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
-    bcd_value_to_dfdl(kind, bcd_bytes_to_u64(bytes, le)?)
+    let le = props.byte_order == ByteOrder::LittleEndian;
+    let digits = bcd_to_digit_string(bytes, le)?;
+    signed_magnitude_to_dfdl(false, &digits, kind, 0)
+}
+
+fn decode_ibm4690_number(
+    kind: crate::ir::ValueKind,
+    bytes: &[u8],
+    props: &IrProps,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    let le = props.byte_order == ByteOrder::LittleEndian;
+    let (negative, digits) = ibm4690_to_digit_string(bytes, le)?;
+    signed_magnitude_to_dfdl(negative, &digits, kind, 0)
 }
 
 fn decode_packed_bcd_number(
     kind: crate::ir::ValueKind,
     bytes: &[u8],
-    le: bool,
+    props: &IrProps,
+    strings: &StringPool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
-    bcd_value_to_dfdl(kind, packed_bcd_bytes_to_u64(bytes, le)?)
-}
-
-fn bcd_value_to_dfdl(
-    kind: crate::ir::ValueKind,
-    value: u64,
-) -> Result<crate::value::DfdlValue, crate::error::VmError> {
-    use crate::error::VmError;
-    use crate::ir::ValueKind::*;
-    use crate::value::DfdlValue;
-
-    macro_rules! fit {
-        ($t:ty, $cons:expr) => {{
-            <$t>::try_from(value).map($cons).map_err(|_| VmError::InvalidValue {
-                message: alloc::format!("BCD value `{value}` out of range"),
-            })
-        }};
-    }
-
-    match kind {
-        Byte => fit!(i8, DfdlValue::Byte),
-        UnsignedByte => fit!(u8, DfdlValue::UnsignedByte),
-        Short => fit!(i16, DfdlValue::Short),
-        UnsignedShort => fit!(u16, DfdlValue::UnsignedShort),
-        Int => fit!(i32, DfdlValue::Int),
-        UnsignedInt => fit!(u32, DfdlValue::UnsignedInt),
-        Long => fit!(i64, DfdlValue::Long),
-        other => Err(VmError::TypeMismatch {
-            expected: alloc::format!("BCD number for `{other:?}`"),
-        }),
-    }
+    let le = props.byte_order == ByteOrder::LittleEndian;
+    let codes = packed_sign_codes(props, strings)?;
+    let (negative, digits) = packed_to_digit_string(bytes, le, &codes)?;
+    signed_magnitude_to_dfdl(negative, &digits, kind, 0)
 }
 
 fn binary_bit_length(
@@ -1522,7 +1536,13 @@ pub(crate) fn read_text_scalar(
         UnsignedShort => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedShort),
         Int => parse_int_typed_with_base(trimmed, "xs:int", base).map(DfdlValue::Int),
         UnsignedInt => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedInt),
-        Long => parse_int_typed_with_base(trimmed, "xs:long", base).map(DfdlValue::Long),
+        Long => {
+            if props.unsigned_integer {
+                parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedLong)
+            } else {
+                parse_int_typed_with_base(trimmed, "xs:long", base).map(DfdlValue::Long)
+            }
+        }
         Float => parse_float(trimmed).map(|v| DfdlValue::Float(v as f32)),
         Double => parse_float(trimmed).map(DfdlValue::Double),
         Decimal => Ok(DfdlValue::Decimal(trimmed.into())),

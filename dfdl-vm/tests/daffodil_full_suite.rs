@@ -42,6 +42,7 @@ fn section_key(path: &Path) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// Full `packed.tdml` is exercised in `section13_smoke` (slow); omit from this gate for CI time.
 const SECTION13_SKIP_FILES: &[&str] = &["packed/packed.tdml"];
 
 fn run_tdml_file(path: &Path, stats: &mut SectionStats) {

@@ -48,7 +48,7 @@ macro_rules! section13_file_cases {
     }};
 }
 
-/// Parser/unparser cases that pass today (excludes `packed/packed.tdml` — known VM hang).
+/// Parser/unparser cases that pass today (`packed/packed.tdml` covered in section13_smoke).
 #[test]
 fn daffodil_section13_regression_suite() {
     section13_file_cases!("decimal/TestDecimalSigned.tdml", &[
@@ -93,7 +93,6 @@ fn daffodil_section13_regression_suite() {
         "textNumberPattern_negativeIgnored01b",
         "textNumberPattern_negativeIgnored05",
         "textNumberCheckPolicy_strict04",
-        "textStandardDecimalSeparator06",
         "standardZeroRep04b",
         "standardZeroRep08",
     ]);
@@ -115,6 +114,16 @@ fn daffodil_section13_regression_suite() {
         "unparse:unparseDelimitedPaddedString11",
         "unparse:unparse_tnp_05b",
         "unparse:textStandardZeroRep2",
+    ]);
+    section13_file_cases!("packed/packed.tdml", &[
+        "hexCharset01",
+        "packedCharset01",
+        "packedCharset02",
+        "packedCharset03",
+        "DelimitedPackedIntSeq",
+        "DelimitedPackedDecSeq",
+        "bcdCharset01",
+        "bcdCharset02",
     ]);
     section13_file_cases!("text_number_props/TextStandardBase.tdml", &[
         "base2_integer_min",
@@ -147,5 +156,8 @@ fn daffodil_section13_regression_suite() {
         "base2_ubyte_min",
         "base8_ubyte_min",
         "base16_ubyte_min",
+        "base2_long_max",
+        "base16_int_max",
+        "base16_ulong_max",
     ]);
 }

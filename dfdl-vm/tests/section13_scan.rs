@@ -126,7 +126,7 @@ fn report_file(rel: &str) {
 }
 
 /// Skipped in full-section scans: known to hang the VM (packed decimal loop).
-const SKIP_HANG_FILES: &[&str] = &["packed/packed.tdml"];
+const SKIP_HANG_FILES: &[&str] = &[];
 
 #[test]
 #[ignore = "diagnostic: single TDML file"]

@@ -42,6 +42,8 @@ pub struct DfdlProps {
     /// Expanded pad character for string text (`dfdl:textStringPadCharacter`).
     pub text_string_pad_character: Option<String>,
     pub binary_number_rep: Option<BinaryNumberRep>,
+    pub binary_packed_sign_codes: Option<String>,
+    pub binary_number_check_policy: Option<BinaryNumberCheckPolicy>,
     pub binary_calendar_rep: Option<BinaryNumberRep>,
     pub binary_float_rep: Option<BinaryFloatRep>,
     pub binary_decimal_virtual_point: Option<u32>,
@@ -215,6 +217,12 @@ pub enum BinaryNumberRep {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryNumberCheckPolicy {
+    Strict,
+    Lax,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryFloatRep {
     Ieee,
 }
@@ -303,6 +311,7 @@ impl BuiltinType {
             "xs:float" | "float" => Some(BuiltinType::Float),
             "xs:double" | "double" => Some(BuiltinType::Double),
             "xs:decimal" | "decimal" => Some(BuiltinType::Decimal),
+            "xs:date" | "date" => Some(BuiltinType::DateTime),
             "xs:dateTime" | "dateTime" => Some(BuiltinType::DateTime),
             "xs:time" | "time" => Some(BuiltinType::Time),
             "xs:boolean" | "boolean" => Some(BuiltinType::Boolean),

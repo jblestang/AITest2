@@ -1024,6 +1024,12 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.binary_number_rep.is_some() {
         base.binary_number_rep = overlay.binary_number_rep;
     }
+    if overlay.binary_packed_sign_codes.is_some() {
+        base.binary_packed_sign_codes = overlay.binary_packed_sign_codes;
+    }
+    if overlay.binary_number_check_policy.is_some() {
+        base.binary_number_check_policy = overlay.binary_number_check_policy;
+    }
     if overlay.binary_calendar_rep.is_some() {
         base.binary_calendar_rep = overlay.binary_calendar_rep;
     }
@@ -1330,6 +1336,8 @@ fn is_dfdl_property(name: &str) -> bool {
             | "textNumberJustification"
             | "textStandardBase"
             | "binaryNumberRep"
+            | "binaryPackedSignCodes"
+            | "binaryNumberCheckPolicy"
             | "binaryCalendarRep"
             | "binaryFloatRep"
             | "binaryDecimalVirtualPoint"
@@ -1584,6 +1592,21 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     props.input_value_calc = Some(calc.0);
                     props.input_value_calc_sibling = calc.1;
                 }
+            }
+            "binaryPackedSignCodes" => {
+                props.binary_packed_sign_codes = Some(value.clone());
+            }
+            "binaryNumberCheckPolicy" => {
+                props.binary_number_check_policy = Some(match value.as_str() {
+                    "strict" => crate::schema::BinaryNumberCheckPolicy::Strict,
+                    "lax" => crate::schema::BinaryNumberCheckPolicy::Lax,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown binaryNumberCheckPolicy `{other}`"),
+                        }
+                        .into())
+                    }
+                });
             }
             "binaryNumberRep" | "binaryCalendarRep" => {
                 let rep = match value.as_str() {

@@ -33,6 +33,16 @@ fn section13_literal_character_text_01() {
 }
 
 #[test]
+fn section13_text_standard_base_max_samples() {
+    for name in ["base2_long_max", "base16_int_max", "base16_ulong_max"] {
+        match run_named("section13/text_number_props/TextStandardBase.tdml", name) {
+            TestOutcome::Pass => {}
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn section13_text_standard_base_schema_loads() {
     let text =
         fs::read_to_string(tdml("section13/text_number_props/TextStandardBase.tdml")).expect("read");
@@ -40,10 +50,19 @@ fn section13_text_standard_base_schema_loads() {
 }
 
 #[test]
-fn section13_packed_first_case() {
-    match run_named("section13/packed/packed.tdml", "hexCharset01") {
-        TestOutcome::Pass => {}
-        other => panic!("hexCharset01: {other:?}"),
+fn section13_packed_hex_and_sign_cases() {
+    for name in [
+        "hexCharset01",
+        "packedCharset01",
+        "packedCharset02",
+        "packedCharset03",
+        "DelimitedPackedIntSeq",
+        "DelimitedPackedDecSeq",
+    ] {
+        match run_named("section13/packed/packed.tdml", name) {
+            TestOutcome::Pass => {}
+            other => panic!("{name}: {other:?}"),
+        }
     }
 }
 

@@ -22,7 +22,16 @@ struct IrBuilder<'a> {
 impl<'a> IrBuilder<'a> {
     fn new(schema: &'a SchemaDocument, tunables: DaffodilTunables) -> Self {
         let mut strings = StringPool::new();
-        let defaults = overlay_dfdl_to_ir(IrProps::default(), &schema.format_defaults.props, &mut strings);
+        let mut defaults =
+            overlay_dfdl_to_ir(IrProps::default(), &schema.format_defaults.props, &mut strings);
+        defaults.binary_packed_sign_codes = strings.intern(
+            schema
+                .format_defaults
+                .props
+                .binary_packed_sign_codes
+                .as_deref()
+                .unwrap_or("C D F C"),
+        );
         Self {
             schema,
             nodes: Vec::new(),
@@ -44,12 +53,13 @@ impl<'a> IrBuilder<'a> {
         let root = if let Some(builtin) = BuiltinType::from_xsd(root_element.type_name.as_str()) {
             let kind = value_kind_from_builtin(builtin);
             let defaults = self.defaults.clone();
-            let props = finalize_element_props(
+            let mut props = finalize_element_props(
                 kind,
                 self.merge_props_full(&defaults, &DfdlProps::default(), &root_element.props)?,
                 &self.strings,
                 self.tunables,
             )?;
+            apply_unsigned_long_flag(&root_element.type_name, &mut props);
             validate_implicit_text_length(kind, &props)?;
             let name = self.strings.intern(root_name);
             self.push(IrNode::Element {
@@ -75,6 +85,7 @@ impl<'a> IrBuilder<'a> {
                     &self.strings,
                     self.tunables,
                 )?;
+                apply_unsigned_long_flag(&root_element.type_name, &mut ir_props);
                 apply_restriction_facets(&mut ir_props, base);
                 validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern(root_name);
@@ -998,6 +1009,13 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.binary_number_rep {
         base.binary_number_rep = v;
     }
+    if props.binary_packed_sign_codes.is_some() {
+        base.binary_packed_sign_codes =
+            strings.intern(props.binary_packed_sign_codes.as_deref().unwrap_or("C D F C"));
+    }
+    if let Some(v) = props.binary_number_check_policy {
+        base.binary_number_check_policy = v;
+    }
     if let Some(v) = props.binary_calendar_rep {
         base.binary_calendar_rep = v;
     }
@@ -1159,6 +1177,8 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.text_number_pad_character = overlay.text_number_pad_character;
     out.text_string_pad_character = overlay.text_string_pad_character;
     out.binary_number_rep = overlay.binary_number_rep;
+    out.binary_packed_sign_codes = overlay.binary_packed_sign_codes;
+    out.binary_number_check_policy = overlay.binary_number_check_policy;
     out.binary_calendar_rep = overlay.binary_calendar_rep;
     out.binary_float_rep = overlay.binary_float_rep;
     out.binary_decimal_virtual_point = overlay.binary_decimal_virtual_point;

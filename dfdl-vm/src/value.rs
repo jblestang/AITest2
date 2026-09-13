@@ -79,6 +79,7 @@ pub enum DfdlValue {
     Boolean(bool),
     Int(i32),
     Long(i64),
+    UnsignedLong(u64),
     Short(i16),
     Byte(i8),
     UnsignedInt(u32),

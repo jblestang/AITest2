@@ -400,6 +400,7 @@ fn scalar_to_string(value: &DfdlValue) -> String {
         DfdlValue::Boolean(v) => v.to_string(),
         DfdlValue::Int(v) => v.to_string(),
         DfdlValue::Long(v) => v.to_string(),
+        DfdlValue::UnsignedLong(v) => v.to_string(),
         DfdlValue::Short(v) => v.to_string(),
         DfdlValue::Byte(v) => v.to_string(),
         DfdlValue::UnsignedInt(v) => v.to_string(),
