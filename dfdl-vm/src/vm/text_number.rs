@@ -615,9 +615,69 @@ fn pattern_literals_between(chars: &[char], start: usize, end: usize) -> String 
     out
 }
 
-fn negative_affixes(pattern: &str) -> (String, String) {
-    let chars: Vec<char> = pattern.chars().collect();
-    let (tmpl_start, tmpl_end) = negative_template_span(pattern);
+fn fuzzy_positive_in_negative(negative: &str, positive: &str) -> Option<(usize, usize)> {
+    let neg: Vec<char> = negative.chars().collect();
+    let pos: Vec<char> = positive.chars().collect();
+    if pos.is_empty() {
+        return None;
+    }
+    for start in 0..neg.len() {
+        let mut ni = start;
+        let mut pi = 0usize;
+        while pi < pos.len() && ni < neg.len() {
+            if neg[ni] == '\'' {
+                if let Some((lit, nnext)) = parse_quoted_pattern_literal(&neg, ni) {
+                    if pos[pi] != '\'' {
+                        break;
+                    }
+                    if let Some((plit, pnext)) = parse_quoted_pattern_literal(&pos, pi) {
+                        if lit != plit {
+                            break;
+                        }
+                        ni = nnext;
+                        pi = pnext;
+                        continue;
+                    }
+                    break;
+                }
+                break;
+            }
+            if pos[pi] == '\'' {
+                break;
+            }
+            if neg[ni] == '*' && pi + 1 < pos.len() && pos[pi] == '*' {
+                ni += 2;
+                pi += 2;
+                continue;
+            }
+            if is_negative_template_char(pos[pi]) && is_negative_template_char(neg[ni]) {
+                ni += 1;
+                pi += 1;
+                continue;
+            }
+            if neg[ni] == pos[pi] {
+                ni += 1;
+                pi += 1;
+                continue;
+            }
+            break;
+        }
+        if pi == pos.len() {
+            return Some((start, ni));
+        }
+    }
+    None
+}
+
+fn negative_affixes(negative_pattern: &str, positive_pattern: &str) -> (String, String) {
+    if let Some((start, end)) = fuzzy_positive_in_negative(negative_pattern, positive_pattern) {
+        let chars: Vec<char> = negative_pattern.chars().collect();
+        let prefix = pattern_literals_between(&chars, 0, start);
+        let suffix = pattern_literals_between(&chars, end, chars.len());
+        return (prefix, suffix);
+    }
+    let chars: Vec<char> = negative_pattern.chars().collect();
+    let (tmpl_start, tmpl_end) = negative_template_span(negative_pattern);
     let prefix = pattern_literals_between(&chars, 0, tmpl_start);
     let suffix = pattern_literals_between(&chars, tmpl_end, chars.len());
     (prefix, suffix)
@@ -690,7 +750,7 @@ fn match_negative_subpattern(
     v_frac_digits: usize,
     v_int_slots: usize,
 ) -> Result<String, VmError> {
-    let (prefix, suffix) = negative_affixes(negative_pattern);
+    let (prefix, suffix) = negative_affixes(negative_pattern, positive_pattern);
     let bytes = text.as_bytes();
     let mut pos = 0usize;
     skip_ws(bytes, &mut pos, lax);
