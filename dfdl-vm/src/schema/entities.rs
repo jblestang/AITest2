@@ -360,6 +360,9 @@ pub fn delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::S
         for part in pattern.split("||") {
             out.extend(split_whitespace_delimiter_alternatives(part.trim()));
         }
+        if out.is_empty() {
+            return alloc::vec![pattern.to_string()];
+        }
         return out;
     }
     if let Some(alts) = split_entity_and_literal_alternatives(pattern) {
@@ -1406,6 +1409,13 @@ mod tests {
         let alts2 = super::delimiter_alternatives("{{ {{ [");
         assert_eq!(alts2, vec!["{{", "{{", "["]);
         assert_eq!(match_delimiter(b"{{9", "{{ {{ ["), Some(2));
+    }
+
+    #[test]
+    fn double_pipe_separator_pattern() {
+        assert_eq!(match_delimiter_opts(b"||Shoes", "||", false), Some(2));
+        assert_eq!(delimiter_alternatives("||"), vec!["||"]);
+        assert_eq!(delimiter_alternatives("a||b"), vec!["a", "b"]);
     }
 
     #[test]

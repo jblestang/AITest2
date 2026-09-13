@@ -1,7 +1,8 @@
 use super::runtime::{
     consume_alignment, consume_enclosing_delimiter, default_value_for, encoding_name,
-    prefixed_payload_byte_length, read_delimited_bytes, read_length_span, read_prefixed_payload,
-    read_simple, read_until_separator, validate_explicit_decimal_before_decode,
+    is_suppressible_empty_representation, prefixed_payload_byte_length, read_delimited_bytes,
+    read_length_span, read_prefixed_payload, read_simple, read_until_separator,
+    should_suppress_decode_infix_separator, validate_explicit_decimal_before_decode,
     would_read_empty_delimited_field, Cursor, RuntimeConfig, VmContext,
 };
 use crate::length_validate::validate_data_length_vm;
@@ -106,8 +107,13 @@ impl<'a> Decoder<'a> {
                 let mut infix_sep_newline_prefix = Vec::new();
                 let mut separator_alts = Vec::new();
                 let mut field_delim_meta = BTreeMap::new();
+                let mut prev_absent_or_empty = false;
                 for (idx, &child) in children.iter().enumerate() {
                     let child_has_following = self.following_sibling_consumes_input(children, idx);
+                    let child_element_props = match self.ctx.program.node(child) {
+                        Ok(IrNode::Element { props: cp, .. }) => Some(cp),
+                        _ => None,
+                    };
                     if idx > 0 {
                         if let Some(sep_id) = props.separator {
                             let pat = self.ctx.strings().get(sep_id)?;
@@ -122,14 +128,23 @@ impl<'a> Decoder<'a> {
                         }
                     }
                     self.field_delimiters.borrow_mut().clear();
-                    let sep_alt = self.consume_separator(
-                        props,
-                        cursor,
-                        idx,
-                        children.len(),
-                        &mut infix_sep_newline_prefix,
-                        child_stops,
-                    )?;
+                    let suppress_sep = child_element_props
+                        .map(|cp| {
+                            should_suppress_decode_infix_separator(props, cp, prev_absent_or_empty)
+                        })
+                        .unwrap_or(false);
+                    let sep_alt = if suppress_sep {
+                        None
+                    } else {
+                        self.consume_separator(
+                            props,
+                            cursor,
+                            idx,
+                            children.len(),
+                            &mut infix_sep_newline_prefix,
+                            child_stops,
+                        )?
+                    };
                     separator_alts.push(sep_alt);
                     let saved = cursor.clone();
                     let start = cursor.pos;
@@ -144,6 +159,16 @@ impl<'a> Decoder<'a> {
                         child_stops,
                     ) {
                         Ok(child_value) => {
+                            prev_absent_or_empty = child_element_props
+                                .map(|cp| {
+                                    is_suppressible_empty_representation(
+                                        &child_value,
+                                        cp,
+                                        self.ctx.strings(),
+                                    )
+                                })
+                                .transpose()?
+                                .unwrap_or(false);
                             let consumed = cursor.pos.saturating_sub(start);
                             if let IrNode::Element { name, props, .. } = self.ctx.program.node(child)? {
                                 let key = self.ctx.strings().get(*name)?.to_string();
@@ -180,6 +205,7 @@ impl<'a> Decoder<'a> {
                                     return Err(e);
                                 }
                             }
+                            prev_absent_or_empty = true;
                             *cursor = saved;
                         }
                         Err(e) => return Err(e),
@@ -320,6 +346,7 @@ impl<'a> Decoder<'a> {
             if items.len() as u64 >= min && cursor.is_empty() {
                 break;
             }
+            let before_occurrence_sep = cursor.clone();
             if !items.is_empty() {
                 if !self.element_consumes_enclosing_delimiter(node_id, props) {
                     self.consume_occurrence_separator(parent_sequence, cursor)?;
@@ -350,7 +377,11 @@ impl<'a> Decoder<'a> {
                 Ok(v) => items.push(v),
                 Err(e) => {
                     if (items.len() as u64) >= min {
-                        *cursor = saved;
+                        *cursor = if items.is_empty() {
+                            saved
+                        } else {
+                            before_occurrence_sep
+                        };
                         break;
                     }
                     if min == 0 && items.is_empty() {

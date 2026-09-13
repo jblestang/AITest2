@@ -2082,6 +2082,33 @@ fn should_defer_parent_stop_delimiter(props: &IrProps) -> bool {
     props.initiator.is_some()
 }
 
+/// Infix sequence separators are consumed by the sequence decoder before the next child.
+fn should_defer_infix_sequence_separator(
+    seq_props: &IrProps,
+    separator_id: StringId,
+    field_props: &IrProps,
+) -> bool {
+    seq_props.separator_position == SeparatorPosition::Infix
+        && seq_props.separator == Some(separator_id)
+        && field_props.terminator.is_none()
+}
+
+/// When decoding a sequence child, skip the infix separator before this index if
+/// `anyEmpty` applies and the previous particle was absent or an empty representation.
+pub(crate) fn should_suppress_decode_infix_separator(
+    seq_props: &IrProps,
+    child_props: &IrProps,
+    prev_absent_or_empty: bool,
+) -> bool {
+    let policy = seq_props
+        .separator_suppression_policy
+        .or(child_props.separator_suppression_policy);
+    if policy != Some(SeparatorSuppressionPolicy::AnyEmpty) {
+        return false;
+    }
+    seq_props.separator_position == SeparatorPosition::Infix && prev_absent_or_empty
+}
+
 pub(crate) fn would_read_empty_delimited_field(
     cursor: &Cursor<'_>,
     props: &IrProps,
@@ -2312,6 +2339,9 @@ pub(crate) fn consume_enclosing_delimiter(
                         seq.ignore_case,
                     ) {
                         if n > 0 {
+                            if should_defer_infix_sequence_separator(seq, id, props) {
+                                return Ok(());
+                            }
                             cursor.advance(n);
                         }
                         return Ok(());
