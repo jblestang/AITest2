@@ -141,11 +141,24 @@ fn match_subpattern(
 
         match chars[i] {
             '0' | '#' => {
+                let mut j = i;
+                let mut min_digits = 0usize;
+                let mut max_digits = 0usize;
+                while j < chars.len() && matches!(chars[j], '0' | '#') {
+                    if chars[j] == '0' {
+                        min_digits += 1;
+                    }
+                    max_digits += 1;
+                    j += 1;
+                }
+                i = j;
+
                 skip_pad(bytes, &mut pos, props.pad_character, lax);
                 if !in_exponent && !saw_decimal {
                     for dec in props.decimal_separators {
                         let ds = dec.to_string();
-                        if text[pos..].starts_with(&ds) || (*dec == '.' && pos < bytes.len() && bytes[pos] == b'.')
+                        if text[pos..].starts_with(&ds)
+                            || (*dec == '.' && pos < bytes.len() && bytes[pos] == b'.')
                         {
                             pos += ds.len().max(1);
                             saw_decimal = true;
@@ -153,38 +166,34 @@ fn match_subpattern(
                         }
                     }
                 }
-                if in_exponent {
-                    let start = pos;
-                    while pos < bytes.len() && bytes[pos].is_ascii_digit() {
-                        pos += 1;
-                    }
-                    if start == pos && chars[i] == '0' && !lax {
-                        return Err(VmError::InvalidValue {
-                            message: "textNumberPattern mismatch".into(),
-                        });
-                    }
-                    exponent.get_or_insert_with(String::new).push_str(
-                        core::str::from_utf8(&bytes[start..pos]).unwrap_or(""),
-                    );
-                } else if saw_decimal {
-                    let start = pos;
-                    while pos < bytes.len() && bytes[pos].is_ascii_digit() {
-                        pos += 1;
-                    }
-                    frac_digits.push_str(core::str::from_utf8(&bytes[start..pos]).unwrap_or(""));
-                } else {
-                    let start = pos;
-                    while pos < bytes.len() && bytes[pos].is_ascii_digit() {
-                        pos += 1;
-                    }
-                    if start == pos && chars[i] == '0' && !lax {
-                        return Err(VmError::InvalidValue {
-                            message: "textNumberPattern mismatch".into(),
-                        });
-                    }
-                    int_digits.push_str(core::str::from_utf8(&bytes[start..pos]).unwrap_or(""));
+                let start = pos;
+                while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                    pos += 1;
                 }
-                i += 1;
+                let digit_count = pos - start;
+                if digit_count < min_digits && !lax {
+                    return Err(VmError::InvalidValue {
+                        message: "textNumberPattern mismatch".into(),
+                    });
+                }
+                if digit_count > max_digits && !lax {
+                    return Err(VmError::InvalidValue {
+                        message: "textNumberPattern mismatch".into(),
+                    });
+                }
+                if digit_count == 0 && min_digits > 0 && !lax {
+                    return Err(VmError::InvalidValue {
+                        message: "textNumberPattern mismatch".into(),
+                    });
+                }
+                let chunk = core::str::from_utf8(&bytes[start..pos]).unwrap_or("");
+                if in_exponent {
+                    exponent.get_or_insert_with(String::new).push_str(chunk);
+                } else if saw_decimal {
+                    frac_digits.push_str(chunk);
+                } else {
+                    int_digits.push_str(chunk);
+                }
             }
             '*' => {
                 skip_pad(bytes, &mut pos, props.pad_character, lax);
@@ -365,5 +374,19 @@ mod tests {
         let props = TextNumberFormatProps::default();
         let n = parse_standard_text_number("006.54E9", "000.0#E0", &props).unwrap();
         assert_eq!(n, "6.54E9");
+    }
+
+    #[test]
+    fn strict_four_zeros() {
+        let dec = ['.'];
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(','),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number("1988", "0000", &props).unwrap();
+        assert_eq!(n, "1988");
     }
 }
