@@ -107,6 +107,30 @@ fn is_compound_dfdl_entity_delimiter(s: &str) -> bool {
     count >= 2
 }
 
+/// True when `s` contains a `%entity+;`, `%entity*;`, or `%entity?;` token.
+fn has_quantified_dfdl_entity(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let Some(rel) = s[i..].find(';') {
+                let body = &s[i + 1..i + rel];
+                if body
+                    .chars()
+                    .last()
+                    .is_some_and(|c| matches!(c, '+' | '*' | '?'))
+                {
+                    return true;
+                }
+                i += rel + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Parse a delimiter literal from an XSD attribute value.
 pub fn parse_delimiter_literal_value(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -123,7 +147,7 @@ pub fn parse_delimiter_literal_value(raw: &str) -> String {
     {
         return unescaped.trim_end_matches([' ', '\t']).to_string();
     }
-    if is_compound_dfdl_entity_delimiter(&unescaped) {
+    if is_compound_dfdl_entity_delimiter(&unescaped) || has_quantified_dfdl_entity(&unescaped) {
         return unescaped.trim().to_string();
     }
     let normalized = normalize_delimiter_pattern(&unescaped);
@@ -1431,6 +1455,8 @@ mod tests {
             parse_delimiter_literal_value("%WSP;%WSP+;+%NL;%WSP*;"),
             "%WSP;%WSP+;+%NL;%WSP*;"
         );
+        assert_eq!(parse_delimiter_literal_value("%WSP+;"), "%WSP+;");
+        assert_eq!(parse_delimiter_literal_value("%WSP*;"), "%WSP*;");
     }
 
     #[test]

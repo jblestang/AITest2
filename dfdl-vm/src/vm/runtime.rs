@@ -234,8 +234,7 @@ impl<'a> Cursor<'a> {
 
     pub fn consume_delimiter(&mut self, pattern: &str, ignore_case: bool) -> bool {
         self.consume_delimiter_with_alt(pattern, ignore_case)
-            .map(|(n, _)| n > 0 || pattern.is_empty())
-            .unwrap_or(false)
+            .is_some()
     }
 
     pub fn consume_delimiter_with_alt(
@@ -3019,16 +3018,11 @@ pub(crate) fn read_simple(
     if let Some(id) = props.initiator {
         let pat = strings.get(id)?;
         if !pat.is_empty() {
-            let Some((n, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) else {
+            let Some((_n, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) else {
                 return Err(VmError::InvalidValue {
                     message: "initiator mismatch".into(),
                 });
             };
-            if n == 0 {
-                return Err(VmError::InvalidValue {
-                    message: "initiator mismatch".into(),
-                });
-            }
             if let Some(out) = delim_out.as_mut() {
                 out.initiator_alt = Some(alt);
             }
