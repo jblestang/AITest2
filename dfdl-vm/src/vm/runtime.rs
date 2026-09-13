@@ -2446,6 +2446,16 @@ fn format_field_text_number(
         pad_character: pad,
         ignore_case: props.ignore_case,
     };
+    if props.text_standard_zero_rep_defined {
+        if let Ok(raw) = strings.get(props.text_standard_zero_rep) {
+            if let Some(z) =
+                crate::vm::text_number_format::text_standard_zero_unparse(text, raw)
+            {
+                return Ok(z);
+            }
+        }
+    }
+
     let increment_owned = if props.text_number_rounding_increment_defined {
         strings.get(props.text_number_rounding_increment)?.to_string()
     } else {

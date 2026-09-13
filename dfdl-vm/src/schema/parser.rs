@@ -867,12 +867,85 @@ impl<'a> XsdParser<'a> {
         }
 
         self.reader.skip_insignificant_ws()?;
+        if local == "element" {
+            if self.reader.peek_is_end("element")? {
+                self.expect_end_local("element")?;
+            } else {
+                loop {
+                    self.reader.skip_insignificant_ws()?;
+                    match self.reader.peek()? {
+                        XmlEvent::EndElement { name } if name.local_name == "element" => {
+                            let _ = self.reader.next_event()?;
+                            break;
+                        }
+                        XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                        XmlEvent::StartElement { name, .. } => {
+                            let child_local = name.local_name.clone();
+                            let child_prefix = name.prefix.clone();
+                            let child_attrs = self.reader.take_start_attributes()?;
+                            if Self::is_dfdl_element(child_prefix.as_deref(), &child_local)
+                                && child_local == "property"
+                            {
+                                let prop_name = child_attrs.get("name").cloned().ok_or_else(|| {
+                                    ParseError::InvalidXml {
+                                        message: "dfdl:property missing name".into(),
+                                    }
+                                })?;
+                                let value = self.read_simple_element_text("property")?;
+                                let mut map = BTreeMap::new();
+                                map.insert(prop_name, value);
+                                props = merge_props(props, props_from_attrs(&map)?);
+                            } else {
+                                self.skip_element_body(&child_local)?;
+                            }
+                        }
+                        XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                            let _ = self.reader.next_event()?;
+                        }
+                        other => {
+                            return Err(ParseError::InvalidXml {
+                                message: alloc::format!(
+                                    "expected dfdl:element child, found {:?}",
+                                    event_kind(other)
+                                ),
+                            }
+                            .into());
+                        }
+                    }
+                }
+            }
+            return Ok(props);
+        }
         if self.reader.peek_is_end(local)? {
             self.expect_end_local(local)?;
         } else {
             self.reader.skip_current_subtree()?;
         }
         Ok(props)
+    }
+
+    fn read_simple_element_text(&mut self, local: &str) -> Result<String> {
+        let mut out = String::new();
+        loop {
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.next_event()? {
+                XmlEvent::EndElement { name } if name.local_name == local => break,
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::Characters(text) => out.push_str(&text),
+                XmlEvent::CData(text) => out.push_str(&text),
+                XmlEvent::Whitespace(text) => out.push_str(&text),
+                other => {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "expected text in `{local}`, found {:?}",
+                            event_kind(&other)
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+        Ok(out)
     }
 
     fn parse_define_format(&mut self, attrs: BTreeMap<String, String>) -> Result<DfdlProps> {
@@ -1614,6 +1687,14 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 })?);
             }
             "textStringPadCharacter" => {
+                if value.chars().any(|c| c.is_whitespace()) {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "Schema Definition Error: facet-valid NonEmptyStringLiteral property textStringPadCharacter"
+                        ),
+                    }
+                    .into());
+                }
                 props.text_string_pad_character =
                     Some(crate::schema::expand_entities_str(value));
             }

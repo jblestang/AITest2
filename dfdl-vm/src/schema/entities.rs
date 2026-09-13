@@ -233,6 +233,20 @@ pub fn parse_text_standard_zero_rep_list(raw: &str) -> alloc::vec::Vec<String> {
         .collect()
 }
 
+pub fn validate_text_string_pad_character(raw: &str) -> Result<(), String> {
+    if raw.is_empty() || raw.chars().any(|c| c.is_whitespace()) {
+        return Err(
+            "facet-valid NonEmptyStringLiteral property textStringPadCharacter".into(),
+        );
+    }
+    if raw.chars().count() != 1 {
+        return Err(
+            "facet-valid NonEmptyStringLiteral property textStringPadCharacter".into(),
+        );
+    }
+    Ok(())
+}
+
 pub fn validate_text_standard_zero_rep_literal(raw: &str) -> Result<(), String> {
     if raw.is_empty() {
         return Ok(());

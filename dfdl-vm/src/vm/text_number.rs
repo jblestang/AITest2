@@ -1361,7 +1361,7 @@ fn apply_scientific_exponent(
     s
 }
 
-fn grouping_segment_slot_counts(pattern: &str) -> Vec<usize> {
+pub(crate) fn grouping_segment_slot_counts(pattern: &str) -> Vec<usize> {
     let bare = pattern_without_quoted_regions(pattern);
     let int_part = bare
         .split(['.', 'E', 'e', ';'])

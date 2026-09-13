@@ -2,7 +2,9 @@
 
 use crate::error::VmError;
 use crate::schema::{TextNumberRounding, TextNumberRoundingMode};
-use crate::vm::text_number::{pattern_without_quoted_regions, TextNumberFormatProps};
+use crate::vm::text_number::{
+    grouping_segment_slot_counts, pattern_without_quoted_regions, TextNumberFormatProps,
+};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -509,6 +511,63 @@ fn apply_rounding_increment_to_decimal(
     Ok(from_scaled_integer(product, target_scale, d.negative))
 }
 
+fn decimal_is_zero(d: &Decimal) -> bool {
+    d.digits.iter().all(|&x| x == 0)
+}
+
+fn needs_fraction_display(d: &Decimal, min_frac: usize) -> bool {
+    if min_frac > 0 {
+        return true;
+    }
+    if d.scale == 0 {
+        return false;
+    }
+    let split = d.digits.len().saturating_sub(d.scale);
+    d.digits[split..].iter().any(|&x| x != 0)
+}
+
+fn trim_insignificant_fraction(d: &mut Decimal) {
+    trim_trailing_zeros(d);
+}
+
+fn format_grouped_integer(digits: &[u8], positive_pattern: &str, sep: &str) -> String {
+    if digits.is_empty() {
+        return "0".into();
+    }
+    let bare = pattern_without_quoted_regions(positive_pattern);
+    let int_part = bare
+        .split(['.', 'E', 'e', ';'])
+        .next()
+        .unwrap_or(bare.as_str());
+    if !int_part.contains(',') {
+        return digits.iter().map(|n| (b'0' + n) as char).collect();
+    }
+    let segs = grouping_segment_slot_counts(int_part);
+    if segs.is_empty() {
+        return digits.iter().map(|n| (b'0' + n) as char).collect();
+    }
+    let mut idx = digits.len();
+    let mut groups: Vec<Vec<u8>> = Vec::new();
+    for &seg in segs.iter().rev() {
+        if idx == 0 {
+            break;
+        }
+        let take = seg.min(idx);
+        let start = idx - take;
+        groups.push(digits[start..idx].to_vec());
+        idx = start;
+    }
+    if idx > 0 {
+        groups.push(digits[0..idx].to_vec());
+    }
+    groups.reverse();
+    groups
+        .iter()
+        .map(|g| g.iter().map(|n| (b'0' + n) as char).collect::<String>())
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
 fn fraction_digit_bounds(positive_bare: &str) -> (usize, usize) {
     let head = positive_bare
         .split(['E', 'e', ';'])
@@ -523,6 +582,28 @@ fn fraction_digit_bounds(positive_bare: &str) -> (usize, usize) {
     (min, max)
 }
 
+fn fraction_round_increments(
+    round_digit: u8,
+    tail: &[u8],
+    mode: TextNumberRoundingMode,
+    q_last: u8,
+    negative: bool,
+) -> bool {
+    let tail_has = tail.iter().any(|&d| d > 0);
+    match mode {
+        TextNumberRoundingMode::RoundUnnecessary => false,
+        TextNumberRoundingMode::RoundUp => !negative,
+        TextNumberRoundingMode::RoundDown => negative,
+        TextNumberRoundingMode::RoundCeiling => !negative,
+        TextNumberRoundingMode::RoundFloor => negative,
+        TextNumberRoundingMode::RoundHalfUp => round_digit > 5 || (round_digit == 5 && tail_has),
+        TextNumberRoundingMode::RoundHalfDown => round_digit > 5,
+        TextNumberRoundingMode::RoundHalfEven => {
+            round_digit > 5 || (round_digit == 5 && (tail_has || q_last % 2 == 1))
+        }
+    }
+}
+
 fn round_to_max_fraction_digits(d: &mut Decimal, max_frac: usize, mode: TextNumberRoundingMode) {
     if d.scale <= max_frac {
         return;
@@ -535,15 +616,13 @@ fn round_to_max_fraction_digits(d: &mut Decimal, max_frac: usize, mode: TextNumb
     }
     let round_digit = d.digits[round_idx];
     let tail = &d.digits[round_idx + 1..];
-    let mut rem = vec![round_digit];
-    rem.extend_from_slice(tail);
     let q_last = if round_idx > 0 {
         d.digits[round_idx - 1]
     } else {
         0
     };
     let mut new_digits = d.digits[..round_idx].to_vec();
-    if should_round_up(&rem, &[5], mode, d.negative, q_last) {
+    if fraction_round_increments(round_digit, tail, mode, q_last, d.negative) {
         let mut carry = 1u16;
         for i in (0..new_digits.len()).rev() {
             let sum = new_digits[i] as u16 + carry;
@@ -626,6 +705,25 @@ fn format_exponent(exp: i32, exp_pattern: &str) -> String {
     }
 }
 
+fn int_pattern_ends_at_dot(chars: &[char], start: usize) -> Option<usize> {
+    let mut j = start;
+    while j < chars.len() {
+        match chars[j] {
+            '0' | '#' | ',' => j += 1,
+            '.' => return Some(j),
+            '\'' => {
+                if let Some((_, ni)) = parse_quoted_literal(chars, j) {
+                    j = ni;
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn format_mantissa_pattern(
     pattern: &str,
     d: &Decimal,
@@ -681,18 +779,43 @@ fn format_mantissa_pattern(
                     j += 1;
                 }
                 i = j;
-                let stops_at_dot = j < chars.len() && chars[j] == '.';
+                let stops_at_dot =
+                    int_pattern_ends_at_dot(&chars, i.saturating_sub(max)).is_some() && !saw_decimal;
                 if stops_at_dot && !saw_decimal {
-                    while int_idx < int_digits.len() {
-                        out.push((b'0' + int_digits[int_idx]) as char);
-                        int_idx += 1;
+                    let dot_at = int_pattern_ends_at_dot(&chars, i.saturating_sub(max)).unwrap();
+                    let avail = int_digits.len().saturating_sub(int_idx);
+                    let need = core::cmp::max(min, avail);
+                    let pad = need.saturating_sub(avail);
+                    let mut chunk = Vec::new();
+                    for _ in 0..pad {
+                        chunk.push(0u8);
                     }
+                    chunk.extend_from_slice(&int_digits[int_idx..]);
+                    out.push_str(&format_grouped_integer(&chunk, pattern, grp_sep));
+                    int_idx = int_digits.len();
+                    out.push_str(dec_sep);
+                    saw_decimal = true;
+                    i = dot_at + 1;
                     continue;
                 }
                 if saw_decimal {
                     let mut emitted = 0usize;
                     while frac_idx < frac_digits.len() && emitted < max {
-                        out.push((b'0' + frac_digits[frac_idx]) as char);
+                        let digit = frac_digits[frac_idx];
+                        let remaining = &frac_digits[frac_idx..];
+                        if min == 0
+                            && remaining.iter().all(|&d| d == 0)
+                            && emitted >= min
+                        {
+                            break;
+                        }
+                        if min == 0 && emitted >= min {
+                            let rest_significant = remaining.iter().any(|&d| d != 0);
+                            if !rest_significant {
+                                break;
+                            }
+                        }
+                        out.push((b'0' + digit) as char);
                         frac_idx += 1;
                         emitted += 1;
                     }
@@ -700,32 +823,29 @@ fn format_mantissa_pattern(
                         out.push('0');
                         emitted += 1;
                     }
-                    // `#`-only slots (min == 0): show extra significant digits only.
-                    if min == 0 && max > 0 && emitted == 0 {
-                        while frac_idx < frac_digits.len() && emitted < max {
-                            let d = frac_digits[frac_idx];
-                            if d == 0 && frac_idx + 1 >= frac_digits.len() {
-                                break;
-                            }
-                            out.push((b'0' + d) as char);
-                            frac_idx += 1;
-                            emitted += 1;
-                        }
-                    }
+                } else if int_idx >= int_digits.len() {
+                    // Integer digits already emitted; skip redundant int slots.
                 } else {
                     let avail = int_digits.len().saturating_sub(int_idx);
                     let need = core::cmp::max(min, avail);
                     let pad = need.saturating_sub(avail);
+                    let mut chunk = Vec::new();
                     for _ in 0..pad {
-                        out.push('0');
+                        chunk.push(0u8);
                     }
-                    while int_idx < int_digits.len() {
-                        out.push((b'0' + int_digits[int_idx]) as char);
-                        int_idx += 1;
-                    }
+                    chunk.extend_from_slice(&int_digits[int_idx..]);
+                    out.push_str(&format_grouped_integer(&chunk, pattern, grp_sep));
+                    int_idx = int_digits.len();
                 }
             }
             '.' => {
+                if !needs_fraction_display(d, min_frac) {
+                    i += 1;
+                    while i < chars.len() && matches!(chars[i], '0' | '#') {
+                        i += 1;
+                    }
+                    continue;
+                }
                 saw_decimal = true;
                 out.push_str(dec_sep);
                 i += 1;
@@ -760,6 +880,23 @@ fn format_mantissa_pattern(
     }
 
     Ok(out)
+}
+
+pub(crate) fn text_number_value_is_zero(value: &str) -> bool {
+    parse_decimal_value(value.trim())
+        .map(|d| decimal_is_zero(&d))
+        .unwrap_or(false)
+}
+
+pub(crate) fn text_standard_zero_unparse(value: &str, raw_zero_rep: &str) -> Option<String> {
+    if !text_number_value_is_zero(value) {
+        return None;
+    }
+    let reps = crate::schema::parse_text_standard_zero_rep_list(raw_zero_rep);
+    if reps.is_empty() {
+        return None;
+    }
+    Some(reps[0].clone())
 }
 
 pub(crate) fn format_standard_text_number(
@@ -818,7 +955,19 @@ pub(crate) fn format_standard_text_number(
     if use_explicit {
         d = apply_rounding_increment_to_decimal(&d, increment, rounding.mode)?;
     }
-    round_to_max_fraction_digits(&mut d, max_frac, rounding.mode);
+    if matches!(rounding.mode, TextNumberRoundingMode::RoundUnnecessary) {
+        let before = decimal_to_string(&d);
+        let mut probe = d.clone();
+        round_to_max_fraction_digits(&mut probe, max_frac, rounding.mode);
+        if decimal_to_string(&probe) != before {
+            return Err(VmError::InvalidValue {
+                message: "Unparse Error. rounding required with roundUnnecessary".into(),
+            });
+        }
+    } else {
+        round_to_max_fraction_digits(&mut d, max_frac, rounding.mode);
+    }
+    trim_insignificant_fraction(&mut d);
 
     let mut formatted = format_mantissa_pattern(positive, &d, props, min_frac)?;
     if negative_input && !formatted.starts_with('-') {

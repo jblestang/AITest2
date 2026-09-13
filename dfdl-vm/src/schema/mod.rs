@@ -20,6 +20,7 @@ pub use entities::{
     validate_text_standard_separator_literal,
     validate_text_standard_special_value_literal,
     validate_text_standard_zero_rep_literal,
+    validate_text_string_pad_character,
 };
 pub use parser::{parse_schema, parse_schema_with_resolver, ParseOptions};
 pub use resolver::SchemaResolver;
