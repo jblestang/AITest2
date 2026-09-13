@@ -94,7 +94,6 @@ fn daffodil_section13_regression_suite() {
         "textNumberPattern_negativeIgnored01b",
         "textNumberPattern_negativeIgnored05",
         "textNumberCheckPolicy_strict04",
-        "standardZeroRep08",
     ]);
     section13_file_cases!("text_number_props/TextNumberPropsUnparse.tdml", &[
         "parseDelimitedPaddedString01",
