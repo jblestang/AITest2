@@ -1762,16 +1762,14 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 if let Some((sibling, _)) = parse_sibling_length_expr(value) {
                     props.text_standard_exponent_rep_sibling = Some(sibling);
                 } else {
-                    props.text_standard_exponent_rep =
-                        Some(crate::schema::expand_entities_str(value));
+                    props.text_standard_exponent_rep = Some(value.clone());
                 }
             }
             "textStandardInfinityRep" => {
-                props.text_standard_infinity_rep =
-                    Some(crate::schema::expand_entities_str(value));
+                props.text_standard_infinity_rep = Some(value.clone());
             }
             "textStandardNaNRep" => {
-                props.text_standard_nan_rep = Some(crate::schema::expand_entities_str(value));
+                props.text_standard_nan_rep = Some(value.clone());
             }
             "textStandardZeroRep" => {
                 props.text_standard_zero_rep = Some(value.clone());

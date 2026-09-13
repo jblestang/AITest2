@@ -625,13 +625,19 @@ fn text_number_pattern_has_grouping_and_exponent(pattern: &str) -> bool {
 fn validate_text_number_pattern_unquoted_special(pattern: &str) -> Result<()> {
     for sub in pattern.split(';') {
         let bare = text_number_pattern_bare(sub);
-        if bare.contains('_') {
-            return Err(SchemaError::InvalidProperty {
-                message: alloc::format!(
-                    "Schema Definition Error: Invalid textNumberPattern: unquoted special character in pattern `{pattern}`"
-                ),
+        let chars: Vec<char> = bare.chars().collect();
+        for (i, c) in chars.iter().enumerate() {
+            if *c == '_' {
+                let pad_suffix = i > 0 && chars[i - 1] == '*';
+                if !pad_suffix {
+                    return Err(SchemaError::InvalidProperty {
+                        message: alloc::format!(
+                            "Schema Definition Error: Invalid textNumberPattern: unquoted special character in pattern `{pattern}`"
+                        ),
+                    }
+                    .into());
+                }
             }
-            .into());
         }
     }
     Ok(())
@@ -842,35 +848,6 @@ fn validate_text_standard_separator_semantics(
             }
             .into());
         }
-        if text_number_pattern_requires_grouping_separator(pat)
-            && text_number_pattern_requires_decimal_separator(pat)
-            && ir.text_standard_decimal_separator_defined
-            && ir.text_standard_grouping_separator_defined
-            && ir.text_standard_decimal_separator_sibling.is_none()
-            && ir.text_standard_grouping_separator_sibling.is_none()
-        {
-            let dec = strings.get(ir.text_standard_decimal_separator).map_err(|e| {
-                SchemaError::InvalidProperty {
-                    message: e.to_string(),
-                }
-            })?;
-            let dec_list = parse_text_standard_separator_list(dec);
-            if let Some(gid) = ir.text_standard_grouping_separator {
-                let grp = strings.get(gid).map_err(|e| SchemaError::InvalidProperty {
-                    message: e.to_string(),
-                })?;
-                let g_exp = expand_entities_str(grp);
-                if dec_list.len() == 1
-                    && g_exp.chars().count() == 1
-                    && dec_list[0] == g_exp
-                {
-                    return Err(SchemaError::InvalidProperty {
-                        message: "Schema Definition Error: Non-distinct property textStandardDecimalSeparator and textStandardGroupingSeparator".into(),
-                    }
-                    .into());
-                }
-            }
-        }
     }
     Ok(())
 }
@@ -1003,6 +980,10 @@ fn finalize_element_props(
             let pat = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
                 message: e.to_string(),
             })?;
+            for sub in pat.split(';') {
+                validate_text_number_pad_specifiers(sub)?;
+            }
+            validate_text_number_pattern_unquoted_special(pat)?;
             if text_number_pattern_has_grouping_and_exponent(pat) {
                 return Err(SchemaError::InvalidProperty {
                     message: alloc::format!(
@@ -1011,10 +992,6 @@ fn finalize_element_props(
                 }
                 .into());
             }
-            for sub in pat.split(';') {
-                validate_text_number_pad_specifiers(sub)?;
-            }
-            validate_text_number_pattern_unquoted_special(pat)?;
             if ir.text_standard_decimal_separator_defined {
                 let dec = strings.get(ir.text_standard_decimal_separator).unwrap_or("");
                 if dec.is_empty()
@@ -1086,36 +1063,9 @@ fn finalize_element_props(
             message: alloc::format!("Schema Definition Error: {msg}"),
         })?;
     }
-    if ir.text_standard_exponent_rep_defined
-        && ir.text_standard_exponent_rep_sibling.is_none()
-        && !strings.get(ir.text_standard_exponent_rep).unwrap_or("").is_empty()
-    {
-        let raw = strings.get(ir.text_standard_exponent_rep).unwrap_or("");
-        validate_text_standard_exponent_rep_literal(raw).map_err(|msg| {
-            SchemaError::InvalidProperty {
-                message: alloc::format!("Schema Definition Error: {msg}"),
-            }
-        })?;
-    }
     if ir.text_standard_zero_rep_defined {
         let raw = strings.get(ir.text_standard_zero_rep).unwrap_or("");
         validate_text_standard_zero_rep_literal(raw).map_err(|msg| {
-            SchemaError::InvalidProperty {
-                message: alloc::format!("Schema Definition Error: {msg}"),
-            }
-        })?;
-    }
-    if ir.text_standard_infinity_rep != StringId(0) {
-        let raw = strings.get(ir.text_standard_infinity_rep).unwrap_or("");
-        validate_text_standard_special_value_literal("textStandardInfinityRep", raw).map_err(
-            |msg| SchemaError::InvalidProperty {
-                message: alloc::format!("Schema Definition Error: {msg}"),
-            },
-        )?;
-    }
-    if ir.text_standard_nan_rep != StringId(0) {
-        let raw = strings.get(ir.text_standard_nan_rep).unwrap_or("");
-        validate_text_standard_special_value_literal("textStandardNaNRep", raw).map_err(|msg| {
             SchemaError::InvalidProperty {
                 message: alloc::format!("Schema Definition Error: {msg}"),
             }
@@ -1705,7 +1655,7 @@ fn overlay_dfdl_to_ir(
                 }
             })?;
         }
-        base.text_standard_exponent_rep = strings.intern(raw);
+        base.text_standard_exponent_rep = strings.intern(expand_entities_str(raw));
         base.text_standard_exponent_rep_defined = true;
     }
     if props.text_standard_zero_rep.is_some() {
@@ -1716,20 +1666,28 @@ fn overlay_dfdl_to_ir(
             }
         })?;
         base.text_standard_zero_rep = strings.intern(raw);
-        base.text_standard_zero_rep_defined = true;
+        base.text_standard_zero_rep_defined = !raw.is_empty();
     }
     if props.text_standard_infinity_rep.is_some() {
-        base.text_standard_infinity_rep = strings.intern(
-            props
-                .text_standard_infinity_rep
-                .as_deref()
-                .unwrap_or("Inf"),
-        );
+        let raw = props
+            .text_standard_infinity_rep
+            .as_deref()
+            .unwrap_or("Inf");
+        validate_text_standard_special_value_literal("textStandardInfinityRep", raw).map_err(
+            |msg| SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {msg}"),
+            },
+        )?;
+        base.text_standard_infinity_rep = strings.intern(expand_entities_str(raw));
     }
     if props.text_standard_nan_rep.is_some() {
-        base.text_standard_nan_rep = strings.intern(
-            props.text_standard_nan_rep.as_deref().unwrap_or("NaN"),
-        );
+        let raw = props.text_standard_nan_rep.as_deref().unwrap_or("NaN");
+        validate_text_standard_special_value_literal("textStandardNaNRep", raw).map_err(|msg| {
+            SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {msg}"),
+            }
+        })?;
+        base.text_standard_nan_rep = strings.intern(expand_entities_str(raw));
     }
     if let Some(ref s) = props.initiator {
         if !s.is_empty() {
@@ -1916,10 +1874,10 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.text_standard_nan_rep != StringId(0) {
         out.text_standard_nan_rep = overlay.text_standard_nan_rep;
     }
-    if overlay.text_standard_zero_rep != StringId(0) || overlay.text_standard_zero_rep_defined {
+    if overlay.text_standard_zero_rep != StringId(0) {
         out.text_standard_zero_rep = overlay.text_standard_zero_rep;
-    }
-    if overlay.text_standard_zero_rep_defined {
+        out.text_standard_zero_rep_defined = overlay.text_standard_zero_rep_defined;
+    } else if overlay.text_standard_zero_rep_defined {
         out.text_standard_zero_rep_defined = true;
     }
     if overlay.text_standard_exponent_rep_defined {

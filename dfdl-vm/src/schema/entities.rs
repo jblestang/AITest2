@@ -52,6 +52,7 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
             "LF" => vec![b'\n'],
             "SP" => vec![b' '],
             "HT" => vec![b'\t'],
+            "DEL" => vec![0x7f],
             "WSP" | "WS" => match quantifier {
                 Some('*') | Some('?') => vec![],
                 _ => vec![b' '],
@@ -214,7 +215,9 @@ pub fn validate_text_standard_distinct_values(entries: &[(&str, &str)]) -> Resul
     }
     conflict.sort_unstable();
     let names = conflict.join(", ");
-    Err(format!("Non-distinct property values for {names}"))
+    Err(format!(
+        "Non-distinct property values among {names}"
+    ))
 }
 
 /// Parse `textStandardDecimalSeparator` (list of single-character literals, space-separated).

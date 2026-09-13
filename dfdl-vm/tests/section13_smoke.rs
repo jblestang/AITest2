@@ -25,6 +25,17 @@ fn run_named(tdml_rel: &str, case_name: &str) -> TestOutcome {
 }
 
 #[test]
+fn section13_exp_char_classes_compile() {
+    match run_named(
+        "section13/text_number_props/TextNumberProps.tdml",
+        "expCharClasses",
+    ) {
+        TestOutcome::Pass => {}
+        other => panic!("expCharClasses: {other:?}"),
+    }
+}
+
+#[test]
 fn section13_text_standard_decimal_separator08() {
     match run_named(
         "section13/text_number_props/TextNumberProps.tdml",

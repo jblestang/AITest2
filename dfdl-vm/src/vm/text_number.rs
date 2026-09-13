@@ -338,15 +338,16 @@ pub(crate) fn implicit_text_number_byte_length(
     pattern: &str,
     props: &TextNumberFormatProps<'_>,
 ) -> Option<usize> {
+    let mut best = None;
     for end in 1..=data.len() {
         let Ok(text) = core::str::from_utf8(&data[..end]) else {
             continue;
         };
         if parse_standard_text_number(text, pattern, props).is_ok() {
-            return Some(end);
+            best = Some(end);
         }
     }
-    None
+    best
 }
 
 pub(crate) fn parse_standard_text_number(
@@ -531,7 +532,10 @@ fn match_decimal_separator(
             return true;
         }
     }
-    if *pos < bytes.len() && bytes[*pos] == b'.' {
+    if props.decimal_separators.is_empty()
+        && *pos < bytes.len()
+        && bytes[*pos] == b'.'
+    {
         *pos += 1;
         return true;
     }

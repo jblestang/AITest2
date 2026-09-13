@@ -1026,6 +1026,7 @@ fn resolved_text_number_format_parts(
     if dec_seps.is_empty()
         && !props.text_standard_decimal_separator_defined
         && props.resolved_text_standard_decimal_separator.is_none()
+        && props.text_standard_decimal_separator_sibling.is_none()
     {
         dec_seps.push(".".into());
     }
@@ -1100,13 +1101,21 @@ fn read_implicit_numeric_text(
                         pad_character: pad,
                         ignore_case: props.ignore_case,
                     };
-                    if let Some(len) = crate::vm::text_number::implicit_text_number_byte_length(
+                    let available = cursor.data.len() - cursor.pos;
+                    if let Some(mut len) = crate::vm::text_number::implicit_text_number_byte_length(
                         &cursor.data[cursor.pos..],
                         pattern,
                         &fmt,
                     ) {
+                        if pattern.contains('*') && len < available {
+                            len = available;
+                        }
                         let start = cursor.pos;
                         cursor.pos += len;
+                        return cursor.data[start..cursor.pos].to_vec();
+                    } else if pattern.contains('*') && available > 0 {
+                        let start = cursor.pos;
+                        cursor.pos += available;
                         return cursor.data[start..cursor.pos].to_vec();
                     }
                 }
@@ -1124,9 +1133,6 @@ fn parse_field_text_number(
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::ir::ValueKind;
     use crate::error::VmError;
-    if let Some(zero) = text_standard_zero_rep_match(trimmed, props, strings) {
-        return Ok(zero);
-    }
     if !props.custom_text_number_pattern {
         if props.text_standard_base != 10 {
             return Ok(trimmed.into());
@@ -1194,18 +1200,24 @@ fn parse_field_text_number(
         pad_character: pad,
         ignore_case: props.ignore_case,
     };
-    if text_to_parse.starts_with('-') {
-        let inner = text_number::parse_standard_text_number(&text_to_parse[1..], pattern, &fmt)
-            .map_err(|_| unable_parse_from_text(type_name_for_parse(kind, props), trimmed))?;
-        return Ok(if inner.starts_with('-') {
-            inner
-        } else {
-            alloc::format!("-{inner}")
-        });
+    let parse_result = if text_to_parse.starts_with('-') {
+        text_number::parse_standard_text_number(&text_to_parse[1..], pattern, &fmt).map(|inner| {
+            if inner.starts_with('-') {
+                inner
+            } else {
+                alloc::format!("-{inner}")
+            }
+        })
+    } else {
+        text_number::parse_standard_text_number(&text_to_parse, pattern, &fmt)
+    };
+    if let Ok(v) = parse_result {
+        return Ok(v);
     }
-    text_number::parse_standard_text_number(&text_to_parse, pattern, &fmt).map_err(|_| {
-        unable_parse_from_text(type_name_for_parse(kind, props), trimmed)
-    })
+    if let Some(zero) = text_standard_zero_rep_match(trimmed, props, strings) {
+        return Ok(zero);
+    }
+    Err(unable_parse_from_text(type_name_for_parse(kind, props), trimmed))
 }
 
 fn type_name_for_parse(kind: crate::ir::ValueKind, props: &IrProps) -> &'static str {
@@ -1305,9 +1317,6 @@ fn text_number_for_parse<'a>(
     }
     if let Some(special) = text_standard_infinity_nan_match(trimmed, props, strings) {
         return Ok(special.into());
-    }
-    if let Some(zero) = text_standard_zero_rep_match(trimmed, props, strings) {
-        return Ok(zero);
     }
     parse_field_text_number(trimmed, kind, props, strings)
 }
