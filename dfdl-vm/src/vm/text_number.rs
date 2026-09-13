@@ -763,6 +763,12 @@ fn match_subpattern(
                     message: "textNumberPattern mismatch".into(),
                 });
             }
+            // Trailing +/- may belong to an alternate (negative) subpattern.
+            if rest == "-" || rest == "+" {
+                return Err(VmError::InvalidValue {
+                    message: "textNumberPattern mismatch".into(),
+                });
+            }
         } else {
             return Err(VmError::InvalidValue {
                 message: "textNumberPattern mismatch".into(),
