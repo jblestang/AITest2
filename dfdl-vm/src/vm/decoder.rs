@@ -5,7 +5,7 @@ use super::runtime::{
     should_suppress_decode_infix_separator, validate_explicit_decimal_before_decode,
     would_read_empty_delimited_field, Cursor, RuntimeConfig, VmContext,
 };
-use crate::length_validate::validate_data_length_vm;
+use crate::length_validate::{binary_length_validation_applies, validate_data_length_vm};
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, ValueKind};
 use crate::schema::{match_length_pattern, InputValueCalc, LengthKind, LengthUnits, Representation, SeparatorPosition};
@@ -1356,9 +1356,11 @@ fn resolve_length_props(
     let mut resolved = props.clone();
     resolved.length = Some(length_from_value(sib_val, props.length_sibling_cast_long)?);
     if kind == ValueKind::Decimal {
-        validate_explicit_decimal_before_decode(kind, &resolved, tunables)?;
+        validate_explicit_decimal_before_decode(kind, &resolved, tunables, strings)?;
     } else if let Some(len) = resolved.length {
-        validate_data_length_vm(kind, len, resolved.length_units, resolved.binary_number_rep)?;
+        if binary_length_validation_applies(kind, resolved.binary_number_rep) {
+            validate_data_length_vm(kind, len, resolved.length_units, resolved.binary_number_rep)?;
+        }
     }
     Ok(resolved)
 }

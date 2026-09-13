@@ -268,6 +268,7 @@ impl<'a> Encoder<'a> {
                     *kind,
                     &resolved,
                     &self.ctx.program.tunables,
+                    self.ctx.strings(),
                 )?;
                 if let Some(child_id) = child {
                     let field = match value.field(key) {

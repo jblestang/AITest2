@@ -9,9 +9,10 @@ use super::packed_decimal::{
 };
 use crate::schema::BinaryNumberCheckPolicy;
 use crate::length_validate::{
-    validate_data_length_vm, validate_decimal_data_length_vm,
-    validate_decimal_signed_one_bit_length_vm, validate_signed_one_bit_length_vm,
-    DaffodilTunables, VmDecimalPhase,
+    binary_length_validation_applies, is_packed_binary_rep, validate_data_length_vm,
+    validate_decimal_data_length_vm, validate_decimal_signed_one_bit_length_vm,
+    validate_packed_binary_bit_length_parse, validate_signed_one_bit_length_vm, DaffodilTunables,
+    VmDecimalPhase,
 };
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
@@ -388,6 +389,7 @@ fn validate_explicit_decimal_vm(
     phase: VmDecimalPhase,
     tunables: &DaffodilTunables,
     units: Option<LengthUnits>,
+    strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
     if !matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
         return Ok(());
@@ -397,6 +399,20 @@ fn validate_explicit_decimal_vm(
     };
     let runtime_resolved = props.length_sibling.is_some();
     let units = units.unwrap_or(props.length_units);
+    if let Ok(enc) = strings.get(props.encoding) {
+        if hex_charset_order(&enc).is_some() {
+            let n_bits = match units {
+                LengthUnits::Bits => len as usize,
+                LengthUnits::Bytes => len.saturating_mul(8) as usize,
+                LengthUnits::Characters => 0,
+            };
+            return validate_packed_binary_bit_length_parse(
+                n_bits,
+                ValueKind::Decimal,
+                props.binary_number_rep,
+            );
+        }
+    }
     validate_decimal_data_length_vm(
         props.decimal_signed,
         len,
@@ -418,9 +434,10 @@ pub(crate) fn validate_explicit_decimal_before_encode(
     kind: crate::ir::ValueKind,
     props: &IrProps,
     tunables: &DaffodilTunables,
+    strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
     if kind == crate::ir::ValueKind::Decimal {
-        validate_explicit_decimal_vm(props, VmDecimalPhase::Unparse, tunables, None)?;
+        validate_explicit_decimal_vm(props, VmDecimalPhase::Unparse, tunables, None, strings)?;
     }
     Ok(())
 }
@@ -429,9 +446,10 @@ pub(crate) fn validate_explicit_decimal_before_decode(
     kind: ValueKind,
     props: &IrProps,
     tunables: &DaffodilTunables,
+    strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
     if kind == ValueKind::Decimal {
-        validate_explicit_decimal_vm(props, VmDecimalPhase::Parse, tunables, None)?;
+        validate_explicit_decimal_vm(props, VmDecimalPhase::Parse, tunables, None, strings)?;
     }
     Ok(())
 }
@@ -495,15 +513,23 @@ pub(crate) fn read_binary_scalar(
     }
 
     if kind == ValueKind::Decimal {
-        validate_explicit_decimal_vm(props, VmDecimalPhase::Parse, tunables, None)?;
+        validate_explicit_decimal_vm(props, VmDecimalPhase::Parse, tunables, None, strings)?;
     }
 
     if props.length_units == LengthUnits::Bits {
         let len = binary_bit_length(cursor, kind, props, strings)?;
-        if len == 0 && kind != ValueKind::String && kind != ValueKind::HexBinary {
-            return Err(VmError::InvalidValue {
-                message: "zero-length scalar".into(),
-            });
+        if kind != ValueKind::String && kind != ValueKind::HexBinary {
+            let enc = encoding_name(props, strings)?;
+            if hex_charset_order(&enc).is_some()
+                && (kind == ValueKind::Decimal || is_packed_binary_rep(props.binary_number_rep))
+            {
+                validate_packed_binary_bit_length_parse(len, kind, props.binary_number_rep)?;
+            }
+            if len == 0 {
+                return Err(VmError::InvalidValue {
+                    message: "zero-length scalar".into(),
+                });
+            }
         }
         if kind == ValueKind::String || kind == ValueKind::HexBinary {
             let bytes = cursor.read_stream_bits_as_bytes(len, props.bit_order)?;
@@ -530,10 +556,13 @@ pub(crate) fn read_binary_scalar(
 
     let size = binary_byte_length(cursor, kind, props, strings)?;
 
-    if size == 0 && kind != ValueKind::String && kind != ValueKind::HexBinary {
-        return Err(VmError::InvalidValue {
-            message: "zero-length scalar".into(),
-        });
+    if kind != ValueKind::String && kind != ValueKind::HexBinary {
+        validate_packed_binary_bit_length_parse(size.saturating_mul(8), kind, props.binary_number_rep)?;
+        if size == 0 {
+            return Err(VmError::InvalidValue {
+                message: "zero-length scalar".into(),
+            });
+        }
     }
 
     let encoding = encoding_name(props, strings)?;
@@ -849,11 +878,87 @@ fn format_calendar_pattern(
     Ok(alloc::format!("{year}-{month}-{day}"))
 }
 
+fn match_text_number_subpattern(text: &str, pattern: &str) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+    let mut ti = 0usize;
+    let mut digits = alloc::string::String::new();
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            i += 1;
+            let start = i;
+            while i < chars.len() && chars[i] != '\'' {
+                i += 1;
+            }
+            if i >= chars.len() {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("invalid textNumberPattern `{pattern}`"),
+                });
+            }
+            let lit: alloc::string::String = chars[start..i].iter().collect();
+            i += 1;
+            if !text[ti..].starts_with(&lit) {
+                return Err(VmError::InvalidValue {
+                    message: "textNumberPattern mismatch".into(),
+                });
+            }
+            ti += lit.len();
+        } else if matches!(chars[i], '0' | '#') {
+            let Some(ch) = text.as_bytes().get(ti) else {
+                return Err(VmError::InvalidValue {
+                    message: "textNumberPattern mismatch".into(),
+                });
+            };
+            if !ch.is_ascii_digit() {
+                return Err(VmError::InvalidValue {
+                    message: "textNumberPattern mismatch".into(),
+                });
+            }
+            digits.push(*ch as char);
+            ti += 1;
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    if ti != text.len() {
+        return Err(VmError::InvalidValue {
+            message: "textNumberPattern mismatch".into(),
+        });
+    }
+    Ok(digits)
+}
+
+fn apply_text_number_sign_pattern(
+    text: &str,
+    pattern: &str,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+    let mut alts = pattern.split(';');
+    if let Some(pos) = alts.next() {
+        if let Ok(digits) = match_text_number_subpattern(text, pos) {
+            return Ok(digits);
+        }
+    }
+    if let Some(neg) = alts.next() {
+        if let Ok(digits) = match_text_number_subpattern(text, neg) {
+            return Ok(alloc::format!("-{digits}"));
+        }
+    }
+    Err(VmError::InvalidValue {
+        message: alloc::format!("Parse Error. xs:int {text}"),
+    })
+}
+
 fn apply_text_number_pattern_numeric(
     text: &str,
     pattern: &str,
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
+    if pattern.contains(';') && pattern.contains('\'') {
+        return apply_text_number_sign_pattern(text, pattern);
+    }
     if !pattern.contains('V') {
         return Ok(text.into());
     }
@@ -1158,7 +1263,13 @@ fn binary_bit_length(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
             })?;
-            validate_data_length_vm(kind, len, LengthUnits::Bits, props.binary_number_rep)?;
+            if hex_charset_order(&encoding_name(props, strings)?).is_some()
+                && (kind == ValueKind::Decimal || is_packed_binary_rep(props.binary_number_rep))
+            {
+                validate_packed_binary_bit_length_parse(len as usize, kind, props.binary_number_rep)?;
+            } else if binary_length_validation_applies(kind, props.binary_number_rep) {
+                validate_data_length_vm(kind, len, LengthUnits::Bits, props.binary_number_rep)?;
+            }
             Ok(len as usize)
         }
         LengthKind::Pattern => {
@@ -1615,7 +1726,19 @@ pub(crate) fn read_text_scalar(
         UnsignedByte => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedByte),
         Short => parse_int_typed_with_base(trimmed, "xs:short", base).map(DfdlValue::Short),
         UnsignedShort => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedShort),
-        Int => parse_int_typed_with_base(trimmed, "xs:int", base).map(DfdlValue::Int),
+        Int => {
+            let num = if let Some(pat_id) = props.text_number_pattern {
+                let pattern = strings.get(pat_id)?;
+                if pattern.contains('\'') {
+                    apply_text_number_pattern_numeric(trimmed, pattern)?
+                } else {
+                    trimmed.into()
+                }
+            } else {
+                trimmed.into()
+            };
+            parse_int_typed_with_base(&num, "xs:int", base).map(DfdlValue::Int)
+        }
         UnsignedInt => parse_unsigned_radix(trimmed, base).map(DfdlValue::UnsignedInt),
         Long => {
             if props.unsigned_integer {
@@ -1705,11 +1828,11 @@ pub(crate) fn write_binary_scalar(
     }
 
     if kind == crate::ir::ValueKind::Decimal {
-        validate_explicit_decimal_vm(props, VmDecimalPhase::Unparse, tunables, None)?;
+        validate_explicit_decimal_vm(props, VmDecimalPhase::Unparse, tunables, None, strings)?;
     }
 
     if props.length_units == LengthUnits::Bits {
-        let n = binary_encode_bit_length(kind, props, tunables)?;
+        let n = binary_encode_bit_length(kind, props, tunables, strings)?;
         let raw = scalar_to_raw_bits(value, kind, props, n)?;
         write_stream_bits(out, bit_count, raw, n, props.bit_order);
         return Ok(());
@@ -1788,6 +1911,7 @@ fn binary_encode_bit_length(
     kind: crate::ir::ValueKind,
     props: &IrProps,
     tunables: &DaffodilTunables,
+    strings: &StringPool,
 ) -> Result<usize, crate::error::VmError> {
     use crate::error::VmError;
     match props.length_kind {
@@ -1803,6 +1927,7 @@ fn binary_encode_bit_length(
                     VmDecimalPhase::Unparse,
                     tunables,
                     Some(LengthUnits::Bits),
+                    strings,
                 )?;
             } else {
                 validate_data_length_vm(kind, len, LengthUnits::Bits, props.binary_number_rep)?;

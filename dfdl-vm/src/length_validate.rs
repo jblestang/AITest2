@@ -1,6 +1,149 @@
+use crate::vm::encoding::hex_charset_order;
 use crate::error::{SchemaError, VmError};
-use crate::ir::ValueKind;
-use crate::schema::{BinaryNumberRep, LengthUnits};
+use crate::ir::{IrProps, StringId, StringPool, ValueKind};
+use crate::schema::{BinaryNumberRep, LengthKind, LengthUnits, Representation};
+
+fn uses_hex_charset_encoding(strings: &StringPool, enc: StringId) -> bool {
+    strings
+        .get(enc)
+        .ok()
+        .and_then(|name| hex_charset_order(name))
+        .is_some()
+}
+
+pub fn is_packed_binary_rep(rep: BinaryNumberRep) -> bool {
+    matches!(
+        rep,
+        BinaryNumberRep::PackedBcd | BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed
+    )
+}
+
+fn packed_type_label(kind: ValueKind) -> &'static str {
+    match kind {
+        ValueKind::Decimal => "decimal",
+        _ => "number",
+    }
+}
+
+fn packed_align_type_name(kind: ValueKind) -> &'static str {
+    match kind {
+        ValueKind::Byte => "byte",
+        ValueKind::Short => "short",
+        ValueKind::Int => "int",
+        ValueKind::Long => "long",
+        ValueKind::UnsignedByte => "unsignedByte",
+        ValueKind::UnsignedShort => "unsignedShort",
+        ValueKind::UnsignedInt => "unsignedInt",
+        ValueKind::Float => "float",
+        ValueKind::Double => "double",
+        ValueKind::Decimal => "decimal",
+        _ => "value",
+    }
+}
+
+/// Compile-time checks for packed/BCD/IBM4690 binary numerics (Daffodil SDE).
+pub fn validate_packed_binary_properties_schema(
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), SchemaError> {
+    if kind == ValueKind::Complex {
+        return Ok(());
+    }
+    if props.representation != Representation::Binary || !is_packed_binary_rep(props.binary_number_rep) {
+        return Ok(());
+    }
+    if !uses_hex_charset_encoding(strings, props.encoding) {
+        return Ok(());
+    }
+    if props.length_kind == LengthKind::Implicit {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error. lengthKind='implicit' is not allowed with packed binary formats".into(),
+        });
+    }
+    if matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
+        if let Some(len) = props.length {
+            let n_bits = match props.length_units {
+                LengthUnits::Bits => Some(len),
+                LengthUnits::Bytes => len.checked_mul(8),
+                LengthUnits::Characters => None,
+            };
+            if let Some(n_bits) = n_bits {
+                if n_bits % 4 != 0 {
+                    return Err(SchemaError::InvalidProperty {
+                        message: alloc::format!(
+                            "Schema Definition Error. The given length ({n_bits} bits) must be a multiple of 4 when using packed binary formats"
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    if props.alignment_units == LengthUnits::Bits && props.alignment % 4 != 0 {
+        let type_name = packed_align_type_name(kind);
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. The given alignment ({} bits) must be a multiple of 4 for {type_name} when using packed binary formats",
+                props.alignment
+            ),
+        });
+    }
+    let _ = kind;
+    Ok(())
+}
+
+/// Parse-time bit length rules for packed/BCD/IBM4690 fields.
+/// Runtime length from a resolved `dfdl:length` expression (hex charset packed fields).
+pub fn validate_resolved_packed_length_vm(
+    kind: ValueKind,
+    len: u64,
+    units: LengthUnits,
+    rep: BinaryNumberRep,
+    strings: &StringPool,
+    enc: StringId,
+) -> Result<(), VmError> {
+    if !uses_hex_charset_encoding(strings, enc) {
+        return Ok(());
+    }
+    if kind == ValueKind::Decimal || is_packed_binary_rep(rep) {
+        // Section 13 hex charset tests use packed decimal/bit rules even when the
+        // resolved IR still carries `binary` as number rep on decimals.
+    } else {
+        return Ok(());
+    }
+    let n_bits = match units {
+        LengthUnits::Bits => len as usize,
+        LengthUnits::Bytes => len.saturating_mul(8) as usize,
+        LengthUnits::Characters => return Ok(()),
+    };
+    validate_packed_binary_bit_length_parse(n_bits, kind, rep)
+}
+
+pub fn validate_packed_binary_bit_length_parse(
+    n_bits: usize,
+    kind: ValueKind,
+    rep: BinaryNumberRep,
+) -> Result<(), VmError> {
+    if !is_packed_binary_rep(rep) {
+        return Ok(());
+    }
+    if n_bits == 0 {
+        let packed_type = packed_type_label(kind);
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Parse Error. Number of bits {n_bits} out of range for a packed {packed_type}."
+            ),
+        });
+    }
+    if n_bits % 4 != 0 {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Parse Error. The given length ({n_bits} bits) must be a multiple of 4 when using packed binary formats"
+            ),
+        });
+    }
+    Ok(())
+}
 
 /// Packed/BCD/IBM4690 lengths are digit-oriented; skip xs:int-style bit caps.
 pub fn binary_length_validation_applies(kind: ValueKind, rep: BinaryNumberRep) -> bool {
