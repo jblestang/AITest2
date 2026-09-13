@@ -1051,6 +1051,12 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_number_check_policy.is_some() {
         base.text_number_check_policy = overlay.text_number_check_policy;
     }
+    if overlay.text_number_rep.is_some() {
+        base.text_number_rep = overlay.text_number_rep;
+    }
+    if overlay.text_zoned_sign_style.is_some() {
+        base.text_zoned_sign_style = overlay.text_zoned_sign_style;
+    }
     if overlay.text_standard_decimal_separator.is_some() {
         base.text_standard_decimal_separator = overlay.text_standard_decimal_separator;
     }
@@ -1362,6 +1368,8 @@ fn is_dfdl_property(name: &str) -> bool {
             | "textNumberJustification"
             | "textStandardBase"
             | "textNumberCheckPolicy"
+            | "textNumberRep"
+            | "textZonedSignStyle"
             | "textStandardDecimalSeparator"
             | "textStandardGroupingSeparator"
             | "textStandardExponentRep"
@@ -1689,6 +1697,36 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!("unknown textNumberCheckPolicy `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "textNumberRep" => {
+                props.text_number_rep = Some(match value.as_str() {
+                    "standard" => crate::schema::TextNumberRep::Standard,
+                    "zoned" => crate::schema::TextNumberRep::Zoned,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown textNumberRep `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "textZonedSignStyle" => {
+                props.text_zoned_sign_style = Some(match value.as_str() {
+                    "asciiStandard" => crate::schema::TextZonedSignStyle::AsciiStandard,
+                    "asciiTranslatedEBCDIC" => {
+                        crate::schema::TextZonedSignStyle::AsciiTranslatedEBCDIC
+                    }
+                    "asciiCARealiaModified" => {
+                        crate::schema::TextZonedSignStyle::AsciiCARealiaModified
+                    }
+                    "asciiTandemModified" => crate::schema::TextZonedSignStyle::AsciiTandemModified,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown textZonedSignStyle `{other}`"),
                         }
                         .into())
                     }

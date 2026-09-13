@@ -247,6 +247,48 @@ fn apply_decimal_virtual_point(num: &str, vp: i32) -> String {
     out
 }
 
+fn strip_unquoted_char(s: &str, ch: char) -> String {
+    let mut out = String::new();
+    let mut in_quote = false;
+    for c in s.chars() {
+        if c == '\'' {
+            in_quote = !in_quote;
+            out.push(c);
+            continue;
+        }
+        if in_quote || c != ch {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn strip_unquoted_substr(s: &str, sub: &str) -> String {
+    if sub.len() == 1 {
+        return strip_unquoted_char(s, sub.chars().next().unwrap());
+    }
+    let mut out = String::new();
+    let mut in_quote = false;
+    let chars: Vec<char> = s.chars().collect();
+    let sub_chars: Vec<char> = sub.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            in_quote = !in_quote;
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        if !in_quote && i + sub_chars.len() <= chars.len() && chars[i..i + sub_chars.len()] == sub_chars[..] {
+            i += sub_chars.len();
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
 pub(crate) fn parse_standard_text_number(
     input: &str,
     pattern: &str,
@@ -258,6 +300,25 @@ pub(crate) fn parse_standard_text_number(
     } else {
         input.to_string()
     };
+
+    let pattern_has_grouping = strip_unquoted_char(pattern, ',').len() < pattern.len();
+    let (work, pattern_owned) = if pattern_has_grouping {
+        if let Some(grp) = props.grouping_separator {
+            if !grp.is_empty() {
+                (
+                    strip_unquoted_substr(&work, grp),
+                    strip_unquoted_char(pattern, ','),
+                )
+            } else {
+                (work, pattern.to_string())
+            }
+        } else {
+            (work, pattern.to_string())
+        }
+    } else {
+        (work, pattern.to_string())
+    };
+    let pattern = pattern_owned.as_str();
 
     let subpatterns: Vec<&str> = if pattern.contains(';') {
         pattern.split(';').collect()
@@ -557,6 +618,7 @@ fn match_subpattern(
     let mut int_digits = String::new();
     let mut frac_digits = String::new();
     let mut exponent: Option<String> = None;
+    let mut exp_negative = false;
     let mut negative = negative_subpattern;
     let mut saw_decimal = false;
     let mut in_exponent = false;
@@ -610,8 +672,17 @@ fn match_subpattern(
                 i = j;
                 // DFDL/ICU parse: digit characters in the data are always recognized (0 vs # affects unparse only).
                 let min_digits = 0usize;
+                let stops_at_dot = j < chars.len() && chars[j] == '.';
 
                 skip_pad(bytes, &mut pos, props.pad_character, lax, props, saw_decimal);
+                if in_exponent && exponent.as_ref().map_or(true, |e| e.is_empty()) {
+                    if pos < bytes.len() && bytes[pos] == b'+' {
+                        pos += 1;
+                    } else if pos < bytes.len() && bytes[pos] == b'-' {
+                        exp_negative = true;
+                        pos += 1;
+                    }
+                }
                 if !in_exponent && !saw_decimal {
                     if match_decimal_separator(bytes, &mut pos, props) {
                         saw_decimal = true;
@@ -619,6 +690,12 @@ fn match_subpattern(
                 }
                 let start = pos;
                 while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                    if stops_at_dot && !saw_decimal && !in_exponent {
+                        if match_decimal_separator(bytes, &mut pos, props) {
+                            saw_decimal = true;
+                            break;
+                        }
+                    }
                     pos += 1;
                 }
                 let digit_count = pos - start;
@@ -684,12 +761,6 @@ fn match_subpattern(
                         if b == b'E' || b == b'e' || props.exponent_chars.contains(b as char) {
                             pos += 1;
                             in_exponent = true;
-                            if pos < bytes.len() && (bytes[pos] == b'+' || bytes[pos] == b'-') {
-                                if bytes[pos] == b'-' {
-                                    negative = true;
-                                }
-                                pos += 1;
-                            }
                             i += 1;
                             continue;
                         }
@@ -735,6 +806,19 @@ fn match_subpattern(
             other => {
                 skip_ws(bytes, &mut pos, lax);
                 let lit = other;
+                if in_exponent && lit == '+' {
+                    if text[pos..].starts_with('+') {
+                        pos += 1;
+                    } else if pos < bytes.len() && bytes[pos] == b'-' {
+                        // optional '+' omitted when exponent is negative
+                    } else if !lax {
+                        return Err(VmError::InvalidValue {
+                            message: "textNumberPattern mismatch".into(),
+                        });
+                    }
+                    i += 1;
+                    continue;
+                }
                 if pos + lit.len_utf8() <= bytes.len() {
                     let slice = core::str::from_utf8(&bytes[pos..pos + lit.len_utf8()]).ok();
                     if slice == Some(lit.to_string().as_str()) {
@@ -803,8 +887,7 @@ fn match_subpattern(
 
     if let Some(exp) = exponent {
         if !exp.is_empty() {
-            out.push('E');
-            out.push_str(&exp);
+            return Ok(apply_scientific_exponent(&out, &exp, exp_negative, negative));
         }
     }
 
@@ -813,6 +896,36 @@ fn match_subpattern(
     }
 
     Ok(out)
+}
+
+fn apply_scientific_exponent(
+    mantissa: &str,
+    exp: &str,
+    exp_negative: bool,
+    mantissa_negative: bool,
+) -> String {
+    let e: i32 = exp.parse().unwrap_or(0);
+    let power = if exp_negative { -e } else { e };
+    let m: f64 = mantissa.parse().unwrap_or(0.0);
+    let signed_m = if mantissa_negative { -m } else { m };
+    let mut scale = 1.0f64;
+    let steps = power.unsigned_abs();
+    for _ in 0..steps {
+        scale *= 10.0;
+    }
+    let v = if power >= 0 {
+        signed_m * scale
+    } else {
+        signed_m / scale
+    };
+    let mut s = format!("{v}");
+    if s.contains('.') {
+        s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    if s == "-0" {
+        s = "0".into();
+    }
+    s
 }
 
 fn normalize_int_digits(digits: &str) -> String {
@@ -957,6 +1070,38 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn multi_grouping_pattern() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(","),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number("123,123,1234", "#,##,###,####", &props).unwrap();
+        assert_eq!(n, "1231231234");
+    }
+
+    #[test]
+    fn scientific_notation_exp_sign() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            grouping_separator: Some(","),
+            exponent_chars: "E",
+            pad_character: Some('0'),
+        };
+        let n = parse_standard_text_number("1.234E+1", "0.###E+0", &props).unwrap();
+        assert_eq!(n, "12.34");
+        let n2 = parse_standard_text_number("1.234E-1", "0.###E+0", &props).unwrap();
+        assert_eq!(n2, "0.1234");
+        let n3 = parse_standard_text_number("12.3E-4", "00.###E0", &props).unwrap();
+        assert_eq!(n3, "0.00123");
+    }
+
     fn v_pattern_money() {
         let dec = default_decimal_separators();
         let props = TextNumberFormatProps {

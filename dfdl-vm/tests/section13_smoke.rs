@@ -36,6 +36,32 @@ fn section13_text_standard_decimal_separator08() {
 }
 
 #[test]
+fn section13_scientific_and_grouping() {
+    for name in [
+        "textNumberPattern_scientificNotation03",
+        "textNumberPattern_scientificNotation04",
+        "textNumberPattern_scientificNotation05",
+        "textNumberPattern_scientificNotation06",
+        "textStandardGroupingSeparator13",
+    ] {
+        match run_named("section13/text_number_props/TextNumberProps.tdml", name) {
+            TestOutcome::Pass => {}
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn section13_zoned_standard() {
+    for name in ["ZonedStandard01", "ZonedStandard02", "ZonedStandard05"] {
+        match run_named("section13/zoned/zoned.tdml", name) {
+            TestOutcome::Pass => {}
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn section13_text_number_p_symbol() {
     for name in ["textNumberPattern_pSymbol01", "textNumberPattern_pSymbol02"] {
         match run_named("section13/text_number_props/TextNumberProps.tdml", name) {

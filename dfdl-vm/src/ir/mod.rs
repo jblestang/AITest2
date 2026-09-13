@@ -103,6 +103,8 @@ pub struct IrProps {
     pub calendar_pattern: Option<StringId>,
     pub text_number_pattern: Option<StringId>,
     pub text_number_check_policy: BinaryNumberCheckPolicy,
+    pub text_number_rep: crate::schema::TextNumberRep,
+    pub text_zoned_sign_style: Option<crate::schema::TextZonedSignStyle>,
     pub text_standard_decimal_separator: StringId,
     /// Set when `textStandardDecimalSeparator` was present on merged DFDL props.
     pub text_standard_decimal_separator_defined: bool,
@@ -181,6 +183,8 @@ impl Default for IrProps {
             calendar_pattern: None,
             text_number_pattern: None,
             text_number_check_policy: BinaryNumberCheckPolicy::Lax,
+            text_number_rep: crate::schema::TextNumberRep::Standard,
+            text_zoned_sign_style: None,
             text_standard_decimal_separator: StringId(0),
             text_standard_decimal_separator_defined: false,
             text_standard_decimal_separator_sibling: None,

@@ -51,6 +51,8 @@ pub struct DfdlProps {
     pub calendar_pattern: Option<String>,
     pub text_number_pattern: Option<String>,
     pub text_number_check_policy: Option<BinaryNumberCheckPolicy>,
+    pub text_number_rep: Option<TextNumberRep>,
+    pub text_zoned_sign_style: Option<TextZonedSignStyle>,
     pub text_standard_decimal_separator: Option<String>,
     /// Sibling local name when decimal separator is `{ ../ex:name }`.
     pub text_standard_decimal_separator_sibling: Option<String>,
@@ -229,6 +231,21 @@ pub enum BinaryNumberRep {
 pub enum BinaryNumberCheckPolicy {
     Strict,
     Lax,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextNumberRep {
+    #[default]
+    Standard,
+    Zoned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextZonedSignStyle {
+    AsciiStandard,
+    AsciiTranslatedEBCDIC,
+    AsciiCARealiaModified,
+    AsciiTandemModified,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

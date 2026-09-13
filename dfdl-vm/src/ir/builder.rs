@@ -542,6 +542,94 @@ fn text_number_pattern_requires_grouping_separator(pattern: &str) -> bool {
     false
 }
 
+fn text_number_pattern_bare(pattern: &str) -> String {
+    let mut out = String::new();
+    let mut in_quote = false;
+    for c in pattern.chars() {
+        if c == '\'' {
+            in_quote = !in_quote;
+            continue;
+        }
+        if !in_quote {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn text_number_pattern_has_grouping_and_exponent(pattern: &str) -> bool {
+    let bare = text_number_pattern_bare(pattern);
+    bare.contains('E') && bare.contains(',')
+}
+
+fn validate_zoned_text_number_pattern(
+    kind: ValueKind,
+    pattern: &str,
+    check_policy: crate::schema::BinaryNumberCheckPolicy,
+    decimal_signed: bool,
+) -> Result<()> {
+    use crate::schema::BinaryNumberCheckPolicy;
+    let bare = text_number_pattern_bare(pattern);
+    if bare.contains('@') {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: The '@' symbol may not be used in textNumberPattern for textNumberRep='zoned'".into(),
+        }
+        .into());
+    }
+    if bare.contains('E') {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: The 'E' symbol may not be used in textNumberPattern for textNumberRep='zoned'".into(),
+        }
+        .into());
+    }
+    if bare.contains(';') {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Negative patterns may not be used in textNumberPattern for textNumberRep='zoned'".into(),
+        }
+        .into());
+    }
+    if matches!(kind, ValueKind::Float | ValueKind::Double) {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: textNumberRep=\"zoned\" does not support xs:{}",
+                match kind {
+                    ValueKind::Float => "float",
+                    ValueKind::Double => "double",
+                    _ => "float",
+                }
+            ),
+        }
+        .into());
+    }
+    let has_leading_plus = bare.starts_with('+');
+    let has_trailing_plus = bare.ends_with('+');
+    if has_leading_plus && has_trailing_plus {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: The textNumberPattern may either begin or end with a '+', not both.".into(),
+        }
+        .into());
+    }
+    let unsigned = matches!(
+        kind,
+        ValueKind::UnsignedByte | ValueKind::UnsignedShort | ValueKind::UnsignedInt
+    );
+    let _ = decimal_signed;
+    let needs_plus = if unsigned {
+        check_policy == BinaryNumberCheckPolicy::Lax
+    } else {
+        true
+    };
+    if needs_plus && !has_leading_plus && !has_trailing_plus {
+        let msg = if unsigned {
+            "Schema Definition Error: textNumberPattern must have '+' at the beginning or the end of the pattern when textNumberRep='zoned' and textNumberPolicy='lax' for unsigned numbers"
+        } else {
+            "Schema Definition Error: textNumberPattern must have '+' at the beginning or the end of the pattern when textNumberRep='zoned' for signed numbers"
+        };
+        return Err(SchemaError::InvalidProperty { message: msg.into() }.into());
+    }
+    Ok(())
+}
+
 fn text_number_pattern_requires_decimal_separator(pattern: &str) -> bool {
     let mut in_quote = false;
     let chars: Vec<char> = pattern.chars().collect();
@@ -656,6 +744,22 @@ fn finalize_element_props(
             let pat = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
                 message: e.to_string(),
             })?;
+            if text_number_pattern_has_grouping_and_exponent(pat) {
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!(
+                        "Schema Definition Error: Invalid textNumberPattern: Cannot have grouping separator in scientific notation {pat}"
+                    ),
+                }
+                .into());
+            }
+            if ir.text_number_rep == crate::schema::TextNumberRep::Zoned {
+                validate_zoned_text_number_pattern(
+                    kind,
+                    pat,
+                    ir.text_number_check_policy,
+                    ir.decimal_signed,
+                )?;
+            }
             if pat.starts_with(';') {
                 return Err(SchemaError::InvalidProperty {
                     message: "Schema Definition Error: The positive part of the dfdl:textNumberPattern is required. The dfdl:textNumberPattern cannot begin with ';'.".into(),
@@ -1186,6 +1290,12 @@ fn overlay_dfdl_to_ir(mut base: IrProps, props: &DfdlProps, strings: &mut String
     if let Some(v) = props.text_number_check_policy {
         base.text_number_check_policy = v;
     }
+    if let Some(v) = props.text_number_rep {
+        base.text_number_rep = v;
+    }
+    if props.text_zoned_sign_style.is_some() {
+        base.text_zoned_sign_style = props.text_zoned_sign_style;
+    }
     if props.text_standard_decimal_separator_sibling.is_some() {
         base.text_standard_decimal_separator_sibling = props
             .text_standard_decimal_separator_sibling
@@ -1384,6 +1494,8 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
         out.text_number_pattern = overlay.text_number_pattern;
     }
     out.text_number_check_policy = overlay.text_number_check_policy;
+    out.text_number_rep = overlay.text_number_rep;
+    out.text_zoned_sign_style = overlay.text_zoned_sign_style;
     if overlay.text_standard_decimal_separator != StringId(0) {
         out.text_standard_decimal_separator = overlay.text_standard_decimal_separator;
     }

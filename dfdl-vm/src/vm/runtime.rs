@@ -1010,14 +1010,41 @@ fn parse_field_text_number(
     let Some(pat_id) = props.text_number_pattern else {
         return Ok(trimmed.into());
     };
-    let pattern = strings.get(pat_id)?;
+    let raw_pattern = strings.get(pat_id)?;
+    let pattern_owned = if props.text_number_rep == crate::schema::TextNumberRep::Zoned {
+        crate::vm::zoned_text::strip_zoned_plus_markers(raw_pattern)
+    } else {
+        raw_pattern.to_string()
+    };
+    let pattern = pattern_owned.as_str();
+    let mut text_to_parse = trimmed.to_string();
+    if props.text_number_rep == crate::schema::TextNumberRep::Zoned {
+        use crate::schema::TextZonedSignStyle as ZStyle;
+        use crate::vm::zoned_text::{
+            overpunch_location_from_pattern, zoned_to_number, OverpunchLocation,
+            TextZonedSignStyle as VmStyle,
+        };
+        let style = props.text_zoned_sign_style.unwrap_or(ZStyle::AsciiStandard);
+        let vm_style = match style {
+            ZStyle::AsciiStandard => VmStyle::AsciiStandard,
+            ZStyle::AsciiTranslatedEBCDIC => VmStyle::AsciiTranslatedEBCDIC,
+            ZStyle::AsciiCARealiaModified => VmStyle::AsciiCARealiaModified,
+            ZStyle::AsciiTandemModified => VmStyle::AsciiTandemModified,
+        };
+        let opl = overpunch_location_from_pattern(raw_pattern);
+        if opl != OverpunchLocation::None {
+            text_to_parse = zoned_to_number(trimmed, vm_style, opl).map_err(|_| {
+                unable_parse_from_text(value_kind_type_name(kind), trimmed)
+            })?;
+        }
+    }
     if pattern.contains('V')
         && !pattern.contains('E')
         && !pattern.contains('e')
         && !pattern.contains('\'')
         && !pattern.contains(';')
     {
-        return apply_text_number_pattern_numeric(trimmed, pattern);
+        return apply_text_number_pattern_numeric(&text_to_parse, pattern);
     }
     let dec = props
         .resolved_text_standard_decimal_separator
@@ -1056,7 +1083,16 @@ fn parse_field_text_number(
         exponent_chars: &exponent,
         pad_character: pad,
     };
-    text_number::parse_standard_text_number(trimmed, pattern, &fmt).map_err(|_| {
+    if text_to_parse.starts_with('-') {
+        let inner = text_number::parse_standard_text_number(&text_to_parse[1..], pattern, &fmt)
+            .map_err(|_| unable_parse_from_text(value_kind_type_name(kind), trimmed))?;
+        return Ok(if inner.starts_with('-') {
+            inner
+        } else {
+            alloc::format!("-{inner}")
+        });
+    }
+    text_number::parse_standard_text_number(&text_to_parse, pattern, &fmt).map_err(|_| {
         unable_parse_from_text(value_kind_type_name(kind), trimmed)
     })
 }
