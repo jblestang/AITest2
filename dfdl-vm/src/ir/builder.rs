@@ -1541,6 +1541,19 @@ fn validate_program_sequence_bit_orders(program: &IrProgram) -> Result<()> {
     Ok(())
 }
 
+fn calendar_first_day_of_week_iso(raw: &str) -> u32 {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "sunday" => 7,
+        "monday" => 1,
+        "tuesday" => 2,
+        "wednesday" => 3,
+        "thursday" => 4,
+        "friday" => 5,
+        "saturday" => 6,
+        _ => 1,
+    }
+}
+
 fn validate_binary_calendar_compile(
     kind: ValueKind,
     props: &IrProps,
@@ -2464,6 +2477,18 @@ fn overlay_dfdl_to_ir(
     if let Some(start) = props.calendar_century_start {
         base.calendar_century_start = start;
     }
+    if props.calendar_language.is_some() {
+        base.calendar_language = props
+            .calendar_language
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
+    if let Some(v) = props.calendar_days_in_first_week {
+        base.calendar_days_in_first_week = v;
+    }
+    if let Some(ref raw) = props.calendar_first_day_of_week {
+        base.calendar_first_day_of_week = calendar_first_day_of_week_iso(raw);
+    }
     if props.calendar_check_policy_lax == Some(true) {
         base.calendar_check_policy_lax = true;
     }
@@ -2868,6 +2893,11 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
         out.calendar_time_zone = overlay.calendar_time_zone;
     }
     out.calendar_century_start = overlay.calendar_century_start;
+    if overlay.calendar_language.is_some() {
+        out.calendar_language = overlay.calendar_language;
+    }
+    out.calendar_days_in_first_week = overlay.calendar_days_in_first_week;
+    out.calendar_first_day_of_week = overlay.calendar_first_day_of_week;
     if overlay.calendar_check_policy_lax {
         out.calendar_check_policy_lax = true;
     }

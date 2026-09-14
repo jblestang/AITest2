@@ -1536,6 +1536,15 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.calendar_century_start.is_some() {
         base.calendar_century_start = overlay.calendar_century_start;
     }
+    if overlay.calendar_language.is_some() {
+        base.calendar_language = overlay.calendar_language;
+    }
+    if overlay.calendar_days_in_first_week.is_some() {
+        base.calendar_days_in_first_week = overlay.calendar_days_in_first_week;
+    }
+    if overlay.calendar_first_day_of_week.is_some() {
+        base.calendar_first_day_of_week = overlay.calendar_first_day_of_week;
+    }
     if overlay.calendar_check_policy_lax == Some(true) {
         base.calendar_check_policy_lax = Some(true);
     }
@@ -2039,6 +2048,9 @@ fn is_dfdl_property(name: &str) -> bool {
             | "calendarPatternKind"
             | "calendarTimeZone"
             | "calendarCenturyStart"
+            | "calendarLanguage"
+            | "calendarDaysInFirstWeek"
+            | "calendarFirstDayOfWeek"
             | "textNumberPattern"
             | "textNumberRounding"
             | "textNumberRoundingIncrement"
@@ -2422,6 +2434,14 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 })?;
                 props.calendar_century_start = Some(parsed);
             }
+            "calendarLanguage" => props.calendar_language = Some(value.clone()),
+            "calendarDaysInFirstWeek" => {
+                let parsed: u32 = value.parse().map_err(|_| ParseError::InvalidXml {
+                    message: alloc::format!("invalid calendarDaysInFirstWeek `{value}`"),
+                })?;
+                props.calendar_days_in_first_week = Some(parsed);
+            }
+            "calendarFirstDayOfWeek" => props.calendar_first_day_of_week = Some(value.clone()),
             "textNumberPattern" => props.text_number_pattern = Some(value.clone()),
             "textNumberCheckPolicy" => {
                 props.text_number_check_policy = Some(match value.as_str() {

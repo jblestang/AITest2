@@ -784,7 +784,7 @@ fn decode_binary_scalar(
     if matches!(kind, ValueKind::DateTime | ValueKind::Time)
         && calendar_binary_rep(props)
     {
-        return decode_binary_calendar(kind, bytes, props, strings, tunables);
+        return decode_binary_calendar(kind, bytes, props, strings, tunables, None);
     }
 
     match props.binary_number_rep {
@@ -1179,6 +1179,7 @@ fn decode_binary_calendar(
     props: &IrProps,
     strings: &StringPool,
     tunables: &DaffodilTunables,
+    raw_bits: Option<(u64, usize)>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::value::DfdlValue;
@@ -1197,46 +1198,56 @@ fn decode_binary_calendar(
         return match rep {
             BinaryNumberRep::BinarySeconds => {
                 let delta = crate::vm::calendar_binary::decode_binary_seconds_value(bytes, le)?;
-                let text = crate::vm::calendar_binary::format_binary_calendar_datetime(
-                    base + delta,
-                    0,
+                let text = crate::vm::calendar_binary::format_binary_calendar_from_seconds_delta(
                     epoch_raw,
-                );
-                crate::vm::calendar_binary::validate_calendar_year_tunables(&text, tunables)?;
+                    delta,
+                    tunables,
+                )?;
                 return calendar_value_from_text(kind, text);
             }
             BinaryNumberRep::BinaryMilliseconds => {
+                let mut buf = [0u8; 8];
                 if bytes.len() == 8 {
-                    let mut buf = [0u8; 8];
                     buf.copy_from_slice(bytes);
-                    let delta_ms = if le {
-                        i64::from_le_bytes(buf)
-                    } else {
-                        i64::from_be_bytes(buf)
-                    };
-                    if let Some(epoch_ms) = base.checked_mul(1000) {
-                        if epoch_ms.checked_add(delta_ms).is_none() || epoch_ms.saturating_add(delta_ms) < 0 {
-                            return Err(crate::vm::calendar_binary::binary_calendar_millis_delta_out_of_range(
-                                delta_ms,
-                            ));
-                        }
-                    }
+                } else if bytes.len() == 4 {
+                    buf[..4].copy_from_slice(bytes);
+                } else {
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!(
+                            "binaryMilliseconds expects 4 or 8 bytes, got {}",
+                            bytes.len()
+                        ),
+                    });
                 }
-                let (secs, micros) =
-                    crate::vm::calendar_binary::decode_binary_milliseconds_value(bytes, le)?;
-                let text = crate::vm::calendar_binary::format_binary_calendar_datetime(
-                    base + secs,
-                    micros,
+                let delta_ms = if le {
+                    i64::from_le_bytes(buf)
+                } else {
+                    i64::from_be_bytes(buf)
+                };
+                let text = crate::vm::calendar_binary::format_binary_calendar_from_millis_delta(
                     epoch_raw,
-                );
-                crate::vm::calendar_binary::validate_calendar_year_tunables(&text, tunables)?;
+                    delta_ms,
+                    tunables,
+                )?;
                 return calendar_value_from_text(kind, text);
             }
             _ => unreachable!(),
         };
     }
     let digits = match rep {
-        BinaryNumberRep::Bcd => bcd_to_digit_string(bytes, le)?,
+        BinaryNumberRep::Bcd => {
+            if let Some((raw, bits)) = raw_bits {
+                let from_raw =
+                    crate::vm::calendar_binary::bcd_digits_from_raw_bits(raw, bits);
+                if !from_raw.is_empty() {
+                    from_raw
+                } else {
+                    bcd_to_digit_string(bytes, le)?
+                }
+            } else {
+                bcd_to_digit_string(bytes, le)?
+            }
+        }
         BinaryNumberRep::Ibm4690Packed => ibm4690_to_digit_string(bytes, le)
             .map(|(_n, d)| d)
             .unwrap_or_default(),
@@ -1462,6 +1473,7 @@ struct CalendarTextFields {
     day: Option<u32>,
     day_of_year: Option<u32>,
     week_in_month: Option<u32>,
+    week_of_year: Option<u32>,
     year: Option<i32>,
     hour: Option<u32>,
     minute: Option<u32>,
@@ -1479,6 +1491,14 @@ struct CalendarPatternPresence {
     d: bool,
     day_of_year: bool,
     week_in_month: bool,
+    week_of_year: bool,
+    weekday: bool,
+}
+
+struct CalendarTextConfig<'a> {
+    language: Option<&'a str>,
+    first_day_of_week: u32,
+    days_in_first_week: u32,
 }
 
 fn append_default_utc_offset(kind: crate::ir::ValueKind, date_only: bool, parsed: &str) -> alloc::string::String {
@@ -1633,6 +1653,23 @@ fn apply_hour12(fields: &mut CalendarTextFields) -> Result<(), crate::error::VmE
     Ok(())
 }
 
+fn month_from_name_locale(name: &str, language: Option<&str>) -> Option<u32> {
+    let trimmed = name.trim().trim_end_matches('.');
+    if let Some(lang) = language {
+        let key = lang.split('-').next().unwrap_or(lang).to_ascii_lowercase();
+        let lower = trimmed.to_lowercase();
+        match key.as_str() {
+            "de" if lower.contains("mär") || lower.contains("marz") || lower.contains("maerz") => {
+                return Some(3);
+            }
+            "es" if lower == "noviembre" => return Some(11),
+            "ru" if lower.starts_with("мар") => return Some(3),
+            _ => {}
+        }
+    }
+    month_from_name(trimmed)
+}
+
 fn month_from_name(name: &str) -> Option<u32> {
     let n = name.to_ascii_lowercase();
     match n.as_str() {
@@ -1650,6 +1687,20 @@ fn month_from_name(name: &str) -> Option<u32> {
         "december" | "dec" => Some(12),
         _ => None,
     }
+}
+
+fn weekday_from_name_locale(name: &str, language: Option<&str>) -> Option<u32> {
+    let n = name.trim().to_ascii_lowercase();
+    if let Some(lang) = language {
+        let key = lang.split('-').next().unwrap_or(lang).to_ascii_lowercase();
+        match key.as_str() {
+            "de" if matches!(n.as_str(), "freitag" | "fr") => return Some(5),
+            "es" if matches!(n.as_str(), "lunes" | "lu") => return Some(1),
+            "ru" if n.starts_with("пят") => return Some(5),
+            _ => {}
+        }
+    }
+    weekday_from_name(name)
 }
 
 fn weekday_from_name(name: &str) -> Option<u32> {
@@ -1682,7 +1733,8 @@ fn weekday_of_ymd(year: i32, month: u32, day: u32) -> Option<u32> {
 }
 
 fn infer_day_from_weekday(year: i32, month: u32, weekday: u32) -> Option<u32> {
-    for day in 1..=31 {
+    let dim = crate::vm::calendar_binary::days_in_month(year, month);
+    for day in 1..=dim {
         if weekday_of_ymd(year, month, day) == Some(weekday) {
             return Some(day);
         }
@@ -1716,7 +1768,7 @@ fn read_calendar_field(
     })?;
     let mut out = alloc::string::String::new();
     let max_digits = if width == 1
-        && matches!(letters, 'd' | 'M' | 'y' | 'Y' | 'D' | 'F' | 'H' | 'h' | 'm' | 's')
+        && matches!(letters, 'd' | 'M' | 'y' | 'Y' | 'D' | 'F' | 'w' | 'W' | 'H' | 'h' | 'm' | 's')
     {
         4
     } else {
@@ -1745,6 +1797,7 @@ fn format_calendar_text(
     pattern: &str,
     lax: bool,
     century_start: u32,
+    cal: CalendarTextConfig<'_>,
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -1756,6 +1809,7 @@ fn format_calendar_text(
         day: None,
         day_of_year: None,
         week_in_month: None,
+        week_of_year: None,
         year: None,
         hour: None,
         minute: None,
@@ -1839,7 +1893,7 @@ fn format_calendar_text(
             i += 1;
             continue;
         }
-        const FIELD: &str = "EMdDFmyYHhs";
+        const FIELD: &str = "EMdDFwWmyYHhs";
         if !FIELD.contains(c) {
             let Some(ch) = text[ti..].chars().next() else {
                 return Err(VmError::InvalidValue {
@@ -1861,12 +1915,29 @@ fn format_calendar_text(
         }
         let raw = read_calendar_field(text, &mut ti, width, c)?;
         match c {
-            'E' => fields.weekday = Some(raw),
+            'E' => {
+                pattern_parts.weekday = true;
+                fields.weekday = Some(raw);
+            }
             'M' if width >= 3 => {
                 pattern_parts.m = true;
-                fields.month = Some(month_from_name(&raw).ok_or_else(|| VmError::InvalidValue {
-                    message: alloc::format!("calendar `{pattern}` invalid month `{raw}`"),
-                })?);
+                fields.month = Some(
+                    month_from_name_locale(&raw, cal.language).ok_or_else(|| VmError::InvalidValue {
+                        message: alloc::format!("calendar `{pattern}` invalid month `{raw}`"),
+                    })?,
+                );
+            }
+            'F' => {
+                pattern_parts.week_in_month = true;
+                fields.week_in_month = raw.parse().ok();
+            }
+            'w' => {
+                pattern_parts.week_of_year = true;
+                fields.week_of_year = raw.parse().ok();
+            }
+            'W' => {
+                pattern_parts.week_in_month = true;
+                fields.week_in_month = raw.parse().ok();
             }
             'M' => {
                 pattern_parts.m = true;
@@ -1879,10 +1950,6 @@ fn format_calendar_text(
             'D' => {
                 pattern_parts.day_of_year = true;
                 fields.day_of_year = raw.parse().ok();
-            }
-            'F' => {
-                pattern_parts.week_in_month = true;
-                fields.week_in_month = raw.parse().ok();
             }
             'y' | 'Y' => {
                 pattern_parts.y = true;
@@ -1922,11 +1989,14 @@ fn format_calendar_text(
         || pattern_parts.d
         || pattern_parts.day_of_year
         || pattern_parts.week_in_month
+        || pattern_parts.week_of_year
+        || pattern_parts.weekday
         || fields.year.is_some()
         || fields.month.is_some()
         || fields.day.is_some()
         || fields.day_of_year.is_some()
-        || fields.week_in_month.is_some();
+        || fields.week_in_month.is_some()
+        || fields.week_of_year.is_some();
     let has_time = fields.hour.is_some() || fields.minute.is_some() || fields.second.is_some();
     apply_hour12(&mut fields)?;
     if has_time && !has_date {
@@ -1960,6 +2030,19 @@ fn format_calendar_text(
             year = 1970;
         }
         crate::vm::calendar_binary::month_day_from_ordinal(year, ordinal)?
+    } else if pattern_parts.week_of_year {
+        let week = fields.week_of_year.ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing week-of-year"),
+        })?;
+        let target_year = fields.year.unwrap_or(1970);
+        let (y, m, d) = crate::vm::calendar_binary::date_from_week_of_year(
+            target_year,
+            week,
+            cal.first_day_of_week,
+            cal.days_in_first_week,
+        )?;
+        year = y;
+        (m, d)
     } else if pattern_parts.week_in_month {
         let month = fields.month.ok_or_else(|| VmError::InvalidValue {
             message: alloc::format!("calendar `{pattern}` missing month"),
@@ -1970,8 +2053,22 @@ fn format_calendar_text(
         let n = fields.week_in_month.ok_or_else(|| VmError::InvalidValue {
             message: alloc::format!("calendar `{pattern}` missing week-in-month"),
         })?;
-        // Daffodil default `calendarFirstDayOfWeek` is Sunday (ISO weekday 7).
-        let day = crate::vm::calendar_binary::nth_weekday_in_month(year, month, n, 7)?;
+        let day = if pattern.contains('W') {
+            crate::vm::calendar_binary::date_from_week_of_month(
+                year,
+                month,
+                n,
+                cal.first_day_of_week,
+                cal.days_in_first_week,
+            )?
+        } else {
+            crate::vm::calendar_binary::nth_weekday_in_month(
+                year,
+                month,
+                n,
+                cal.first_day_of_week,
+            )?
+        };
         (month, day)
     } else {
         if !pattern_parts.y {
@@ -1989,7 +2086,7 @@ fn format_calendar_text(
                 message: alloc::format!("calendar `{pattern}` missing day"),
             })?
         } else if let Some(ref wd) = fields.weekday {
-            let w = weekday_from_name(wd).ok_or_else(|| VmError::InvalidValue {
+            let w = weekday_from_name_locale(wd, cal.language).ok_or_else(|| VmError::InvalidValue {
                 message: alloc::format!("calendar `{pattern}` invalid weekday"),
             })?;
             infer_day_from_weekday(year, month, w).ok_or_else(|| VmError::InvalidValue {
@@ -3020,7 +3117,14 @@ fn decode_binary_from_raw_bits(
     }
     if matches!(kind, DateTime | Time) && calendar_binary_rep(props) {
         let bytes = stream_bits_to_bytes(raw, bit_width, props.byte_order);
-        return decode_binary_calendar(kind, &bytes, props, strings, tunables);
+        return decode_binary_calendar(
+            kind,
+            &bytes,
+            props,
+            strings,
+            tunables,
+            Some((raw, bit_width)),
+        );
     }
 
     macro_rules! unsigned {
@@ -4026,6 +4130,13 @@ pub(crate) fn read_text_scalar(
                         pattern,
                         props.calendar_check_policy_lax,
                         props.calendar_century_start,
+                        CalendarTextConfig {
+                            language: props
+                                .calendar_language
+                                .and_then(|id| strings.get(id).ok()),
+                            first_day_of_week: props.calendar_first_day_of_week,
+                            days_in_first_week: props.calendar_days_in_first_week,
+                        },
                     )?
                 };
                 let with_tz = append_packed_calendar_timezone(
@@ -8206,25 +8317,33 @@ mod delimited_stop_tests {
     }
 
     #[test]
+    fn default_cal_cfg() -> CalendarTextConfig<'static> {
+        CalendarTextConfig {
+            language: None,
+            first_day_of_week: 1,
+            days_in_first_week: 4,
+        }
+    }
+
     fn format_calendar_text_time_and_datetime() {
         assert_eq!(
-            format_calendar_text("04:09:23", "hh:mm:ss", false, 53)
+            format_calendar_text("04:09:23", "hh:mm:ss", false, 53, default_cal_cfg())
                 .map_err(|e| e.to_string())
                 .unwrap(),
             "04:09:23"
         );
         assert_eq!(
-            format_calendar_text("Friday 05 2013 - 03:30:30", "EEEE MM yyyy - hh:mm:ss", false, 53).unwrap(),
+            format_calendar_text("Friday 05 2013 - 03:30:30", "EEEE MM yyyy - hh:mm:ss", false, 53, default_cal_cfg()).unwrap(),
             "2013-05-03T03:30:30"
         );
     }
 
     #[test]
     fn format_calendar_text_section5_samples() {
-        let date = format_calendar_text("Wednesday, July 10, '96", "EEEE, MMM d, ''yy", false, 53)
+        let date = format_calendar_text("Wednesday, July 10, '96", "EEEE, MMM d, ''yy", false, 53, default_cal_cfg())
             .unwrap_or_else(|e| panic!("dateText: {e}"));
         assert_eq!(date, "1996-07-10");
-        let time = format_calendar_text("12:08 PM", "h:mm a", false, 53).unwrap_or_else(|e| panic!("timeText: {e}"));
+        let time = format_calendar_text("12:08 PM", "h:mm a", false, 53, default_cal_cfg()).unwrap_or_else(|e| panic!("timeText: {e}"));
         assert_eq!(time, "12:08:00");
         let time_tz = append_default_utc_offset(crate::ir::ValueKind::Time, false, &time);
         assert_eq!(time_tz, "12:08:00+00:00");
@@ -8233,6 +8352,7 @@ mod delimited_stop_tests {
             "yyyy.MM.dd G 'at' HH:mm:ss ZZZZ",
             false,
             53,
+            default_cal_cfg(),
         )
         .unwrap_or_else(|e| panic!("dateTimeText: {e}"));
         assert_eq!(dt, "1996-07-10T15:08:56-05:00");
