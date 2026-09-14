@@ -3842,7 +3842,8 @@ pub(crate) fn read_text_scalar(
         }
         Decimal => {
             let num = text_number_for_parse(trimmed, kind, props, strings)?;
-            Ok(DfdlValue::Decimal(num.into()))
+            let canon = crate::vm::facet_validate::canonicalize_xs_decimal_lexical(&num);
+            Ok(DfdlValue::Decimal(canon.into()))
         }
         DateTime | Time => {
             if let Some(pat_id) = props.calendar_pattern {

@@ -220,7 +220,134 @@ fn facet_err_not_integer(raw: &str) -> SchemaError {
     }
 }
 
+fn validate_enumeration_unique(enumerations: &[String]) -> Result<(), SchemaError> {
+    for (idx, value) in enumerations.iter().enumerate() {
+        if enumerations[..idx].iter().any(|v| v == value) {
+            return Err(SchemaError::InvalidProperty {
+                message: "Enumerations must be unique".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_single_restriction(
+    schema: &SchemaDocument,
+    parent: &RestrictionBase,
+    min_inclusive: &Option<i64>,
+    min_exclusive: &Option<i64>,
+    max_inclusive: &Option<i64>,
+    max_exclusive: &Option<i64>,
+    enumerations: &[String],
+    total_digits: &Option<u64>,
+    fraction_digits: &Option<u64>,
+) -> Result<(), SchemaError> {
+    if min_inclusive.is_some() && min_exclusive.is_some() {
+        return Err(SchemaError::InvalidProperty {
+            message: "MinInclusive and MinExclusive cannot be specified for the same simple type"
+                .into(),
+        });
+    }
+    if max_inclusive.is_some() && max_exclusive.is_some() {
+        return Err(SchemaError::InvalidProperty {
+            message: "MaxInclusive and MaxExclusive cannot be specified for the same simple type"
+                .into(),
+        });
+    }
+    if let Some(0) = total_digits {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: Value '0' is not facet-valid with respect to minInclusive '0' for type 'positiveInteger' (totalDigits)"
+            ),
+        });
+    }
+    if let (Some(frac), Some(total)) = (fraction_digits, total_digits) {
+        if frac > total {
+            return Err(SchemaError::InvalidProperty {
+                message: "FractionDigits facet must not exceed TotalDigits".into(),
+            });
+        }
+    }
+    validate_enumeration_unique(enumerations)?;
+    if !enumerations.is_empty() {
+        if let Some(parent_enums) = parent_restriction_enumerations(schema, parent) {
+            for value in enumerations {
+                if !parent_enums.iter().any(|p| p == value) {
+                    return Err(SchemaError::InvalidProperty {
+                        message: "Local enumerations must be a subset of base enumerations".into(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate XSD facets on each restriction level in a simple-type derivation chain.
+pub fn validate_restriction_chain(
+    schema: &SchemaDocument,
+    base: &SimpleBase,
+) -> Result<(), SchemaError> {
+    match base {
+        SimpleBase::Restriction {
+            base: parent,
+            min_inclusive,
+            min_exclusive,
+            max_inclusive,
+            max_exclusive,
+            enumerations,
+            total_digits,
+            fraction_digits,
+            ..
+        } => {
+            validate_single_restriction(
+                schema,
+                parent,
+                min_inclusive,
+                min_exclusive,
+                max_inclusive,
+                max_exclusive,
+                enumerations,
+                total_digits,
+                fraction_digits,
+            )?;
+            match parent {
+                RestrictionBase::Named(name) => {
+                    if let Some(TypeDef::Simple { base: inner, .. }) = schema.types.get(name) {
+                        validate_restriction_chain(schema, inner)?;
+                    }
+                }
+                RestrictionBase::Builtin(_) => {}
+            }
+            Ok(())
+        }
+        SimpleBase::Union { members } => {
+            for member in members {
+                match member {
+                    super::ast::UnionMember::Inline(inner) => {
+                        validate_restriction_chain(schema, inner)?;
+                    }
+                    super::ast::UnionMember::Named(name) => {
+                        if let Some(TypeDef::Simple { base: inner, .. }) = schema.types.get(name) {
+                            validate_restriction_chain(schema, inner)?;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        SimpleBase::Builtin(_) => Ok(()),
+    }
+}
+
 pub fn validate_facet_literals(eff: &EffectiveFacets) -> Result<(), SchemaError> {
+    if eff.total_digits == Some(0) {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: Value '0' is not facet-valid with respect to minInclusive '0' for type 'positiveInteger' (totalDigits)"
+            ),
+        });
+    }
     for v in [
         eff.invalid_length.as_deref(),
         eff.invalid_min_length.as_deref(),
@@ -393,42 +520,14 @@ fn parent_restriction_enumerations(
     }
 }
 
-fn validate_enumeration_subset(
-    schema: &SchemaDocument,
-    base: &SimpleBase,
-) -> Result<(), SchemaError> {
-    let SimpleBase::Restriction {
-        base: parent,
-        enumerations,
-        ..
-    } = base
-    else {
-        return Ok(());
-    };
-    if enumerations.is_empty() {
-        return Ok(());
-    }
-    let Some(parent_enums) = parent_restriction_enumerations(schema, parent) else {
-        return Ok(());
-    };
-    for value in enumerations {
-        if !parent_enums.iter().any(|p| p == value) {
-            return Err(SchemaError::InvalidProperty {
-                message: "Local enumerations must be a subset of base enumerations".into(),
-            });
-        }
-    }
-    Ok(())
-}
-
 pub fn validate_value_space_facets(
     schema: &SchemaDocument,
     base: &SimpleBase,
 ) -> Result<(), SchemaError> {
+    validate_restriction_chain(schema, base)?;
     let eff = schema.effective_facets(base);
     validate_facet_range_order(&eff)?;
     validate_fraction_total_digits(&eff)?;
-    validate_enumeration_subset(schema, base)?;
 
     let Some(builtin) = schema.builtin_for_simple_base(base) else {
         return Ok(());

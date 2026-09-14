@@ -46,6 +46,23 @@ pub fn needs_facet_validation(props: &IrProps) -> bool {
         || props.fraction_digits.is_some()
 }
 
+pub fn canonicalize_xs_decimal_lexical(s: &str) -> alloc::string::String {
+    let s = s.trim();
+    let (neg, rest) = if let Some(r) = s.strip_prefix('-') {
+        (true, r)
+    } else if let Some(r) = s.strip_prefix('+') {
+        (false, r)
+    } else {
+        (false, s)
+    };
+    let body = normalize_decimal_digits(rest);
+    if neg && body != "0" {
+        alloc::format!("-{body}")
+    } else {
+        body
+    }
+}
+
 pub fn validate_decoded_facets(
     value: &DfdlValue,
     kind: ValueKind,
@@ -65,8 +82,10 @@ pub fn validate_decoded_facets(
         validate_decimal_range_facets(value, props, strings)?;
     } else if kind == ValueKind::DateTime {
         validate_datetime_range_facets(value, props, strings)?;
+        validate_calendar_enumeration(value, props, strings)?;
     } else if kind == ValueKind::Time {
         validate_time_range_facets(value, props, strings)?;
+        validate_calendar_enumeration(value, props, strings)?;
     } else if let Some(n) = numeric_value_i64(value) {
         validate_numeric_facets(n, props, strings)?;
         validate_enumeration_numeric(n, props, strings)?;
@@ -152,6 +171,47 @@ fn validate_datetime_range_facets(
         }
     }
     Ok(())
+}
+
+fn validate_calendar_enumeration(
+    value: &DfdlValue,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), VmError> {
+    if props.facet_enumeration.is_empty() {
+        return Ok(());
+    }
+    let DfdlValue::DateTime(lex) = value else {
+        return Ok(());
+    };
+    let date_only = props.calendar_date_only || !lex.contains('T');
+    for id in &props.facet_enumeration {
+        let allowed = strings.get(*id)?;
+        if calendar_lexical_equal(lex, allowed, date_only) {
+            return Ok(());
+        }
+    }
+    Err(facet_validation_error(
+        props,
+        strings,
+        "failed facet checks due to: enumeration".into(),
+    ))
+}
+
+fn calendar_lexical_equal(value: &str, allowed: &str, date_only: bool) -> bool {
+    if value == allowed {
+        return true;
+    }
+    if date_only {
+        return super::calendar_binary::xs_date_lexical_cmp(value, allowed)
+            == Some(core::cmp::Ordering::Equal);
+    }
+    if !value.contains('T') && !allowed.contains('T') {
+        return super::calendar_binary::xs_date_lexical_cmp(value, allowed)
+            == Some(core::cmp::Ordering::Equal);
+    }
+    super::calendar_binary::xs_datetime_lexical_cmp(value, allowed)
+        == Some(core::cmp::Ordering::Equal)
 }
 
 fn validate_time_range_facets(
@@ -389,8 +449,9 @@ fn validate_digit_facets(
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<(), VmError> {
+    let lexical = canonicalize_xs_decimal_lexical(lexical);
     if let Some(max) = props.total_digits {
-        let count = xsd_total_digits(lexical);
+        let count = xsd_total_digits(&lexical);
         if count > max as usize {
             return Err(facet_validation_error(
                 props,
@@ -400,7 +461,7 @@ fn validate_digit_facets(
         }
     }
     if let Some(max) = props.fraction_digits {
-        let count = xsd_fraction_digits(lexical);
+        let count = xsd_fraction_digits(&lexical);
         if count > max as usize {
             return Err(facet_validation_error(
                 props,
