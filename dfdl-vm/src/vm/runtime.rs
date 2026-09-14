@@ -2095,6 +2095,10 @@ fn normalize_bit_field_raw(raw: u64, bit_width: usize, byte_order: ByteOrder) ->
     if bit_width == 0 {
         return 0;
     }
+    // Sub-byte bit fields are already in stream bit order; byteOrder applies to multi-byte values.
+    if bit_width < 8 {
+        return raw & bit_mask(bit_width);
+    }
     if byte_order == ByteOrder::LittleEndian {
         let mut bytes = stream_bits_to_bytes(raw, bit_width, ByteOrder::BigEndian);
         bytes.reverse();
@@ -4971,8 +4975,11 @@ pub(crate) fn consume_element_framing(
     encoding: &str,
 ) -> Result<(), crate::error::VmError> {
     crate::vm::alignment::consume_leading_skip(cursor, props)?;
-    let (align, units) = crate::vm::alignment::resolved_alignment(kind, props, encoding);
-    consume_alignment_values(cursor, props, align, units)
+    if crate::vm::alignment::pre_element_alignment_applies(kind, props, encoding) {
+        let (align, units) = crate::vm::alignment::resolved_alignment(kind, props, encoding);
+        consume_alignment_values(cursor, props, align, units)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn consume_element_trailing_framing(

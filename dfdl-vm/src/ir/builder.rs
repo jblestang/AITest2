@@ -981,6 +981,7 @@ fn finalize_element_props(
         ir.nil_kind = Some(NilKind::LiteralValue);
     }
     validate_binary_delimited(kind, &ir)?;
+    validate_trailing_skip_delimited(&ir)?;
     validate_bcd_signed_integer_type(kind, &ir)?;
     validate_packed_binary_properties_schema(kind, &ir, strings)?;
     validate_text_alignment_schema(kind, &ir, strings)?;
@@ -1329,11 +1330,29 @@ fn validate_bcd_signed_integer_type(kind: ValueKind, props: &IrProps) -> Result<
     .into())
 }
 
+fn validate_trailing_skip_delimited(props: &IrProps) -> Result<()> {
+    if props.trailing_skip == 0 || props.length_kind != LengthKind::Delimited {
+        return Ok(());
+    }
+    let has_terminator = props
+        .terminator
+        .is_some();
+    if has_terminator {
+        return Ok(());
+    }
+    Err(SchemaError::InvalidProperty {
+        message: alloc::format!(
+            "Schema Definition Error. Property terminator must be defined when trailingSkip > 0 and lengthKind='delimited'"
+        ),
+    }
+    .into())
+}
+
 fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
     if props.representation == Representation::Binary
         && props.length_kind == LengthKind::Delimited
     {
-        if matches!(kind, ValueKind::String | ValueKind::HexBinary) {
+        if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {
             return Ok(());
         }
         if matches!(

@@ -262,21 +262,9 @@ impl<'a> Decoder<'a> {
                     },
                 }))
             }
-            IrNode::Choice { branches, props } => {
+            IrNode::Choice { branches, props: _ } => {
                 for branch in branches {
                     let saved = cursor.clone();
-                    if let Some(init_id) = branch.initiator {
-                        let pat = self.ctx.strings().get(init_id)?;
-                        if crate::schema::match_delimiter_opts(
-                            &cursor.data[cursor.pos..],
-                            pat,
-                            props.ignore_case,
-                        )
-                        .is_none()
-                        {
-                            continue;
-                        }
-                    }
                     if let Ok(value) = self.decode_node(
                         branch.node,
                         cursor,

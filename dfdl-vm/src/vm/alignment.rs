@@ -61,6 +61,32 @@ fn text_encoding_alignment_bits(encoding: &str) -> usize {
     }
 }
 
+/// Whether implicit/explicit pre-element alignment runs before a binary bit-length field.
+pub fn pre_element_alignment_applies(
+    kind: ValueKind,
+    props: &IrProps,
+    encoding: &str,
+) -> bool {
+    use crate::schema::{LengthKind, LengthUnits, Representation};
+    if props.representation != Representation::Binary {
+        return true;
+    }
+    if !matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
+        return true;
+    }
+    if props.length_units != LengthUnits::Bits {
+        return true;
+    }
+    let Some(len) = props.length else {
+        return true;
+    };
+    if !props.alignment_implicit {
+        return true;
+    }
+    let implicit_bits = implicit_alignment_in_bits(kind, props, encoding);
+    (len as usize) >= implicit_bits
+}
+
 /// Resolved `(alignment, alignment_units)` for consume/write alignment helpers.
 pub fn resolved_alignment(kind: ValueKind, props: &IrProps, encoding: &str) -> (u64, LengthUnits) {
     if !props.alignment_implicit {
@@ -75,12 +101,12 @@ pub fn resolved_alignment(kind: ValueKind, props: &IrProps, encoding: &str) -> (
     }
 }
 
-/// Post-data alignment after reading a simple element (may differ from pre-element `alignment`).
+/// Post-data alignment after reading a simple element (`dfdl:framingAlignment` only).
 pub fn post_read_alignment(props: &IrProps) -> (u64, LengthUnits) {
     if props.framing_alignment != 0 {
         return (props.framing_alignment, props.framing_alignment_units);
     }
-    (props.alignment, props.alignment_units)
+    (1, LengthUnits::Bits)
 }
 
 pub(crate) fn cursor_uses_bitstream_alignment(cursor: &Cursor<'_>) -> bool {
