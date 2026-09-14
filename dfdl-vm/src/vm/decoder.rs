@@ -25,6 +25,23 @@ struct SiblingState {
     content_bytes: usize,
 }
 
+fn sibling_text_values(
+    siblings: Option<&BTreeMap<String, SiblingState>>,
+) -> Option<BTreeMap<String, String>> {
+    let sibs = siblings?;
+    let mut out = BTreeMap::new();
+    for (name, state) in sibs {
+        if let DfdlValue::String(s) = &state.value {
+            out.insert(name.clone(), s.text.clone());
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 enum FramingExtraOccurrences {
     None,
     One,
@@ -127,7 +144,7 @@ impl<'a> Decoder<'a> {
                 extended.push(props);
                 let child_stops = extended.as_slice();
                 let mut map = BTreeMap::new();
-                let mut seq_siblings = BTreeMap::new();
+                let mut seq_siblings = siblings.cloned().unwrap_or_default();
                 let mut infix_sep_newline_prefix = Vec::new();
                 let mut separator_alts = Vec::new();
                 let mut field_delim_meta = BTreeMap::new();
@@ -853,6 +870,7 @@ impl<'a> Decoder<'a> {
                     }
                     let field_name = self.ctx.strings().get(*name)?.to_string();
                     let mut delim_meta = FieldDelimiterMeta::default();
+                    let sibling_text = sibling_text_values(siblings);
                     let value = read_simple(
                         cursor,
                         *kind,
@@ -864,6 +882,7 @@ impl<'a> Decoder<'a> {
                         &self.ctx.program.tunables,
                         false,
                         Some(&mut delim_meta),
+                        sibling_text.as_ref(),
                     )
                     .map_err(crate::error::Error::from)?;
                     if delim_meta.initiator_alt.is_some() || delim_meta.terminator_alt.is_some() {

@@ -1,5 +1,6 @@
 //! Text/binary boolean representation helpers.
 
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -43,18 +44,54 @@ pub fn tokenize_text_boolean_rep_list(raw: &str) -> Vec<String> {
     out
 }
 
+fn local_name_from_qname(qname: &str) -> &str {
+    qname.rsplit(':').next().unwrap_or(qname)
+}
+
+fn sibling_ref_name(inner: &str) -> Option<String> {
+    let trimmed = inner.trim();
+    let path = trimmed.strip_prefix("../")?;
+    Some(local_name_from_qname(path.trim()).to_string())
+}
+
+fn sibling_text_value(
+    siblings: Option<&BTreeMap<String, String>>,
+    name: &str,
+) -> Result<String, String> {
+    siblings
+        .and_then(|m| m.get(name))
+        .cloned()
+        .ok_or_else(|| alloc::format!("Schema Definition Error: {name} does not exist"))
+}
+
 /// Evaluate a single `{ ... }` or plain token to the comparison string at runtime.
-pub fn resolve_text_boolean_rep_token(token: &str) -> Result<String, String> {
+pub fn resolve_text_boolean_rep_token(
+    token: &str,
+    siblings: Option<&BTreeMap<String, String>>,
+) -> Result<String, String> {
     let trimmed = token.trim();
     if trimmed.starts_with('{') && trimmed.ends_with('}') {
         let inner = trimmed[1..trimmed.len() - 1].trim();
         if inner.starts_with('\'') && inner.ends_with('\'') && inner.len() >= 2 {
             return Ok(inner[1..inner.len() - 1].to_string());
         }
+        if let Some(name) = sibling_ref_name(inner) {
+            return sibling_text_value(siblings, &name);
+        }
         if inner.starts_with("xs:string(") && inner.ends_with(')') {
             let arg = inner["xs:string(".len()..inner.len() - 1].trim();
             if arg.starts_with('\'') && arg.ends_with('\'') && arg.len() >= 2 {
                 return Ok(arg[1..arg.len() - 1].to_string());
+            }
+            if arg.starts_with("dfdl:valueLength(") && arg.ends_with(')') {
+                let inner_arg = arg["dfdl:valueLength(".len()..arg.len() - 1].trim();
+                let (sib_part, _) = inner_arg
+                    .split_once(',')
+                    .ok_or_else(|| alloc::format!("unsupported xs:string argument `{arg}`"))?;
+                let name = sibling_ref_name(sib_part.trim())
+                    .ok_or_else(|| alloc::format!("unsupported xs:string argument `{arg}`"))?;
+                let text = sibling_text_value(siblings, &name)?;
+                return Ok(text.len().to_string());
             }
             if let Some(v) = eval_simple_arithmetic(arg) {
                 return Ok(v.to_string());
@@ -88,7 +125,7 @@ mod tests {
     #[test]
     fn tokenize_splits_whitespace_and_braces() {
         let t = tokenize_text_boolean_rep_list("yes Y 1");
-        assert_eq!(t, vec!["yes", "Y", "1"]);
+        assert_eq!(t, alloc::vec!["yes", "Y", "1"]);
         let t2 = tokenize_text_boolean_rep_list("{'a b c'} { xs:string(5-3) }");
         assert_eq!(t2.len(), 2);
         assert_eq!(t2[0], "{'a b c'}");
@@ -97,11 +134,11 @@ mod tests {
     #[test]
     fn resolve_xs_string_arithmetic() {
         assert_eq!(
-            resolve_text_boolean_rep_token("{ xs:string(5-3) }").unwrap(),
+            resolve_text_boolean_rep_token("{ xs:string(5-3) }", None).unwrap(),
             "2"
         );
         assert_eq!(
-            resolve_text_boolean_rep_token("{'a b c'}").unwrap(),
+            resolve_text_boolean_rep_token("{'a b c'}", None).unwrap(),
             "a b c"
         );
     }

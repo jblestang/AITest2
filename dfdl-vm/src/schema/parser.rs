@@ -1404,6 +1404,15 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_boolean_false_rep.is_some() {
         base.text_boolean_false_rep = overlay.text_boolean_false_rep;
     }
+    if overlay.text_boolean_true_rep_defined {
+        base.text_boolean_true_rep_defined = true;
+    }
+    if overlay.text_boolean_false_rep_defined {
+        base.text_boolean_false_rep_defined = true;
+    }
+    if overlay.text_boolean_pad_character.is_some() {
+        base.text_boolean_pad_character = overlay.text_boolean_pad_character.clone();
+    }
     if overlay.binary_boolean_true_rep_defined {
         base.binary_boolean_true_rep_defined = true;
         base.binary_boolean_true_rep = overlay.binary_boolean_true_rep;
@@ -2223,8 +2232,29 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     }
                 });
             }
-            "textBooleanTrueRep" => props.text_boolean_true_rep = Some(value.clone()),
-            "textBooleanFalseRep" => props.text_boolean_false_rep = Some(value.clone()),
+            "textBooleanTrueRep" => {
+                props.text_boolean_true_rep_defined = true;
+                props.text_boolean_true_rep = Some(value.clone());
+            }
+            "textBooleanFalseRep" => {
+                props.text_boolean_false_rep_defined = true;
+                props.text_boolean_false_rep = Some(value.clone());
+            }
+            "textBooleanPadCharacter" => {
+                props.text_boolean_pad_character =
+                    Some(crate::schema::expand_entities_str(value));
+            }
+            "occursCount" => {
+                let trimmed = value.trim();
+                if trimmed.starts_with('{') && trimmed.ends_with('}') {
+                    let inner = trimmed[1..trimmed.len() - 1].trim();
+                    if let Ok(n) = inner.parse::<u64>() {
+                        props.occurs_min = Some(n);
+                        props.occurs_max = Some(n);
+                        props.occurs_count_kind = Some(OccursCountKind::Expression);
+                    }
+                }
+            }
             "binaryBooleanTrueRep" => {
                 props.binary_boolean_true_rep_defined = true;
                 if value.is_empty() {

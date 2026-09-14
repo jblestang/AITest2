@@ -3126,6 +3126,7 @@ pub(crate) fn read_text_scalar(
     require_delimiter: bool,
     stop_sequences: &[&IrProps],
     field_name: Option<&str>,
+    sibling_text: Option<&alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -3288,7 +3289,7 @@ pub(crate) fn read_text_scalar(
 
     let base = props.text_standard_base;
     let value = match kind {
-        Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
+        Boolean => parse_text_boolean(trimmed, props, strings, sibling_text).map(DfdlValue::Boolean),
         Byte => {
             reject_internal_whitespace_explicit_field(
                 trimmed, "xs:byte", props, base, trailing_input,
@@ -3514,6 +3515,7 @@ fn text_boolean_rep_candidates(
     props: &IrProps,
     strings: &StringPool,
     true_side: bool,
+    sibling_text: Option<&alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>>,
 ) -> Result<alloc::vec::Vec<alloc::string::String>, crate::error::VmError> {
     use crate::error::VmError;
     let id = if true_side {
@@ -3528,11 +3530,10 @@ fn text_boolean_rep_candidates(
     let tokens = crate::schema::boolean_reps::tokenize_text_boolean_rep_list(raw);
     let mut out = alloc::vec::Vec::new();
     for tok in tokens {
-        let s = crate::schema::boolean_reps::resolve_text_boolean_rep_token(&tok).map_err(
-            |detail| VmError::InvalidValue {
+        let s = crate::schema::boolean_reps::resolve_text_boolean_rep_token(&tok, sibling_text)
+            .map_err(|detail| VmError::InvalidValue {
                 message: detail,
-            },
-        )?;
+            })?;
         out.push(s);
     }
     Ok(out)
@@ -3542,17 +3543,32 @@ fn parse_text_boolean(
     trimmed: &str,
     props: &IrProps,
     strings: &StringPool,
+    sibling_text: Option<&alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>>,
 ) -> Result<bool, crate::error::VmError> {
     use crate::error::VmError;
     let ignore = props.ignore_case;
-    let true_reps = text_boolean_rep_candidates(props, strings, true)?;
-    let false_reps = text_boolean_rep_candidates(props, strings, false)?;
+    let true_reps = text_boolean_rep_candidates(props, strings, true, sibling_text)?;
+    let false_reps = text_boolean_rep_candidates(props, strings, false, sibling_text)?;
     let matches = |a: &str, b: &str| {
         if ignore {
-            a.eq_ignore_ascii_case(b)
-        } else {
-            a == b
+            if a.eq_ignore_ascii_case(b) {
+                return true;
+            }
+        } else if a == b {
+            return true;
         }
+        // Delimited padded booleans may present a prefix of a multi-character rep (e.g. `a` vs `a b c`).
+        if a.len() < b.len() && b.as_bytes().get(a.len()) == Some(&b' ') {
+            let head = &b[..a.len()];
+            if ignore {
+                if a.eq_ignore_ascii_case(head) {
+                    return true;
+                }
+            } else if a == head {
+                return true;
+            }
+        }
+        false
     };
     if true_reps.iter().any(|r| matches(trimmed, r)) {
         return Ok(true);
@@ -5262,6 +5278,13 @@ fn pad_char_for_kind(
             }
         }
     }
+    if matches!(kind, Boolean) {
+        if let Some(id) = props.text_boolean_pad_character {
+            if let Ok(raw) = strings.get(id) {
+                return expand_entities_str(raw);
+            }
+        }
+    }
     pad_char_from_props(props, strings)
         .map(|s| s.to_string())
         .unwrap_or_else(|| alloc::string::String::from(" "))
@@ -5976,6 +5999,7 @@ pub(crate) fn read_simple(
     tunables: &DaffodilTunables,
     consume_delimited_enclosing: bool,
     mut delim_out: Option<&mut crate::value::FieldDelimiterMeta>,
+    sibling_text: Option<&alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -6010,6 +6034,7 @@ pub(crate) fn read_simple(
             require_enclosing,
             stop_sequences,
             field_name,
+            sibling_text,
         )?
     } else {
         read_binary_scalar(
@@ -6995,7 +7020,9 @@ pub(crate) fn default_value_for(
     let raw = props.default_value.and_then(|id| strings.get(id).ok())?;
     let base = props.text_standard_base;
     match kind {
-        Boolean => parse_text_boolean(raw, props, strings).ok().map(DfdlValue::Boolean),
+        Boolean => parse_text_boolean(raw, props, strings, None)
+            .ok()
+            .map(DfdlValue::Boolean),
         Byte => parse_int_with_base(raw, "xs:byte", base).ok().map(DfdlValue::Byte),
         UnsignedByte => parse_unsigned_radix(raw, base).ok().map(DfdlValue::UnsignedByte),
         Short => parse_int_with_base(raw, "xs:short", base).ok().map(DfdlValue::Short),

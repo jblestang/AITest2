@@ -1049,7 +1049,7 @@ fn finalize_element_props(
     strings: &mut StringPool,
     tunables: DaffodilTunables,
 ) -> Result<IrProps> {
-    use crate::schema::NilKind;
+    use crate::schema::{NilKind, TextPadKind, TextTrimKind};
     if ir.nillable && ir.nil_value.is_some() && ir.nil_kind.is_none() {
         ir.nil_kind = Some(NilKind::LiteralValue);
     }
@@ -1086,6 +1086,31 @@ fn finalize_element_props(
                     message: "Schema Definition Error: Invalid value constraint value".into(),
                 }
                 .into());
+            }
+        }
+        if ir.representation == Representation::Text {
+            if ir.text_boolean_true_rep_defined && !ir.text_boolean_false_rep_defined {
+                return Err(SchemaError::InvalidProperty {
+                    message:
+                        "Schema Definition Error: Property textBooleanFalseRep is not defined."
+                            .into(),
+                }
+                .into());
+            }
+            if ir.text_boolean_false_rep_defined && !ir.text_boolean_true_rep_defined {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: Property textBooleanTrueRep is not defined."
+                        .into(),
+                }
+                .into());
+            }
+            if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Implicit)
+                && (ir.text_pad_kind == TextPadKind::None
+                    || ir.text_trim_kind == TextTrimKind::None)
+                && ir.text_boolean_true_rep_defined
+                && ir.text_boolean_false_rep_defined
+            {
+                validate_text_boolean_same_length(&ir, strings)?;
             }
         }
         if ir.representation == Representation::Binary {
@@ -1426,6 +1451,51 @@ fn validate_delimiter_props(props: &DfdlProps) -> Result<()> {
                 validate_delimiter_at_compile(prop, v)?;
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_text_boolean_same_length(props: &IrProps, strings: &StringPool) -> Result<()> {
+    let (Some(true_id), Some(false_id)) = (props.text_boolean_true_rep, props.text_boolean_false_rep)
+    else {
+        return Ok(());
+    };
+    let true_raw = strings.get(true_id).map_err(|e| SchemaError::InvalidProperty {
+        message: e.to_string(),
+    })?;
+    let false_raw = strings.get(false_id).map_err(|e| SchemaError::InvalidProperty {
+        message: e.to_string(),
+    })?;
+    let true_tokens = crate::schema::boolean_reps::tokenize_text_boolean_rep_list(true_raw);
+    let false_tokens = crate::schema::boolean_reps::tokenize_text_boolean_rep_list(false_raw);
+    let true_len = true_tokens
+        .first()
+        .and_then(|t| crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None).ok())
+        .map(|s| s.chars().count())
+        .unwrap_or(0);
+    let false_len = false_tokens
+        .first()
+        .and_then(|t| crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None).ok())
+        .map(|s| s.chars().count())
+        .unwrap_or(0);
+    if true_len != false_len
+        || true_tokens.iter().any(|t| {
+            crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None)
+                .map(|s| s.chars().count())
+                .unwrap_or(0)
+                != true_len
+        })
+        || false_tokens.iter().any(|t| {
+            crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None)
+                .map(|s| s.chars().count())
+                .unwrap_or(0)
+                != false_len
+        })
+    {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: dfdl:textBooleanTrueRep and dfdl:textBooleanFalseRep must have the same length".into(),
+        }
+        .into());
     }
     Ok(())
 }
@@ -2206,6 +2276,18 @@ fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if props.text_boolean_true_rep_defined {
+        base.text_boolean_true_rep_defined = true;
+    }
+    if props.text_boolean_false_rep_defined {
+        base.text_boolean_false_rep_defined = true;
+    }
+    if props.text_boolean_pad_character.is_some() {
+        base.text_boolean_pad_character = props
+            .text_boolean_pad_character
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
     if props.binary_boolean_true_rep_defined {
         base.binary_boolean_true_rep_defined = true;
         base.binary_boolean_true_rep = props.binary_boolean_true_rep;
@@ -2453,6 +2535,15 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.text_boolean_false_rep.is_some() {
         out.text_boolean_false_rep = overlay.text_boolean_false_rep;
+    }
+    if overlay.text_boolean_true_rep_defined {
+        out.text_boolean_true_rep_defined = true;
+    }
+    if overlay.text_boolean_false_rep_defined {
+        out.text_boolean_false_rep_defined = true;
+    }
+    if overlay.text_boolean_pad_character.is_some() {
+        out.text_boolean_pad_character = overlay.text_boolean_pad_character;
     }
     if overlay.binary_boolean_true_rep_defined {
         out.binary_boolean_true_rep_defined = true;
