@@ -13,6 +13,8 @@ const DFDL_NS: &str = "http://www.ogf.org/dfdl/";
 #[derive(Debug, Clone, Default)]
 pub struct ParseOptions {
     pub base_dir: Option<String>,
+    /// File name for error messages (e.g. TDML external `model="foo.dfdl.xsd"`).
+    pub schema_label: Option<String>,
 }
 
 /// Parse an XSD document with DFDL annotations into a [`SchemaDocument`].
@@ -26,11 +28,27 @@ pub fn parse_schema_with_options(input: &str, options: &ParseOptions) -> Result<
     if let Some(base) = &options.base_dir {
         resolver = resolver.with_base_dir(base.clone());
     }
-    parse_schema_with_resolver(input, resolver)
+    parse_schema_with_resolver_and_label(input, resolver, options.schema_label.as_deref())
 }
 
 /// Parse using a custom [`SchemaResolver`] for `xs:include` / `xs:import`.
 pub fn parse_schema_with_resolver(input: &str, resolver: SchemaResolver) -> Result<SchemaDocument> {
+    parse_schema_with_resolver_and_label(input, resolver, None)
+}
+
+fn parse_schema_with_resolver_and_label(
+    input: &str,
+    resolver: SchemaResolver,
+    schema_label: Option<&str>,
+) -> Result<SchemaDocument> {
+    if input.contains("<!DOCTYPE") {
+        let mut message = "Schema Definition Error. org.xml.sax.SAXParseException: DOCTYPE is disallowed when parsing DFDL schemas".to_string();
+        if let Some(label) = schema_label {
+            message.push(' ');
+            message.push_str(label);
+        }
+        return Err(crate::error::SchemaError::InvalidProperty { message }.into());
+    }
     let mut parser = XsdParser::new(input, resolver);
     parser.parse_document()
 }

@@ -1,7 +1,10 @@
 mod infoset;
 mod parser;
+mod resources;
 mod runner;
 mod validation;
+
+pub use resources::{load_tdml_resource, TdmlResourceContext};
 
 pub use infoset::{compare_infoset, infer_root_element_name, infoset_xml_to_root_value, InfosetNode};
 pub use parser::{effective_round_trip, parse_tdml, ParserTestCase, RoundTrip, TdmlDocument, TdmlSchema, TdmlSuite, UnparserTestCase};

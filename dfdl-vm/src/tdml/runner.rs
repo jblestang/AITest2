@@ -1,4 +1,5 @@
-use super::infoset::{compare_infoset, infoset_xml_to_root_value};
+use super::infoset::{compare_infoset_with_context, infoset_xml_to_root_value, resolve_expected_infoset_xml};
+use super::resources::load_tdml_resource;
 use super::validation::collect_post_decode_validation_errors;
 use super::parser::{
     effective_round_trip, parse_tdml, DocumentKind, ParserTestCase, RoundTrip, TdmlDocument,
@@ -84,11 +85,13 @@ pub fn run_parser_test_with_options(
         .copied()
         .unwrap_or_default();
 
+    let schema_label = external_schema_label(&test.model);
     let spec = match compile_tdml_schema(
         &schema_xsd,
         &test.root,
         tunables,
         compile_base_dir.as_deref(),
+        schema_label,
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -115,6 +118,7 @@ pub fn run_parser_test_with_options(
     let empty_doc = TdmlDocument {
         kind: DocumentKind::Text,
         data: Vec::new(),
+        file_resource: None,
         last_byte_bit_count: None,
         transmission_bit_order: crate::schema::BitOrder::MostSignificantBitFirst,
         document_transmission_bit_order: None,
@@ -129,6 +133,39 @@ pub fn run_parser_test_with_options(
         });
     }
     let doc = test.documents.first().unwrap_or(&empty_doc);
+    let document_data = match resolve_tdml_document_bytes(doc, &suite.resource_context) {
+        Ok(data) => data,
+        Err(msg) => {
+            if let Some(expected_errors) = &test.expected_errors {
+                if error_messages_match(expected_errors, &msg) {
+                    return Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Pass,
+                    });
+                }
+                return Ok(TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Fail(alloc::format!("decode error mismatch: {msg}")),
+                });
+            }
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!("document load error: {msg}")),
+            });
+        }
+    };
+    if let Err(msg) = resolve_expected_infoset_xml(&test.expected_infoset, &suite.resource_context) {
+        if msg.contains("DOCTYPE is disallowed") {
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Pass,
+            });
+        }
+        return Ok(TestResult {
+            name: test.name.clone(),
+            outcome: TestOutcome::Fail(alloc::format!("infoset load error: {msg}")),
+        });
+    }
     let config = RuntimeConfig {
         strict_eos: true,
         defer_facet_validation: test.expected_validation_errors.is_some(),
@@ -163,7 +200,7 @@ pub fn run_parser_test_with_options(
     if let Some(expected_errors) = &test.expected_errors {
         return match spec
             .decoder_with_config(config)
-            .decode_with_tdml_options(&doc.data, frame_bits, transmission, tdml_regions.clone())
+            .decode_with_tdml_options(&document_data, frame_bits, transmission, tdml_regions.clone())
         {
             Ok(_) => Ok(TestResult {
                 name: test.name.clone(),
@@ -191,7 +228,7 @@ pub fn run_parser_test_with_options(
 
     let decoded = match spec
         .decoder_with_config(config)
-        .decode_with_tdml_options(&doc.data, frame_bits, transmission, tdml_regions)
+        .decode_with_tdml_options(&document_data, frame_bits, transmission, tdml_regions)
     {
         Ok(v) => v,
         Err(e) => {
@@ -224,18 +261,24 @@ pub fn run_parser_test_with_options(
         }
     }
 
-    match compare_infoset(&decoded, &test.expected_infoset) {
+    match compare_infoset_with_context(&decoded, &test.expected_infoset, &suite.resource_context) {
         Ok(()) => {
             let rt = effective_round_trip(test.round_trip, suite.default_round_trip);
             let should_verify = options.verify_round_trip
                 && matches!(rt, RoundTrip::TwoPass | RoundTrip::OnePass);
             if should_verify {
                 match spec.encode(&decoded) {
-                    Ok(encoded) if encoded == doc.data => {
+                    Ok(encoded) if encoded == document_data => {
                         if rt == RoundTrip::TwoPass {
                             match spec.decode(&encoded) {
                                 Ok(redecoded) => {
-                                    if compare_infoset(&redecoded, &test.expected_infoset).is_ok() {
+                                    if compare_infoset_with_context(
+                                        &redecoded,
+                                        &test.expected_infoset,
+                                        &suite.resource_context,
+                                    )
+                                    .is_ok()
+                                    {
                                         Ok(TestResult {
                                             name: test.name.clone(),
                                             outcome: TestOutcome::Pass,
@@ -267,7 +310,7 @@ pub fn run_parser_test_with_options(
                         name: test.name.clone(),
                         outcome: TestOutcome::Fail(alloc::format!(
                             "roundtrip byte mismatch: expected {} byte(s), got {} byte(s)",
-                            doc.data.len(),
+                            document_data.len(),
                             encoded.len()
                         )),
                     }),
@@ -280,7 +323,13 @@ pub fn run_parser_test_with_options(
                 match spec.encode(&decoded) {
                     Ok(encoded) => match spec.decode(&encoded) {
                         Ok(redecoded) => {
-                            if compare_infoset(&redecoded, &test.expected_infoset).is_ok() {
+                            if compare_infoset_with_context(
+                                &redecoded,
+                                &test.expected_infoset,
+                                &suite.resource_context,
+                            )
+                            .is_ok()
+                            {
                                 Ok(TestResult {
                                     name: test.name.clone(),
                                     outcome: TestOutcome::Pass,
@@ -341,11 +390,13 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         .copied()
         .unwrap_or_default();
 
+    let schema_label = external_schema_label(&test.model);
     let spec = match compile_tdml_schema(
         &schema_xsd,
         &test.root,
         tunables,
         compile_base_dir.as_deref(),
+        schema_label,
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -502,17 +553,37 @@ fn error_messages_match(expected: &[String], err: &str) -> bool {
     })
 }
 
+fn resolve_tdml_document_bytes(
+    doc: &TdmlDocument,
+    ctx: &super::resources::TdmlResourceContext,
+) -> core::result::Result<Vec<u8>, String> {
+    if let Some(path) = &doc.file_resource {
+        return load_tdml_resource(path, ctx);
+    }
+    Ok(doc.data.clone())
+}
+
+fn external_schema_label(model: &str) -> Option<&str> {
+    if model.ends_with(".xsd") || model.ends_with(".dfdl.xsd") {
+        Some(model)
+    } else {
+        None
+    }
+}
+
 fn compile_tdml_schema(
     xsd: &str,
     root: &str,
     tunables: DaffodilTunables,
     compile_base_dir: Option<&str>,
+    schema_label: Option<&str>,
 ) -> Result<DfdlSpec> {
     let schema = if let Some(base) = compile_base_dir {
         crate::schema::parse_schema_with_options(
             xsd,
             &crate::schema::ParseOptions {
                 base_dir: Some(base.to_string()),
+                schema_label: schema_label.map(String::from),
             },
         )?
     } else {

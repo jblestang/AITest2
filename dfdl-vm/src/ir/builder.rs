@@ -2075,7 +2075,6 @@ fn validate_prefix_length_type(
         .into());
     }
 
-    validate_text_alignment_schema(kind, prefix_props, strings)?;
     if prefix_props.length_kind == LengthKind::Prefixed {
         return Err(SchemaError::InvalidProperty {
             message: "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" not supported"
@@ -2086,41 +2085,29 @@ fn validate_prefix_length_type(
     let encoding = strings
         .get(prefix_props.encoding)
         .unwrap_or("utf-8");
-    let enc_align = crate::length_validate::implicit_text_encoding_alignment_bits_for_kind(
-        kind,
-        encoding,
-    );
-    let mut align_bits = if prefix_props.length_units == LengthUnits::Bits {
-        if prefix_props.alignment_implicit {
-            crate::vm::alignment::implicit_alignment_in_bits(kind, prefix_props, encoding) as u64
-        } else if prefix_props.alignment == 0 {
+    if prefix_props.length_units == LengthUnits::Bits
+        && encoding.eq_ignore_ascii_case("US-ASCII")
+        && prefix_props.representation == Representation::Text
+        && !prefix_props.alignment_implicit
+    {
+        let enc_align = crate::length_validate::implicit_text_encoding_alignment_bits_for_kind(
+            kind,
+            encoding,
+        );
+        let bit_align = if prefix_props.alignment == 0 {
             1
         } else {
             prefix_props.alignment
+        };
+        if enc_align != 0 && bit_align % enc_align != 0 {
+            let type_name = value_kind_type_name(kind);
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: The given alignment ({bit_align} bits) must be a multiple of the encoding specified alignment ({enc_align} bits) for {type_name} when representation='text'. Encoding: {encoding}"
+                ),
+            }
+            .into());
         }
-    } else {
-        let (align, align_units) =
-            crate::vm::alignment::resolved_alignment(kind, prefix_props, encoding);
-        match align_units {
-            LengthUnits::Bits => align,
-            LengthUnits::Bytes | LengthUnits::Characters => align.saturating_mul(8),
-        }
-    };
-    if raw_props.length_units == Some(LengthUnits::Bits)
-        || prefix_props.length_units == LengthUnits::Bits
-    {
-        if !prefix_props.alignment_implicit && prefix_props.alignment == 0 {
-            align_bits = 1;
-        }
-    }
-    if enc_align != 0 && align_bits % enc_align != 0 {
-        let type_name = value_kind_type_name(kind);
-        return Err(SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error: The given alignment ({align_bits} bits) must be a multiple of the encoding specified alignment ({enc_align} bits) for {type_name} when representation='text'. Encoding: {encoding}"
-            ),
-        }
-        .into());
     }
 
     Ok(())

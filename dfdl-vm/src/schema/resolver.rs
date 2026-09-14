@@ -91,8 +91,25 @@ impl SchemaResolver {
                 return Ok((*content).to_string());
             }
         }
+        #[cfg(feature = "std")]
+        {
+            use std::path::Path;
+            for base in &self.base_dirs {
+                let candidates = [
+                    Path::new(base).join(loc),
+                    Path::new(base).join(file_name),
+                ];
+                for path in &candidates {
+                    if let Ok(content) = std::fs::read_to_string(path) {
+                        return Ok(content);
+                    }
+                }
+            }
+        }
         Err(ParseError::InvalidXml {
-            message: alloc::format!("cannot resolve schemaLocation `{loc}`"),
+            message: alloc::format!(
+                "Schema Definition Error: Resource not found at Include Location `{loc}`"
+            ),
         }
         .into())
     }

@@ -1,3 +1,4 @@
+use super::resources::{load_tdml_resource, TdmlResourceContext};
 use crate::ir::{IrNode, IrProgram, ValueKind};
 use crate::value::DfdlValue;
 use crate::xml_util::{attrs_to_map, local_name_str, owned_local_name, XmlReader};
@@ -20,9 +21,26 @@ pub struct InfosetNode {
 
 /// Compare decoded value against expected TDML infoset XML (best-effort).
 pub fn compare_infoset(actual: &DfdlValue, expected_xml: &str) -> Result<(), String> {
-    let expected = parse_expected_infoset(expected_xml)?;
+    compare_infoset_with_context(actual, expected_xml, &TdmlResourceContext::default())
+}
+
+/// Compare decoded value against expected TDML infoset, resolving `type="file"` references.
+pub fn compare_infoset_with_context(
+    actual: &DfdlValue,
+    expected_xml: &str,
+    ctx: &TdmlResourceContext,
+) -> Result<(), String> {
+    let expected = parse_expected_infoset_with_context(expected_xml, ctx)?;
     let actual_nodes = value_to_infoset(actual);
     compare_nodes(&expected, &actual_nodes)
+}
+
+/// Resolve expected infoset XML, including `dfdlInfoset type="file"` (validates DOCTYPE policy).
+pub fn resolve_expected_infoset_xml(
+    expected_xml: &str,
+    ctx: &TdmlResourceContext,
+) -> Result<String, String> {
+    resolve_infoset_inner_xml(expected_xml, ctx)
 }
 
 /// Build a root-wrapped [`DfdlValue`] from TDML infoset XML for unparser tests.
@@ -243,8 +261,55 @@ pub fn infer_root_element_name(expected_xml: &str) -> Option<String> {
 }
 
 fn parse_expected_infoset(xml: &str) -> Result<Vec<InfosetNode>, String> {
-    let inner = extract_dfdl_infoset_xml(xml);
+    parse_expected_infoset_with_context(xml, &TdmlResourceContext::default())
+}
+
+fn parse_expected_infoset_with_context(
+    xml: &str,
+    ctx: &TdmlResourceContext,
+) -> Result<Vec<InfosetNode>, String> {
+    let inner = resolve_infoset_inner_xml(xml, ctx)?;
     parse_infoset_elements(&inner)
+}
+
+fn reject_doctype_in_resource(text: &str, resource_name: &str) -> Result<(), String> {
+    if text.contains("<!DOCTYPE") || text.contains("<!doctype") {
+        return Err(alloc::format!(
+            "schema error: Schema Definition Error. DOCTYPE is disallowed when parsing infoset `{resource_name}`"
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_infoset_inner_xml(xml: &str, ctx: &TdmlResourceContext) -> Result<String, String> {
+    let xml = xml.trim();
+    if xml.is_empty() {
+        return Ok(String::new());
+    }
+    let wrapped = alloc::format!("<wrapper>{xml}</wrapper>");
+    let mut reader = XmlReader::new(&wrapped);
+    reader.expect_start("wrapper").map_err(|e| e.to_string())?;
+    reader.skip_insignificant_ws().map_err(|e| e.to_string())?;
+    if reader.peek_start_local().ok().flatten().as_deref() != Some("dfdlInfoset") {
+        return Ok(extract_dfdl_infoset_xml(xml));
+    }
+    let XmlEvent::StartElement { attributes, .. } =
+        reader.next_event().map_err(|e| e.to_string())?
+    else {
+        return Err("expected dfdlInfoset".into());
+    };
+    let attrs = attrs_to_map(&attributes);
+    let path = reader.read_inner_xml().map_err(|e| e.to_string())?;
+    if attrs.get("type").map(String::as_str) == Some("file") {
+        let path = path.trim();
+        let bytes = load_tdml_resource(path, ctx)?;
+        let text = core::str::from_utf8(&bytes)
+            .map_err(|_| alloc::format!("infoset file `{path}` is not UTF-8"))?
+            .to_string();
+        reject_doctype_in_resource(&text, path)?;
+        return Ok(extract_dfdl_infoset_xml(&text));
+    }
+    Ok(path)
 }
 
 fn extract_dfdl_infoset_xml(xml: &str) -> String {

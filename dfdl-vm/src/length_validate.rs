@@ -83,7 +83,7 @@ pub fn validate_text_alignment_schema(
     if props.alignment_implicit {
         return Ok(());
     }
-    if props.representation != Representation::Text && kind != ValueKind::String {
+    if props.representation != Representation::Text {
         return Ok(());
     }
     let Some(type_name) = text_prim_type_name(kind) else {

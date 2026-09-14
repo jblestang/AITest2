@@ -27,6 +27,8 @@ pub struct TdmlSuite {
     pub tests: Vec<ParserTestCase>,
     pub unparser_tests: Vec<UnparserTestCase>,
     pub default_round_trip: RoundTrip,
+    /// Set when loading a suite from disk (resolves `documentPart type="file"`).
+    pub resource_context: super::resources::TdmlResourceContext,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +70,8 @@ pub struct UnparserTestCase {
 pub struct TdmlDocument {
     pub kind: DocumentKind,
     pub data: Vec<u8>,
+    /// When set, decode loads document bytes from this TDML resource path at run time.
+    pub file_resource: Option<String>,
     /// Significant bits in the last byte when the document ends mid-byte.
     pub last_byte_bit_count: Option<u8>,
     /// How bits are packed into `data` for `type="bits"` documents.
@@ -150,6 +154,7 @@ pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
         tests,
         unparser_tests,
         default_round_trip,
+        resource_context: super::resources::TdmlResourceContext::default(),
     })
 }
 
@@ -439,6 +444,7 @@ fn parse_document(
         return Ok(TdmlDocument {
             kind: DocumentKind::Text,
             data: Vec::new(),
+            file_resource: None,
             last_byte_bit_count: None,
             transmission_bit_order: BitOrder::MostSignificantBitFirst,
             document_transmission_bit_order,
@@ -459,6 +465,7 @@ fn parse_document(
         let mut saw_rtl_byte_order = false;
         let mut mixed_bits_text_document = false;
         let mut part_bit_order_regions: Vec<(BitOrder, usize)> = Vec::new();
+        let mut file_resource: Option<String> = None;
 
         let flush_pending_bits =
             |pending: &mut Vec<u8>, data: &mut Vec<u8>, last: &mut Option<u8>| {
@@ -473,6 +480,11 @@ fn parse_document(
 
         while reader.peek_start_local()? == Some("documentPart".to_string()) {
             let part = parse_document_part(reader, default_bit_order, document_bit_order_from_attr)?;
+            if let Some(path) = part.file_resource {
+                file_resource = Some(path);
+                reader.skip_insignificant_ws()?;
+                continue;
+            }
             part_transitions.push((part.bit_order, part.length_in_bits, part.explicit_bit_order));
             part_bit_order_regions.push((
                 document_bit_order_to_transmission(part.bit_order),
@@ -558,6 +570,7 @@ fn parse_document(
             return Ok(TdmlDocument {
                 kind: DocumentKind::Text,
                 data: Vec::new(),
+                file_resource: None,
                 last_byte_bit_count: None,
                 transmission_bit_order: BitOrder::MostSignificantBitFirst,
                 document_transmission_bit_order,
@@ -570,6 +583,7 @@ fn parse_document(
             return Ok(TdmlDocument {
                 kind: DocumentKind::Text,
                 data: Vec::new(),
+                file_resource: None,
                 last_byte_bit_count: None,
                 transmission_bit_order: BitOrder::MostSignificantBitFirst,
                 document_transmission_bit_order,
@@ -581,6 +595,7 @@ fn parse_document(
         return Ok(TdmlDocument {
             kind,
             data,
+            file_resource,
             last_byte_bit_count,
             transmission_bit_order: packed_document_transmission_bit_order(use_lsb_assembly),
             document_transmission_bit_order,
@@ -594,6 +609,7 @@ fn parse_document(
     Ok(TdmlDocument {
         kind: DocumentKind::Text,
         data: text.into_bytes(),
+        file_resource: None,
         last_byte_bit_count: None,
         transmission_bit_order: BitOrder::MostSignificantBitFirst,
         document_transmission_bit_order,
@@ -606,6 +622,7 @@ fn parse_document(
 struct ParsedDocumentPart {
     kind: DocumentKind,
     data: Vec<u8>,
+    file_resource: Option<String>,
     last_byte_bit_count: Option<u8>,
     /// Bit chunks (up to 8 digits each) when `kind == Bits`.
     bit_chunks: Option<Vec<String>>,
@@ -629,7 +646,30 @@ fn parse_document_part(
         .into());
     };
     let attrs = attrs_to_map(&attributes);
-    let kind = match attrs.get("type").map(String::as_str) {
+    let part_type = attrs.get("type").map(String::as_str);
+    if part_type == Some("file") {
+        if document_bit_order_from_attr {
+            return Err(ParseError::InvalidXml {
+                message: "bitOrder may not be specified on document parts of type 'file'".into(),
+            }
+            .into());
+        }
+        let text = reader.read_text_until_end("documentPart")?;
+        let path = text.trim().to_string();
+        return Ok(ParsedDocumentPart {
+            kind: DocumentKind::Text,
+            data: Vec::new(),
+            file_resource: Some(path),
+            last_byte_bit_count: None,
+            bit_chunks: None,
+            data_bit_chunks: None,
+            bit_order: default_bit_order,
+            explicit_bit_order: false,
+            byte_order: DocumentByteOrder::Ltr,
+            length_in_bits: 0,
+        });
+    }
+    let kind = match part_type {
         Some("hex") | Some("byte") => DocumentKind::Hex,
         Some("bits") => DocumentKind::Bits,
         _ => DocumentKind::Text,
@@ -709,6 +749,7 @@ fn parse_document_part(
     Ok(ParsedDocumentPart {
         kind,
         data,
+        file_resource: None,
         last_byte_bit_count,
         bit_chunks,
         data_bit_chunks,

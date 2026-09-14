@@ -3,7 +3,8 @@
 //! - `daffodil_section12_length_kind_regression_gate` — CI gate (305 cases, must pass)
 //! - `daffodil_full_suite_report` — baseline report for all sections (ignored, slow)
 use dfdl_vm::tdml::{
-    parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlSchema, TdmlSuite,
+    parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
+    TdmlSuite,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -21,6 +22,8 @@ fn enrich_external_tdml_models(suite: &mut TdmlSuite, tdml_path: &Path) {
     for t in &suite.unparser_tests {
         models.insert(t.model.clone());
     }
+    suite.resource_context =
+        TdmlResourceContext::from_tdml_path(&tdml_path.to_string_lossy());
     for model in models {
         if suite.schemas.contains_key(&model) {
             continue;
@@ -79,6 +82,22 @@ fn section_key(path: &Path) -> String {
 }
 
 const SECTION13_SKIP_FILES: &[&str] = &[];
+
+/// TDML files excluded from section00 gate (unparser/SAX/tunables not yet at parity).
+const SECTION00_GATE_SKIP_FILES: &[&str] = &[
+    "general/testUnparserGeneral.tdml",
+    "general/testUnparserFileBuffering.tdml",
+    "general/tunables.tdml",
+    "general/parseUnparsePolicy.tdml",
+    "general/testElementFormDefault.tdml",
+    // Not yet at parity (error text, infoset walker, unparser OVC, etc.)
+    "general/general.tdml",
+    "general/infosetWalker.tdml",
+    "general/dfdlFormatPrefixedAttributesSDE.tdml",
+    "general/testSchemaWithoutDFDLNamespace.tdml",
+    "general/testTextBidi.tdml",
+    "general/testUnparserBitOrderOVC.tdml",
+];
 
 fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
     let Ok(tdml) = fs::read_to_string(path) else {
@@ -163,6 +182,44 @@ fn daffodil_full_suite_report() {
         "TOTAL", total_pass, total_fail, total_skip, total_parse_fail
     );
     eprintln!("TDML files: {}", files.len());
+}
+
+/// CI gate: Section 00 general (supported TDML subset).
+#[test]
+fn daffodil_section00_regression_gate() {
+    let root = assert_tdml_root().join("section00");
+    let mut files = Vec::new();
+    collect_tdml_files(&root, &mut files);
+    let mut stats = SectionStats::default();
+    for path in files {
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if SECTION00_GATE_SKIP_FILES
+            .iter()
+            .any(|skip| rel == *skip)
+        {
+            continue;
+        }
+        run_tdml_file(&path, &mut stats);
+    }
+    eprintln!(
+        "section00: pass={} fail={} skip={} parse_fail={}",
+        stats.pass, stats.fail, stats.skip, stats.parse_fail
+    );
+    assert_eq!(stats.parse_fail, 0, "section00 TDML parse errors");
+    assert_eq!(
+        stats.fail, 0,
+        "section00 failures: pass={} fail={} skip={}",
+        stats.pass, stats.fail, stats.skip
+    );
+    assert!(
+        stats.pass >= 12,
+        "section00: expected at least 12 passing cases, got pass={}",
+        stats.pass
+    );
 }
 
 #[test]

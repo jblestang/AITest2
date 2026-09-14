@@ -15,6 +15,7 @@ fn tdml_e3_one_has_leading_skip_in_ir() {
         &def.xsd,
         &ParseOptions {
             base_dir: def.compile_base_dir.clone(),
+            schema_label: None,
         },
     )
     .expect("parse");
@@ -42,6 +43,7 @@ fn tdml_hb_decode_via_spec() {
         &def.xsd,
         &ParseOptions {
             base_dir: def.compile_base_dir.clone(),
+            schema_label: None,
         },
     )
     .expect("parse");
