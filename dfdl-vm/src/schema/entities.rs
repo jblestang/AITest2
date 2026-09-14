@@ -1885,6 +1885,17 @@ mod tests {
     }
 
     #[test]
+    fn dfdl708_orig_pattern_allows_comma_in_local_part() {
+        let pat = r"[.A-Za-z0-9!#$%&'*+-/=?^_`\{\|\}~]+";
+        let doc = b"john,doe";
+        assert_eq!(
+            match_length_pattern(doc, pat),
+            Some(doc.len()),
+            "DFDL-708 orig pattern should match comma via +-/ range"
+        );
+    }
+
+    #[test]
     fn encode_newline_delimiters() {
         assert_eq!(expand_entities("%NL;"), vec![10u8]);
         assert_eq!(encode_delimiter("\n"), vec![10u8]);

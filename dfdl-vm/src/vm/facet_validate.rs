@@ -102,17 +102,9 @@ fn validate_string_facets(text: &str, props: &IrProps, strings: &StringPool) -> 
 
 fn pattern_group_matches(text: &str, or_pattern: &str) -> bool {
     let bytes = text.as_bytes();
-    for sub in or_pattern.split('|') {
-        if sub.is_empty() {
-            continue;
-        }
-        if let Some(len) = match_length_pattern(bytes, sub) {
-            if len == bytes.len() {
-                return true;
-            }
-        }
-    }
-    false
+    // Match the full restriction-level pattern (OR branches are already `|` in the
+    // regex). Do not split on `|` — that breaks character classes like `\|`.
+    match_length_pattern(bytes, or_pattern).is_some_and(|len| len == bytes.len())
 }
 
 fn validate_digit_facets(

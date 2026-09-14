@@ -283,14 +283,14 @@ fn daffodil_section05_regression_gate() {
     );
     // Baseline (2026-03): TDML part bitOrder regions for decode; Page70 mixed bits+text documentBits.
     assert!(
-        stats.pass >= 533,
-        "section05: expected at least 533 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 544,
+        "section05: expected at least 544 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 278,
+        stats.fail <= 267,
         "section05 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,

@@ -1430,6 +1430,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.calendar_pattern_kind.is_some() {
         base.calendar_pattern_kind = overlay.calendar_pattern_kind;
     }
+    if overlay.calendar_time_zone.is_some() {
+        base.calendar_time_zone = overlay.calendar_time_zone;
+    }
     if overlay.text_number_pattern.is_some() {
         base.text_number_pattern = overlay.text_number_pattern;
     }

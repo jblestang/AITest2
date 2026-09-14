@@ -30,3 +30,8 @@ fn time_bin_bcd_smoke() {
 fn time_bin_bcd2_fraction() {
     assert!(matches!(run("timeBinBCD2"), TestOutcome::Pass));
 }
+
+#[test]
+fn date_time_bin_packed3_timezone() {
+    assert!(matches!(run("dateTimeBinPacked3"), TestOutcome::Pass));
+}

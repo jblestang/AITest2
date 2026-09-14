@@ -244,6 +244,43 @@ fn is_valid_positive_integer_literal(raw: &str) -> bool {
     is_valid_non_negative_integer_literal(raw) && raw.trim().trim_start_matches('+') != "0"
 }
 
+fn validate_int_range_facet(name: &str, value: i64) -> Result<(), SchemaError> {
+    if value < i32::MIN as i64 || value > i32::MAX as i64 {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "{name} facet value ({value}) was found to be outside of Int range."
+            ),
+        });
+    }
+    Ok(())
+}
+
+pub fn validate_value_space_facets(
+    schema: &SchemaDocument,
+    base: &SimpleBase,
+) -> Result<(), SchemaError> {
+    let Some(builtin) = schema.builtin_for_simple_base(base) else {
+        return Ok(());
+    };
+    if builtin != BuiltinType::Int {
+        return Ok(());
+    }
+    let eff = schema.effective_facets(base);
+    if let Some(v) = eff.min_inclusive {
+        validate_int_range_facet("minInclusive", v)?;
+    }
+    if let Some(v) = eff.max_inclusive {
+        validate_int_range_facet("maxInclusive", v)?;
+    }
+    if let Some(v) = eff.min_exclusive {
+        validate_int_range_facet("minExclusive", v)?;
+    }
+    if let Some(v) = eff.max_exclusive {
+        validate_int_range_facet("maxExclusive", v)?;
+    }
+    Ok(())
+}
+
 pub fn validate_length_facets_for_type(
     schema: &SchemaDocument,
     base: &SimpleBase,
@@ -252,6 +289,7 @@ pub fn validate_length_facets_for_type(
 ) -> Result<(), SchemaError> {
     let eff = schema.effective_facets(base);
     validate_facet_literals(&eff)?;
+    validate_value_space_facets(schema, base)?;
 
     let builtin = schema.builtin_for_simple_base(base);
     let prim_name = builtin

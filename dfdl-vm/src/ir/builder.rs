@@ -2160,8 +2160,14 @@ fn apply_restriction_facets(
         props.facet_assert_message = Some(strings.intern(msg.clone()));
     }
     if let SimpleBase::Restriction { base, .. } = base {
-        if matches!(base, crate::schema::RestrictionBase::Named(_)) {
-            props.facet_assert_daffodil_prefix = true;
+        match base {
+            crate::schema::RestrictionBase::Named(_) => {
+                props.facet_assert_daffodil_prefix = true;
+            }
+            crate::schema::RestrictionBase::Builtin(b) if *b != crate::schema::BuiltinType::String => {
+                props.facet_assert_daffodil_prefix = true;
+            }
+            _ => {}
         }
     }
 }
