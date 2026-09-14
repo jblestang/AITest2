@@ -59,3 +59,13 @@ fn imp_alignment_integer3() {
 fn imp_alignment_integer2() {
     run("impAlignmentInteger2");
 }
+
+#[test]
+fn alignment03() {
+    run("alignment03");
+}
+
+#[test]
+fn explicit_alignment_no_skips03() {
+    run("explicitAlignmentNoSkips03");
+}

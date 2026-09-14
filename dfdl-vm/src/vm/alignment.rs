@@ -450,6 +450,107 @@ mod tests {
             .expect("delim");
         assert_eq!(bytes, [0xF4], "got {bytes:02x?}");
     }
+
+    #[test]
+    fn tdml_alignment03_e4_one_props_and_manual() {
+        use crate::length_validate::DaffodilTunables;
+        use crate::tdml::parse_tdml;
+        use crate::value::DfdlValue;
+        use crate::vm::runtime::{consume_element_framing, read_simple, Cursor};
+        const TDML: &str = include_str!(
+            "../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/Aligned_Data.tdml"
+        );
+        let suite = parse_tdml(TDML).expect("tdml");
+        let test = suite.tests.iter().find(|t| t.name == "alignment03").expect("t");
+        let def = suite.schemas.get("alignmentSchema").expect("schema");
+        let schema = crate::schema::parse_schema_with_options(
+            &def.xsd,
+            &crate::schema::ParseOptions {
+                base_dir: def.compile_base_dir.clone(),
+            },
+        )
+        .expect("parse");
+        let program = compile_named(&schema, Some("e4")).expect("ir");
+        let root = program.node(program.root).expect("root");
+        let IrNode::Element { child: Some(seq_id), .. } = root else {
+            panic!("root");
+        };
+        let seq = program.node(*seq_id).expect("seq");
+        let IrNode::Sequence { children, .. } = seq else {
+            panic!("seq");
+        };
+        let child = program.node(children[0]).expect("one");
+        let IrNode::Element { props, kind, .. } = child else {
+            panic!("one");
+        };
+        assert_eq!(props.alignment, 8, "element pre-align");
+        assert_eq!(props.framing_alignment, 4, "type post-align");
+        assert_eq!(props.leading_skip, 4);
+        let doc = &test.documents[0];
+        let mut cursor = Cursor::with_frame_bits(
+            &doc.data,
+            doc.significant_bit_length().expect("bits"),
+        );
+        let enc = program.strings.get(props.encoding).unwrap();
+        let tunables = DaffodilTunables::default();
+        consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
+        assert_eq!(cursor.absolute_bit_index(), 8);
+        let v = read_simple(
+            &mut cursor,
+            *kind,
+            props,
+            &program.strings,
+            false,
+            &[],
+            None,
+            &tunables,
+            true,
+            None,
+        )
+        .expect("read");
+        assert!(matches!(v, DfdlValue::UnsignedByte(1)));
+        assert_eq!(cursor.absolute_bit_index(), 12, "post framing align to 4-bit boundary");
+    }
+
+    #[test]
+    fn tdml_explicit_no_skips03_e7_props() {
+        use crate::tdml::parse_tdml;
+        const TDML: &str = include_str!(
+            "../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/Aligned_Data.tdml"
+        );
+        let suite = parse_tdml(TDML).expect("tdml");
+        let def = suite.schemas.get("alignmentSchema").expect("schema");
+        let schema = crate::schema::parse_schema_with_options(
+            &def.xsd,
+            &crate::schema::ParseOptions {
+                base_dir: def.compile_base_dir.clone(),
+            },
+        )
+        .expect("parse");
+        let program = compile_named(&schema, Some("e7")).expect("ir");
+        let root = program.node(program.root).expect("root");
+        let IrNode::Element { child: Some(seq_id), .. } = root else {
+            panic!("root");
+        };
+        let seq = program.node(*seq_id).expect("seq");
+        let IrNode::Sequence { children, .. } = seq else {
+            panic!("seq");
+        };
+        let names = ["one", "two", "three"];
+        let expected = [(6u64, 1u64), (3, 2), (12, 1)];
+        for (idx, &id) in children.iter().enumerate() {
+            let IrNode::Element { name, props, .. } = program.node(id).expect("el") else {
+                panic!("el");
+            };
+            assert_eq!(program.strings.get(*name).ok(), Some(names[idx]));
+            assert_eq!(props.length, Some(expected[idx].0));
+            assert_eq!(props.alignment, expected[idx].1);
+            assert_eq!(props.framing_alignment, 4);
+            assert_eq!(props.framing_alignment_units, LengthUnits::Bits);
+            assert_eq!(props.length_units, LengthUnits::Bits);
+            assert_eq!(props.alignment_units, LengthUnits::Bytes);
+        }
+    }
 }
 
 pub fn consume_trailing_skip(

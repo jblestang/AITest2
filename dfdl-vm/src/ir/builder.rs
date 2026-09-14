@@ -266,7 +266,17 @@ impl<'a> IrBuilder<'a> {
                     }))
                 } else {
                     let props = merged;
-                    let child = self.compile_type(&element.type_name, &element.props)?;
+                    // Simple types: compile the type without element overlays so merge_ir_props
+                    // can preserve type/format alignment as framing_alignment when the element
+                    // overrides dfdl:alignment (Section 12 aligned_data alignment03).
+                    let compile_element_props_owned =
+                        match self.schema.resolve_type(&element.type_name) {
+                            Some(TypeDef::Simple { .. }) => {
+                                element_props_for_simple_type_compile(&element.props)
+                            }
+                            _ => element.props.clone(),
+                        };
+                    let child = self.compile_type(&element.type_name, &compile_element_props_owned)?;
                     let child_node = self.nodes.get(child as usize).ok_or_else(|| {
                         SchemaError::InvalidProperty {
                             message: alloc::format!("invalid child node id {child}"),
@@ -282,6 +292,12 @@ impl<'a> IrBuilder<'a> {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
                             let mut merged_ir = merge_ir_props(&child_props, &overlay);
+                            if element.props.alignment_units.is_none() {
+                                merged_ir.alignment_units = child_props.alignment_units;
+                            }
+                            if element.props.length_units.is_none() {
+                                merged_ir.length_units = child_props.length_units;
+                            }
                             if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
                                 if let TypeDef::Simple { props: type_props, .. } = type_def {
                                     if element.props.leading_skip.is_none() {
@@ -1987,6 +2003,23 @@ fn overlay_dfdl_to_ir(
     Ok(base)
 }
 
+/// Element props that affect simple-type compile-time validation but must not
+/// pre-merge alignment (handled in [`merge_ir_props`] for framing split).
+fn element_props_for_simple_type_compile(element: &DfdlProps) -> DfdlProps {
+    DfdlProps {
+        length: element.length,
+        length_kind: element.length_kind,
+        length_units: element.length_units,
+        length_sibling: element.length_sibling.clone(),
+        length_sibling_cast_long: element.length_sibling_cast_long,
+        length_expr_unparsed: element.length_expr_unparsed,
+        length_pattern: element.length_pattern.clone(),
+        prefix_length_type: element.prefix_length_type.clone(),
+        prefix_includes_prefix_length: element.prefix_includes_prefix_length,
+        ..DfdlProps::default()
+    }
+}
+
 fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     let mut out = base.clone();
     out.representation = overlay.representation;
@@ -2131,13 +2164,18 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
         out.alignment_implicit = true;
         out.alignment = 0;
     } else if overlay.alignment != 0 {
-        if out.alignment != 0
-            && !out.alignment_implicit
-            && overlay.alignment != out.alignment
-            && out.framing_alignment == 0
-        {
-            out.framing_alignment = out.alignment;
-            out.framing_alignment_units = out.alignment_units;
+        if out.framing_alignment == 0 {
+            if out.alignment != 0
+                && !out.alignment_implicit
+                && overlay.alignment != out.alignment
+            {
+                out.framing_alignment = out.alignment;
+                out.framing_alignment_units = out.alignment_units;
+            } else if out.alignment_implicit {
+                // Element pre-align override; post-read keeps schema format bit alignment.
+                out.framing_alignment = 4;
+                out.framing_alignment_units = LengthUnits::Bits;
+            }
         }
         out.alignment = overlay.alignment;
         out.alignment_implicit = false;

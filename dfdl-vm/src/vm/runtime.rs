@@ -5105,7 +5105,6 @@ pub(crate) fn read_simple(
     }
     if !use_text
         && props.representation == Representation::Binary
-        && props.alignment_units == LengthUnits::Bits
         && props.length_units == LengthUnits::Bits
         && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
         && !matches!(

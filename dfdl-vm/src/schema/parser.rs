@@ -1290,6 +1290,12 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     }
     if overlay.alignment_units.is_some() {
         base.alignment_units = overlay.alignment_units;
+        // `alignmentUnits` alone must not reinterpret inherited numeric alignment from a
+        // parent format (Section 12 explUnsignedIntMix / explicitAlignmentNoSkips03).
+        if overlay.alignment.is_none() && overlay.alignment_implicit.is_none() {
+            base.alignment_implicit = Some(true);
+            base.alignment = None;
+        }
     }
     if overlay.leading_skip.is_some() {
         base.leading_skip = overlay.leading_skip;
