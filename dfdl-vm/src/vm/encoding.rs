@@ -692,8 +692,9 @@ fn count_utf16_code_units(bytes: &[u8], label: &str) -> Result<usize, VmError> {
 fn decode_utf32(bytes: &[u8], le: bool) -> Result<String, VmError> {
     let label = if le { "UTF-32LE" } else { "UTF-32BE" };
     let usable = bytes.len() - (bytes.len() % 4);
+    let trailing = &bytes[usable..];
     let bytes = &bytes[..usable];
-    let mut out = String::with_capacity(bytes.len() / 4);
+    let mut out = String::with_capacity(bytes.len() / 4 + if trailing.is_empty() { 0 } else { 1 });
     for chunk in bytes.chunks_exact(4) {
         let unit = if le {
             (chunk[0] as u32)
@@ -710,6 +711,9 @@ fn decode_utf32(bytes: &[u8], le: bool) -> Result<String, VmError> {
             message: alloc::format!("invalid {label} code unit `0x{unit:08x}`"),
         })?;
         out.push(ch);
+    }
+    if !trailing.is_empty() {
+        out.push('\u{FFFD}');
     }
     Ok(out)
 }

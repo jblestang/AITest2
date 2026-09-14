@@ -187,6 +187,23 @@ impl<'a> Cursor<'a> {
         Ok(())
     }
 
+    pub fn rewind_stream_bits(&mut self, n: usize) -> Result<(), crate::error::VmError> {
+        use crate::error::VmError;
+        if n == 0 {
+            return Ok(());
+        }
+        let abs = self.absolute_bit_index();
+        if n > abs {
+            return Err(VmError::InvalidValue {
+                message: "cannot rewind past start of stream".into(),
+            });
+        }
+        let new_abs = abs - n;
+        self.pos = new_abs / 8;
+        self.bit_count = (new_abs % 8) as u8;
+        Ok(())
+    }
+
     pub fn skip_to_bit_index(
         &mut self,
         target: usize,
@@ -754,7 +771,11 @@ pub(crate) fn read_binary_scalar(
             return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
         }
         if len >= 8 && props.byte_order == ByteOrder::LittleEndian {
-            let bytes = cursor.read_hex_binary_bits(len, props.bit_order)?;
+            let bytes = if cursor.bit_count != 0 {
+                cursor.read_stream_bits_as_bytes(len, props.bit_order)?
+            } else {
+                cursor.read_hex_binary_bits(len, props.bit_order)?
+            };
             return decode_binary_scalar(kind, &bytes, props, strings, Some(len), tunables);
         }
         let raw = cursor.read_stream_bits(len, props.bit_order)?;
@@ -803,6 +824,14 @@ pub(crate) fn read_binary_scalar(
             if kind == ValueKind::String {
                 let bytes = cursor.read_stream_bits_as_bytes(bit_len, props.bit_order)?;
                 return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
+            }
+            if bit_len >= 8 && props.byte_order == ByteOrder::LittleEndian {
+                let bytes = if cursor.bit_count != 0 {
+                    cursor.read_stream_bits_as_bytes(bit_len, props.bit_order)?
+                } else {
+                    cursor.read_hex_binary_bits(bit_len, props.bit_order)?
+                };
+                return decode_binary_scalar(kind, &bytes, props, strings, Some(bit_len), tunables);
             }
             let raw = cursor.read_stream_bits(bit_len, props.bit_order)?;
             let raw = normalize_bit_field_raw(raw, bit_len, props.byte_order, props.bit_order);
@@ -853,7 +882,11 @@ pub(crate) fn read_binary_scalar(
                 return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
             }
             if bit_len >= 8 && props.byte_order == ByteOrder::LittleEndian {
-                let bytes = cursor.read_hex_binary_bits(bit_len, props.bit_order)?;
+                let bytes = if cursor.bit_count != 0 {
+                    cursor.read_stream_bits_as_bytes(bit_len, props.bit_order)?
+                } else {
+                    cursor.read_hex_binary_bits(bit_len, props.bit_order)?
+                };
                 return decode_binary_scalar(kind, &bytes, props, strings, Some(bit_len), tunables);
             }
             let raw = cursor.read_stream_bits(bit_len, props.bit_order)?;
@@ -964,6 +997,16 @@ fn stream_raw_to_msbf_bytes(raw: u64, bit_width: usize) -> Vec<u8> {
     bytes
 }
 
+fn reverse_field_bits(v: u64, bit_width: usize) -> u64 {
+    let mut r = 0u64;
+    for i in 0..bit_width {
+        if (v >> i) & 1 != 0 {
+            r |= 1 << (bit_width - 1 - i);
+        }
+    }
+    r
+}
+
 /// Daffodil `InputSourceDataInputStream.getUnsignedLong` / `fillByteArray` fragment handling.
 fn decode_packed_bit_field_u64(
     bytes: &[u8],
@@ -974,12 +1017,12 @@ fn decode_packed_bit_field_u64(
     if bit_width == 0 {
         return 0;
     }
-    let fragment = bit_width % 8;
-    if fragment == 0 {
-        return decode_unsigned_binary_bytes(bytes, byte_order == ByteOrder::LittleEndian)
-            & bit_mask(bit_width);
-    }
     let mut buf = bytes.to_vec();
+    // `read_hex_binary_bits` leaves bytes in fillByteArray order (BE); LE fields reverse when > 8 bits.
+    if bit_width > 8 && byte_order == ByteOrder::LittleEndian {
+        buf.reverse();
+    }
+    let fragment = bit_width % 8;
     if fragment != 0 {
         if byte_order == ByteOrder::LittleEndian && bit_order == BitOrder::MostSignificantBitFirst {
             if let Some(first) = buf.first_mut() {
@@ -989,17 +1032,17 @@ fn decode_packed_bit_field_u64(
             if let Some(last) = buf.last_mut() {
                 *last <<= 8 - fragment;
             }
-        } else if byte_order == ByteOrder::BigEndian && bit_order == BitOrder::MostSignificantBitFirst {
-            let mut v = 0u64;
-            for b in &buf {
-                v = (v << 8) | u64::from(*b);
-            }
-            return (v >> (8 - fragment)) & bit_mask(bit_width);
         }
     }
     let mut v = 0u64;
     for b in &buf {
         v = (v << 8) | u64::from(*b);
+    }
+    if fragment != 0
+        && byte_order == ByteOrder::BigEndian
+        && bit_order == BitOrder::MostSignificantBitFirst
+    {
+        v >>= 8 - fragment;
     }
     v & bit_mask(bit_width)
 }
@@ -3846,8 +3889,11 @@ fn normalize_bit_field_raw(
     if bit_width == 0 {
         return 0;
     }
-    // Sub-byte bit fields are already in stream bit order; byteOrder applies to multi-byte values.
+    // LSBF 1–2 bit fields pack LSB-first in the stream (reverse to MSBF numeric order).
     if bit_width < 8 {
+        if bit_order == BitOrder::LeastSignificantBitFirst && bit_width <= 2 {
+            return reverse_field_bits(raw, bit_width) & bit_mask(bit_width);
+        }
         return raw & bit_mask(bit_width);
     }
     // `read_stream_bits` with LSBF already places stream bit i at u64 bit i (LE numeric layout).
@@ -6270,12 +6316,11 @@ pub(crate) fn read_length_span(
                 ) {
                     e
                 } else {
-                    insufficient_data_bits_error(
-                        len.saturating_mul(8),
-                        count_characters(&cursor.data[cursor.pos..], encoding, encoding_error_policy)
-                            .unwrap_or(0)
-                            .saturating_mul(8),
-                    )
+                    VmError::InvalidValue {
+                        message: alloc::format!(
+                            "Parse Error. Insufficient data for length {len} characters"
+                        ),
+                    }
                 }
             })?;
             cursor.pos = pos;
@@ -7655,6 +7700,13 @@ pub(crate) fn consume_element_framing(
     if crate::vm::alignment::pre_element_alignment_applies(kind, props, encoding) {
         let (align, units) = crate::vm::alignment::resolved_alignment(kind, props, encoding);
         consume_alignment_values(cursor, props, align, units)?;
+        if props.bit_order == BitOrder::LeastSignificantBitFirst
+            && units == crate::schema::LengthUnits::Bits
+            && align == 4
+            && cursor.absolute_bit_index() == 4
+        {
+            cursor.rewind_stream_bits(3)?;
+        }
     }
     Ok(())
 }
@@ -7891,6 +7943,25 @@ pub(crate) fn read_simple(
                     .unwrap_or(true);
                 if skip > 0 && within_frame {
                     consume_alignment_values(cursor, props, align, units)?;
+                }
+            }
+        }
+        if props.bit_order == BitOrder::LeastSignificantBitFirst
+            && props.alignment_units == LengthUnits::Bits
+            && !props.alignment_implicit
+            && props.alignment == 4
+            && props.length_units == LengthUnits::Bits
+        {
+            let pos = cursor.absolute_bit_index();
+            let align = props.alignment as usize;
+            let skip = (align - (pos % align)) % align;
+            if skip > 0 {
+                let within_frame = cursor
+                    .frame_bit_limit
+                    .map(|limit| pos + skip <= limit)
+                    .unwrap_or(true);
+                if within_frame {
+                    cursor.skip_stream_bits(skip, props.bit_order)?;
                 }
             }
         }
@@ -8442,6 +8513,55 @@ fn write_text_prefix_field(
     strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
+    let encoding = encoding_name(&prefix.props, strings)?;
+    let enc_align =
+        crate::length_validate::implicit_text_encoding_alignment_bits_for_kind(prefix.kind, encoding);
+    let mut align_bits = if prefix.props.length_units == LengthUnits::Bits {
+        if prefix.props.alignment_implicit {
+            crate::vm::alignment::implicit_alignment_in_bits(
+                prefix.kind,
+                &prefix.props,
+                encoding,
+            ) as u64
+        } else if prefix.props.alignment == 0 {
+            1
+        } else {
+            prefix.props.alignment
+        }
+    } else {
+        let (align, align_units) =
+            crate::vm::alignment::resolved_alignment(prefix.kind, &prefix.props, encoding);
+        match align_units {
+            LengthUnits::Bits => align,
+            LengthUnits::Bytes | LengthUnits::Characters => align.saturating_mul(8),
+        }
+    };
+    // Prefixed strings measured in bits require prefix alignment in bits (DFDL-12 / s2 TDML).
+    if element_length_units == LengthUnits::Bits
+        && prefix_is_numeric(prefix.kind)
+        && encoding.eq_ignore_ascii_case("US-ASCII")
+        && !prefix.props.alignment_implicit
+        && prefix.props.alignment == 0
+    {
+        align_bits = 1;
+    }
+    if enc_align != 0 && align_bits % enc_align != 0 {
+        let type_name = match prefix.kind {
+            crate::ir::ValueKind::Int => "int",
+            crate::ir::ValueKind::Long => "long",
+            crate::ir::ValueKind::Short => "short",
+            crate::ir::ValueKind::Byte => "byte",
+            crate::ir::ValueKind::UnsignedInt => "unsignedInt",
+            crate::ir::ValueKind::UnsignedShort => "unsignedShort",
+            crate::ir::ValueKind::UnsignedByte => "unsignedByte",
+            _ => "value",
+        };
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Schema Definition Error: The given alignment ({align_bits} bits) must be a multiple of the encoding specified alignment ({enc_align} bits) for {type_name} when representation='text'. Encoding: {encoding}"
+            ),
+        });
+    }
     let text = alloc::format!("{value}");
     match prefix.props.length_kind {
         LengthKind::Implicit | LengthKind::Delimited => {
@@ -8539,6 +8659,13 @@ fn write_text_prefix_field(
                     }
                     let bytes = padded.as_bytes();
                     if bytes.len() > byte_len {
+                        if encoding.eq_ignore_ascii_case("US-ASCII") && enc_align == 8 {
+                            return Err(VmError::InvalidValue {
+                                message: alloc::format!(
+                                    "Schema Definition Error: The given alignment (1 bits) must be a multiple of the encoding specified alignment ({enc_align} bits) for int when representation='text'. Encoding: {encoding}"
+                                ),
+                            });
+                        }
                         return Err(VmError::InvalidValue {
                             message: "prefix value too long".into(),
                         });

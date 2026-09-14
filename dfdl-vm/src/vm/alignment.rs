@@ -99,7 +99,13 @@ pub fn pre_element_alignment_applies(
 /// Resolved `(alignment, alignment_units)` for consume/write alignment helpers.
 pub fn resolved_alignment(kind: ValueKind, props: &IrProps, encoding: &str) -> (u64, LengthUnits) {
     if !props.alignment_implicit {
-        return (props.alignment, props.alignment_units);
+        // DFDL default alignment is 1 (in alignmentUnits); unset IR alignment stays 0.
+        let align = if props.alignment == 0 {
+            1
+        } else {
+            props.alignment
+        };
+        return (align, props.alignment_units);
     }
     let bits = implicit_alignment_in_bits(kind, props, encoding);
     match props.alignment_units {

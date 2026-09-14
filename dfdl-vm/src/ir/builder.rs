@@ -326,6 +326,9 @@ impl<'a> IrBuilder<'a> {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
                             let mut merged_ir = merge_ir_props(&child_props, &overlay);
+                            if element.props.encoding.is_none() {
+                                merged_ir.encoding = child_props.encoding;
+                            }
                             if element.props.text_string_pad_character.is_none() {
                                 merged_ir.text_string_pad_character =
                                     child_props.text_string_pad_character;
@@ -2073,6 +2076,13 @@ fn validate_prefix_length_type(
     }
 
     validate_text_alignment_schema(kind, prefix_props, strings)?;
+    if prefix_props.length_kind == LengthKind::Prefixed {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" not supported"
+                .into(),
+        }
+        .into());
+    }
     let encoding = strings
         .get(prefix_props.encoding)
         .unwrap_or("utf-8");
@@ -2080,12 +2090,29 @@ fn validate_prefix_length_type(
         kind,
         encoding,
     );
-    let (align, units) =
-        crate::vm::alignment::resolved_alignment(kind, prefix_props, encoding);
-    let align_bits = match units {
-        LengthUnits::Bits => align,
-        LengthUnits::Bytes | LengthUnits::Characters => align.saturating_mul(8),
+    let mut align_bits = if prefix_props.length_units == LengthUnits::Bits {
+        if prefix_props.alignment_implicit {
+            crate::vm::alignment::implicit_alignment_in_bits(kind, prefix_props, encoding) as u64
+        } else if prefix_props.alignment == 0 {
+            1
+        } else {
+            prefix_props.alignment
+        }
+    } else {
+        let (align, align_units) =
+            crate::vm::alignment::resolved_alignment(kind, prefix_props, encoding);
+        match align_units {
+            LengthUnits::Bits => align,
+            LengthUnits::Bytes | LengthUnits::Characters => align.saturating_mul(8),
+        }
     };
+    if raw_props.length_units == Some(LengthUnits::Bits)
+        || prefix_props.length_units == LengthUnits::Bits
+    {
+        if !prefix_props.alignment_implicit && prefix_props.alignment == 0 {
+            align_bits = 1;
+        }
+    }
     if enc_align != 0 && align_bits % enc_align != 0 {
         let type_name = value_kind_type_name(kind);
         return Err(SchemaError::InvalidProperty {
