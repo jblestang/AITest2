@@ -350,11 +350,17 @@ pub enum BinaryFloatRep {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct GroupRefDecl {
+    pub name: String,
+    pub props: DfdlProps,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Particle {
     Element(ElementDecl),
     Sequence(SequenceDecl),
     Choice(ChoiceDecl),
-    GroupRef(String),
+    GroupRef(GroupRefDecl),
 }
 
 #[derive(Debug, Clone, PartialEq)]

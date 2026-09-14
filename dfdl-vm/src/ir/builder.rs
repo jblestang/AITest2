@@ -413,7 +413,8 @@ impl<'a> IrBuilder<'a> {
                     }))
                 }
             }
-            Particle::GroupRef(qname) => {
+            Particle::GroupRef(gr) => {
+                let qname = &gr.name;
                 let group = self
                     .schema
                     .groups
@@ -424,7 +425,7 @@ impl<'a> IrBuilder<'a> {
                 match group {
                     GroupDecl::Sequence(seq) => {
                         let ir_props =
-                            self.merge_props_full(inherited, &seq.props, &DfdlProps::default())?;
+                            self.merge_props_full(inherited, &seq.props, &gr.props)?;
                         let child_inherited =
                             particle_inherited_for_children(inherited, &seq.props, &self.defaults);
                         let mut children = Vec::new();
@@ -561,24 +562,68 @@ impl<'a> IrBuilder<'a> {
         match content {
             ComplexContent::Sequence(sequence) => {
                 validate_model_group_occurs("sequence", &sequence.props)?;
-                let ir_props = self.merge_props_full(
+                let mut ir_props = self.merge_props_full(
                     type_base,
                     &sequence.props,
                     &DfdlProps::default(),
                 )?;
-                let child_inherited =
+                let mut child_inherited =
                     particle_inherited_for_children(type_base, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
                 let mut prior_element_names: Vec<String> = Vec::new();
                 for particle in &sequence.particles {
                     validate_initiated_content_particle(&sequence.props, particle)?;
-                    children.push(self.compile_particle(
-                        particle,
-                        &child_inherited,
-                        &prior_element_names,
-                    )?);
-                    if let Particle::Element(el) = particle {
-                        prior_element_names.push(el.name.clone());
+                    if let Particle::GroupRef(gr) = particle {
+                        let qname = &gr.name;
+                        let group = self
+                            .schema
+                            .groups
+                            .get(group_local_name(qname))
+                            .ok_or_else(|| SchemaError::InvalidProperty {
+                                message: alloc::format!("unknown group `{qname}`"),
+                            })?;
+                        match group {
+                            GroupDecl::Sequence(seq) => {
+                                ir_props = self.merge_props_full(
+                                    &ir_props,
+                                    &seq.props,
+                                    &gr.props,
+                                )?;
+                                child_inherited = particle_inherited_for_children(
+                                    type_base,
+                                    &seq.props,
+                                    &self.defaults,
+                                );
+                                for p in &seq.particles {
+                                    validate_initiated_content_particle(&seq.props, p)?;
+                                    children.push(self.compile_particle(
+                                        p,
+                                        &child_inherited,
+                                        &prior_element_names,
+                                    )?);
+                                    if let Particle::Element(el) = p {
+                                        prior_element_names.push(el.name.clone());
+                                    }
+                                }
+                                continue;
+                            }
+                            GroupDecl::Choice(_) => {
+                                children.push(self.compile_particle(
+                                    particle,
+                                    &child_inherited,
+                                    &prior_element_names,
+                                )?);
+                            }
+                        }
+                    } else {
+                        children.push(self.compile_particle(
+                            particle,
+                            &child_inherited,
+                            &prior_element_names,
+                        )?);
+                        if let Particle::Element(el) = particle {
+                            prior_element_names.push(el.name.clone());
+                        }
                     }
                 }
                 Ok(self.push(IrNode::Sequence {
@@ -2093,7 +2138,7 @@ fn branch_name(particle: &Particle) -> String {
         Particle::Element(e) => e.name.clone(),
         Particle::Sequence(_) => "sequence".to_string(),
         Particle::Choice(_) => "choice".to_string(),
-        Particle::GroupRef(q) => group_local_name(q).to_string(),
+        Particle::GroupRef(gr) => group_local_name(&gr.name).to_string(),
     }
 }
 

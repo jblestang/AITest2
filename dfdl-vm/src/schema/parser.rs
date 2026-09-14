@@ -330,7 +330,7 @@ impl<'a> XsdParser<'a> {
             return Ok(());
         }
 
-        props = self.parse_inline_content(props, &["sequence", "choice", "annotation"])?;
+        props = self.parse_inline_content(props, &["sequence", "choice", "group", "annotation"])?;
         let content = self.parse_complex_content()?;
         self.expect_end_local("complexType")?;
 
@@ -399,17 +399,10 @@ impl<'a> XsdParser<'a> {
                             return Ok(ComplexContent::Choice(self.parse_choice(child_attrs)?))
                         }
                         "group" => {
-                            let (xsd, _) = split_dfdl_attrs("group", &child_attrs)?;
-                            let ref_name = xsd.get("ref").cloned().ok_or_else(|| {
-                                ParseError::MissingAttribute {
-                                    element: "group".into(),
-                                    attribute: "ref".into(),
-                                }
-                            })?;
-                            self.skip_element_body("group")?;
+                            let gr = self.parse_group_ref_particle(child_attrs)?;
                             return Ok(ComplexContent::Sequence(SequenceDecl {
                                 props: DfdlProps::default(),
-                                particles: alloc::vec![Particle::GroupRef(normalize_qname(&ref_name))],
+                                particles: alloc::vec![Particle::GroupRef(gr)],
                             }));
                         }
                         "annotation" => self.skip_element_body("annotation")?,
@@ -468,6 +461,30 @@ impl<'a> XsdParser<'a> {
         }
     }
 
+    fn parse_group_ref_particle(
+        &mut self,
+        attrs: BTreeMap<String, String>,
+    ) -> Result<GroupRefDecl> {
+        let (xsd, dfdl_from_attrs) = split_dfdl_attrs("group", &attrs)?;
+        let ref_name = xsd.get("ref").cloned().ok_or_else(|| ParseError::MissingAttribute {
+            element: "group".into(),
+            attribute: "ref".into(),
+        })?;
+        let pending = core::mem::take(&mut self.pending_props);
+        let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
+        self.reader.skip_insignificant_ws()?;
+        if !self.reader.peek_is_end("group")? {
+            props = self.parse_inline_content(props, &["annotation"])?;
+            self.expect_end_local("group")?;
+        } else {
+            self.expect_end_local("group")?;
+        }
+        Ok(GroupRefDecl {
+            name: normalize_qname(&ref_name),
+            props,
+        })
+    }
+
     fn parse_sequence(&mut self, attrs: BTreeMap<String, String>) -> Result<SequenceDecl> {
         let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("sequence", &attrs)?;
         let pending = core::mem::take(&mut self.pending_props);
@@ -502,13 +519,9 @@ impl<'a> XsdParser<'a> {
                             particles.push(Particle::Sequence(self.parse_sequence(child_attrs)?))
                         }
                         "group" => {
-                            let (xsd, _) = split_dfdl_attrs("group", &child_attrs)?;
-                            let ref_name = xsd.get("ref").cloned().ok_or_else(|| ParseError::MissingAttribute {
-                                element: "group".into(),
-                                attribute: "ref".into(),
-                            })?;
-                            particles.push(Particle::GroupRef(normalize_qname(&ref_name)));
-                            self.skip_element_body("group")?;
+                            particles.push(Particle::GroupRef(
+                                self.parse_group_ref_particle(child_attrs)?,
+                            ));
                         }
                         "choice" => particles.push(Particle::Choice(self.parse_choice(child_attrs)?)),
                         "annotation" => self.skip_element_body("annotation")?,
@@ -567,13 +580,9 @@ impl<'a> XsdParser<'a> {
                             branches.push(Particle::Sequence(self.parse_sequence(child_attrs)?))
                         }
                         "group" => {
-                            let (xsd, _) = split_dfdl_attrs("group", &child_attrs)?;
-                            let ref_name = xsd.get("ref").cloned().ok_or_else(|| ParseError::MissingAttribute {
-                                element: "group".into(),
-                                attribute: "ref".into(),
-                            })?;
-                            branches.push(Particle::GroupRef(normalize_qname(&ref_name)));
-                            self.skip_element_body("group")?;
+                            branches.push(Particle::GroupRef(
+                                self.parse_group_ref_particle(child_attrs)?,
+                            ));
                         }
                         "choice" => branches.push(Particle::Choice(self.parse_choice(child_attrs)?)),
                         "annotation" => self.skip_element_body("annotation")?,
@@ -2840,6 +2849,46 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("Schema Definition Error"), "{msg}");
         assert!(msg.contains("initiatedContent"), "{msg}");
+    }
+
+    #[test]
+    fn complex_type_group_ref_is_not_empty() {
+        let xsd = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
+           xmlns:ex="http://example.com">
+  <xs:include schemaLocation="/org/apache/daffodil/xsd/DFDLGeneralFormat.dfdl.xsd"/>
+  <dfdl:format ref="ex:GeneralFormat" lengthKind="delimited" representation="text"/>
+  <xs:group name="g">
+    <xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:group ref="ex:g"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"#;
+        let doc = parse_schema(xsd).expect("parse");
+        let el = doc.global_elements.get("root").expect("root");
+        let TypeDef::Complex { content, .. } = doc.resolve_type(&el.type_name).unwrap() else {
+            panic!("complex type");
+        };
+        let ComplexContent::Sequence(seq) = content else {
+            panic!("sequence wrapper");
+        };
+        assert_eq!(seq.particles.len(), 1);
+        assert!(matches!(seq.particles[0], Particle::GroupRef(_)));
+        let prog = crate::ir::compile_named(&doc, Some("root")).expect("compile");
+        let root_node = &prog.nodes[prog.root as usize];
+        let crate::ir::IrNode::Element { child: Some(child), .. } = root_node else {
+            panic!("root element");
+        };
+        let crate::ir::IrNode::Sequence { children, .. } = &prog.nodes[*child as usize] else {
+            panic!("inner sequence");
+        };
+        assert_eq!(children.len(), 1);
     }
 
     #[test]

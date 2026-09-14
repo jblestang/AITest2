@@ -77,7 +77,7 @@ fn validate_string_facets(text: &str, props: &IrProps, strings: &StringPool) -> 
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: pattern ({pat})"),
+                alloc::format!("failed facet checks due to: facet pattern ({pat})"),
             ));
         }
     }
