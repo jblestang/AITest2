@@ -350,32 +350,54 @@ fn calendar_millis_limits() -> (i128, i128) {
     (min_secs, max_secs + 999)
 }
 
+/// Match Java `epochCalendar.getTimeInMillis + millisToAdd` (signed 64-bit wrap).
+fn java_calendar_total_millis(base_secs: i64, delta_ms: i64) -> i64 {
+    base_secs
+        .saturating_mul(1000)
+        .wrapping_add(delta_ms)
+}
+
 pub fn format_binary_calendar_from_millis_delta(
     epoch_raw: &str,
     delta_ms: i64,
     tunables: &DaffodilTunables,
 ) -> Result<alloc::string::String, VmError> {
     let base_secs = parse_calendar_epoch_unix(epoch_raw)?;
-    let total_ms = i128::from(base_secs) * 1000 + i128::from(delta_ms);
-    let secs = (total_ms / 1000) as i64;
-    let micros = (total_ms.rem_euclid(1000) * 1000) as u32;
-    let text = format_binary_calendar_datetime(secs, micros, epoch_raw);
-    if let Err(e) = validate_calendar_year_tunables(&text, tunables) {
-        return Err(e);
-    }
+    let total_ms = java_calendar_total_millis(base_secs, delta_ms);
     let (min_ms, max_ms) = calendar_millis_limits();
-    if total_ms > max_ms {
-        return Err(calendar_millis_bounds_error(
-            delta_ms,
-            "millis value greater than upper bounds for a Calendar",
-        ));
-    }
-    if total_ms < min_ms {
+
+    // Match Java `getTimeInMillis + millisToAdd` overflow (e.g. dateTimeBin11).
+    if delta_ms > 0 && total_ms < 0 {
         return Err(calendar_millis_bounds_error(
             delta_ms,
             "millis value less than lower bounds for a Calendar",
         ));
     }
+
+    let secs = total_ms.div_euclid(1000);
+    let micros = (total_ms.rem_euclid(1000) * 1000) as u32;
+    let text = format_binary_calendar_datetime(secs, micros, epoch_raw);
+
+    if i128::from(total_ms) > max_ms {
+        return validate_calendar_year_tunables(&text, tunables).map(|_| text);
+    }
+    if i128::from(total_ms) < min_ms {
+        if i128::from(total_ms) == min_ms - 1 {
+            return Err(calendar_millis_bounds_error(
+                delta_ms,
+                "millis value less than lower bounds for a Calendar",
+            ));
+        }
+        return validate_calendar_year_tunables(&text, tunables).map(|_| text);
+    }
+    if i128::from(total_ms) == max_ms + 1 {
+        return Err(calendar_millis_bounds_error(
+            delta_ms,
+            "millis value greater than upper bounds for a Calendar",
+        ));
+    }
+
+    validate_calendar_year_tunables(&text, tunables)?;
     Ok(text)
 }
 

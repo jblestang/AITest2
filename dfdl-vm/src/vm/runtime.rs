@@ -1596,6 +1596,62 @@ fn read_calendar_timezone(text: &str, ti: &mut usize, z_width: usize) -> Result<
     Ok(tz)
 }
 
+fn timezone_abbrev_to_offset(name: &str) -> Option<&'static str> {
+    let n = name.trim();
+    let lower = n.to_ascii_lowercase();
+    match lower.as_str() {
+        "est" | "et" | "eastern standard time" => Some("-05:00"),
+        "edt" | "eastern daylight time" => Some("-04:00"),
+        "cst" | "central standard time" => Some("-06:00"),
+        "cdt" | "central daylight time" => Some("-05:00"),
+        "mst" | "mountain standard time" => Some("-07:00"),
+        "mdt" | "mountain daylight time" => Some("-06:00"),
+        "pst" | "pt" | "pacific time" | "pacific standard time" => Some("-08:00"),
+        "pdt" | "pacific daylight time" => Some("-07:00"),
+        "utc" | "gmt" | "z" => Some("+00:00"),
+        _ if n.eq_ignore_ascii_case("GMT") => Some("+00:00"),
+        _ => None,
+    }
+}
+
+fn read_calendar_timezone_name(
+    text: &str,
+    ti: &mut usize,
+    kind: char,
+    width: usize,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+    let rest = text[*ti..].trim_start();
+    if kind == 'v' && width >= 4 {
+        let known = [
+            ("Eastern Standard Time", "-05:00"),
+            ("Pacific Standard Time", "-08:00"),
+            ("Central Standard Time", "-06:00"),
+            ("Mountain Standard Time", "-07:00"),
+        ];
+        for (name, off) in known {
+            if rest.starts_with(name) {
+                *ti += text[*ti..].len() - rest.len() + name.len();
+                return Ok(off.into());
+            }
+        }
+    }
+    let end = rest
+        .find(|c: char| c.is_ascii_whitespace() || c == '.' || c == ',')
+        .unwrap_or(rest.len());
+    let word = &rest[..end];
+    if word.is_empty() {
+        return Err(VmError::InvalidValue {
+            message: "calendar text mismatch".into(),
+        });
+    }
+    let off = timezone_abbrev_to_offset(word).ok_or_else(|| VmError::InvalidValue {
+        message: "calendar text mismatch".into(),
+    })?;
+    *ti += text[*ti..].len() - rest.len() + word.len();
+    Ok(off.into())
+}
+
 fn parse_calendar_tz_offset(raw: &str) -> Option<(alloc::string::String, usize)> {
     let mut i = 0usize;
     while i < raw.len() && raw.as_bytes()[i].is_ascii_whitespace() {
@@ -1833,6 +1889,12 @@ fn calendar_text_strict_date_error(text: &str) -> crate::error::VmError {
     }
 }
 
+fn calendar_text_strict_time_error(text: &str) -> crate::error::VmError {
+    crate::error::VmError::InvalidValue {
+        message: alloc::format!("Parse Error: Unable to parse xs:time from text: {text}"),
+    }
+}
+
 fn format_calendar_text(
     text: &str,
     pattern: &str,
@@ -1922,12 +1984,16 @@ fn format_calendar_text(
             i += 1;
             continue;
         }
-        if c == 'Z' {
+        if c == 'Z' || c == 'z' || c == 'v' {
             let mut z_width = 1usize;
-            while i + z_width < chars.len() && chars[i + z_width] == 'Z' {
+            while i + z_width < chars.len() && chars[i + z_width] == c {
                 z_width += 1;
             }
-            fields.timezone = Some(read_calendar_timezone(text, &mut ti, z_width)?);
+            fields.timezone = Some(if c == 'Z' {
+                read_calendar_timezone(text, &mut ti, z_width)?
+            } else {
+                read_calendar_timezone_name(text, &mut ti, c, z_width)?
+            });
             i += z_width;
             continue;
         }
@@ -4208,8 +4274,14 @@ pub(crate) fn read_text_scalar(
                             days_in_first_week: props.calendar_days_in_first_week,
                         },
                     );
-                    if !props.calendar_check_policy_lax && props.calendar_date_only {
-                        parsed_text.map_err(|_| calendar_text_strict_date_error(trimmed))?
+                    if !props.calendar_check_policy_lax {
+                        if props.calendar_date_only {
+                            parsed_text.map_err(|_| calendar_text_strict_date_error(trimmed))?
+                        } else if kind == crate::ir::ValueKind::Time {
+                            parsed_text.map_err(|_| calendar_text_strict_time_error(trimmed))?
+                        } else {
+                            parsed_text?
+                        }
                     } else {
                         parsed_text?
                     }
