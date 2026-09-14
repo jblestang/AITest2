@@ -12,7 +12,7 @@ use crate::length_validate::{binary_length_validation_applies, validate_data_len
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, StringId, ValueKind};
 use crate::schema::{match_length_pattern, InputValueCalc, LengthKind, LengthUnits, Representation, SeparatorPosition};
-use crate::value::DfdlValue;
+use crate::value::{DfdlValue, StringValue};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString;
@@ -859,6 +859,9 @@ impl<'a> Decoder<'a> {
                         inner,
                         ValueKind::Complex,
                     ))
+                } else if props.input_value_calc_segments.is_some() {
+                    eval_input_value_calc_concat(&props, siblings, self.ctx.strings())
+                        .map_err(Into::into)
                 } else if props.input_value_calc.is_some() {
                     eval_input_value_calc(
                         &props,
@@ -1241,7 +1244,9 @@ impl<'a> Decoder<'a> {
 
     fn particle_consumes_input(&self, node_id: u32) -> bool {
         match self.ctx.program.node(node_id) {
-            Ok(IrNode::Element { props, .. }) => props.input_value_calc.is_none(),
+            Ok(IrNode::Element { props, .. }) => {
+                props.input_value_calc.is_none() && props.input_value_calc_segments.is_none()
+            }
             Ok(IrNode::Sequence { children, .. }) => {
                 children.iter().any(|&child| self.particle_consumes_input(child))
             }
@@ -1395,6 +1400,39 @@ fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
     } else {
         inner
     }
+}
+
+fn eval_input_value_calc_concat(
+    props: &IrProps,
+    siblings: Option<&BTreeMap<String, SiblingState>>,
+    strings: &crate::ir::StringPool,
+) -> Result<DfdlValue> {
+    use crate::ir::IrInputValueCalcSegment;
+    let segments = props.input_value_calc_segments.as_ref().ok_or_else(|| VmError::InvalidValue {
+        message: "missing inputValueCalc concat segments".into(),
+    })?;
+    let mut out = alloc::string::String::new();
+    for seg in segments {
+        match seg {
+            IrInputValueCalcSegment::Sibling(id) => {
+                let name = strings.get(*id)?;
+                out.push_str(&sibling_string_value(siblings, name)?);
+            }
+            IrInputValueCalcSegment::Substring {
+                sibling,
+                start,
+                length,
+            } => {
+                let name = strings.get(*sibling)?;
+                let text = sibling_string_value(siblings, name)?;
+                let start = (*start as usize).saturating_sub(1);
+                for ch in text.chars().skip(start).take(*length as usize) {
+                    out.push(ch);
+                }
+            }
+        }
+    }
+    Ok(DfdlValue::String(StringValue::new(out)))
 }
 
 fn eval_input_value_calc(

@@ -79,6 +79,10 @@ pub fn validate_text_alignment_schema(
     if props.alignment_implicit {
         return Ok(());
     }
+    // Bit-granular layouts (Encodings.tdml): explicit alignment is in bits, not byte charset boundaries.
+    if props.alignment_units == LengthUnits::Bits {
+        return Ok(());
+    }
     let text_field = props.representation == Representation::Text || kind == ValueKind::String;
     if !text_field {
         return Ok(());

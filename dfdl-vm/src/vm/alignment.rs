@@ -88,7 +88,7 @@ pub fn pre_element_alignment_applies(
         return true;
     }
     let implicit_bits = implicit_alignment_in_bits(kind, props, encoding);
-    if (len as usize) < implicit_bits && implicit_bits <= 8 {
+    if (len as usize) <= implicit_bits && implicit_bits <= 8 {
         return false;
     }
     true

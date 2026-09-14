@@ -2643,6 +2643,9 @@ fn sign_extend_u64(value: u64, bits: usize) -> i64 {
     if bits == 0 {
         return 0;
     }
+    if bits >= 64 {
+        return value as i64;
+    }
     let sign = 1u64 << (bits - 1);
     if value & sign != 0 {
         let mask = (1u64 << bits) - 1;

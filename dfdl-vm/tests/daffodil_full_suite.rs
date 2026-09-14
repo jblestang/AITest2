@@ -281,16 +281,16 @@ fn daffodil_section05_regression_gate() {
         stats.parse_fail, 0,
         "section05 TDML load errors: {stats:?}"
     );
-    // Baseline (2026-03): facets/simple-types need type resolution and expected-error matching for 100%.
+    // Baseline (2026-03): Encodings.tdml bits charsets + TDML LSBFirst document assembly + inputValueCalc concat.
     assert!(
-        stats.pass >= 436,
-        "section05: expected at least 425 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 454,
+        "section05: expected at least 454 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 375,
+        stats.fail <= 358,
         "section05 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,

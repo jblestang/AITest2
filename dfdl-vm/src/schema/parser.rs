@@ -1517,6 +1517,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.input_value_calc_sibling.is_some() {
         base.input_value_calc_sibling = overlay.input_value_calc_sibling;
     }
+    if overlay.input_value_calc_segments.is_some() {
+        base.input_value_calc_segments = overlay.input_value_calc_segments.clone();
+    }
     if overlay.output_value_calc.is_some() {
         base.output_value_calc = overlay.output_value_calc;
     }
@@ -1550,6 +1553,71 @@ fn parse_xs_string_literal_arg(arg: &str) -> Option<String> {
         return None;
     }
     Some(arg[1..arg.len() - 1].to_string())
+}
+
+fn split_top_level_commas(s: &str) -> alloc::vec::Vec<alloc::string::String> {
+    let mut out = alloc::vec::Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(s[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(s[start..].trim().to_string());
+    out
+}
+
+fn parse_input_value_calc_concat(value: &str) -> Option<alloc::vec::Vec<crate::schema::InputValueCalcSegment>> {
+    use crate::schema::InputValueCalcSegment;
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let rest = inner.strip_prefix("fn:concat(")?;
+    if !rest.ends_with(')') {
+        return None;
+    }
+    let args = &rest[..rest.len() - 1];
+    let mut out = alloc::vec::Vec::new();
+    for part in split_top_level_commas(args) {
+        if part.is_empty() {
+            return None;
+        }
+        if let Some(name) = part.strip_prefix("../") {
+            out.push(InputValueCalcSegment::Sibling(
+                local_name_from_qname(name).to_string(),
+            ));
+            continue;
+        }
+        if let Some(rest) = part.strip_prefix("fn:substring(") {
+            if !rest.ends_with(')') {
+                return None;
+            }
+            let sub_args = split_top_level_commas(&rest[..rest.len() - 1]);
+            if sub_args.len() != 3 {
+                return None;
+            }
+            let sib = sub_args[0].strip_prefix("../")?;
+            let start: usize = sub_args[1].parse().ok()?;
+            let length: usize = sub_args[2].parse().ok()?;
+            out.push(InputValueCalcSegment::Substring {
+                sibling: local_name_from_qname(sib).to_string(),
+                start,
+                length,
+            });
+            continue;
+        }
+        return None;
+    }
+    Some(out)
 }
 
 fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>, Option<String>)> {
@@ -2056,7 +2124,9 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 }
             }
             "inputValueCalc" => {
-                if let Some(calc) = parse_input_value_calc(value) {
+                if let Some(segments) = parse_input_value_calc_concat(value) {
+                    props.input_value_calc_segments = Some(segments);
+                } else if let Some(calc) = parse_input_value_calc(value) {
                     props.input_value_calc = Some(calc.0);
                     props.input_value_calc_sibling = calc.1;
                     props.input_value_calc_literal = calc.2;

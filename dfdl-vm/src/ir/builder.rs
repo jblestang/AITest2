@@ -1724,7 +1724,10 @@ fn validate_implicit_text_length(kind: ValueKind, props: &IrProps) -> Result<()>
     if props.representation != Representation::Text {
         return Ok(());
     }
-    if props.input_value_calc.is_some() || props.input_value_calc_sibling.is_some() {
+    if props.input_value_calc.is_some()
+        || props.input_value_calc_sibling.is_some()
+        || props.input_value_calc_segments.is_some()
+    {
         return Ok(());
     }
     if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {
@@ -1902,7 +1905,7 @@ fn validate_prefix_length_type(
         .into());
     }
     validate_text_alignment_schema(kind, prefix_props, strings)?;
-    if prefix_props.alignment_implicit {
+    if prefix_props.alignment_implicit || prefix_props.alignment_units == LengthUnits::Bits {
         return Ok(());
     }
     let encoding = strings
@@ -2427,6 +2430,27 @@ fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if let Some(segments) = &props.input_value_calc_segments {
+        base.input_value_calc_segments = Some(
+            segments
+                .iter()
+                .map(|seg| match seg {
+                    crate::schema::InputValueCalcSegment::Sibling(name) => {
+                        crate::ir::IrInputValueCalcSegment::Sibling(strings.intern(name.clone()))
+                    }
+                    crate::schema::InputValueCalcSegment::Substring {
+                        sibling,
+                        start,
+                        length,
+                    } => crate::ir::IrInputValueCalcSegment::Substring {
+                        sibling: strings.intern(sibling.clone()),
+                        start: *start as u32,
+                        length: *length as u32,
+                    },
+                })
+                .collect(),
+        );
+    }
     if let Some(v) = props.output_value_calc {
         base.output_value_calc = Some(v);
     }
@@ -2705,6 +2729,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.input_value_calc = overlay.input_value_calc;
     out.input_value_calc_literal = overlay.input_value_calc_literal;
     out.input_value_calc_sibling = overlay.input_value_calc_sibling;
+    out.input_value_calc_segments = overlay.input_value_calc_segments.clone();
     if overlay.calendar_date_only {
         out.calendar_date_only = true;
     }

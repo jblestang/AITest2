@@ -75,6 +75,36 @@ pub(crate) fn bits_charset_spec(name: &str) -> Option<BitsCharsetSpec> {
             alphabet: "01234567",
             bit_order: BitOrder::MostSignificantBitFirst,
         })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-3-BIT-DFI-336-DUI-001") {
+        Some(BitsCharsetSpec {
+            width: 3,
+            alphabet: "12345678",
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-3-BIT-DFI-746-DUI-002") {
+        Some(BitsCharsetSpec {
+            width: 3,
+            alphabet: "ABCDEFGH",
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-4-BIT-DFI-746-DUI-002") {
+        Some(BitsCharsetSpec {
+            width: 4,
+            alphabet: "ABCDEFGHIJKLMNPQ",
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-3-BIT-DFI-747-DUI-001") {
+        Some(BitsCharsetSpec {
+            width: 3,
+            alphabet: "AEGHJKLM",
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-5-BIT-DFI-769-DUI-002") {
+        Some(BitsCharsetSpec {
+            width: 5,
+            alphabet: "01234567ABCDEFGHJKLMNPQRSTUVWXYZ",
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
     } else if eq_ascii_ignore_case(name, "X-DFDL-US-ASCII-7-BIT-PACKED")
         || eq_ascii_ignore_case(name, "us-ascii-7-bit-packed")
     {

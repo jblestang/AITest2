@@ -4,7 +4,7 @@ pub use builder::{compile, compile_named, compile_named_with_tunables};
 use crate::error::VmError;
 use crate::schema::{
     BinaryFloatRep, BinaryNumberCheckPolicy, BinaryNumberRep, BitOrder, ByteOrder,
-    EncodingErrorPolicy, InputValueCalc,
+    EncodingErrorPolicy, InputValueCalc, InputValueCalcSegment,
     LengthKind, LengthUnits, NilKind, OccursCountKind, OutputValueCalc, Representation,
     SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind, TextNumberJustification,
     TextPadKind,
@@ -75,6 +75,16 @@ pub struct IrPrefixLength {
     pub props: IrProps,
     pub min_inclusive: Option<i64>,
     pub max_inclusive: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IrInputValueCalcSegment {
+    Sibling(StringId),
+    Substring {
+        sibling: StringId,
+        start: u32,
+        length: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +179,7 @@ pub struct IrProps {
     pub input_value_calc: Option<InputValueCalc>,
     pub input_value_calc_literal: Option<StringId>,
     pub input_value_calc_sibling: Option<StringId>,
+    pub input_value_calc_segments: Option<Vec<IrInputValueCalcSegment>>,
     /// True when the XSD type is `xs:date` (vs `xs:dateTime`).
     pub calendar_date_only: bool,
     pub output_value_calc: Option<OutputValueCalc>,
@@ -296,6 +307,7 @@ impl Default for IrProps {
             input_value_calc: None,
             input_value_calc_literal: None,
             input_value_calc_sibling: None,
+            input_value_calc_segments: None,
             calendar_date_only: false,
             output_value_calc: None,
             output_value_calc_sibling: None,

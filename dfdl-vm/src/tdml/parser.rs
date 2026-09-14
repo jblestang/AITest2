@@ -218,9 +218,9 @@ fn parse_parser_test_case(
     let mut expected_infoset = String::new();
     let mut expected_errors = None;
 
-    reader.for_each_child("parserTestCase", |local, _, r| match local {
+    reader.for_each_child("parserTestCase", |local, doc_attrs, r| match local {
         "document" => {
-            documents.push(parse_document(r, &attrs)?);
+            documents.push(parse_document(r, &doc_attrs)?);
             Ok(())
         }
         "infoset" => {
@@ -266,13 +266,13 @@ fn parse_unparser_test_case(
     let mut expected_errors = None;
     let mut documents = Vec::new();
 
-    reader.for_each_child("unparserTestCase", |local, _, r| match local {
+    reader.for_each_child("unparserTestCase", |local, doc_attrs, r| match local {
         "infoset" => {
             infoset = r.read_inner_xml()?;
             Ok(())
         }
         "document" => {
-            documents.push(parse_document(r, &attrs)?);
+            documents.push(parse_document(r, &doc_attrs)?);
             Ok(())
         }
         "errors" => {
@@ -303,6 +303,12 @@ enum DocumentBitOrder {
     LsbFirst,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocumentByteOrder {
+    Ltr,
+    Rtl,
+}
+
 fn parse_document_bit_order(value: &str) -> Result<DocumentBitOrder> {
     match value {
         "MSBFirst" => Ok(DocumentBitOrder::MsbFirst),
@@ -311,6 +317,22 @@ fn parse_document_bit_order(value: &str) -> Result<DocumentBitOrder> {
             message: alloc::format!("unknown document bitOrder `{other}`"),
         }
         .into()),
+    }
+}
+
+fn effective_document_bit_order(
+    document_default: DocumentBitOrder,
+    from_document_attr: bool,
+    parts: &[(DocumentBitOrder, usize)],
+) -> DocumentBitOrder {
+    if from_document_attr || parts.is_empty() {
+        return document_default;
+    }
+    let first = parts[0].0;
+    if parts.iter().all(|(order, _)| *order == first) {
+        first
+    } else {
+        document_default
     }
 }
 
@@ -341,6 +363,7 @@ fn parse_document(
     doc_attrs: &BTreeMap<String, String>,
 ) -> Result<TdmlDocument> {
     reader.skip_insignificant_ws()?;
+    let document_bit_order_from_attr = doc_attrs.get("bitOrder").is_some();
     let default_bit_order = doc_attrs
         .get("bitOrder")
         .map(|s| parse_document_bit_order(s))
@@ -362,15 +385,17 @@ fn parse_document(
         let mut data = Vec::new();
         let mut last_byte_bit_count = None;
         let mut pending_bits: Vec<u8> = Vec::new();
+        let mut bit_part_chunks: Vec<Vec<String>> = Vec::new();
         let mut saw_bits_part = false;
         let mut part_transitions: Vec<(DocumentBitOrder, usize)> = Vec::new();
+        let mut saw_rtl_byte_order = false;
 
         let flush_pending_bits =
             |pending: &mut Vec<u8>, data: &mut Vec<u8>, last: &mut Option<u8>| {
                 if pending.is_empty() {
                     return;
                 }
-                let (packed, trailing) = pack_bits_to_document(pending);
+                let (packed, trailing) = pack_bits_msb_first(pending);
                 data.extend(packed);
                 *last = Some(trailing);
                 pending.clear();
@@ -379,10 +404,18 @@ fn parse_document(
         while reader.peek_start_local()? == Some("documentPart".to_string()) {
             let part = parse_document_part(reader, default_bit_order)?;
             part_transitions.push((part.bit_order, part.length_in_bits));
-            if let Some(bits) = part.expanded_bits {
+            if let Some(chunks) = part.bit_chunks {
                 saw_bits_part = true;
                 kind = DocumentKind::Bits;
-                pending_bits.extend(bits);
+                if part.byte_order == DocumentByteOrder::Rtl {
+                    saw_rtl_byte_order = true;
+                }
+                for chunk in &chunks {
+                    for c in chunk.chars() {
+                        pending_bits.push(if c == '1' { 1 } else { 0 });
+                    }
+                }
+                bit_part_chunks.push(chunks);
             } else if saw_bits_part && part.kind == DocumentKind::Text {
                 // When the bit stream ends mid-byte, following text continues in the same stream;
                 // otherwise text starts on the next byte boundary (TDML multi-part documents).
@@ -404,9 +437,30 @@ fn parse_document(
             reader.skip_insignificant_ws()?;
         }
         reader.expect_end("document")?;
-        flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
-        if saw_bits_part {
+        let assembly_order = effective_document_bit_order(
+            default_bit_order,
+            document_bit_order_from_attr,
+            &part_transitions,
+        );
+        let use_lsb_assembly = !bit_part_chunks.is_empty()
+            && (assembly_order == DocumentBitOrder::LsbFirst || saw_rtl_byte_order);
+        if use_lsb_assembly {
+            let (packed, trailing) =
+                assemble_tdml_document_bytes(&bit_part_chunks, DocumentBitOrder::LsbFirst);
+            pending_bits.clear();
+            if data.is_empty() {
+                data = packed;
+                last_byte_bit_count = Some(trailing);
+            } else {
+                data.extend(packed);
+                last_byte_bit_count = Some(trailing);
+            }
             kind = DocumentKind::Bits;
+        } else {
+            flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
+            if saw_bits_part {
+                kind = DocumentKind::Bits;
+            }
         }
         if let Err(e) = check_document_part_bit_order_transitions(&part_transitions) {
             return Ok(TdmlDocument {
@@ -437,9 +491,10 @@ struct ParsedDocumentPart {
     kind: DocumentKind,
     data: Vec<u8>,
     last_byte_bit_count: Option<u8>,
-    /// Expanded 0/1 bit stream when `kind == Bits` (for multi-part merge).
-    expanded_bits: Option<Vec<u8>>,
+    /// Bit chunks (up to 8 digits each) when `kind == Bits`.
+    bit_chunks: Option<Vec<String>>,
     bit_order: DocumentBitOrder,
+    byte_order: DocumentByteOrder,
     length_in_bits: usize,
 }
 
@@ -469,8 +524,26 @@ fn parse_document_part(
         .map(|s| parse_document_bit_order(s))
         .transpose()?
         .unwrap_or(default_bit_order);
+    let byte_order = match attrs.get("byteOrder").map(String::as_str) {
+        Some("RTL") => {
+            if bit_order != DocumentBitOrder::LsbFirst {
+                return Err(ParseError::InvalidXml {
+                    message: "byteOrder RTL requires bitOrder LSBFirst".into(),
+                }
+                .into());
+            }
+            DocumentByteOrder::Rtl
+        }
+        Some("LTR") | None => DocumentByteOrder::Ltr,
+        Some(other) => {
+            return Err(ParseError::InvalidXml {
+                message: alloc::format!("unknown document byteOrder `{other}`"),
+            }
+            .into());
+        }
+    };
     let text = reader.read_text_until_end("documentPart")?;
-    let (data, last_byte_bit_count, expanded_bits) = match kind {
+    let (data, last_byte_bit_count, bit_chunks) = match kind {
         DocumentKind::Text => {
             let data = if replace_entities {
                 expand_entities(&text)
@@ -485,13 +558,13 @@ fn parse_document_part(
         }
         DocumentKind::Hex => (parse_hex_document(&text)?, None, None),
         DocumentKind::Bits => {
-            let bits = collect_bits_from_text(&text);
-            let (data, bit_count) = pack_bits_to_document(&bits);
-            (data, Some(bit_count), Some(bits))
+            let digits = collect_bit_digits_from_text(&text);
+            let chunks = bit_chunks_for_part(&digits, byte_order);
+            (Vec::new(), None, Some(chunks))
         }
     };
-    let length_in_bits = if let Some(bits) = &expanded_bits {
-        bits.len()
+    let length_in_bits = if let Some(chunks) = &bit_chunks {
+        chunks.iter().map(String::len).sum()
     } else {
         data.len() * 8
     };
@@ -499,8 +572,9 @@ fn parse_document_part(
         kind,
         data,
         last_byte_bit_count,
-        expanded_bits,
+        bit_chunks,
         bit_order,
+        byte_order,
         length_in_bits,
     })
 }
@@ -561,20 +635,110 @@ fn append_bytes_as_msb_bits(bits: &mut Vec<u8>, bytes: &[u8]) {
     }
 }
 
-fn collect_bits_from_text(text: &str) -> Vec<u8> {
-    let mut bits = Vec::new();
-    for c in text.chars() {
-        match c {
-            '0' => bits.push(0),
-            '1' => bits.push(1),
-            // TDML: any character other than 0 or 1 is ignored.
-            _ => {}
-        }
-    }
-    bits
+fn collect_bit_digits_from_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| *c == '0' || *c == '1')
+        .collect()
 }
 
-fn pack_bits_to_document(bits: &[u8]) -> (Vec<u8>, u8) {
+fn collect_bits_from_text(text: &str) -> Vec<u8> {
+    collect_bit_digits_from_text(text)
+        .chars()
+        .map(|c| if c == '1' { 1 } else { 0 })
+        .collect()
+}
+
+fn reverse_bit_string(s: &str) -> String {
+    s.chars().rev().collect()
+}
+
+fn chunk_bit_string_ltr(bits: &str) -> Vec<String> {
+    bits.as_bytes()
+        .chunks(8)
+        .map(|chunk| core::str::from_utf8(chunk).unwrap_or("").to_string())
+        .collect()
+}
+
+fn bit_chunks_for_part(bits: &str, byte_order: DocumentByteOrder) -> Vec<String> {
+    match byte_order {
+        DocumentByteOrder::Ltr => chunk_bit_string_ltr(bits),
+        DocumentByteOrder::Rtl => {
+            let rev = reverse_bit_string(bits);
+            chunk_bit_string_ltr(&rev)
+                .into_iter()
+                .map(|chunk| reverse_bit_string(&chunk))
+                .collect()
+        }
+    }
+}
+
+/// Match Daffodil `Document.documentBits` / `bits2Bytes` for TDML test data.
+fn assemble_tdml_document_bytes(
+    part_chunks: &[Vec<String>],
+    document_bit_order: DocumentBitOrder,
+) -> (Vec<u8>, u8) {
+    let byte_strings: Vec<String> = match document_bit_order {
+        DocumentBitOrder::MsbFirst => part_chunks
+            .iter()
+            .flat_map(|part| part.iter().cloned())
+            .collect::<Vec<_>>()
+            .join("")
+            .as_bytes()
+            .chunks(8)
+            .map(|chunk| core::str::from_utf8(chunk).unwrap_or("").to_string())
+            .collect(),
+        DocumentBitOrder::LsbFirst => {
+            let reversed_parts: Vec<Vec<String>> = part_chunks
+                .iter()
+                .map(|part| {
+                    part.iter()
+                        .map(|chunk| reverse_bit_string(chunk))
+                        .collect()
+                })
+                .collect();
+            let flat: String = reversed_parts.iter().flatten().cloned().collect();
+            flat.as_bytes()
+                .chunks(8)
+                .map(|chunk| reverse_bit_string(core::str::from_utf8(chunk).unwrap_or("")))
+                .collect()
+        }
+    };
+    if byte_strings.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let total_bits: usize = part_chunks
+        .iter()
+        .flat_map(|p| p.iter())
+        .map(String::len)
+        .sum();
+    let n_frag = total_bits % 8;
+    let n_add = if n_frag == 0 { 0 } else { 8 - n_frag };
+    let mut all_bits = byte_strings;
+    let last = all_bits.pop().unwrap_or_default();
+    let padded_last = match document_bit_order {
+        DocumentBitOrder::MsbFirst => {
+            let mut s = last;
+            s.push_str(&"0".repeat(n_add));
+            s
+        }
+        DocumentBitOrder::LsbFirst => {
+            alloc::format!("{}{}", "0".repeat(n_add), last)
+        }
+    };
+    all_bits.push(padded_last);
+    let mut out = Vec::with_capacity(all_bits.len());
+    for s in all_bits {
+        if s.is_empty() {
+            continue;
+        }
+        let byte = u8::from_str_radix(&s, 2).unwrap_or(0);
+        out.push(byte);
+    }
+    let trailing = n_frag as u8;
+    (out, trailing)
+}
+
+fn pack_bits_msb_first(bits: &[u8]) -> (Vec<u8>, u8) {
     let trailing = (bits.len() % 8) as u8;
     let mut out = Vec::new();
     for chunk in bits.chunks(8) {
@@ -585,11 +749,6 @@ fn pack_bits_to_document(bits: &[u8]) -> (Vec<u8>, u8) {
         out.push(byte);
     }
     (out, trailing)
-}
-
-fn parse_bits_document_with_count(text: &str) -> Result<(Vec<u8>, u8)> {
-    let bits = collect_bits_from_text(text);
-    Ok(pack_bits_to_document(&bits))
 }
 
 #[allow(dead_code)]

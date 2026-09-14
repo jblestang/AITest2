@@ -113,6 +113,7 @@ pub struct DfdlProps {
     pub input_value_calc_literal: Option<String>,
     /// Local name of sibling referenced by `../name` in inputValueCalc.
     pub input_value_calc_sibling: Option<String>,
+    pub input_value_calc_segments: Option<alloc::vec::Vec<InputValueCalcSegment>>,
     pub output_value_calc: Option<OutputValueCalc>,
     /// Local name of sibling referenced by `../name` in outputValueCalc.
     pub output_value_calc_sibling: Option<String>,
@@ -232,6 +233,17 @@ pub enum TextTrimKind {
 pub enum TextPadKind {
     None,
     PadChar,
+}
+
+/// One segment of `{ fn:concat(...) }` in `dfdl:inputValueCalc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputValueCalcSegment {
+    Sibling(String),
+    Substring {
+        sibling: String,
+        start: usize,
+        length: usize,
+    },
 }
 
 /// Narrow support for `dfdl:inputValueCalc` used in Daffodil prefixed length tests.
