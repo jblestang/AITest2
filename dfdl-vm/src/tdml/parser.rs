@@ -67,6 +67,8 @@ pub struct TdmlDocument {
     pub data: Vec<u8>,
     /// Significant bits in the last byte when the document ends mid-byte.
     pub last_byte_bit_count: Option<u8>,
+    /// TDML document assembly error (e.g. illegal bitOrder transition between parts).
+    pub load_error: Option<String>,
 }
 
 impl TdmlDocument {
@@ -218,7 +220,7 @@ fn parse_parser_test_case(
 
     reader.for_each_child("parserTestCase", |local, _, r| match local {
         "document" => {
-            documents.push(parse_document(r)?);
+            documents.push(parse_document(r, &attrs)?);
             Ok(())
         }
         "infoset" => {
@@ -270,7 +272,7 @@ fn parse_unparser_test_case(
             Ok(())
         }
         "document" => {
-            documents.push(parse_document(r)?);
+            documents.push(parse_document(r, &attrs)?);
             Ok(())
         }
         "errors" => {
@@ -295,8 +297,55 @@ fn parse_unparser_test_case(
     })
 }
 
-fn parse_document(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocumentBitOrder {
+    MsbFirst,
+    LsbFirst,
+}
+
+fn parse_document_bit_order(value: &str) -> Result<DocumentBitOrder> {
+    match value {
+        "MSBFirst" => Ok(DocumentBitOrder::MsbFirst),
+        "LSBFirst" => Ok(DocumentBitOrder::LsbFirst),
+        other => Err(ParseError::InvalidXml {
+            message: alloc::format!("unknown document bitOrder `{other}`"),
+        }
+        .into()),
+    }
+}
+
+fn check_document_part_bit_order_transitions(
+    parts: &[(DocumentBitOrder, usize)],
+) -> Result<()> {
+    if parts.len() <= 1 {
+        return Ok(());
+    }
+    let mut cumulative = 0usize;
+    for (i, (order, len)) in parts.iter().enumerate() {
+        if i > 0 {
+            let prior = parts[i - 1].0;
+            if prior != *order && cumulative % 8 != 0 {
+                return Err(ParseError::InvalidXml {
+                    message: "bitOrder can only change on a byte boundary.".into(),
+                }
+                .into());
+            }
+        }
+        cumulative += len;
+    }
+    Ok(())
+}
+
+fn parse_document(
+    reader: &mut XmlReader<'_>,
+    doc_attrs: &BTreeMap<String, String>,
+) -> Result<TdmlDocument> {
     reader.skip_insignificant_ws()?;
+    let default_bit_order = doc_attrs
+        .get("bitOrder")
+        .map(|s| parse_document_bit_order(s))
+        .transpose()?
+        .unwrap_or(DocumentBitOrder::MsbFirst);
 
     if reader.peek_is_end("document")? {
         reader.expect_end("document")?;
@@ -304,6 +353,7 @@ fn parse_document(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
             kind: DocumentKind::Text,
             data: Vec::new(),
             last_byte_bit_count: None,
+            load_error: None,
         });
     }
 
@@ -313,6 +363,7 @@ fn parse_document(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
         let mut last_byte_bit_count = None;
         let mut pending_bits: Vec<u8> = Vec::new();
         let mut saw_bits_part = false;
+        let mut part_transitions: Vec<(DocumentBitOrder, usize)> = Vec::new();
 
         let flush_pending_bits =
             |pending: &mut Vec<u8>, data: &mut Vec<u8>, last: &mut Option<u8>| {
@@ -326,7 +377,8 @@ fn parse_document(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
             };
 
         while reader.peek_start_local()? == Some("documentPart".to_string()) {
-            let part = parse_document_part(reader)?;
+            let part = parse_document_part(reader, default_bit_order)?;
+            part_transitions.push((part.bit_order, part.length_in_bits));
             if let Some(bits) = part.expanded_bits {
                 saw_bits_part = true;
                 kind = DocumentKind::Bits;
@@ -356,10 +408,19 @@ fn parse_document(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
         if saw_bits_part {
             kind = DocumentKind::Bits;
         }
+        if let Err(e) = check_document_part_bit_order_transitions(&part_transitions) {
+            return Ok(TdmlDocument {
+                kind: DocumentKind::Text,
+                data: Vec::new(),
+                last_byte_bit_count: None,
+                load_error: Some(e.to_string()),
+            });
+        }
         return Ok(TdmlDocument {
             kind,
             data,
             last_byte_bit_count,
+            load_error: None,
         });
     }
 
@@ -368,6 +429,7 @@ fn parse_document(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
         kind: DocumentKind::Text,
         data: text.into_bytes(),
         last_byte_bit_count: None,
+        load_error: None,
     })
 }
 
@@ -377,9 +439,14 @@ struct ParsedDocumentPart {
     last_byte_bit_count: Option<u8>,
     /// Expanded 0/1 bit stream when `kind == Bits` (for multi-part merge).
     expanded_bits: Option<Vec<u8>>,
+    bit_order: DocumentBitOrder,
+    length_in_bits: usize,
 }
 
-fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<ParsedDocumentPart> {
+fn parse_document_part(
+    reader: &mut XmlReader<'_>,
+    default_bit_order: DocumentBitOrder,
+) -> Result<ParsedDocumentPart> {
     let XmlEvent::StartElement { attributes, .. } = reader.next_event()? else {
         return Err(ParseError::InvalidXml {
             message: "expected documentPart".into(),
@@ -397,6 +464,11 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<ParsedDocumentPart>
         .map(|v| v == "true")
         .unwrap_or(false);
     let encoding = attrs.get("encoding").map(String::as_str);
+    let bit_order = attrs
+        .get("bitOrder")
+        .map(|s| parse_document_bit_order(s))
+        .transpose()?
+        .unwrap_or(default_bit_order);
     let text = reader.read_text_until_end("documentPart")?;
     let (data, last_byte_bit_count, expanded_bits) = match kind {
         DocumentKind::Text => {
@@ -418,11 +490,18 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<ParsedDocumentPart>
             (data, Some(bit_count), Some(bits))
         }
     };
+    let length_in_bits = if let Some(bits) = &expanded_bits {
+        bits.len()
+    } else {
+        data.len() * 8
+    };
     Ok(ParsedDocumentPart {
         kind,
         data,
         last_byte_bit_count,
         expanded_bits,
+        bit_order,
+        length_in_bits,
     })
 }
 

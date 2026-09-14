@@ -1,5 +1,6 @@
 use super::encoding::{
     character_span_byte_length, count_characters, decode_text_bytes, encode_document_text,
+    is_iso8859_1_encoding, remap_xml_illegal_characters_to_pua,
     bits_charset_spec, decode_bits_charset_payload, hex_charset_order, hex_charset_payload_to_text,
     HexCharsetOrder, normalize_encoding_name,
     read_character_bytes, read_one_utf8_char,
@@ -3256,6 +3257,11 @@ pub(crate) fn read_text_scalar(
     } else {
         decode_text_bytes(&raw, enc, props.encoding_error_policy)?
     };
+    let text = if kind == crate::ir::ValueKind::String && is_iso8859_1_encoding(enc) {
+        remap_xml_illegal_characters_to_pua(&text)
+    } else {
+        text
+    };
     let trimmed = trim_text_value(&text, kind, props.text_trim_kind, props, strings);
 
     if text_matches_nil_literal(trimmed, props, strings)? {
@@ -3308,7 +3314,7 @@ pub(crate) fn read_text_scalar(
             let num = if base == 10 && unsigned_uses_text_number_pattern(trimmed, props) {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else if base == 10 {
-                lax_numeric_field_text(trimmed, props).to_string()
+                lax_numeric_field_text(trimmed, props, "xs:unsignedByte")
             } else {
                 trimmed.to_string()
             };
@@ -3336,7 +3342,7 @@ pub(crate) fn read_text_scalar(
             let num = if base == 10 && unsigned_uses_text_number_pattern(trimmed, props) {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else if base == 10 {
-                lax_numeric_field_text(trimmed, props).to_string()
+                lax_numeric_field_text(trimmed, props, "xs:unsignedShort")
             } else {
                 trimmed.to_string()
             };
@@ -3374,7 +3380,7 @@ pub(crate) fn read_text_scalar(
             let num = if base == 10 && unsigned_uses_text_number_pattern(trimmed, props) {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else if base == 10 {
-                lax_numeric_field_text(trimmed, props).to_string()
+                lax_numeric_field_text(trimmed, props, "xs:unsignedInt")
             } else {
                 trimmed.to_string()
             };
@@ -5414,12 +5420,27 @@ fn unsigned_uses_text_number_pattern(trimmed: &str, props: &IrProps) -> bool {
     props.custom_text_number_pattern || trimmed.contains(',')
 }
 
-fn lax_numeric_field_text<'a>(text: &'a str, props: &IrProps) -> &'a str {
+fn explicit_length_unsigned_short_whitespace(type_name: &str, props: &IrProps) -> bool {
+    type_name == "xs:unsignedShort"
+        && matches!(
+            props.length_kind,
+            LengthKind::Explicit | LengthKind::Fixed
+        )
+}
+
+fn lax_numeric_field_text(text: &str, props: &IrProps, type_name: &str) -> alloc::string::String {
     use crate::schema::BinaryNumberCheckPolicy;
-    if props.text_standard_base == 10 && props.text_number_check_policy == BinaryNumberCheckPolicy::Lax {
-        text.trim()
+    if props.text_standard_base == 10 && props.text_number_check_policy == BinaryNumberCheckPolicy::Lax
+    {
+        if explicit_length_unsigned_short_whitespace(type_name, props) {
+            text.chars()
+                .filter(|c| !c.is_whitespace())
+                .collect()
+        } else {
+            text.trim().to_string()
+        }
     } else {
-        text
+        text.to_string()
     }
 }
 
@@ -5430,6 +5451,7 @@ fn reject_internal_whitespace_explicit_field(
     base: u32,
     trailing_input: bool,
 ) -> Result<(), crate::error::VmError> {
+    use crate::schema::BinaryNumberCheckPolicy;
     if base != 10 {
         return Ok(());
     }
@@ -5441,6 +5463,16 @@ fn reject_internal_whitespace_explicit_field(
     }
     if trailing_input && type_name == "xs:short" {
         return Ok(());
+    }
+    if explicit_length_unsigned_short_whitespace(type_name, props) {
+        if props.text_number_check_policy == BinaryNumberCheckPolicy::Lax {
+            return Ok(());
+        }
+        if props.text_number_check_policy == BinaryNumberCheckPolicy::Strict
+            && text.chars().any(char::is_whitespace)
+        {
+            return Err(unable_parse_from_text(type_name, text));
+        }
     }
     let t = text.trim();
     if t.chars().any(char::is_whitespace) {

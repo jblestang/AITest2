@@ -76,7 +76,7 @@ impl<'a> XsdParser<'a> {
         }
     }
 
-    fn merge_included(&mut self, other: SchemaDocument) {
+    fn merge_included(&mut self, other: SchemaDocument) -> Result<()> {
         for (k, v) in other.types {
             self.doc.types.insert(k, v);
         }
@@ -84,6 +84,9 @@ impl<'a> XsdParser<'a> {
             self.doc.global_elements.insert(k, v);
         }
         for (k, v) in other.named_formats {
+            if self.doc.named_formats.contains_key(&k) {
+                return Err(duplicate_format_definition(&k).into());
+            }
             self.doc.named_formats.insert(k, v);
         }
         for (k, v) in other.groups {
@@ -91,6 +94,7 @@ impl<'a> XsdParser<'a> {
         }
         self.doc.format_defaults.props =
             merge_dfdl_props(self.doc.format_defaults.props.clone(), other.format_defaults.props);
+        Ok(())
     }
 
     fn consume_start(&mut self) -> Result<(String, Option<String>, BTreeMap<String, String>)> {
@@ -229,7 +233,7 @@ impl<'a> XsdParser<'a> {
         }
         let content = self.resolver.resolve(location)?;
         let included = parse_schema_with_resolver(&content, self.resolver.clone())?;
-        self.merge_included(included);
+        self.merge_included(included)?;
         Ok(())
     }
 
@@ -1197,9 +1201,18 @@ impl<'a> XsdParser<'a> {
         self.in_define_format = false;
 
         if let Some(name) = format_name {
+            if self.doc.named_formats.contains_key(&name) {
+                return Err(duplicate_format_definition(&name).into());
+            }
             self.doc.named_formats.insert(name, props.clone());
         }
         Ok(props)
+    }
+}
+
+fn duplicate_format_definition(name: &str) -> ParseError {
+    ParseError::InvalidXml {
+        message: alloc::format!("More than one definition for name: {name}"),
     }
 }
 

@@ -309,6 +309,47 @@ fn decode_latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| b as char).collect()
 }
 
+/// Daffodil `XMLUtils.remapXMLIllegalCharactersToPUA` (CR/CRLF → LF, other C0 → PUA).
+pub(crate) fn remap_xml_illegal_characters_to_pua(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        let curr = chars[i];
+        let next = if i + 1 < chars.len() {
+            chars[i + 1]
+        } else {
+            '\0'
+        };
+        match curr {
+            '\t' | '\n' => out.push(curr),
+            '\r' if next == '\n' => {
+                out.push('\n');
+                i += 2;
+                continue;
+            }
+            '\r' => out.push('\n'),
+            c if (c as u32) < 0x20 => {
+                if let Some(pua) = char::from_u32(c as u32 + 0xE000) {
+                    out.push(pua);
+                }
+            }
+            c if (0xE000..=0xF8FF).contains(&(c as u32)) => out.push(c),
+            c if c as u32 >= 0xFFFE => out.push(c),
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    out
+}
+
+pub(crate) fn is_iso8859_1_encoding(name: &str) -> bool {
+    matches!(
+        normalize_encoding_name(name),
+        Some("iso-8859-1")
+    )
+}
+
 fn eq_ascii_ignore_case(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()

@@ -103,6 +103,7 @@ pub fn run_parser_test_with_options(
         kind: DocumentKind::Text,
         data: Vec::new(),
         last_byte_bit_count: None,
+        load_error: None,
     };
     if test.documents.is_empty() && test.expected_errors.is_none() {
         return Ok(TestResult {
@@ -114,6 +115,25 @@ pub fn run_parser_test_with_options(
     let config = RuntimeConfig {
         strict_eos: true,
     };
+
+    if let Some(load_err) = &doc.load_error {
+        if let Some(expected_errors) = &test.expected_errors {
+            if error_messages_match(expected_errors, load_err) {
+                return Ok(TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Pass,
+                });
+            }
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!("decode error mismatch: {load_err}")),
+            });
+        }
+        return Ok(TestResult {
+            name: test.name.clone(),
+            outcome: TestOutcome::Fail(alloc::format!("document load error: {load_err}")),
+        });
+    }
 
     let frame_bits = doc.significant_bit_length();
     if let Some(expected_errors) = &test.expected_errors {
