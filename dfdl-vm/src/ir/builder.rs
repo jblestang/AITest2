@@ -3,7 +3,7 @@ use crate::error::{Result, SchemaError};
 use crate::length_validate::{
     binary_length_validation_applies, validate_data_length_schema,
     validate_float_double_bit_length_schema, validate_packed_binary_properties_schema,
-    validate_signed_one_bit_length_schema, DaffodilTunables,
+    validate_signed_one_bit_length_schema, validate_text_alignment_schema, DaffodilTunables,
 };
 use crate::schema::{
     BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, OccursCountKind, Particle,
@@ -983,6 +983,7 @@ fn finalize_element_props(
     validate_binary_delimited(kind, &ir)?;
     validate_bcd_signed_integer_type(kind, &ir)?;
     validate_packed_binary_properties_schema(kind, &ir, strings)?;
+    validate_text_alignment_schema(kind, &ir, strings)?;
     validate_prefixed_character_encoding(kind, &ir, strings)?;
     validate_end_of_parent(kind, &ir)?;
     if kind == ValueKind::Boolean {

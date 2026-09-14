@@ -505,8 +505,14 @@ pub(crate) fn read_binary_scalar(
     use crate::ir::ValueKind;
 
     if props.length_kind == LengthKind::Delimited {
-        let bytes =
-            read_until_delimiters(cursor, props, strings, require_delimiter, stop_sequences)?;
+        let bytes = read_until_delimiters(
+            cursor,
+            props,
+            strings,
+            require_delimiter,
+            stop_sequences,
+            None,
+        )?;
         return decode_binary_scalar(kind, &bytes, props, strings, None);
     }
 
@@ -2574,6 +2580,7 @@ pub(crate) fn read_text_scalar(
         }
     }
 
+    let enc = encoding_name(props, strings)?;
     let raw = match props.length_kind {
         LengthKind::Fixed => {
             let len = props.length.ok_or(VmError::InvalidValue {
@@ -2583,7 +2590,7 @@ pub(crate) fn read_text_scalar(
                 cursor,
                 len,
                 props.length_units,
-                encoding_name(props, strings)?,
+                enc,
                 props.bit_order,
                 props.encoding_error_policy,
                 false,
@@ -2597,23 +2604,29 @@ pub(crate) fn read_text_scalar(
                 cursor,
                 len,
                 props.length_units,
-                encoding_name(props, strings)?,
+                enc,
                 props.bit_order,
                 props.encoding_error_policy,
                 false,
             )?
         }
         LengthKind::Delimited => {
-            read_until_delimiters(cursor, props, strings, require_delimiter, stop_sequences)?
+            read_until_delimiters(
+                cursor,
+                props,
+                strings,
+                require_delimiter,
+                stop_sequences,
+                Some(enc),
+            )?
         }
         LengthKind::Pattern => {
             let id = props.length_pattern.ok_or(VmError::InvalidValue {
                 message: "pattern length missing lengthPattern".into(),
             })?;
             let pat = pattern_str(strings, id)?;
-            let encoding = encoding_name(props, strings)?;
             let policy = props.encoding_error_policy;
-            let len = if pat == "." && normalize_encoding_name(encoding) == Some("utf-8") {
+            let len = if pat == "." && normalize_encoding_name(enc) == Some("utf-8") {
                 read_one_utf8_char(&cursor.data, cursor.pos, policy)?.1
             } else {
                 match_length_pattern(&cursor.data[cursor.pos..], pat).ok_or(VmError::InvalidValue {
@@ -2626,7 +2639,7 @@ pub(crate) fn read_text_scalar(
             if is_numeric_text_kind(kind) {
                 read_implicit_numeric_text(cursor, props, strings)
             } else {
-                read_until_delimiters(cursor, props, strings, false, stop_sequences)?
+                read_until_delimiters(cursor, props, strings, false, stop_sequences, Some(enc))?
             }
         }
         LengthKind::Prefixed => read_prefixed_payload(cursor, props, strings, field_name)?,
@@ -2637,7 +2650,6 @@ pub(crate) fn read_text_scalar(
         }
     };
 
-    let enc = encoding_name(props, strings)?;
     let text = if hex_charset_order(enc).is_some() {
         hex_charset_payload_to_text(&raw)
     } else {
@@ -3817,6 +3829,7 @@ fn read_until_delimiters(
     strings: &StringPool,
     require_delimiter: bool,
     stop_sequences: &[&IrProps],
+    encoding: Option<&str>,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences)?;
@@ -3835,7 +3848,7 @@ fn read_until_delimiters(
             return Ok(Vec::new());
         }
         if cursor.bit_count == 0 && remaining_bits % 8 == 0 {
-            let byte_len = remaining_bits / 8;
+            let byte_len = trim_byte_len_to_encoding(remaining_bits / 8, encoding);
             let end = cursor.pos.saturating_add(byte_len);
             if end <= cursor.data.len() {
                 let out = cursor.data[cursor.pos..end].to_vec();
@@ -3983,7 +3996,24 @@ pub(crate) fn read_delimited_bytes(
     require_delimiter: bool,
     stop_sequences: &[&IrProps],
 ) -> Result<Vec<u8>, crate::error::VmError> {
-    read_until_delimiters(cursor, props, strings, require_delimiter, stop_sequences)
+    read_until_delimiters(
+        cursor,
+        props,
+        strings,
+        require_delimiter,
+        stop_sequences,
+        None,
+    )
+}
+
+fn trim_byte_len_to_encoding(byte_len: usize, encoding: Option<&str>) -> usize {
+    let Some(enc) = encoding.and_then(crate::vm::encoding::normalize_encoding_name) else {
+        return byte_len;
+    };
+    match enc {
+        "utf-16be" | "utf-16le" => byte_len - (byte_len % 2),
+        _ => byte_len,
+    }
 }
 
 fn read_until_any_delimiter(
@@ -6117,7 +6147,8 @@ mod delimited_stop_tests {
         };
         let stops = [&row_seq, &cell_seq];
         let mut cursor = Cursor::new(b"\n");
-        let raw = read_until_delimiters(&mut cursor, &cell, &strings, false, &stops).unwrap();
+        let raw =
+            read_until_delimiters(&mut cursor, &cell, &strings, false, &stops, None).unwrap();
         assert!(raw.is_empty(), "expected empty before newline, got {raw:?}");
     }
 

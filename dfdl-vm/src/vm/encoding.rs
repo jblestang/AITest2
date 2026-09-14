@@ -34,6 +34,8 @@ pub(crate) fn hex_charset_order(name: &str) -> Option<HexCharsetOrder> {
 pub(crate) fn normalize_encoding_name(name: &str) -> Option<&'static str> {
     if eq_ascii_ignore_case(name, "utf-16be") || eq_ascii_ignore_case(name, "utf_16be") {
         Some("utf-16be")
+    } else if eq_ascii_ignore_case(name, "utf-16le") || eq_ascii_ignore_case(name, "utf_16le") {
+        Some("utf-16le")
     } else if eq_ascii_ignore_case(name, "utf-8") || eq_ascii_ignore_case(name, "utf8") {
         Some("utf-8")
     } else if eq_ascii_ignore_case(name, "ascii") || eq_ascii_ignore_case(name, "us-ascii") {
@@ -161,6 +163,7 @@ pub(crate) fn encode_document_text(text: &str, encoding: &str) -> Result<Vec<u8>
         Some("iso-8859-1") => encode_latin1(text),
         Some("ebcdic-cp-us") => encode_ebcdic_cp_us(text),
         Some("utf-16be") => Ok(encode_utf16be(text)),
+        Some("utf-16le") => Ok(encode_utf16le(text)),
         _ => Err(VmError::UnsupportedOperation {
             op: alloc::format!("document encoding `{encoding}`"),
         }),
@@ -182,7 +185,8 @@ pub(crate) fn decode_text_bytes(
             }
             Ok(bytes.iter().map(|b| *b as char).collect())
         }
-        Some("utf-16be") => decode_utf16be(bytes),
+        Some("utf-16be") => decode_utf16(bytes, false),
+        Some("utf-16le") => decode_utf16(bytes, true),
         Some("iso-8859-1") => Ok(decode_latin1(bytes)),
         Some("ebcdic-cp-us") => Ok(decode_ebcdic_cp_us(bytes)),
         _ => Err(VmError::UnsupportedOperation {
@@ -197,7 +201,7 @@ pub(crate) fn character_span_byte_length(
 ) -> Result<usize, VmError> {
     match normalize_encoding_name(encoding) {
         Some("utf-8") | Some("ascii") | Some("iso-8859-1") | Some("ebcdic-cp-us") => Ok(char_count),
-        Some("utf-16be") => char_count
+        Some("utf-16be") | Some("utf-16le") => char_count
             .checked_mul(2)
             .ok_or(VmError::InvalidValue {
                 message: "character span overflow".into(),
@@ -216,14 +220,8 @@ pub(crate) fn count_characters(
     match normalize_encoding_name(encoding) {
         Some("utf-8") => count_utf8_characters(bytes, policy),
         Some("ascii") | Some("iso-8859-1") | Some("ebcdic-cp-us") => Ok(bytes.len()),
-        Some("utf-16be") => {
-            if bytes.len() % 2 != 0 {
-                return Err(VmError::InvalidValue {
-                    message: "invalid UTF-16BE byte length".into(),
-                });
-            }
-            Ok(bytes.len() / 2)
-        }
+        Some("utf-16be") => count_utf16_code_units(bytes, "UTF-16BE"),
+        Some("utf-16le") => count_utf16_code_units(bytes, "UTF-16LE"),
         _ => Err(VmError::UnsupportedOperation {
             op: alloc::format!("character counting for encoding `{encoding}`"),
         }),
@@ -256,7 +254,7 @@ pub(crate) fn read_character_bytes(
             }
             *pos += n;
         }
-        Some("utf-16be") => {
+        Some("utf-16be") | Some("utf-16le") => {
             let bytes = n.checked_mul(2).ok_or(VmError::InvalidValue {
                 message: "character span overflow".into(),
             })?;
@@ -415,21 +413,45 @@ fn encode_utf16be(text: &str) -> Vec<u8> {
     out
 }
 
-fn decode_utf16be(bytes: &[u8]) -> Result<String, VmError> {
+fn count_utf16_code_units(bytes: &[u8], label: &str) -> Result<usize, VmError> {
     if bytes.len() % 2 != 0 {
         return Err(VmError::InvalidValue {
-            message: "invalid UTF-16BE byte length".into(),
+            message: alloc::format!("invalid {label} byte length"),
+        });
+    }
+    Ok(bytes.len() / 2)
+}
+
+fn decode_utf16(bytes: &[u8], le: bool) -> Result<String, VmError> {
+    let label = if le { "UTF-16LE" } else { "UTF-16BE" };
+    if bytes.len() % 2 != 0 {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("invalid {label} byte length"),
         });
     }
     let mut out = String::with_capacity(bytes.len() / 2);
     for chunk in bytes.chunks_exact(2) {
-        let unit = ((chunk[0] as u32) << 8) | chunk[1] as u32;
+        let unit = if le {
+            (chunk[0] as u32) | ((chunk[1] as u32) << 8)
+        } else {
+            ((chunk[0] as u32) << 8) | chunk[1] as u32
+        };
         let ch = char::from_u32(unit).ok_or(VmError::InvalidValue {
-            message: alloc::format!("invalid UTF-16BE code unit `0x{unit:04x}`"),
+            message: alloc::format!("invalid {label} code unit `0x{unit:04x}`"),
         })?;
         out.push(ch);
     }
     Ok(out)
+}
+
+fn encode_utf16le(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() * 2);
+    for ch in text.chars() {
+        let unit = ch as u32;
+        out.push((unit & 0xff) as u8);
+        out.push((unit >> 8) as u8);
+    }
+    out
 }
 
 #[cfg(test)]

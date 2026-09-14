@@ -11,6 +11,85 @@ fn uses_hex_charset_encoding(strings: &StringPool, enc: StringId) -> bool {
         .is_some()
 }
 
+fn text_encoding_alignment_bits(encoding: &str) -> u64 {
+    let enc = encoding.to_ascii_uppercase();
+    if enc.contains("UTF-16") {
+        16
+    } else {
+        8
+    }
+}
+
+fn implicit_text_encoding_alignment_bits(kind: ValueKind, encoding: &str) -> u64 {
+    if kind == ValueKind::String {
+        text_encoding_alignment_bits(encoding)
+    } else {
+        8
+    }
+}
+
+fn alignment_in_bits(props: &IrProps) -> u64 {
+    match props.alignment_units {
+        LengthUnits::Bits => props.alignment,
+        LengthUnits::Bytes | LengthUnits::Characters => props.alignment.saturating_mul(8),
+    }
+}
+
+fn text_prim_type_name(kind: ValueKind) -> Option<&'static str> {
+    match kind {
+        ValueKind::String => Some("String"),
+        ValueKind::Byte => Some("byte"),
+        ValueKind::UnsignedByte => Some("unsignedByte"),
+        ValueKind::Short => Some("short"),
+        ValueKind::UnsignedShort => Some("unsignedShort"),
+        ValueKind::Int => Some("int"),
+        ValueKind::UnsignedInt => Some("unsignedInt"),
+        ValueKind::Long => Some("long"),
+        ValueKind::Integer => Some("integer"),
+        ValueKind::Float => Some("float"),
+        ValueKind::Double => Some("double"),
+        ValueKind::Decimal => Some("decimal"),
+        ValueKind::Boolean => Some("boolean"),
+        ValueKind::DateTime => Some("dateTime"),
+        ValueKind::Time => Some("time"),
+        _ => None,
+    }
+}
+
+/// Explicit text alignment must be a multiple of the encoding's natural alignment (DFDL-12-025R).
+pub fn validate_text_alignment_schema(
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), SchemaError> {
+    if kind == ValueKind::Complex {
+        return Ok(());
+    }
+    let text_field = props.representation == Representation::Text || kind == ValueKind::String;
+    if !text_field {
+        return Ok(());
+    }
+    if props.alignment_implicit {
+        return Ok(());
+    }
+    let Some(type_name) = text_prim_type_name(kind) else {
+        return Ok(());
+    };
+    let encoding = strings
+        .get(props.encoding)
+        .unwrap_or("utf-8");
+    let enc_align = implicit_text_encoding_alignment_bits(kind, encoding);
+    let align_bits = alignment_in_bits(props);
+    if enc_align == 0 || align_bits % enc_align == 0 {
+        return Ok(());
+    }
+    Err(SchemaError::InvalidProperty {
+        message: alloc::format!(
+            "Schema Definition Error: The given alignment ({align_bits} bits) must be a multiple of the encoding specified alignment ({enc_align} bits) for {type_name} when representation='text'. Encoding: {encoding}"
+        ),
+    })
+}
+
 pub fn is_packed_binary_rep(rep: BinaryNumberRep) -> bool {
     matches!(
         rep,

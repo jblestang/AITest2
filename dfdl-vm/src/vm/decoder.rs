@@ -815,6 +815,7 @@ impl<'a> Decoder<'a> {
                     self.enclosing_names.borrow_mut().pop();
                     self.enclosing.borrow_mut().pop();
                     self.consume_terminator(&props, cursor)?;
+                    consume_element_trailing_framing(cursor, &props)?;
                     Ok(wrap_named(
                         self.ctx.strings().get(*name)?,
                         inner,
