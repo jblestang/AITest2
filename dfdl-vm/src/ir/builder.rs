@@ -288,8 +288,11 @@ impl<'a> IrBuilder<'a> {
                                 self.tunables,
                             )?;
                             if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
-                                if let TypeDef::Simple { base, .. } = type_def {
+                                if let TypeDef::Simple { base, props: type_props, .. } = type_def {
                                     apply_restriction_facets(&mut merged, base);
+                                    if let Some(signed) = type_props.decimal_signed {
+                                        merged.decimal_signed = signed;
+                                    }
                                 }
                             }
                             validate_implicit_text_length(kind, &merged)?;
@@ -927,6 +930,10 @@ fn finalize_element_props(
     strings: &StringPool,
     tunables: DaffodilTunables,
 ) -> Result<IrProps> {
+    use crate::schema::NilKind;
+    if ir.nillable && ir.nil_value.is_some() && ir.nil_kind.is_none() {
+        ir.nil_kind = Some(NilKind::LiteralValue);
+    }
     validate_binary_delimited(kind, &ir)?;
     validate_bcd_signed_integer_type(kind, &ir)?;
     validate_packed_binary_properties_schema(kind, &ir, strings)?;
@@ -1955,9 +1962,15 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.encoding = overlay.encoding;
     out.encoding_error_policy = overlay.encoding_error_policy;
     out.nillable = overlay.nillable;
-    out.nil_kind = overlay.nil_kind;
-    out.nil_value = overlay.nil_value;
-    out.separator_suppression_policy = overlay.separator_suppression_policy;
+    if overlay.nil_kind.is_some() {
+        out.nil_kind = overlay.nil_kind;
+    }
+    if overlay.nil_value.is_some() {
+        out.nil_value = overlay.nil_value;
+    }
+    if overlay.separator_suppression_policy.is_some() {
+        out.separator_suppression_policy = overlay.separator_suppression_policy;
+    }
     out.ignore_case = overlay.ignore_case;
     out.text_trim_kind = overlay.text_trim_kind;
     out.text_pad_kind = overlay.text_pad_kind;

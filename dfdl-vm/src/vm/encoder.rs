@@ -173,7 +173,7 @@ impl<'a> Encoder<'a> {
             DfdlValue::Array(items) => items.as_slice(),
             single => core::slice::from_ref(single),
         };
-        let suppressed = trailing_suppressed_count(items, props, self.ctx.strings())?;
+        let suppressed = trailing_suppressed_count(items, props, self.ctx.strings(), None)?;
         let encode_len = items.len().saturating_sub(suppressed);
         for (idx, item) in items.iter().take(encode_len).enumerate() {
             self.write_occurrence_separator(props, out, bit_count, idx, encode_len)?;
@@ -225,7 +225,8 @@ impl<'a> Encoder<'a> {
             DfdlValue::Array(items) => items.as_slice(),
             single => core::slice::from_ref(single),
         };
-        let suppressed = trailing_suppressed_count(items, props, self.ctx.strings())?;
+        let suppressed =
+            trailing_suppressed_count(items, props, self.ctx.strings(), Some(sep_props))?;
         let encode_len = items.len().saturating_sub(suppressed);
         for (idx, item) in items.iter().take(encode_len).enumerate() {
             if sep_props.separator_position != SeparatorPosition::Postfix {
@@ -374,7 +375,8 @@ impl<'a> Encoder<'a> {
             DfdlValue::Array(items) => items.as_slice(),
             single => core::slice::from_ref(single),
         };
-        let suppressed = trailing_suppressed_count(items, props, self.ctx.strings())?;
+        let suppressed =
+            trailing_suppressed_count(items, props, self.ctx.strings(), Some(sep_props))?;
         let encode_len = items.len().saturating_sub(suppressed);
         for (idx, item) in items.iter().take(encode_len).enumerate() {
             if sep_props.separator_position != SeparatorPosition::Postfix {

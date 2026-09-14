@@ -1300,6 +1300,29 @@ fn parse_field_text_number(
         return Ok(trimmed.into());
     };
     let raw_pattern = strings.get(pat_id)?;
+    if matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
+        && matches!(
+            kind,
+            ValueKind::Int
+                | ValueKind::Integer
+                | ValueKind::Long
+                | ValueKind::Short
+                | ValueKind::Byte
+                | ValueKind::UnsignedInt
+                | ValueKind::UnsignedShort
+                | ValueKind::UnsignedByte
+        )
+        && !raw_pattern.contains('V')
+        && !raw_pattern.contains('.')
+        && !raw_pattern.contains('E')
+        && !raw_pattern.contains('e')
+        && trimmed.contains(':')
+    {
+        return Err(unable_parse_from_text(
+            type_name_for_parse(kind, props),
+            trimmed,
+        ));
+    }
     if props.text_number_rep == crate::schema::TextNumberRep::Standard {
         validate_standard_v_pattern_runtime(raw_pattern, kind)?;
         if raw_pattern.contains('V')
@@ -2339,6 +2362,12 @@ pub(crate) fn try_consume_nillable_element_nil(
                 )
                 .is_some()
             {
+                let parent_owns = parent_sequence.is_some_and(|parent| {
+                    parent.terminator == Some(term_id)
+                });
+                if parent_owns {
+                    return Ok(true);
+                }
                 let _ = cursor.consume_delimiter(term, props.ignore_case);
                 return Ok(true);
             }
@@ -2350,6 +2379,19 @@ pub(crate) fn try_consume_nillable_element_nil(
                     && crate::schema::match_delimiter_opts(
                         &cursor.data[cursor.pos..],
                         sep,
+                        parent.ignore_case,
+                    )
+                    .is_some()
+                {
+                    return Ok(true);
+                }
+            }
+            if let Some(term_id) = parent.terminator {
+                let term = strings.get(term_id)?;
+                if !term.is_empty()
+                    && crate::schema::match_delimiter_opts(
+                        &cursor.data[cursor.pos..],
+                        term,
                         parent.ignore_case,
                     )
                     .is_some()
@@ -2518,6 +2560,17 @@ pub(crate) fn read_text_scalar(
         if let Some(v) = default_value_for(kind, props, strings) {
             return Ok(v);
         }
+        if is_numeric_text_kind(kind)
+            && matches!(
+                props.length_kind,
+                LengthKind::Delimited | LengthKind::Implicit
+            )
+        {
+            let type_name = value_kind_type_name(kind, Some(props));
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("Parse Error. Unable to parse {type_name} from empty string"),
+            });
+        }
     }
 
     if props.custom_text_number_pattern
@@ -2550,6 +2603,7 @@ pub(crate) fn read_text_scalar(
             parse_unsigned_radix(&num, base).map(DfdlValue::UnsignedShort)
         }
         Int => {
+            reject_text_standard_special_for_integer(trimmed, props, strings, "xs:int")?;
             let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
@@ -3903,6 +3957,9 @@ pub(crate) fn is_suppressible_empty_representation(
 ) -> Result<bool, crate::error::VmError> {
     match value {
         crate::value::DfdlValue::Null => {
+            if props.nillable && nil_value_includes_empty(props, strings)? {
+                return Ok(true);
+            }
             Ok(nil_first_alternative(props, strings)?.is_some_and(|nil| nil.is_empty()))
         }
         crate::value::DfdlValue::String(text) if text.text.is_empty() => Ok(true),
@@ -3912,11 +3969,15 @@ pub(crate) fn is_suppressible_empty_representation(
 
 pub(crate) fn trailing_suppressed_count(
     items: &[crate::value::DfdlValue],
-    props: &IrProps,
+    item_props: &IrProps,
     strings: &StringPool,
+    seq_props: Option<&IrProps>,
 ) -> Result<usize, crate::error::VmError> {
+    let policy = item_props
+        .separator_suppression_policy
+        .or_else(|| seq_props.and_then(|p| p.separator_suppression_policy));
     if !matches!(
-        props.separator_suppression_policy,
+        policy,
         Some(SeparatorSuppressionPolicy::TrailingEmpty)
             | Some(SeparatorSuppressionPolicy::TrailingEmptyStrict)
     ) {
@@ -3924,7 +3985,7 @@ pub(crate) fn trailing_suppressed_count(
     }
     let mut count = 0usize;
     for item in items.iter().rev() {
-        if is_suppressible_empty_representation(item, props, strings)? {
+        if is_suppressible_empty_representation(item, item_props, strings)? {
             count += 1;
         } else {
             break;

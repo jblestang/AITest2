@@ -344,19 +344,8 @@ impl<'a> Decoder<'a> {
         let min = props.occurs_min;
         let max = props.occurs_max.unwrap_or(u64::MAX);
         let mut items = Vec::new();
-        let mut unbounded_iters = 0usize;
 
         while (items.len() as u64) < max {
-            if max == u64::MAX {
-                unbounded_iters += 1;
-                if unbounded_iters > cursor.data.len().saturating_add(8) {
-                    return Err(VmError::InvalidValue {
-                        message: "Parse Error. unbounded repeating element exceeded safe iteration limit"
-                            .into(),
-                    }
-                    .into());
-                }
-            }
             if items.len() as u64 >= min && cursor.is_empty() {
                 break;
             }
@@ -380,11 +369,13 @@ impl<'a> Decoder<'a> {
             ) {
                 Ok(v) => {
                     if max == u64::MAX
-                        && props.representation == Representation::Binary
-                        && props.length_kind == LengthKind::Delimited
                         && cursor.pos == saved.pos
                         && !cursor.is_frame_consumed()
                     {
+                        if matches!(v, DfdlValue::Null) {
+                            items.push(v);
+                            continue;
+                        }
                         if (items.len() as u64) >= min {
                             *cursor = before_occurrence_sep;
                             break;
@@ -806,6 +797,20 @@ impl<'a> Decoder<'a> {
                     )
                     .map_err(Into::into)
                 } else {
+                    if props.nillable
+                        && crate::vm::runtime::try_consume_nillable_element_nil(
+                            cursor,
+                            &props,
+                            parent_sequence,
+                            self.ctx.strings(),
+                        )?
+                    {
+                        return Ok(wrap_named(
+                            self.ctx.strings().get(*name)?,
+                            DfdlValue::Null,
+                            *kind,
+                        ));
+                    }
                     let field_name = self.ctx.strings().get(*name)?.to_string();
                     let mut delim_meta = FieldDelimiterMeta::default();
                     let value = read_simple(
