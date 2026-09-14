@@ -72,6 +72,12 @@ pub fn pre_element_alignment_applies(
     encoding: &str,
 ) -> bool {
     use crate::schema::{LengthKind, LengthUnits, Representation};
+    if kind == ValueKind::HexBinary
+        && props.length_units == LengthUnits::Bits
+        && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
+    {
+        return false;
+    }
     if props.representation != Representation::Binary {
         return true;
     }

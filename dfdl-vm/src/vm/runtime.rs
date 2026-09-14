@@ -271,7 +271,13 @@ impl<'a> Cursor<'a> {
                     let last = array.len() - 1;
                     let mask = match field_order {
                         BitOrder::MostSignificantBitFirst => 0xFFu8 << (8 - fragment),
-                        BitOrder::LeastSignificantBitFirst => (1u8 << fragment) - 1,
+                        BitOrder::LeastSignificantBitFirst => {
+                            if fragment >= 8 {
+                                0xFF
+                            } else {
+                                ((1u16 << fragment) - 1) as u8
+                            }
+                        }
                     };
                     array[last] &= mask;
                 }
@@ -292,13 +298,16 @@ impl<'a> Cursor<'a> {
             let byte = self.data[self.pos];
             let avail = 8 - self.bit_count as usize;
             let take = bits_left.min(avail);
+            let chunk_mask = if take >= 8 {
+                0xFFu8
+            } else {
+                ((1u16 << take) - 1) as u8
+            };
             let chunk = match field_order {
-                BitOrder::LeastSignificantBitFirst => {
-                    (byte >> self.bit_count) & ((1u8 << take) - 1)
-                }
+                BitOrder::LeastSignificantBitFirst => (byte >> self.bit_count) & chunk_mask,
                 BitOrder::MostSignificantBitFirst => {
                     let shift = 8 - self.bit_count as usize - take;
-                    (byte >> shift) & ((1u8 << take) - 1)
+                    (byte >> shift) & chunk_mask
                 }
             };
             for b in 0..take {
@@ -325,7 +334,13 @@ impl<'a> Cursor<'a> {
             let last = array.len() - 1;
             let mask = match field_order {
                 BitOrder::MostSignificantBitFirst => 0xFFu8 << (8 - fragment),
-                BitOrder::LeastSignificantBitFirst => (1u8 << fragment) - 1,
+                BitOrder::LeastSignificantBitFirst => {
+                    if fragment >= 8 {
+                        0xFF
+                    } else {
+                        ((1u16 << fragment) - 1) as u8
+                    }
+                }
             };
             array[last] &= mask;
         }
@@ -7778,6 +7793,7 @@ pub(crate) fn read_simple(
         && props.representation == Representation::Binary
         && props.length_units == LengthUnits::Bits
         && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
+        && kind != crate::ir::ValueKind::HexBinary
         && !matches!(
             props.length_kind,
             LengthKind::Delimited | LengthKind::Prefixed
