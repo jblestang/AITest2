@@ -2912,6 +2912,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.calendar_time_zone.is_some() {
         out.calendar_time_zone = overlay.calendar_time_zone;
     }
+    if overlay.calendar_time_zone_defined {
+        out.calendar_time_zone_defined = true;
+    }
     out.calendar_century_start = overlay.calendar_century_start;
     if overlay.calendar_language.is_some() {
         out.calendar_language = overlay.calendar_language;

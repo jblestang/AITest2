@@ -102,6 +102,7 @@ impl<'a> XsdParser<'a> {
         }
         self.doc.format_defaults.props =
             merge_dfdl_props(self.doc.format_defaults.props.clone(), other.format_defaults.props);
+        self.doc.format_defaults.props.calendar_time_zone_defined = false;
         Ok(())
     }
 
@@ -1175,8 +1176,12 @@ impl<'a> XsdParser<'a> {
                 }
             }
             if !self.in_define_format {
+                let mut format_props = props.clone();
+                format_props.calendar_time_zone_defined = false;
                 self.doc.format_defaults.props =
-                    merge_dfdl_props(self.doc.format_defaults.props.clone(), props.clone());
+                    merge_dfdl_props(self.doc.format_defaults.props.clone(), format_props);
+                // Returned `props` must not carry format-level TZ as element-defined.
+                props.calendar_time_zone_defined = false;
             }
         }
 
@@ -1319,7 +1324,9 @@ impl<'a> XsdParser<'a> {
             if self.doc.named_formats.contains_key(&name) {
                 return Err(duplicate_format_definition(&name).into());
             }
-            self.doc.named_formats.insert(name, props.clone());
+            let mut stored = props.clone();
+            stored.calendar_time_zone_defined = false;
+            self.doc.named_formats.insert(name, stored);
         }
         Ok(props)
     }
@@ -1532,6 +1539,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.calendar_time_zone.is_some() {
         base.calendar_time_zone = overlay.calendar_time_zone;
+    }
+    if overlay.calendar_time_zone_defined {
+        base.calendar_time_zone_defined = true;
     }
     if overlay.calendar_century_start.is_some() {
         base.calendar_century_start = overlay.calendar_century_start;

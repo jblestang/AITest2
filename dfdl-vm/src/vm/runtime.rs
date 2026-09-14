@@ -1286,6 +1286,7 @@ fn decode_binary_calendar(
         props.calendar_date_only,
         &text,
         default_utc,
+        false,
     )?;
     calendar_value_from_text(kind, text)
 }
@@ -1567,21 +1568,29 @@ fn lexical_has_xsd_timezone(parsed: &str) -> bool {
 fn append_packed_calendar_timezone(
     props: &IrProps,
     strings: &StringPool,
-    kind: crate::ir::ValueKind,
+    _kind: crate::ir::ValueKind,
     date_only: bool,
     parsed: &str,
     default_utc_when_missing: bool,
+    allow_inherited_format_timezone: bool,
 ) -> Result<alloc::string::String, crate::error::VmError> {
     if lexical_has_xsd_timezone(parsed) {
         return Ok(parsed.into());
     }
+    let timezone_suffix = || {
+        props.calendar_time_zone.and_then(|id| strings.get(id).ok()).and_then(
+            |raw| crate::vm::calendar_binary::calendar_timezone_xsd_suffix(raw),
+        )
+    };
     if props.calendar_time_zone_defined {
-        if let Some(id) = props.calendar_time_zone {
-            if let Ok(raw) = strings.get(id) {
-                if let Some(suffix) = crate::vm::calendar_binary::calendar_timezone_xsd_suffix(raw) {
-                    return Ok(alloc::format!("{parsed}{suffix}"));
-                }
-            }
+        if let Some(suffix) = timezone_suffix() {
+            return Ok(alloc::format!("{parsed}{suffix}"));
+        }
+        return Ok(parsed.into());
+    }
+    if allow_inherited_format_timezone {
+        if let Some(suffix) = timezone_suffix() {
+            return Ok(alloc::format!("{parsed}{suffix}"));
         }
     }
     if default_utc_when_missing && parsed.contains('T') && !date_only {
@@ -4451,6 +4460,9 @@ pub(crate) fn read_text_scalar(
                         parsed_text?
                     }
                 };
+                use crate::schema::{CalendarPatternKind, Representation};
+                let inherit_format_tz = props.representation == Representation::Text
+                    && props.calendar_pattern_kind == CalendarPatternKind::Explicit;
                 let with_tz = append_packed_calendar_timezone(
                     props,
                     strings,
@@ -4458,6 +4470,7 @@ pub(crate) fn read_text_scalar(
                     props.calendar_date_only,
                     &parsed,
                     false,
+                    inherit_format_tz,
                 )?;
                 Ok(DfdlValue::DateTime(with_tz))
             } else {
