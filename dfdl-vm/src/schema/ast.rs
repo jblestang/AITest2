@@ -335,6 +335,8 @@ pub enum OutputValueCalc {
     ContentLengthSibling(LengthUnits, i64),
     ValueLengthSibling(LengthUnits, i64),
     StringLengthSibling,
+    /// `fn:substring(../sibling, start, length)` — 1-based XPath start index.
+    Substring { start: usize, length: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

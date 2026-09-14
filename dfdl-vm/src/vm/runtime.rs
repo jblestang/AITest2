@@ -485,7 +485,11 @@ impl<'a> Cursor<'a> {
 }
 
 pub(crate) fn encode_absolute_bit_index(out: &[u8], bit_count: u8) -> usize {
-    out.len() * 8 + bit_count as usize
+    if bit_count == 0 {
+        out.len().saturating_mul(8)
+    } else {
+        out.len().saturating_sub(1).saturating_mul(8) + bit_count as usize
+    }
 }
 
 pub(crate) fn effective_encode_bit_order(
@@ -608,6 +612,15 @@ fn write_bits_from_stream(
     write_bits_from_stream_with_config(out, bit_count, src, n, bit_order, None)
 }
 
+fn read_packed_bit_at(data: &[u8], bit_idx: usize, order: BitOrder) -> u8 {
+    let byte = data[bit_idx / 8];
+    let bit_in_byte = bit_idx % 8;
+    match order {
+        BitOrder::MostSignificantBitFirst => (byte >> (7 - bit_in_byte)) & 1,
+        BitOrder::LeastSignificantBitFirst => (byte >> bit_in_byte) & 1,
+    }
+}
+
 fn write_bits_from_stream_with_config(
     out: &mut alloc::vec::Vec<u8>,
     bit_count: &mut u8,
@@ -616,10 +629,9 @@ fn write_bits_from_stream_with_config(
     schema_order: BitOrder,
     config: Option<&RuntimeConfig>,
 ) -> Result<(), crate::error::VmError> {
-    let mut cursor = Cursor::new(src);
-    for _ in 0..n {
-        let bit = cursor.read_stream_bit(schema_order)?;
-        write_stream_bit_with_config(out, bit_count, bit as u8, schema_order, config);
+    for i in 0..n {
+        let bit = read_packed_bit_at(src, i, schema_order);
+        write_stream_bit_with_config(out, bit_count, bit, schema_order, config);
     }
     Ok(())
 }
@@ -7700,9 +7712,10 @@ pub(crate) fn write_alignment_for_kind(
     props: &IrProps,
     kind: crate::ir::ValueKind,
     encoding: &str,
+    config: Option<&RuntimeConfig>,
 ) -> Result<(), crate::error::VmError> {
     let (align, units) = crate::vm::alignment::resolved_alignment(kind, props, encoding);
-    write_alignment_values(out, bit_count, props, align, units, None)
+    write_alignment_values(out, bit_count, props, align, units, config)
 }
 
 fn write_alignment_values(
@@ -9278,5 +9291,43 @@ mod delimited_stop_tests {
             format_calendar_text("08:43.-0800", "hh:mm.Z", false, 53, default_cal_cfg(), false, false).unwrap(),
             "08:43:00-08:00"
         );
+    }
+}
+
+#[cfg(test)]
+mod tdml_encode_bit_index_tests {
+    use super::*;
+    use crate::schema::BitOrder;
+
+    #[test]
+    fn encode_absolute_bit_index_partial_byte() {
+        let out = [0xff_u8];
+        assert_eq!(encode_absolute_bit_index(&out, 7), 7);
+        assert_eq!(encode_absolute_bit_index(&out, 0), 8);
+    }
+
+    #[test]
+    fn tdml_region_msbf_through_full_byte() {
+        let regions = vec![
+            (BitOrder::MostSignificantBitFirst, 8),
+            (BitOrder::LeastSignificantBitFirst, 24),
+            (BitOrder::MostSignificantBitFirst, 8),
+        ];
+        let config = RuntimeConfig {
+            encode_tdml_bit_regions: Some(regions),
+            ..RuntimeConfig::default()
+        };
+        let mut out = Vec::new();
+        let mut bc = 0u8;
+        write_stream_bits_with_config(
+            &mut out,
+            &mut bc,
+            255,
+            8,
+            BitOrder::MostSignificantBitFirst,
+            Some(&config),
+        );
+        assert_eq!(out, [0xff]);
+        assert_eq!(bc, 0);
     }
 }

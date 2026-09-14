@@ -194,6 +194,7 @@ impl<'a> Encoder<'a> {
                         props,
                         *kind,
                         encoding_name(props, self.ctx.strings())?,
+                        Some(&self.ctx.config),
                     )
                     .map_err(Error::from)?;
                     let schema_ctx =
@@ -785,10 +786,6 @@ fn precompute_output_values<'a>(
                 continue;
             }
             let key = enc.ctx.strings().get(*name)?.to_string();
-            // Unparse uses infoset values when present; OVC fills absent fields only.
-            if effective.contains_key(&key) {
-                continue;
-            }
             let computed =
                 eval_output_value_calc(enc, props, &effective, children, parent_props)?;
             effective.insert(key, computed);
@@ -953,6 +950,22 @@ fn eval_output_value_calc(
             } else {
                 length_in_units(value_byte_length(sib_val)?, units)? as i64 + addend
             }
+        }
+        OutputValueCalc::Substring { start, length } => {
+            let sib = sibling_from_map(props.output_value_calc_sibling, map, strings)?;
+            let text = match sib {
+                DfdlValue::String(s) => s.text.as_str(),
+                DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => s.as_str(),
+                other => {
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!("substring on unsupported value `{other:?}`"),
+                    }
+                    .into());
+                }
+            };
+            let start0 = start.saturating_sub(1);
+            let slice: String = text.chars().skip(start0).take(length).collect();
+            return Ok(DfdlValue::string(slice));
         }
     };
     Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {

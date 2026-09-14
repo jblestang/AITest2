@@ -2107,6 +2107,19 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
                 Some(local_name_from_qname(name).to_string()),
             ))
         }
+        ("fn:substring", sib) => {
+            let sub_args = split_top_level_commas(args);
+            if sub_args.len() != 3 {
+                return None;
+            }
+            let name = sub_args[0].strip_prefix("../")?;
+            let start: usize = sub_args[1].parse().ok()?;
+            let length: usize = sub_args[2].parse().ok()?;
+            Some((
+                OutputValueCalc::Substring { start, length },
+                Some(local_name_from_qname(name).to_string()),
+            ))
+        }
         _ => None,
     }
 }
