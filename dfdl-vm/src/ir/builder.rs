@@ -1456,13 +1456,32 @@ fn validate_implicit_text_length(kind: ValueKind, props: &IrProps) -> Result<()>
         }
         .into());
     }
+    let type_label = implicit_text_length_type_label(kind);
     Err(SchemaError::InvalidProperty {
         message: alloc::format!(
-            "Schema Definition Error. type {} representation text lengthKind implicit is not allowed",
-            value_kind_type_name(kind)
+            "Schema Definition Error. type {type_label} lengthKind='implicit' representation='text' is not allowed"
         ),
     }
     .into())
+}
+
+fn implicit_text_length_type_label(kind: ValueKind) -> &'static str {
+    match kind {
+        ValueKind::Integer => "Integer",
+        ValueKind::Decimal => "Decimal",
+        ValueKind::Double => "Double",
+        ValueKind::Float => "Float",
+        ValueKind::Boolean => "Boolean",
+        ValueKind::Byte => "Byte",
+        ValueKind::Short => "Short",
+        ValueKind::Int => "Int",
+        ValueKind::Long => "Long",
+        ValueKind::UnsignedByte => "UnsignedByte",
+        ValueKind::UnsignedShort => "UnsignedShort",
+        ValueKind::UnsignedInt => "UnsignedInt",
+        ValueKind::DateTime => "DateTime",
+        _ => value_kind_type_name(kind),
+    }
 }
 
 fn validate_end_of_parent(kind: ValueKind, props: &IrProps) -> Result<()> {

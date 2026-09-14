@@ -2995,6 +2995,7 @@ pub(crate) fn read_text_scalar(
     let value = match kind {
         Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
         Byte => {
+            reject_internal_whitespace_explicit_field(trimmed, "xs:byte", props, base)?;
             let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
@@ -3003,7 +3004,8 @@ pub(crate) fn read_text_scalar(
             parse_int_typed_with_base(&num, "xs:byte", base, trimmed).map(DfdlValue::Byte)
         }
         UnsignedByte => {
-            let num = if base == 10 && props.custom_text_number_pattern {
+            reject_internal_whitespace_explicit_field(trimmed, "xs:unsignedByte", props, base)?;
+            let num = if base == 10 && unsigned_uses_text_number_pattern(trimmed, props) {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else if base == 10 {
                 lax_numeric_field_text(trimmed, props).to_string()
@@ -3017,6 +3019,7 @@ pub(crate) fn read_text_scalar(
             })
         }
         Short => {
+            reject_internal_whitespace_explicit_field(trimmed, "xs:short", props, base)?;
             let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
@@ -3025,7 +3028,8 @@ pub(crate) fn read_text_scalar(
             parse_int_typed_with_base(&num, "xs:short", base, trimmed).map(DfdlValue::Short)
         }
         UnsignedShort => {
-            let num = if base == 10 && props.custom_text_number_pattern {
+            reject_internal_whitespace_explicit_field(trimmed, "xs:unsignedShort", props, base)?;
+            let num = if base == 10 && unsigned_uses_text_number_pattern(trimmed, props) {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else if base == 10 {
                 lax_numeric_field_text(trimmed, props).to_string()
@@ -3059,7 +3063,7 @@ pub(crate) fn read_text_scalar(
         }
         UnsignedInt => {
             reject_internal_whitespace_explicit_field(trimmed, "xs:unsignedInt", props, base)?;
-            let num = if base == 10 && props.custom_text_number_pattern {
+            let num = if base == 10 && unsigned_uses_text_number_pattern(trimmed, props) {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else if base == 10 {
                 lax_numeric_field_text(trimmed, props).to_string()
@@ -4936,6 +4940,10 @@ where
     parse_int_typed_with_base(s, type_name, base, s)
 }
 
+fn unsigned_uses_text_number_pattern(trimmed: &str, props: &IrProps) -> bool {
+    props.custom_text_number_pattern || trimmed.contains(',')
+}
+
 fn lax_numeric_field_text<'a>(text: &'a str, props: &IrProps) -> &'a str {
     use crate::schema::BinaryNumberCheckPolicy;
     if props.text_standard_base == 10 && props.text_number_check_policy == BinaryNumberCheckPolicy::Lax {
@@ -5076,6 +5084,12 @@ fn parse_unbounded_integer_decimal(s: &str, base: u32, non_negative: bool) -> Re
     } else {
         "xs:integer"
     };
+    if base == 10 {
+        let trimmed = s.trim();
+        if trimmed.contains('.') && !trimmed.contains('E') && !trimmed.contains('e') {
+            return Err(unable_parse_from_text(type_name, s));
+        }
+    }
     if base != 10 {
         let trimmed = s.trim();
         if trimmed.is_empty() {
@@ -5102,8 +5116,40 @@ fn parse_unbounded_integer_decimal(s: &str, base: u32, non_negative: bool) -> Re
     if non_negative && sign < 0 {
         return Err(unable_parse_from_text(type_name, s));
     }
-    let abs = parse_u128_radix_base10(digits, base, type_name, s)?;
-    Ok(decimal_from_sign_magnitude(sign, abs))
+    let abs = parse_unbounded_abs_decimal(digits, base, type_name, s)?;
+    Ok(decimal_from_sign_magnitude_str(sign, &abs))
+}
+
+fn parse_unbounded_abs_decimal(
+    digits: &str,
+    base: u32,
+    type_name: &str,
+    field_text: &str,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    if base == 10 {
+        if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            return Ok(strip_leading_zeros_decimal(digits));
+        }
+        return parse_u128_radix_base10(digits, base, type_name, field_text).map(|v| v.to_string());
+    }
+    parse_u128_radix_base10(digits, base, type_name, field_text).map(|v| v.to_string())
+}
+
+fn strip_leading_zeros_decimal(digits: &str) -> alloc::string::String {
+    let trimmed = digits.trim_start_matches('0');
+    if trimmed.is_empty() {
+        "0".into()
+    } else {
+        trimmed.into()
+    }
+}
+
+fn decimal_from_sign_magnitude_str(sign: i64, abs: &str) -> alloc::string::String {
+    if sign < 0 {
+        alloc::format!("-{abs}")
+    } else {
+        abs.to_string()
+    }
 }
 
 fn parse_u128_radix_base10(
