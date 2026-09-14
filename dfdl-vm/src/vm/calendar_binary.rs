@@ -38,6 +38,22 @@ fn format_tz_suffix(offset_secs: i64) -> alloc::string::String {
     alloc::format!("{sign}{hh:02}:{mm:02}")
 }
 
+fn epoch_had_explicit_timezone(epoch_raw: &str) -> bool {
+    let iso = epoch_raw.trim();
+    iso.rfind('+').is_some_and(|i| i > 10)
+        || iso
+            .get(10..)
+            .and_then(|tail| tail.rfind('-'))
+            .is_some()
+}
+
+fn format_tz_suffix_from_epoch(epoch_raw: &str, offset_secs: i64) -> alloc::string::String {
+    if offset_secs == 0 && epoch_had_explicit_timezone(epoch_raw) {
+        return "+00:00".into();
+    }
+    format_tz_suffix(offset_secs)
+}
+
 /// Format absolute unix time using the timezone from `binaryCalendarEpoch` when present.
 pub fn format_binary_calendar_datetime(
     secs: i64,
@@ -47,7 +63,7 @@ pub fn format_binary_calendar_datetime(
     let (_, offset_secs) = split_epoch_timezone(epoch_raw.trim());
     let display_secs = secs + offset_secs;
     let mut out = format_unix_datetime_utc_millis(display_secs, micros);
-    out.push_str(&format_tz_suffix(offset_secs));
+    out.push_str(&format_tz_suffix_from_epoch(epoch_raw, offset_secs));
     out
 }
 
@@ -447,5 +463,12 @@ mod calendar_tests {
         let base = parse_calendar_epoch_unix("2018-01-01T09:13:42+09:00").unwrap();
         let out = format_binary_calendar_datetime(base + 1, 0, "2018-01-01T09:13:42+09:00");
         assert_eq!(out, "2018-01-01T09:13:43+09:00");
+    }
+
+    #[test]
+    fn binary_calendar_epoch_utc_zero_offset_suffix() {
+        let base = parse_calendar_epoch_unix("1870-01-01T00:05:00+00:00").unwrap();
+        let out = format_binary_calendar_datetime(base - 1, 0, "1870-01-01T00:05:00+00:00");
+        assert!(out.ends_with("+00:00"), "{out}");
     }
 }

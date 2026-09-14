@@ -756,8 +756,10 @@ fn decode_binary_scalar(
     if kind == ValueKind::Decimal {
         return decode_decimal_binary(bytes, props, strings);
     }
-    if kind == ValueKind::DateTime {
-        return decode_binary_datetime(bytes, props, strings);
+    if matches!(kind, ValueKind::DateTime | ValueKind::Time)
+        && calendar_binary_rep(props)
+    {
+        return decode_binary_calendar(kind, bytes, props, strings);
     }
 
     match props.binary_number_rep {
@@ -1055,7 +1057,19 @@ fn packed_digit_string(bytes: &[u8], le: bool, codes: &PackedSignCodes) -> alloc
     out
 }
 
-fn decode_binary_datetime(
+fn calendar_binary_rep(props: &IrProps) -> bool {
+    matches!(
+        props.binary_calendar_rep,
+        BinaryNumberRep::BinarySeconds
+            | BinaryNumberRep::BinaryMilliseconds
+            | BinaryNumberRep::Bcd
+            | BinaryNumberRep::Ibm4690Packed
+            | BinaryNumberRep::PackedBcd
+    )
+}
+
+fn decode_binary_calendar(
+    kind: crate::ir::ValueKind,
     bytes: &[u8],
     props: &IrProps,
     strings: &StringPool,
@@ -1077,24 +1091,22 @@ fn decode_binary_datetime(
         return match rep {
             BinaryNumberRep::BinarySeconds => {
                 let delta = crate::vm::calendar_binary::decode_binary_seconds_value(bytes, le)?;
-                Ok(DfdlValue::DateTime(
-                    crate::vm::calendar_binary::format_binary_calendar_datetime(
-                        base + delta,
-                        0,
-                        epoch_raw,
-                    ),
-                ))
+                let text = crate::vm::calendar_binary::format_binary_calendar_datetime(
+                    base + delta,
+                    0,
+                    epoch_raw,
+                );
+                return calendar_value_from_text(kind, text);
             }
             BinaryNumberRep::BinaryMilliseconds => {
                 let (secs, micros) =
                     crate::vm::calendar_binary::decode_binary_milliseconds_value(bytes, le)?;
-                Ok(DfdlValue::DateTime(
-                    crate::vm::calendar_binary::format_binary_calendar_datetime(
-                        base + secs,
-                        micros,
-                        epoch_raw,
-                    ),
-                ))
+                let text = crate::vm::calendar_binary::format_binary_calendar_datetime(
+                    base + secs,
+                    micros,
+                    epoch_raw,
+                );
+                return calendar_value_from_text(kind, text);
             }
             _ => unreachable!(),
         };
@@ -1120,7 +1132,23 @@ fn decode_binary_datetime(
         message: "dateTime missing calendarPattern".into(),
     })?;
     let pattern = strings.get(pat_id)?;
-    Ok(DfdlValue::DateTime(format_calendar_pattern(&digits, pattern)?))
+    let text = format_calendar_pattern(&digits, pattern)?;
+    calendar_value_from_text(kind, text)
+}
+
+fn calendar_value_from_text(
+    kind: crate::ir::ValueKind,
+    text: alloc::string::String,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    use crate::ir::ValueKind;
+    use crate::value::DfdlValue;
+    match kind {
+        ValueKind::Time => Ok(DfdlValue::DateTime(text)),
+        ValueKind::DateTime => Ok(DfdlValue::DateTime(text)),
+        _ => Err(crate::error::VmError::TypeMismatch {
+            expected: "calendar".into(),
+        }),
+    }
 }
 
 fn format_calendar_pattern(
@@ -1151,28 +1179,56 @@ fn format_calendar_pattern(
         fields.insert(c, field);
         i += width;
     }
-    let year = expand_calendar_year(fields.get(&'y').ok_or_else(|| VmError::InvalidValue {
-        message: alloc::format!("calendar `{pattern}` missing year"),
-    })?)?;
-    let month = fields.get(&'M').ok_or_else(|| VmError::InvalidValue {
-        message: alloc::format!("calendar `{pattern}` missing month"),
-    })?;
-    let day = fields.get(&'d').ok_or_else(|| VmError::InvalidValue {
-        message: alloc::format!("calendar `{pattern}` missing day"),
-    })?;
-    if fields.contains_key(&'H') {
-        let hour = fields.get(&'H').ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("calendar `{pattern}` missing hour"),
+    let year = fields
+        .get(&'y')
+        .map(|y| expand_calendar_year(y))
+        .transpose()?;
+    let month = fields.get(&'M').cloned();
+    let day = fields.get(&'d').cloned();
+    let hour = fields.get(&'H').cloned();
+    let minute = fields.get(&'m').cloned();
+    let second = fields.get(&'s').cloned();
+    let frac = fields.get(&'S').map(|s| format_calendar_s_fraction(s));
+    if year.is_some() {
+        let year = year.unwrap_or_else(|| "1970".into());
+        let month = month.ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing month"),
         })?;
-        let minute = fields.get(&'m').ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("calendar `{pattern}` missing minute"),
+        let day = day.ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing day"),
         })?;
-        let second = fields.get(&'s').ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("calendar `{pattern}` missing second"),
-        })?;
-        return Ok(alloc::format!("{year}-{month}-{day}T{hour}:{minute}:{second}"));
+        if let (Some(hour), Some(minute), Some(second)) = (&hour, &minute, &second) {
+            let mut out = alloc::format!("{year}-{month}-{day}T{hour}:{minute}:{second}");
+            if let Some(f) = frac {
+                out.push_str(&f);
+            }
+            return Ok(out);
+        }
+        return Ok(alloc::format!("{year}-{month}-{day}"));
     }
-    Ok(alloc::format!("{year}-{month}-{day}"))
+    if let (Some(hour), Some(minute), Some(second)) = (hour, minute, second) {
+        let mut out = alloc::format!("{hour}:{minute}:{second}");
+        if let Some(f) = frac {
+            out.push_str(&f);
+        }
+        return Ok(out);
+    }
+    Err(VmError::InvalidValue {
+        message: alloc::format!("calendar `{pattern}` missing date/time fields"),
+    })
+}
+
+fn format_calendar_s_fraction(s_digits: &str) -> alloc::string::String {
+    if s_digits.is_empty() {
+        return alloc::string::String::new();
+    }
+    let ms = if s_digits.len() >= 3 {
+        &s_digits[..3]
+    } else {
+        s_digits
+    };
+    let micros = ms.parse::<u32>().unwrap_or(0).saturating_mul(1000);
+    alloc::format!(".{micros:06}")
 }
 
 struct CalendarTextFields {
@@ -2609,9 +2665,9 @@ fn decode_binary_from_raw_bits(
             props.binary_decimal_virtual_point,
         )));
     }
-    if kind == DateTime {
+    if matches!(kind, DateTime | Time) && calendar_binary_rep(props) {
         let bytes = stream_bits_to_bytes(raw, bit_width, props.byte_order);
-        return decode_binary_datetime(&bytes, props, strings);
+        return decode_binary_calendar(kind, &bytes, props, strings);
     }
 
     macro_rules! unsigned {
