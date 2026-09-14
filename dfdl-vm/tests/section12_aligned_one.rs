@@ -26,6 +26,21 @@ fn alignment02() {
 }
 
 #[test]
+fn leading_skip2_tunable_limit() {
+    run("leadingSkip2");
+}
+
+#[test]
+fn implicit_alignment_unsigned_int_t2b() {
+    run("implicitAlignmentUnsignedIntT2b");
+}
+
+#[test]
+fn imp_alignment_non_negative_integer2() {
+    run("impAlignmentNonNegativeInteger2");
+}
+
+#[test]
 fn explicit_alignment_no_skips01() {
     run("explicitAlignmentNoSkips01");
 }

@@ -1,7 +1,7 @@
 use super::infoset::{compare_infoset, infoset_xml_to_root_value};
 use super::parser::{
-    effective_round_trip, parse_tdml, ParserTestCase, RoundTrip, TdmlDocument, TdmlSuite,
-    UnparserTestCase,
+    effective_round_trip, parse_tdml, DocumentKind, ParserTestCase, RoundTrip, TdmlDocument,
+    TdmlSuite, UnparserTestCase,
 };
 use crate::api::DfdlSpec;
 use crate::length_validate::DaffodilTunables;
@@ -99,14 +99,18 @@ pub fn run_parser_test_with_options(
         }
     };
 
-    if test.documents.is_empty() {
+    let empty_doc = TdmlDocument {
+        kind: DocumentKind::Text,
+        data: Vec::new(),
+        last_byte_bit_count: None,
+    };
+    if test.documents.is_empty() && test.expected_errors.is_none() {
         return Ok(TestResult {
             name: test.name.clone(),
             outcome: TestOutcome::Skip("no document".into()),
         });
     }
-
-    let doc = &test.documents[0];
+    let doc = test.documents.first().unwrap_or(&empty_doc);
     let config = RuntimeConfig {
         strict_eos: true,
     };

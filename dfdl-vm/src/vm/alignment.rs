@@ -13,7 +13,11 @@ pub fn skip_units_to_bits(props: &IrProps, skip: u64) -> usize {
 
 pub fn implicit_alignment_in_bits(kind: ValueKind, props: &IrProps, encoding: &str) -> usize {
     if props.representation == Representation::Text {
-        return text_encoding_alignment_bits(encoding);
+        if kind == ValueKind::String {
+            return text_encoding_alignment_bits(encoding);
+        }
+        // Numeric and other text primitives use 8-bit alignment (DFDL-12-019R), not UTF-16 width.
+        return 8;
     }
     if kind == ValueKind::Complex {
         return match props.alignment_units {
@@ -30,7 +34,7 @@ pub fn implicit_alignment_in_bits(kind: ValueKind, props: &IrProps, encoding: &s
         ValueKind::Double => 64,
         ValueKind::HexBinary => 8,
         ValueKind::Long | ValueKind::Integer => {
-            if packed { 8 } else { 64 }
+            if packed { 8 } else { 8 }
         }
         ValueKind::Int | ValueKind::UnsignedInt => {
             if packed { 8 } else { 32 }
@@ -89,6 +93,9 @@ pub fn align_cursor_to_text_encoding(
     Ok(())
 }
 
+/// Daffodil default tunable for `dfdl:leadingSkip` / `dfdl:trailingSkip` property values.
+pub const LEADING_TRAILING_SKIP_PROPERTY_LIMIT: u64 = 1024;
+
 pub fn consume_leading_skip(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
@@ -96,6 +103,15 @@ pub fn consume_leading_skip(
     use crate::error::VmError;
     if props.leading_skip == 0 {
         return Ok(());
+    }
+    if props.leading_skip > LEADING_TRAILING_SKIP_PROPERTY_LIMIT {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Tunable Limit Exceeded Error: Property leadingSkip {} is larger than limit {}",
+                props.leading_skip,
+                LEADING_TRAILING_SKIP_PROPERTY_LIMIT
+            ),
+        });
     }
     let skip = skip_units_to_bits(props, props.leading_skip);
     if skip == 0 {
@@ -431,6 +447,15 @@ pub fn consume_trailing_skip(
     use crate::error::VmError;
     if props.trailing_skip == 0 {
         return Ok(());
+    }
+    if props.trailing_skip > LEADING_TRAILING_SKIP_PROPERTY_LIMIT {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Tunable Limit Exceeded Error: Property trailingSkip {} is larger than limit {}",
+                props.trailing_skip,
+                LEADING_TRAILING_SKIP_PROPERTY_LIMIT
+            ),
+        });
     }
     let skip = skip_units_to_bits(props, props.trailing_skip);
     if skip == 0 {
