@@ -105,6 +105,7 @@ pub fn run_parser_test_with_options(
         last_byte_bit_count: None,
         transmission_bit_order: crate::schema::BitOrder::MostSignificantBitFirst,
         document_transmission_bit_order: None,
+        mixed_bits_text_document: false,
         load_error: None,
     };
     if test.documents.is_empty() && test.expected_errors.is_none() {

@@ -281,10 +281,10 @@ fn daffodil_section05_regression_gate() {
         stats.parse_fail, 0,
         "section05 TDML load errors: {stats:?}"
     );
-    // Baseline (2026-03): Encodings.tdml bits charsets + TDML LSBFirst document assembly + inputValueCalc concat.
+    // Baseline (2026-03): MIL Page70 mixed bits+7-bit text in documentBits; LSB document assembly regroup.
     assert!(
-        stats.pass >= 456,
-        "section05: expected at least 460 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 461,
+        "section05: expected at least 461 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip

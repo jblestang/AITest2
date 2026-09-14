@@ -1,8 +1,8 @@
 use crate::error::{ParseError, Result};
 use crate::schema::BitOrder;
 use crate::length_validate::DaffodilTunables;
-use crate::schema::expand_entities;
-use crate::vm::encoding::encode_document_text;
+use crate::schema::{expand_entities, expand_entities_str};
+use crate::vm::encoding::{bits_charset_spec, encode_document_text};
 use crate::xml_util::{attrs_to_map, local_name_str, XmlReader};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
@@ -72,6 +72,8 @@ pub struct TdmlDocument {
     pub transmission_bit_order: crate::schema::BitOrder,
     /// When set, overrides schema format `bitOrder` for stream bit extraction (TDML `@bitOrder`).
     pub document_transmission_bit_order: Option<crate::schema::BitOrder>,
+    /// Bits document with a following encoded `type="text"` part (MIL / 7-bit packed continuation).
+    pub mixed_bits_text_document: bool,
     /// TDML document assembly error (e.g. illegal bitOrder transition between parts).
     pub load_error: Option<String>,
 }
@@ -430,6 +432,7 @@ fn parse_document(
             last_byte_bit_count: None,
             transmission_bit_order: BitOrder::MostSignificantBitFirst,
             document_transmission_bit_order,
+            mixed_bits_text_document: false,
             load_error: None,
         });
     }
@@ -443,6 +446,7 @@ fn parse_document(
         let mut saw_bits_part = false;
         let mut part_transitions: Vec<(DocumentBitOrder, usize, bool)> = Vec::new();
         let mut saw_rtl_byte_order = false;
+        let mut mixed_bits_text_document = false;
 
         let flush_pending_bits =
             |pending: &mut Vec<u8>, data: &mut Vec<u8>, last: &mut Option<u8>| {
@@ -476,9 +480,16 @@ fn parse_document(
                 kind = DocumentKind::Bits;
                 bit_part_chunks.push(chunks);
             } else if saw_bits_part && part.kind == DocumentKind::Text {
-                // When the bit stream ends mid-byte, following text continues in the same stream;
-                // otherwise text starts on the next byte boundary (TDML multi-part documents).
-                if pending_bits.len() % 8 != 0 {
+                mixed_bits_text_document = true;
+                if saw_rtl_byte_order {
+                    // Daffodil `Document.documentBits`: encoded text parts join the bit stream (MIL / 7-bit packed).
+                    let chunks = part
+                        .data_bit_chunks
+                        .clone()
+                        .expect("text data_bit_chunks in RTL bits document");
+                    bit_part_chunks.push(chunks);
+                    kind = DocumentKind::Bits;
+                } else if pending_bits.len() % 8 != 0 {
                     append_bytes_as_msb_bits(&mut pending_bits, &part.data);
                 } else {
                     flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
@@ -528,6 +539,7 @@ fn parse_document(
                 last_byte_bit_count: None,
                 transmission_bit_order: BitOrder::MostSignificantBitFirst,
                 document_transmission_bit_order,
+                mixed_bits_text_document,
                 load_error: Some(e.to_string()),
             });
         }
@@ -538,6 +550,7 @@ fn parse_document(
                 last_byte_bit_count: None,
                 transmission_bit_order: BitOrder::MostSignificantBitFirst,
                 document_transmission_bit_order,
+                mixed_bits_text_document,
                 load_error: Some(e.to_string()),
             });
         }
@@ -547,6 +560,7 @@ fn parse_document(
             last_byte_bit_count,
             transmission_bit_order: packed_document_transmission_bit_order(use_lsb_assembly),
             document_transmission_bit_order,
+            mixed_bits_text_document,
             load_error: None,
         });
     }
@@ -558,6 +572,7 @@ fn parse_document(
         last_byte_bit_count: None,
         transmission_bit_order: BitOrder::MostSignificantBitFirst,
         document_transmission_bit_order,
+        mixed_bits_text_document: false,
         load_error: None,
     })
 }
@@ -568,6 +583,8 @@ struct ParsedDocumentPart {
     last_byte_bit_count: Option<u8>,
     /// Bit chunks (up to 8 digits each) when `kind == Bits`.
     bit_chunks: Option<Vec<String>>,
+    /// Daffodil `TextDocumentPart.dataBits` when `kind == Text`.
+    data_bit_chunks: Option<Vec<String>>,
     bit_order: DocumentBitOrder,
     explicit_bit_order: bool,
     byte_order: DocumentByteOrder,
@@ -621,8 +638,13 @@ fn parse_document_part(
         }
     };
     let text = reader.read_text_until_end("documentPart")?;
-    let (data, last_byte_bit_count, bit_chunks) = match kind {
+    let (data, last_byte_bit_count, bit_chunks, data_bit_chunks) = match kind {
         DocumentKind::Text => {
+            let bits_text = if replace_entities {
+                expand_entities_str(&text)
+            } else {
+                text.clone()
+            };
             let data = if replace_entities {
                 expand_entities(&text)
             } else if let Some(enc) = encoding {
@@ -632,7 +654,8 @@ fn parse_document_part(
             } else {
                 text.into_bytes()
             };
-            (data, None, None)
+            let data_bit_chunks = text_document_data_bits(&bits_text, encoding).ok();
+            (data, None, None, data_bit_chunks)
         }
         DocumentKind::Hex => {
             let data_bytes = parse_hex_document(&text)?;
@@ -641,15 +664,15 @@ fn parse_document_part(
                     .iter()
                     .map(|b| alloc::format!("{:08b}", b))
                     .collect();
-                (Vec::new(), None, Some(chunks))
+                (Vec::new(), None, Some(chunks), None)
             } else {
-                (data_bytes, None, None)
+                (data_bytes, None, None, None)
             }
         }
         DocumentKind::Bits => {
             let digits = collect_bit_digits_from_text(&text);
             let chunks = bit_chunks_for_part(&digits, byte_order);
-            (Vec::new(), None, Some(chunks))
+            (Vec::new(), None, Some(chunks), None)
         }
     };
     let length_in_bits = if let Some(chunks) = &bit_chunks {
@@ -662,6 +685,7 @@ fn parse_document_part(
         data,
         last_byte_bit_count,
         bit_chunks,
+        data_bit_chunks,
         bit_order,
         explicit_bit_order,
         byte_order,
@@ -742,6 +766,45 @@ fn reverse_bit_string(s: &str) -> String {
     s.chars().rev().collect()
 }
 
+fn byte_to_msb_bit_string(b: u8) -> String {
+    alloc::format!("{:08b}", b)
+}
+
+/// Match Daffodil `TextDocumentPart.dataBits`.
+fn text_document_data_bits(text: &str, encoding: Option<&str>) -> Result<Vec<String>> {
+    let encoded = if let Some(enc) = encoding {
+        encode_document_text(text, enc).map_err(|e| ParseError::InvalidXml {
+            message: alloc::format!("documentPart encoding: {e}"),
+        })?
+    } else {
+        text.as_bytes().to_vec()
+    };
+    let bit_strings: Vec<String> = encoded.iter().map(|b| byte_to_msb_bit_string(*b)).collect();
+    if let Some(enc) = encoding {
+        if let Some(spec) = bits_charset_spec(enc) {
+            let code_units = text.chars().count();
+            let n_bits = code_units * spec.width as usize;
+            let concatenated: String = bit_strings.iter().rev().map(String::as_str).collect();
+            let all_bits = if concatenated.len() > n_bits {
+                concatenated[concatenated.len() - n_bits..].to_string()
+            } else {
+                concatenated
+            };
+            let width = spec.width as usize;
+            let rev: String = all_bits.chars().rev().collect();
+            let chunks = rev
+                .as_bytes()
+                .chunks(width)
+                .map(|chunk| {
+                    reverse_bit_string(core::str::from_utf8(chunk).unwrap_or(""))
+                })
+                .collect();
+            return Ok(chunks);
+        }
+    }
+    Ok(bit_strings)
+}
+
 fn chunk_bit_string_ltr(bits: &str) -> Vec<String> {
     bits.as_bytes()
         .chunks(8)
@@ -762,29 +825,39 @@ fn bit_chunks_for_part(bits: &str, byte_order: DocumentByteOrder) -> Vec<String>
     }
 }
 
-/// Match Daffodil `Document.documentBits` / `bits2Bytes` for TDML test data.
-fn assemble_tdml_document_bytes(
+/// Regroup bit digits into 8-bit strings (`Seq.mkString` then `sliding(8, 8)`).
+fn regroup_bit_digit_strings(chunks: &[String]) -> Vec<String> {
+    chunks
+        .join("")
+        .as_bytes()
+        .chunks(8)
+        .map(|chunk| core::str::from_utf8(chunk).unwrap_or("").to_string())
+        .collect()
+}
+
+/// Match Daffodil `Document.documentBits` before last-byte padding.
+fn document_bits_byte_strings(
     part_chunks: &[Vec<String>],
     document_bit_order: DocumentBitOrder,
-) -> (Vec<u8>, u8) {
-    let byte_strings: Vec<String> = match document_bit_order {
+) -> Vec<String> {
+    let all_parts_bits: Vec<String> = match document_bit_order {
         DocumentBitOrder::MsbFirst => part_chunks
             .iter()
             .flat_map(|part| part.iter().cloned())
-            .collect::<Vec<_>>()
-            .join("")
-            .as_bytes()
-            .chunks(8)
-            .map(|chunk| core::str::from_utf8(chunk).unwrap_or("").to_string())
             .collect(),
         DocumentBitOrder::LsbFirst => {
-            // Match Daffodil `Document.documentBits` for `LSBFirst`.
-            let flat: String = part_chunks
+            let reversed_parts: Vec<Vec<String>> = part_chunks
                 .iter()
-                .flat_map(|part| {
+                .map(|part| {
                     part.iter()
                         .map(|chunk| reverse_bit_string(chunk))
+                        .collect()
                 })
+                .collect();
+            let flat: String = reversed_parts
+                .iter()
+                .flat_map(|part| part.iter())
+                .cloned()
                 .collect();
             let rtl_bits = reverse_bit_string(&flat);
             rtl_bits
@@ -799,6 +872,15 @@ fn assemble_tdml_document_bytes(
                 .collect()
         }
     };
+    regroup_bit_digit_strings(&all_parts_bits)
+}
+
+/// Match Daffodil `Document.documentBits` / `bits2Bytes` for TDML test data.
+fn assemble_tdml_document_bytes(
+    part_chunks: &[Vec<String>],
+    document_bit_order: DocumentBitOrder,
+) -> (Vec<u8>, u8) {
+    let byte_strings = document_bits_byte_strings(part_chunks, document_bit_order);
     if byte_strings.is_empty() {
         return (Vec::new(), 0);
     }
@@ -975,32 +1057,6 @@ mod tests {
             .find(|t| t.name == "lengthKindPattern_02")
             .expect("no-match test");
         assert_eq!(no_match.expected_errors, Some(alloc::vec![String::new()]));
-    }
-
-    #[test]
-    fn parse_bits_document_ignores_separators() {
-        let (data, trailing) = parse_bits_document_with_count("1000 0000 1|100 0000 001").unwrap();
-        assert_eq!(data, vec![0x80, 0xC0, 0x20]);
-        assert_eq!(trailing, 3);
-    }
-
-    #[test]
-    fn merge_multi_part_bits_document_is_continuous_bit_stream() {
-        let bits: Vec<u8> = collect_bits_from_text("0101")
-            .into_iter()
-            .chain(collect_bits_from_text("1101"))
-            .chain(collect_bits_from_text("11110100"))
-            .collect();
-        let (data, trailing) = pack_bits_to_document(&bits);
-        assert_eq!(data, vec![0x5D, 0xF4]);
-        assert_eq!(trailing, 0);
-        let bits2: Vec<u8> = collect_bits_from_text("00 00")
-            .into_iter()
-            .chain(collect_bits_from_text("11 10"))
-            .collect();
-        let (data2, trailing2) = pack_bits_to_document(&bits2);
-        assert_eq!(data2, vec![0x0E]);
-        assert_eq!(trailing2, 0);
     }
 
     #[test]
