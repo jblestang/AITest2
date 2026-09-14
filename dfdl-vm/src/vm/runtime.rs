@@ -249,6 +249,52 @@ impl<'a> Cursor<'a> {
         })
     }
 
+    /// Pack `n` stream bits into bytes the way Daffodil `fillByteArray` does for `xs:hexBinary`
+    /// (no little-endian byte reversal on the stored array).
+    pub fn read_hex_binary_bits(
+        &mut self,
+        n: usize,
+        bit_order: BitOrder,
+    ) -> Result<Vec<u8>, crate::error::VmError> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let field_order = self.effective_field_bit_order(bit_order);
+        let bytes_to_fill = n.div_ceil(8);
+        if self.bit_count == 0 {
+            let end_byte = self.pos + bytes_to_fill;
+            if end_byte <= self.data.len() {
+                let mut array = self.data[self.pos..end_byte].to_vec();
+                let fragment = n % 8;
+                if fragment != 0 {
+                    let last = array.len() - 1;
+                    let mask = match field_order {
+                        BitOrder::MostSignificantBitFirst => 0xFFu8 << (8 - fragment),
+                        BitOrder::LeastSignificantBitFirst => (1u8 << fragment) - 1,
+                    };
+                    array[last] &= mask;
+                }
+                self.skip_stream_bits(n, bit_order)?;
+                return Ok(array);
+            }
+        }
+        let raw = self.read_stream_bits(n, bit_order)?;
+        let mut array = vec![0u8; bytes_to_fill];
+        let fragment = n % 8;
+        if fragment == 0 {
+            for i in 0..bytes_to_fill {
+                array[bytes_to_fill - 1 - i] = ((raw >> (i * 8)) & 0xFF) as u8;
+            }
+        } else {
+            let last = array.len() - 1;
+            array[last] = match field_order {
+                BitOrder::MostSignificantBitFirst => ((raw << (8 - fragment)) & 0xFF) as u8,
+                BitOrder::LeastSignificantBitFirst => (raw & ((1u64 << fragment) - 1)) as u8,
+            };
+        }
+        Ok(array)
+    }
+
     pub fn read_stream_bits_as_bytes(
         &mut self,
         n: usize,
@@ -647,7 +693,11 @@ pub(crate) fn read_binary_scalar(
                 });
             }
         }
-        if kind == ValueKind::String || kind == ValueKind::HexBinary {
+        if kind == ValueKind::HexBinary {
+            let bytes = cursor.read_hex_binary_bits(len, props.bit_order)?;
+            return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
+        }
+        if kind == ValueKind::String {
             let bytes = cursor.read_stream_bits_as_bytes(len, props.bit_order)?;
             return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
         }
@@ -690,7 +740,11 @@ pub(crate) fn read_binary_scalar(
                 }
                 validate_packed_binary_bit_length_parse(bit_len, kind, props.binary_number_rep)?;
             }
-            if kind == ValueKind::String || kind == ValueKind::HexBinary {
+            if kind == ValueKind::HexBinary {
+                let bytes = cursor.read_hex_binary_bits(bit_len, props.bit_order)?;
+                return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
+            }
+            if kind == ValueKind::String {
                 let bytes = cursor.read_stream_bits_as_bytes(bit_len, props.bit_order)?;
                 return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
             }
@@ -734,7 +788,11 @@ pub(crate) fn read_binary_scalar(
                 }
                 validate_packed_binary_bit_length_parse(bit_len, kind, props.binary_number_rep)?;
             }
-            if kind == ValueKind::String || kind == ValueKind::HexBinary {
+            if kind == ValueKind::HexBinary {
+                let bytes = cursor.read_hex_binary_bits(bit_len, props.bit_order)?;
+                return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
+            }
+            if kind == ValueKind::String {
                 let bytes = cursor.read_stream_bits_as_bytes(bit_len, props.bit_order)?;
                 return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
             }
@@ -2104,6 +2162,8 @@ fn format_calendar_text(
     lax: bool,
     century_start: u32,
     cal: CalendarTextConfig<'_>,
+    time_overflow_carries_to_date: bool,
+    date_only: bool,
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -2454,10 +2514,24 @@ fn format_calendar_text(
             message: alloc::format!("calendar `{pattern}` missing minute"),
         })?;
         let second = fields.second.unwrap_or(0);
-        let (hour, minute, second) = if lax {
-            crate::vm::calendar_binary::normalize_lenient_hms(hour, minute, second)
+        let (hour, minute, second, day_carry) = if lax {
+            crate::vm::calendar_binary::normalize_lenient_hms_with_day_carry(
+                hour,
+                minute,
+                second,
+                !time_overflow_carries_to_date,
+            )
         } else {
-            (hour, minute, second)
+            (hour, minute, second, 0)
+        };
+        let (year, month, day) = if day_carry != 0 {
+            crate::vm::calendar_binary::normalize_lenient_ymd(
+                year,
+                month,
+                day.saturating_add(day_carry as u32),
+            )
+        } else {
+            (year, month, day)
         };
         let mut out = alloc::format!(
             "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}"
@@ -2467,7 +2541,15 @@ fn format_calendar_text(
         }
         return Ok(out);
     }
-    Ok(alloc::format!("{year:04}-{month:02}-{day:02}"))
+    let out = alloc::format!("{year:04}-{month:02}-{day:02}");
+    if time_overflow_carries_to_date
+        && !date_only
+        && pattern.chars().any(|c| c == 'W' || c == 'F' || c == 'w')
+    {
+        Ok(alloc::format!("{out}T00:00:00"))
+    } else {
+        Ok(out)
+    }
 }
 
 fn match_text_number_subpattern(text: &str, pattern: &str) -> Result<alloc::string::String, crate::error::VmError> {
@@ -4486,6 +4568,8 @@ pub(crate) fn read_text_scalar(
                             first_day_of_week: props.calendar_first_day_of_week,
                             days_in_first_week: props.calendar_days_in_first_week,
                         },
+                        kind == crate::ir::ValueKind::DateTime,
+                        props.calendar_date_only,
                     );
                     if !props.calendar_check_policy_lax {
                         if props.calendar_date_only {
@@ -8703,23 +8787,23 @@ mod delimited_stop_tests {
 
     fn format_calendar_text_time_and_datetime() {
         assert_eq!(
-            format_calendar_text("04:09:23", "hh:mm:ss", false, 53, default_cal_cfg())
+            format_calendar_text("04:09:23", "hh:mm:ss", false, 53, default_cal_cfg(), false, false)
                 .map_err(|e| e.to_string())
                 .unwrap(),
             "04:09:23"
         );
         assert_eq!(
-            format_calendar_text("Friday 05 2013 - 03:30:30", "EEEE MM yyyy - hh:mm:ss", false, 53, default_cal_cfg()).unwrap(),
+            format_calendar_text("Friday 05 2013 - 03:30:30", "EEEE MM yyyy - hh:mm:ss", false, 53, default_cal_cfg(), true, false).unwrap(),
             "2013-05-03T03:30:30"
         );
     }
 
     #[test]
     fn format_calendar_text_section5_samples() {
-        let date = format_calendar_text("Wednesday, July 10, '96", "EEEE, MMM d, ''yy", false, 53, default_cal_cfg())
+        let date = format_calendar_text("Wednesday, July 10, '96", "EEEE, MMM d, ''yy", false, 53, default_cal_cfg(), false, true)
             .unwrap_or_else(|e| panic!("dateText: {e}"));
         assert_eq!(date, "1996-07-10");
-        let time = format_calendar_text("12:08 PM", "h:mm a", false, 53, default_cal_cfg()).unwrap_or_else(|e| panic!("timeText: {e}"));
+        let time = format_calendar_text("12:08 PM", "h:mm a", false, 53, default_cal_cfg(), false, false).unwrap_or_else(|e| panic!("timeText: {e}"));
         assert_eq!(time, "12:08:00");
         let time_tz = append_default_utc_offset(crate::ir::ValueKind::Time, false, &time);
         assert_eq!(time_tz, "12:08:00+00:00");
@@ -8729,6 +8813,8 @@ mod delimited_stop_tests {
             false,
             53,
             default_cal_cfg(),
+            true,
+            false,
         )
         .unwrap_or_else(|e| panic!("dateTimeText: {e}"));
         assert_eq!(dt, "1996-07-10T15:08:56-05:00");
@@ -8741,11 +8827,11 @@ mod delimited_stop_tests {
             "-08:00"
         );
         assert_eq!(
-            format_calendar_text("08:43.GMT-8", "hh:mm.v", false, 53, default_cal_cfg()).unwrap(),
+            format_calendar_text("08:43.GMT-8", "hh:mm.v", false, 53, default_cal_cfg(), false, false).unwrap(),
             "08:43:00-08:00"
         );
         assert_eq!(
-            format_calendar_text("08:43.-0800", "hh:mm.Z", false, 53, default_cal_cfg()).unwrap(),
+            format_calendar_text("08:43.-0800", "hh:mm.Z", false, 53, default_cal_cfg(), false, false).unwrap(),
             "08:43:00-08:00"
         );
     }
