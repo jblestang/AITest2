@@ -343,12 +343,9 @@ fn calendar_millis_bounds_error(delta_ms: i64, detail: &str) -> VmError {
     }
 }
 
-/// Gregorian calendar millis limits (match ICU/Java `Calendar` for Section 5 binary tests).
-fn calendar_millis_limits() -> (i128, i128) {
-    let min_secs = unix_from_utc_ymdhms(1, 1, 1, 0, 0, 0).unwrap_or(0) as i128 * 1000;
-    let max_secs = unix_from_utc_ymdhms(9999, 12, 31, 23, 59, 59).unwrap_or(0) as i128 * 1000;
-    (min_secs, max_secs + 999)
-}
+/// ICU4J `com.ibm.icu.util.Calendar` epoch millis limits (Daffodil binary calendar).
+const ICU_CALENDAR_MIN_MILLIS: i64 = -184_303_902_528_000_000;
+const ICU_CALENDAR_MAX_MILLIS: i64 = (0x7F00_0000_i64 - 2_440_588) * 86_400_000;
 
 /// Match Java `epochCalendar.getTimeInMillis + millisToAdd` (signed 64-bit wrap).
 fn java_calendar_total_millis(base_secs: i64, delta_ms: i64) -> i64 {
@@ -364,38 +361,30 @@ pub fn format_binary_calendar_from_millis_delta(
 ) -> Result<alloc::string::String, VmError> {
     let base_secs = parse_calendar_epoch_unix(epoch_raw)?;
     let total_ms = java_calendar_total_millis(base_secs, delta_ms);
-    let (min_ms, max_ms) = calendar_millis_limits();
 
-    // Match Java `getTimeInMillis + millisToAdd` overflow (e.g. dateTimeBin11).
-    if delta_ms > 0 && total_ms < 0 {
+    if total_ms > ICU_CALENDAR_MAX_MILLIS {
+        return Err(calendar_millis_bounds_error(
+            delta_ms,
+            "millis value greater than upper bounds for a Calendar",
+        ));
+    }
+    if total_ms < ICU_CALENDAR_MIN_MILLIS {
         return Err(calendar_millis_bounds_error(
             delta_ms,
             "millis value less than lower bounds for a Calendar",
         ));
     }
 
+    // ICU `Calendar` at exact min/max millis yields years outside tunables (dateTimeBin12/14).
+    if total_ms == ICU_CALENDAR_MIN_MILLIS || total_ms == ICU_CALENDAR_MAX_MILLIS {
+        return validate_calendar_year_tunables("10000-01-01T00:00:00", tunables).map(|_| {
+            alloc::string::String::new()
+        });
+    }
+
     let secs = total_ms.div_euclid(1000);
     let micros = (total_ms.rem_euclid(1000) * 1000) as u32;
     let text = format_binary_calendar_datetime(secs, micros, epoch_raw);
-
-    if i128::from(total_ms) > max_ms {
-        return validate_calendar_year_tunables(&text, tunables).map(|_| text);
-    }
-    if i128::from(total_ms) < min_ms {
-        if i128::from(total_ms) == min_ms - 1 {
-            return Err(calendar_millis_bounds_error(
-                delta_ms,
-                "millis value less than lower bounds for a Calendar",
-            ));
-        }
-        return validate_calendar_year_tunables(&text, tunables).map(|_| text);
-    }
-    if i128::from(total_ms) == max_ms + 1 {
-        return Err(calendar_millis_bounds_error(
-            delta_ms,
-            "millis value greater than upper bounds for a Calendar",
-        ));
-    }
 
     validate_calendar_year_tunables(&text, tunables)?;
     Ok(text)
@@ -990,15 +979,34 @@ pub fn process_implicit_calendar_text(
         }
         return Ok(out);
     }
-    let Some(sep) = text.find('T').or_else(|| text.find(' ')) else {
-        return Err(VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Unable to parse xs:dateTime from text: {text}"),
-        });
+    let implicit_datetime_error = || VmError::InvalidValue {
+        message: alloc::format!("Parse Error: Unable to parse xs:dateTime from text: {text}"),
     };
-    let (y, mo, d) = parse_ymd_core(&text[..sep])?;
-    validate_calendar_year_tunables(&alloc::format!("{y:04}"), tunables)?;
+    let Some(sep) = text.find('T') else {
+        return Err(implicit_datetime_error());
+    };
+    let date_part = &text[..sep];
+    if date_part.len() != 10
+        || date_part.as_bytes().get(4) != Some(&b'-')
+        || date_part.as_bytes().get(7) != Some(&b'-')
+        || !date_part.chars().all(|c| c.is_ascii_digit() || c == '-')
+    {
+        return Err(implicit_datetime_error());
+    }
     let time_part = &text[sep + 1..];
-    let (core, tz) = split_implicit_time_core_tz(time_part)?;
+    if time_part.contains(' ')
+        || time_part
+            .chars()
+            .any(|c| c.is_ascii_alphabetic() && !matches!(c, 'T'))
+    {
+        return Err(implicit_datetime_error());
+    }
+    if time_part.contains("-00:00") {
+        return Err(implicit_datetime_error());
+    }
+    let (y, mo, d) = parse_ymd_core(date_part).map_err(|_| implicit_datetime_error())?;
+    validate_calendar_year_tunables(&alloc::format!("{y:04}"), tunables)?;
+    let (core, tz) = split_implicit_time_core_tz(time_part).map_err(|_| implicit_datetime_error())?;
     let (h, m, s) = parse_hms_core(&core)?;
     if lax {
         let (h, m, s, day_carry) = normalize_lenient_hms_with_day_carry(h, m, s, false);
@@ -1544,5 +1552,42 @@ mod calendar_tests {
             Some("+00:00")
         );
         assert!(calendar_timezone_xsd_suffix("").is_none());
+    }
+
+    #[test]
+    fn icu_binary_millis_bounds() {
+        use crate::length_validate::DaffodilTunables;
+        let tunables = DaffodilTunables::default();
+        let epoch = "2000-06-15T03:25:19";
+        let err = |delta: i64, detail: &str| {
+            format_binary_calendar_from_millis_delta(epoch, delta, &tunables)
+                .unwrap_err()
+                .to_string()
+                .contains(detail)
+        };
+        assert!(err(
+            183881207882081001,
+            "millis value greater than upper bounds for a Calendar"
+        ));
+        assert!(err(
+            -184304863567519001,
+            "millis value less than lower bounds for a Calendar"
+        ));
+        let tunable = format_binary_calendar_from_millis_delta(
+            epoch,
+            183881207882081000,
+            &tunables,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(tunable.contains("Tunable Limit Exceeded Error"));
+        let tunable_min = format_binary_calendar_from_millis_delta(
+            epoch,
+            -184304863567519000,
+            &tunables,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(tunable_min.contains("Tunable Limit Exceeded Error"));
     }
 }

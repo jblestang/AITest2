@@ -1546,6 +1546,15 @@ fn append_default_utc_offset(kind: crate::ir::ValueKind, date_only: bool, parsed
     parsed.into()
 }
 
+fn lexical_has_xsd_timezone(parsed: &str) -> bool {
+    if parsed.contains('+') {
+        return true;
+    }
+    parsed
+        .rfind('-')
+        .is_some_and(|i| i > 2 && parsed[i + 1..].contains(':'))
+}
+
 fn append_packed_calendar_timezone(
     props: &IrProps,
     strings: &StringPool,
@@ -1553,15 +1562,13 @@ fn append_packed_calendar_timezone(
     date_only: bool,
     parsed: &str,
 ) -> Result<alloc::string::String, crate::error::VmError> {
+    if lexical_has_xsd_timezone(parsed) {
+        return Ok(parsed.into());
+    }
     if parsed.contains('T') {
-        if parsed.contains('+')
-            || parsed
-                .rfind('-')
-                .is_some_and(|i| i > 10 && parsed[i + 1..].contains(':'))
-        {
-            return Ok(parsed.into());
-        }
-    } else if !(kind == crate::ir::ValueKind::Time || date_only) {
+        return Ok(parsed.into());
+    }
+    if !(kind == crate::ir::ValueKind::Time || date_only) {
         return Ok(parsed.into());
     }
     if let Some(id) = props.calendar_time_zone {
@@ -1582,12 +1589,16 @@ fn read_calendar_timezone(text: &str, ti: &mut usize, z_width: usize) -> Result<
         pos += 1;
     }
     let mut tail = &text[pos..];
-    if z_width >= 4 && tail.len() >= 3 && tail[..3].eq_ignore_ascii_case("GMT") {
+    if tail.len() >= 3 && tail[..3].eq_ignore_ascii_case("GMT") {
         pos += 3;
         while pos < text.len() && text.as_bytes()[pos].is_ascii_whitespace() {
             pos += 1;
         }
         tail = &text[pos..];
+        if tail.is_empty() {
+            *ti = pos;
+            return Ok("+00:00".into());
+        }
     }
     let (tz, consumed) = parse_calendar_tz_offset(tail).ok_or_else(|| VmError::InvalidValue {
         message: "calendar text mismatch".into(),
@@ -1614,6 +1625,24 @@ fn timezone_abbrev_to_offset(name: &str) -> Option<&'static str> {
     }
 }
 
+fn timezone_long_names() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("Eastern Standard Time", "-05:00"),
+        ("Pacific Standard Time", "-08:00"),
+        ("Central Standard Time", "-06:00"),
+        ("Mountain Standard Time", "-07:00"),
+        ("Los Angeles Time", "-08:00"),
+    ]
+}
+
+fn timezone_id_to_offset(id: &str) -> Option<&'static str> {
+    match id.to_ascii_lowercase().as_str() {
+        "uslax" => Some("-08:00"),
+        "unk" => Some("+00:00"),
+        _ => None,
+    }
+}
+
 fn read_calendar_timezone_name(
     text: &str,
     ti: &mut usize,
@@ -1622,19 +1651,37 @@ fn read_calendar_timezone_name(
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
     let rest = text[*ti..].trim_start();
-    if kind == 'v' && width >= 4 {
-        let known = [
-            ("Eastern Standard Time", "-05:00"),
-            ("Pacific Standard Time", "-08:00"),
-            ("Central Standard Time", "-06:00"),
-            ("Mountain Standard Time", "-07:00"),
-        ];
-        for (name, off) in known {
+    if (kind == 'z' || kind == 'v') && width >= 4 {
+        for (name, off) in timezone_long_names() {
             if rest.starts_with(name) {
                 *ti += text[*ti..].len() - rest.len() + name.len();
-                return Ok(off.into());
+                return Ok((*off).into());
             }
         }
+    }
+    if kind == 'V' {
+        if width >= 4 {
+            for (name, off) in timezone_long_names() {
+                if rest.starts_with(name) {
+                    *ti += text[*ti..].len() - rest.len() + name.len();
+                    return Ok((*off).into());
+                }
+            }
+        }
+        let end = rest
+            .find(|c: char| c.is_ascii_whitespace() || c == '.' || c == ',')
+            .unwrap_or(rest.len());
+        let word = &rest[..end];
+        if word.is_empty() {
+            return Err(VmError::InvalidValue {
+                message: "calendar text mismatch".into(),
+            });
+        }
+        let off = timezone_id_to_offset(word).ok_or_else(|| VmError::InvalidValue {
+            message: "calendar text mismatch".into(),
+        })?;
+        *ti += text[*ti..].len() - rest.len() + word.len();
+        return Ok((*off).into());
     }
     let end = rest
         .find(|c: char| c.is_ascii_whitespace() || c == '.' || c == ',')
@@ -1645,11 +1692,26 @@ fn read_calendar_timezone_name(
             message: "calendar text mismatch".into(),
         });
     }
+    if word.len() >= 3 && word[..3].eq_ignore_ascii_case("GMT") {
+        let tail = word[3..].trim();
+        if tail.is_empty() {
+            *ti += text[*ti..].len() - rest.len() + word.len();
+            return Ok("+00:00".into());
+        }
+        if let Some((tz, _)) = parse_calendar_tz_offset(tail) {
+            *ti += text[*ti..].len() - rest.len() + word.len();
+            return Ok(tz);
+        }
+    }
+    if let Some((tz, consumed)) = parse_calendar_tz_offset(word) {
+        *ti += text[*ti..].len() - rest.len() + consumed;
+        return Ok(tz);
+    }
     let off = timezone_abbrev_to_offset(word).ok_or_else(|| VmError::InvalidValue {
         message: "calendar text mismatch".into(),
     })?;
     *ti += text[*ti..].len() - rest.len() + word.len();
-    Ok(off.into())
+    Ok((*off).into())
 }
 
 fn parse_calendar_tz_offset(raw: &str) -> Option<(alloc::string::String, usize)> {
@@ -1675,6 +1737,24 @@ fn parse_calendar_tz_offset(raw: &str) -> Option<(alloc::string::String, usize)>
         return Some((
             alloc::format!("{sign}{hh}:{mm}"),
             start + 1 + 2 + 1 + 2,
+        ));
+    }
+    if raw.get(i..i + 1)?.bytes().all(|b| b.is_ascii_digit()) {
+        let h1 = raw[i..i + 1].parse::<u8>().ok()?;
+        if h1 <= 9 {
+            let sign = sign as char;
+            return Some((alloc::format!("{sign}{h1:02}:00"), start + 1 + 1));
+        }
+    }
+    if raw.get(i..i + 4)?.bytes().all(|b| b.is_ascii_digit()) {
+        let hh = &raw[i..i + 2];
+        let mm = &raw[i + 2..i + 4];
+        hh.parse::<u8>().ok()?;
+        mm.parse::<u8>().ok()?;
+        let sign = sign as char;
+        return Some((
+            alloc::format!("{sign}{hh}:{mm}"),
+            start + 1 + 4,
         ));
     }
     None
@@ -1735,6 +1815,42 @@ fn apply_hour12(fields: &mut CalendarTextFields) -> Result<(), crate::error::VmE
     };
     fields.hour = Some(h24);
     Ok(())
+}
+
+fn finalize_calendar_hour_fields(
+    fields: &mut CalendarTextFields,
+    pattern: &str,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    let letters = crate::vm::calendar_binary::calendar_pattern_letters_only(pattern);
+    let has_a = letters.contains('a');
+    let has_cap_h = pattern.contains('H');
+    if has_a && has_cap_h && !fields.hour12 {
+        fields.hour = Some(if fields.am_pm.unwrap_or(false) { 12 } else { 0 });
+        return Ok(());
+    }
+    if letters.contains('K') {
+        let h = fields.hour.unwrap_or(0);
+        if has_a && h == 12 {
+            return Err(VmError::InvalidValue {
+                message: "calendar text mismatch".into(),
+            });
+        }
+        let pm = fields.am_pm.unwrap_or(false);
+        let h24 = if pm {
+            if h == 0 { 12 } else { h + 12 }
+        } else {
+            h
+        };
+        fields.hour = Some(h24);
+        return Ok(());
+    }
+    if letters.contains('k') {
+        let h = fields.hour.unwrap_or(0);
+        fields.hour = Some(if h == 0 { 0 } else if h == 24 { 0 } else { h - 1 });
+        return Ok(());
+    }
+    apply_hour12(fields)
 }
 
 fn month_from_name_locale(name: &str, language: Option<&str>, lax: bool) -> Option<u32> {
@@ -1984,7 +2100,7 @@ fn format_calendar_text(
             i += 1;
             continue;
         }
-        if c == 'Z' || c == 'z' || c == 'v' {
+        if c == 'Z' || c == 'z' || c == 'v' || c == 'V' {
             let mut z_width = 1usize;
             while i + z_width < chars.len() && chars[i + z_width] == c {
                 z_width += 1;
@@ -2003,11 +2119,15 @@ fn format_calendar_text(
             continue;
         }
         if c == 'a' {
+            let mut a_width = 1usize;
+            while i + a_width < chars.len() && chars[i + a_width] == 'a' {
+                a_width += 1;
+            }
             fields.am_pm = Some(read_calendar_ampm(text, &mut ti)?);
-            i += 1;
+            i += a_width;
             continue;
         }
-        const FIELD: &str = "EMdDFwWmyYHhse";
+        const FIELD: &str = "EMdDFwWmyYHhsekK";
         if !FIELD.contains(c) {
             let Some(ch) = text[ti..].chars().next() else {
                 return Err(VmError::InvalidValue {
@@ -2082,6 +2202,9 @@ fn format_calendar_text(
                 fields.hour12 = true;
                 fields.hour = raw.parse().ok();
             }
+            'k' | 'K' => {
+                fields.hour = raw.parse().ok();
+            }
             'm' => {
                 fields.minute = raw.parse().ok();
             }
@@ -2117,7 +2240,7 @@ fn format_calendar_text(
         || fields.week_in_month.is_some()
         || fields.week_of_year.is_some();
     let has_time = fields.hour.is_some() || fields.minute.is_some() || fields.second.is_some();
-    apply_hour12(&mut fields)?;
+    finalize_calendar_hour_fields(&mut fields, pattern)?;
     if has_time && !has_date {
         let hour = fields.hour.ok_or_else(|| VmError::InvalidValue {
             message: alloc::format!("calendar `{pattern}` missing hour"),
