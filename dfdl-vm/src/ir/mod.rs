@@ -283,7 +283,7 @@ impl Default for IrProps {
             calendar_century_start: 53,
             calendar_language: None,
             calendar_days_in_first_week: 4,
-            calendar_first_day_of_week: 1,
+            calendar_first_day_of_week: 7,
             text_number_pattern: None,
             text_number_check_policy: BinaryNumberCheckPolicy::Lax,
             text_number_rep: crate::schema::TextNumberRep::Standard,

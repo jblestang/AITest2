@@ -357,30 +357,25 @@ pub fn format_binary_calendar_from_millis_delta(
 ) -> Result<alloc::string::String, VmError> {
     let base_secs = parse_calendar_epoch_unix(epoch_raw)?;
     let total_ms = i128::from(base_secs) * 1000 + i128::from(delta_ms);
-    let (_, max_ms) = calendar_millis_limits();
+    let secs = (total_ms / 1000) as i64;
+    let micros = (total_ms.rem_euclid(1000) * 1000) as u32;
+    let text = format_binary_calendar_datetime(secs, micros, epoch_raw);
+    if let Err(e) = validate_calendar_year_tunables(&text, tunables) {
+        return Err(e);
+    }
+    let (min_ms, max_ms) = calendar_millis_limits();
     if total_ms > max_ms {
         return Err(calendar_millis_bounds_error(
             delta_ms,
             "millis value greater than upper bounds for a Calendar",
         ));
     }
-    let secs = (total_ms / 1000) as i64;
-    let micros = (total_ms.rem_euclid(1000) * 1000) as u32;
-    let (y, _, _) = civil_from_days(secs.div_euclid(86400));
-    if y > 9999 {
-        return Err(calendar_millis_bounds_error(
-            delta_ms,
-            "millis value greater than upper bounds for a Calendar",
-        ));
-    }
-    if y < 1 && total_ms < 0 {
+    if total_ms < min_ms {
         return Err(calendar_millis_bounds_error(
             delta_ms,
             "millis value less than lower bounds for a Calendar",
         ));
     }
-    let text = format_binary_calendar_datetime(secs, micros, epoch_raw);
-    validate_calendar_year_tunables(&text, tunables)?;
     Ok(text)
 }
 
@@ -479,38 +474,76 @@ pub fn date_from_week_of_year(
     })
 }
 
+/// Localized day-of-week index (1-based, relative to `first_day_of_week`).
+pub fn weekday_from_localized_index(localized: u32, first_day_of_week: u32) -> u32 {
+    let base = first_day_of_week.clamp(1, 7);
+    ((base - 1 + localized.saturating_sub(1)) % 7) + 1
+}
+
+pub fn first_weekday_in_month(year: i32, month: u32, weekday: u32) -> Option<u32> {
+    let dim = days_in_month(year, month);
+    for day in 1..=dim {
+        if weekday_of_ymd_iso(year, month, day) == Some(weekday) {
+            return Some(day);
+        }
+    }
+    None
+}
+
+/// First day of the `week`th week-of-month (ICU `W`), possibly in a prior month.
 pub fn date_from_week_of_month(
     year: i32,
     month: u32,
     week: u32,
     first_weekday: u32,
     minimal_days: u32,
-) -> Result<u32, VmError> {
+) -> Result<(i32, u32, u32), VmError> {
     let dim = days_in_month(year, month);
+    let wd1 = weekday_of_ymd_iso(year, month, 1).ok_or_else(|| VmError::InvalidValue {
+        message: alloc::format!("invalid month `{month}` for year `{year}`"),
+    })?;
+    let back = (wd1 + 7 - first_weekday) % 7;
+    let mut week_start = 1i32 - back as i32;
     let mut seen = 0u32;
-    let mut cur = 1u32;
-    while cur <= dim {
-        if weekday_of_ymd_iso(year, month, cur) == Some(first_weekday) {
-            let mut days_in_month = 0u32;
-            for i in 0..7 {
-                let day = cur + i;
-                if day >= 1 && day <= dim {
-                    days_in_month += 1;
-                } else if i == 0 {
-                    // week spans previous month — still count for week-of-month per ICU
-                }
-            }
-            if days_in_month >= minimal_days.min(7) {
-                seen += 1;
-                if seen == week {
-                    return Ok(cur);
-                }
+    let min_days = minimal_days.clamp(1, 7);
+    loop {
+        let mut in_month = 0u32;
+        for off in 0..7 {
+            let d = week_start + off;
+            if d >= 1 && d <= dim as i32 {
+                in_month += 1;
             }
         }
-        cur += 1;
+        if in_month >= min_days {
+            seen += 1;
+            if seen == week {
+                return ymd_from_day_offset(year, month, week_start);
+            }
+        }
+        week_start += 7;
+        if week_start > dim as i32 + 7 {
+            break;
+        }
     }
-    // Fallback: nth first_weekday in month (matches several Section 5 cases).
-    nth_weekday_in_month(year, month, week, first_weekday)
+    Err(VmError::InvalidValue {
+        message: alloc::format!("calendar week `{week}` not found for {year}-{month:02}"),
+    })
+}
+
+fn ymd_from_day_offset(year: i32, month: u32, day: i32) -> Result<(i32, u32, u32), VmError> {
+    if day >= 1 {
+        return Ok((year, month, day as u32));
+    }
+    let mut y = year;
+    let mut m = month;
+    if m == 1 {
+        y -= 1;
+        m = 12;
+    } else {
+        m -= 1;
+    }
+    let prev_dim = days_in_month(y, m);
+    Ok((y, m, (prev_dim as i32 + day) as u32))
 }
 
 pub fn bcd_digits_from_raw_bits(raw: u64, num_bits: usize) -> alloc::string::String {

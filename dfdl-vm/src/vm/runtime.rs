@@ -1269,7 +1269,12 @@ fn decode_binary_calendar(
     })?;
     let pattern = strings.get(pat_id)?;
     let digits = pad_calendar_digit_field(&digits, pattern);
-    let text = format_calendar_pattern(&digits, pattern, props.calendar_century_start)?;
+    let text = format_calendar_pattern(
+        &digits,
+        pattern,
+        props.calendar_century_start,
+        props.calendar_first_day_of_week,
+    )?;
     let text = if rep == BinaryNumberRep::PackedBcd
         && (props.calendar_date_only
             || kind == crate::ir::ValueKind::Time
@@ -1342,6 +1347,7 @@ fn format_calendar_pattern(
     digits: &str,
     pattern: &str,
     century_start: u32,
+    first_day_of_week: u32,
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -1417,7 +1423,28 @@ fn format_calendar_pattern(
             } else {
                 alloc::string::String::from("01")
             };
-            let day_s = if has_d {
+            let month_n: u32 = month_s.parse().map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("calendar `{pattern}` invalid month `{month_s}`"),
+            })?;
+            let day_s = if letters.contains('e') && !letters.contains('d') {
+                let e_raw = fields.get(&'e').ok_or_else(|| VmError::InvalidValue {
+                    message: alloc::format!("calendar `{pattern}` missing localized day-of-week"),
+                })?;
+                let localized: u32 = e_raw.parse().map_err(|_| VmError::InvalidValue {
+                    message: alloc::format!("calendar `{pattern}` invalid day-of-week `{e_raw}`"),
+                })?;
+                let wd = crate::vm::calendar_binary::weekday_from_localized_index(
+                    localized,
+                    first_day_of_week,
+                );
+                let d = crate::vm::calendar_binary::first_weekday_in_month(year_i, month_n, wd)
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: alloc::format!(
+                            "calendar `{pattern}` no day for localized week index `{localized}`"
+                        ),
+                    })?;
+                alloc::format!("{d:02}")
+            } else if has_d {
                 day.ok_or_else(|| VmError::InvalidValue {
                     message: alloc::format!("calendar `{pattern}` missing day"),
                 })?
@@ -1474,6 +1501,7 @@ struct CalendarTextFields {
     day_of_year: Option<u32>,
     week_in_month: Option<u32>,
     week_of_year: Option<u32>,
+    localized_dow: Option<u32>,
     year: Option<i32>,
     hour: Option<u32>,
     minute: Option<u32>,
@@ -1653,8 +1681,12 @@ fn apply_hour12(fields: &mut CalendarTextFields) -> Result<(), crate::error::VmE
     Ok(())
 }
 
-fn month_from_name_locale(name: &str, language: Option<&str>) -> Option<u32> {
-    let trimmed = name.trim().trim_end_matches('.');
+fn month_from_name_locale(name: &str, language: Option<&str>, lax: bool) -> Option<u32> {
+    let trimmed = if lax {
+        name.trim().trim_end_matches('.')
+    } else {
+        name.trim()
+    };
     if let Some(lang) = language {
         let key = lang.split('-').next().unwrap_or(lang).to_ascii_lowercase();
         let lower = trimmed.to_lowercase();
@@ -1768,7 +1800,10 @@ fn read_calendar_field(
     })?;
     let mut out = alloc::string::String::new();
     let max_digits = if width == 1
-        && matches!(letters, 'd' | 'M' | 'y' | 'Y' | 'D' | 'F' | 'w' | 'W' | 'H' | 'h' | 'm' | 's')
+        && matches!(
+            letters,
+            'd' | 'M' | 'y' | 'Y' | 'D' | 'F' | 'w' | 'W' | 'H' | 'h' | 'm' | 's' | 'e'
+        )
     {
         4
     } else {
@@ -1792,6 +1827,12 @@ fn read_calendar_field(
     Ok(out)
 }
 
+fn calendar_text_strict_date_error(text: &str) -> crate::error::VmError {
+    crate::error::VmError::InvalidValue {
+        message: alloc::format!("Parse Error: Unable to parse xs:date from text: {text}"),
+    }
+}
+
 fn format_calendar_text(
     text: &str,
     pattern: &str,
@@ -1802,6 +1843,13 @@ fn format_calendar_text(
     use crate::error::VmError;
 
     let text = text.trim();
+    let map_err = |e: VmError| -> VmError {
+        if lax {
+            e
+        } else {
+            calendar_text_strict_date_error(text)
+        }
+    };
     let mut ti = 0usize;
     let mut fields = CalendarTextFields {
         weekday: None,
@@ -1810,6 +1858,7 @@ fn format_calendar_text(
         day_of_year: None,
         week_in_month: None,
         week_of_year: None,
+        localized_dow: None,
         year: None,
         hour: None,
         minute: None,
@@ -1857,13 +1906,12 @@ fn format_calendar_text(
                 .collect::<alloc::string::String>()
                 .replace("''", "'");
             i += 1;
-            let text_slice = text[ti..].trim_start();
-            if !text_slice.starts_with(&lit) {
+            if !text[ti..].starts_with(&lit) {
                 return Err(VmError::InvalidValue {
                     message: alloc::format!("calendar `{pattern}` mismatch"),
                 });
             }
-            ti += text[ti..].len() - text_slice.len() + lit.len();
+            ti += lit.len();
             continue;
         }
         let c = chars[i];
@@ -1893,7 +1941,7 @@ fn format_calendar_text(
             i += 1;
             continue;
         }
-        const FIELD: &str = "EMdDFwWmyYHhs";
+        const FIELD: &str = "EMdDFwWmyYHhse";
         if !FIELD.contains(c) {
             let Some(ch) = text[ti..].chars().next() else {
                 return Err(VmError::InvalidValue {
@@ -1922,10 +1970,15 @@ fn format_calendar_text(
             'M' if width >= 3 => {
                 pattern_parts.m = true;
                 fields.month = Some(
-                    month_from_name_locale(&raw, cal.language).ok_or_else(|| VmError::InvalidValue {
-                        message: alloc::format!("calendar `{pattern}` invalid month `{raw}`"),
+                    month_from_name_locale(&raw, cal.language, lax).ok_or_else(|| {
+                        map_err(VmError::InvalidValue {
+                            message: alloc::format!("calendar `{pattern}` invalid month `{raw}`"),
+                        })
                     })?,
                 );
+            }
+            'e' => {
+                fields.localized_dow = raw.parse().ok();
             }
             'F' => {
                 pattern_parts.week_in_month = true;
@@ -2053,23 +2106,25 @@ fn format_calendar_text(
         let n = fields.week_in_month.ok_or_else(|| VmError::InvalidValue {
             message: alloc::format!("calendar `{pattern}` missing week-in-month"),
         })?;
-        let day = if pattern.contains('W') {
-            crate::vm::calendar_binary::date_from_week_of_month(
+        if pattern.contains('W') {
+            let (y, m, d) = crate::vm::calendar_binary::date_from_week_of_month(
                 year,
                 month,
                 n,
                 cal.first_day_of_week,
                 cal.days_in_first_week,
-            )?
+            )?;
+            year = y;
+            (m, d)
         } else {
-            crate::vm::calendar_binary::nth_weekday_in_month(
+            let day = crate::vm::calendar_binary::nth_weekday_in_month(
                 year,
                 month,
                 n,
                 cal.first_day_of_week,
-            )?
-        };
-        (month, day)
+            )?;
+            (month, day)
+        }
     } else {
         if !pattern_parts.y {
             year = 1970;
@@ -2084,6 +2139,16 @@ fn format_calendar_text(
         let day = if pattern_parts.d {
             fields.day.ok_or_else(|| VmError::InvalidValue {
                 message: alloc::format!("calendar `{pattern}` missing day"),
+            })?
+        } else if let Some(e) = fields.localized_dow {
+            let wd = crate::vm::calendar_binary::weekday_from_localized_index(
+                e,
+                cal.first_day_of_week,
+            );
+            crate::vm::calendar_binary::first_weekday_in_month(year, month, wd).ok_or_else(|| {
+                VmError::InvalidValue {
+                    message: alloc::format!("calendar `{pattern}` missing day"),
+                }
             })?
         } else if let Some(ref wd) = fields.weekday {
             let w = weekday_from_name_locale(wd, cal.language).ok_or_else(|| VmError::InvalidValue {
@@ -4123,9 +4188,14 @@ pub(crate) fn read_text_scalar(
             if let Some(pat_id) = props.calendar_pattern {
                 let pattern = strings.get(pat_id)?;
                 let parsed = if trimmed.chars().all(|c| c.is_ascii_digit()) {
-                    format_calendar_pattern(trimmed, pattern, props.calendar_century_start)?
+                    format_calendar_pattern(
+                        trimmed,
+                        pattern,
+                        props.calendar_century_start,
+                        props.calendar_first_day_of_week,
+                    )?
                 } else {
-                    format_calendar_text(
+                    let parsed_text = format_calendar_text(
                         trimmed,
                         pattern,
                         props.calendar_check_policy_lax,
@@ -4137,7 +4207,12 @@ pub(crate) fn read_text_scalar(
                             first_day_of_week: props.calendar_first_day_of_week,
                             days_in_first_week: props.calendar_days_in_first_week,
                         },
-                    )?
+                    );
+                    if !props.calendar_check_policy_lax && props.calendar_date_only {
+                        parsed_text.map_err(|_| calendar_text_strict_date_error(trimmed))?
+                    } else {
+                        parsed_text?
+                    }
                 };
                 let with_tz = append_packed_calendar_timezone(
                     props,
@@ -8316,7 +8391,6 @@ mod delimited_stop_tests {
         .unwrap());
     }
 
-    #[test]
     fn default_cal_cfg() -> CalendarTextConfig<'static> {
         CalendarTextConfig {
             language: None,
