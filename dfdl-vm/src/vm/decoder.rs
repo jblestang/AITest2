@@ -581,7 +581,13 @@ impl<'a> Decoder<'a> {
                 }
                 Err(e) => {
                     if (items.len() as u64) >= min {
-                        *cursor = saved;
+                        // Unbounded repetition: failed attempt may have consumed an
+                        // occurrence separator that belongs to following content.
+                        *cursor = if max == u64::MAX {
+                            before_occurrence_sep
+                        } else {
+                            saved
+                        };
                         break;
                     }
                     if min == 0 && items.is_empty() {
