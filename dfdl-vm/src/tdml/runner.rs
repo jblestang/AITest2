@@ -7,9 +7,21 @@ use super::parser::{
 use crate::api::DfdlSpec;
 use crate::length_validate::DaffodilTunables;
 use crate::error::Result;
+use crate::ir::IrProgram;
+use crate::schema::BitOrder;
 use crate::vm::RuntimeConfig;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+
+fn tdml_transmission_bit_order(doc: &TdmlDocument, program: &IrProgram) -> BitOrder {
+    if let Some(order) = doc.document_transmission_bit_order {
+        return order;
+    }
+    if doc.kind == DocumentKind::Bits {
+        return doc.transmission_bit_order;
+    }
+    program.format_transmission_bit_order()
+}
 
 /// Outcome of running one TDML parser test case.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,7 +154,7 @@ pub fn run_parser_test_with_options(
     }
 
     let frame_bits = doc.significant_bit_length();
-    let transmission = Some(spec.program().format_transmission_bit_order());
+    let transmission = Some(tdml_transmission_bit_order(doc, spec.program()));
     let tdml_regions = if doc.part_bit_order_regions.is_empty() {
         None
     } else {

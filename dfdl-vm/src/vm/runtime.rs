@@ -264,6 +264,7 @@ impl<'a> Cursor<'a> {
         if self.bit_count == 0 {
             let end_byte = self.pos + bytes_to_fill;
             if end_byte <= self.data.len() {
+                let start = self.absolute_bit_index();
                 let mut array = self.data[self.pos..end_byte].to_vec();
                 let fragment = n % 8;
                 if fragment != 0 {
@@ -274,23 +275,59 @@ impl<'a> Cursor<'a> {
                     };
                     array[last] &= mask;
                 }
-                self.skip_stream_bits(n, bit_order)?;
+                let end = start + n;
+                self.pos = end / 8;
+                self.bit_count = (end % 8) as u8;
                 return Ok(array);
             }
         }
-        let raw = self.read_stream_bits(n, bit_order)?;
         let mut array = vec![0u8; bytes_to_fill];
-        let fragment = n % 8;
-        if fragment == 0 {
-            for i in 0..bytes_to_fill {
-                array[bytes_to_fill - 1 - i] = ((raw >> (i * 8)) & 0xFF) as u8;
+        let mut bits_left = n;
+        let mut out_bit = 0usize;
+        while bits_left > 0 {
+            if self.pos >= self.data.len() {
+                use crate::error::VmError;
+                return Err(insufficient_data_bits_error(n, n - bits_left));
             }
-        } else {
-            let last = array.len() - 1;
-            array[last] = match field_order {
-                BitOrder::MostSignificantBitFirst => ((raw << (8 - fragment)) & 0xFF) as u8,
-                BitOrder::LeastSignificantBitFirst => (raw & ((1u64 << fragment) - 1)) as u8,
+            let byte = self.data[self.pos];
+            let avail = 8 - self.bit_count as usize;
+            let take = bits_left.min(avail);
+            let chunk = match field_order {
+                BitOrder::LeastSignificantBitFirst => {
+                    (byte >> self.bit_count) & ((1u8 << take) - 1)
+                }
+                BitOrder::MostSignificantBitFirst => {
+                    let shift = 8 - self.bit_count as usize - take;
+                    (byte >> shift) & ((1u8 << take) - 1)
+                }
             };
+            for b in 0..take {
+                let bit = (chunk >> b) & 1;
+                match field_order {
+                    BitOrder::LeastSignificantBitFirst => {
+                        array[out_bit / 8] |= (bit as u8) << (out_bit % 8);
+                    }
+                    BitOrder::MostSignificantBitFirst => {
+                        array[out_bit / 8] |= (bit as u8) << (7 - (out_bit % 8));
+                    }
+                }
+                out_bit += 1;
+            }
+            self.bit_count += take as u8;
+            bits_left -= take;
+            while self.bit_count >= 8 {
+                self.bit_count -= 8;
+                self.pos += 1;
+            }
+        }
+        let fragment = n % 8;
+        if fragment != 0 {
+            let last = array.len() - 1;
+            let mask = match field_order {
+                BitOrder::MostSignificantBitFirst => 0xFFu8 << (8 - fragment),
+                BitOrder::LeastSignificantBitFirst => (1u8 << fragment) - 1,
+            };
+            array[last] &= mask;
         }
         Ok(array)
     }
@@ -2544,7 +2581,8 @@ fn format_calendar_text(
     let out = alloc::format!("{year:04}-{month:02}-{day:02}");
     if time_overflow_carries_to_date
         && !date_only
-        && pattern.chars().any(|c| c == 'W' || c == 'F' || c == 'w')
+        && pattern.contains('W')
+        && !crate::vm::calendar_binary::calendar_pattern_has_time_fields(pattern)
     {
         Ok(alloc::format!("{out}T00:00:00"))
     } else {

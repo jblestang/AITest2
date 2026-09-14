@@ -974,6 +974,15 @@ pub fn strict_calendar_lexical_error_from_negative_magnitude(
     }
 }
 
+/// True when `calendarPattern` includes hour/minute/second field letters.
+pub fn calendar_pattern_has_time_fields(pattern: &str) -> bool {
+    let letters = calendar_pattern_letters_only(pattern);
+    letters.contains('m')
+        || letters
+            .chars()
+            .any(|c| matches!(c, 'H' | 'h' | 'k' | 'K' | 's' | 'S' | 'a'))
+}
+
 /// True when `calendarPattern` has time field letters and no date field letters.
 pub fn calendar_pattern_time_only(pattern: &str) -> bool {
     let letters = calendar_pattern_letters_only(pattern);
