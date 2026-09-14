@@ -96,6 +96,10 @@ const SECTION00_GATE_SKIP_FILES: &[&str] = &[
 const SECTION00_BASELINE_PASS_MIN: usize = 150;
 const SECTION00_BASELINE_FAIL_MAX: usize = 0;
 
+/// Baseline for all `section02/**` TDML (validation + processing error suites).
+const SECTION02_BASELINE_PASS_MIN: usize = 45;
+const SECTION02_BASELINE_FAIL_MAX: usize = 51;
+
 fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
     let Ok(tdml) = fs::read_to_string(path) else {
         stats.parse_fail += 1;
@@ -179,6 +183,36 @@ fn daffodil_full_suite_report() {
         "TOTAL", total_pass, total_fail, total_skip, total_parse_fail
     );
     eprintln!("TDML files: {}", files.len());
+}
+
+/// CI gate: Section 02 — facet validation TDML and related error suites.
+#[test]
+fn daffodil_section02_regression_gate() {
+    let root = assert_tdml_root().join("section02");
+    let mut files = Vec::new();
+    collect_tdml_files(&root, &mut files);
+    assert!(!files.is_empty(), "section02 TDML missing");
+    let mut stats = SectionStats::default();
+    for path in files {
+        run_tdml_file(&path, &mut stats);
+    }
+    eprintln!(
+        "section02 gate: pass={} fail={} skip={} parse_fail={}",
+        stats.pass, stats.fail, stats.skip, stats.parse_fail
+    );
+    assert_eq!(stats.parse_fail, 0, "section02 TDML parse errors: {stats:?}");
+    assert!(
+        stats.pass >= SECTION02_BASELINE_PASS_MIN,
+        "section02 regression: pass={} (need >={SECTION02_BASELINE_PASS_MIN}), fail={}",
+        stats.pass,
+        stats.fail
+    );
+    assert!(
+        stats.fail <= SECTION02_BASELINE_FAIL_MAX,
+        "section02 regression: too many failures pass={} fail={} (max {SECTION02_BASELINE_FAIL_MAX})",
+        stats.pass,
+        stats.fail
+    );
 }
 
 /// CI gate: Section 00 general — regression on the main TDML set (not a tiny all-green subset).

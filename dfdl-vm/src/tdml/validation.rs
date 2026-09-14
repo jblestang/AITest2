@@ -9,15 +9,11 @@ pub fn collect_post_decode_validation_errors(
     schema: &SchemaDocument,
     program: &IrProgram,
     root_value: &DfdlValue,
+    full_xerces_style: bool,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    let DfdlValue::Sequence(seq) = root_value else {
-        return errors;
-    };
-    let Some(root_field) = seq.fields.get(&program.root_element) else {
-        return errors;
-    };
-    let _ = walk_particle(schema, program, program.root, root_field, &mut errors);
+    let root_field = resolve_root_field_value(root_value, &program.root_element);
+    let _ = walk_particle(schema, program, program.root, root_field, full_xerces_style, &mut errors);
     errors
 }
 
@@ -26,6 +22,7 @@ fn walk_particle(
     program: &IrProgram,
     node_id: u32,
     value: &DfdlValue,
+    full_xerces_style: bool,
     errors: &mut Vec<String>,
 ) -> Result<(), ()> {
     match program.node(node_id).map_err(|_| ())? {
@@ -38,7 +35,7 @@ fn walk_particle(
             if *kind == ValueKind::Complex {
                 if let Some(child_id) = child {
                     let inner = complex_element_value(value, program.strings.get(*name).ok())?;
-                    walk_particle(schema, program, *child_id, inner, errors)?;
+                    walk_particle(schema, program, *child_id, inner, full_xerces_style, errors)?;
                 }
                 return Ok(());
             }
@@ -56,11 +53,114 @@ fn walk_particle(
                 ) {
                     let detail = e.to_string();
                     if let Some(ename) = ename {
-                        errors.push(alloc::format!("Validation Error"));
-                        errors.push(ename.to_string());
-                        errors.push(alloc::format!("not valid"));
-                        errors.push(detail.clone());
-                        errors.push(alloc::format!("ex:{ename} {detail}"));
+                        if detail.contains("facet pattern") {
+                            if full_xerces_style || *kind == ValueKind::String {
+                                errors.push(alloc::format!("Validation Error"));
+                                errors.push(ename.to_string());
+                                errors.push(alloc::format!("pattern"));
+                            } else {
+                                errors.push(alloc::format!("failed facet checks"));
+                                errors.push(alloc::format!("pattern"));
+                            }
+                            if let Some(start) = detail.find('(') {
+                                if let Some(end) = detail.rfind(')') {
+                                    errors.push(detail[start + 1..end].to_string());
+                                }
+                            }
+                            let lex = value_lexical(value, *kind).unwrap_or("");
+                            if full_xerces_style && !lex.is_empty() {
+                                errors.push(alloc::format!("'{lex}'"));
+                                errors.push(alloc::format!("not facet-valid"));
+                                errors.push(alloc::format!("pattern"));
+                                if let Some(start) = detail.find('(') {
+                                    if let Some(end) = detail.rfind(')') {
+                                        errors.push(alloc::format!(
+                                            "'{}'",
+                                            &detail[start + 1..end]
+                                        ));
+                                    }
+                                }
+                            }
+                        } else if detail.contains("failed facet checks") {
+                            let rest = detail
+                                .strip_prefix("failed facet checks due to: ")
+                                .map(str::trim);
+                            if full_xerces_style
+                                && matches!(
+                                    *kind,
+                                    ValueKind::Int
+                                        | ValueKind::Long
+                                        | ValueKind::Short
+                                        | ValueKind::Byte
+                                        | ValueKind::UnsignedInt
+                                        | ValueKind::UnsignedShort
+                                        | ValueKind::UnsignedByte
+                                )
+                                && rest.is_some_and(|r| {
+                                    r.contains("Inclusive") || r.contains("Exclusive")
+                                })
+                            {
+                                errors.push(ename.to_string());
+                                errors.push(alloc::format!("not valid"));
+                                if let Some(lex) = value_lexical_any(value, *kind) {
+                                    errors.push(alloc::format!("'{lex}'"));
+                                }
+                                errors.push(alloc::format!("not facet-valid"));
+                            } else if full_xerces_style
+                                && rest.is_some_and(|r| {
+                                    r.contains("Inclusive") || r.contains("Exclusive")
+                                })
+                            {
+                                errors.push(alloc::format!("Validation Error"));
+                                if detail.contains("maxInclusive") {
+                                    errors.push(alloc::format!("maxInclusive"));
+                                    if let Some(max) = props.value_max_inclusive {
+                                        errors.push(format_xerces_float_bound(max as f64));
+                                    }
+                                } else if detail.contains("minInclusive") {
+                                    errors.push(alloc::format!("minInclusive"));
+                                    if let Some(min) = props.value_min_inclusive {
+                                        errors.push(format_xerces_float_bound(min as f64));
+                                    }
+                                } else if detail.contains("maxExclusive") {
+                                    errors.push(alloc::format!("maxExclusive"));
+                                    if let Some(max) = props.value_max_exclusive {
+                                        errors.push(format_xerces_float_bound(max as f64));
+                                    }
+                                } else if detail.contains("minExclusive") {
+                                    errors.push(alloc::format!("minExclusive"));
+                                    if let Some(min) = props.value_min_exclusive {
+                                        errors.push(format_xerces_float_bound(min as f64));
+                                    }
+                                }
+                            } else {
+                                errors.push(ename.to_string());
+                                errors.push(alloc::format!("failed facet checks"));
+                                if let Some(r) = rest {
+                                    if r.contains("enumeration") {
+                                        errors.push(alloc::format!("facet enumeration(s)"));
+                                        let allowed = props
+                                            .facet_enumeration
+                                            .iter()
+                                            .filter_map(|id| program.strings.get(*id).ok())
+                                            .collect::<alloc::vec::Vec<_>>()
+                                            .join("|");
+                                        if !allowed.is_empty() {
+                                            errors.push(allowed);
+                                        }
+                                    } else {
+                                        errors.push(alloc::format!("facet {r}"));
+                                    }
+                                }
+                                errors.push(detail.clone());
+                            }
+                        } else {
+                            errors.push(alloc::format!("Validation Error"));
+                            errors.push(ename.to_string());
+                            errors.push(alloc::format!("not valid"));
+                            errors.push(detail.clone());
+                            errors.push(alloc::format!("ex:{ename} {detail}"));
+                        }
                     } else {
                         errors.push(detail);
                     }
@@ -83,7 +183,8 @@ fn walk_particle(
                 return Ok(());
             };
             for &child_id in children {
-                let IrNode::Element { name, .. } = program.node(child_id).map_err(|_| ())? else {
+                let IrNode::Element { name, props, .. } = program.node(child_id).map_err(|_| ())?
+                else {
                     continue;
                 };
                 let key = program.strings.get(*name).map_err(|_| ())?;
@@ -92,11 +193,36 @@ fn walk_particle(
                 };
                 match field_value {
                     DfdlValue::Array(items) => {
+                        let count = items.len() as u64;
+                        let min = props.occurs_min;
+                        let max = props.occurs_max.unwrap_or(u64::MAX);
+                        if count < min || (props.occurs_max.is_some() && count > max) {
+                            if full_xerces_style {
+                                if props.occurs_max.is_some() && count > max {
+                                    errors.push(key.to_string());
+                                    errors.push(alloc::format!("{count} occur"));
+                                    errors.push(alloc::format!("expected"));
+                                    errors.push(alloc::format!("maximum of '{max}'"));
+                                    errors.push(alloc::format!("exceeded"));
+                                }
+                            } else {
+                                errors.push(key.to_string());
+                                errors.push(alloc::format!("occurred"));
+                                errors.push(alloc::format!("expected"));
+                                errors.push(alloc::format!("minimum of '{min}'"));
+                                if props.occurs_max.is_some() {
+                                    errors.push(alloc::format!("maximum of '{max}'"));
+                                }
+                                errors.push(alloc::format!(
+                                    "{key} occurred '{count}' times when it was expected to be a minimum of '{min}' and a maximum of '{max}' times."
+                                ));
+                            }
+                        }
                         for item in items {
-                            walk_particle(schema, program, child_id, item, errors)?;
+                            walk_particle(schema, program, child_id, item, full_xerces_style, errors)?;
                         }
                     }
-                    other => walk_particle(schema, program, child_id, other, errors)?,
+                    other => walk_particle(schema, program, child_id, other, full_xerces_style, errors)?,
                 }
             }
             Ok(())
@@ -110,7 +236,14 @@ fn walk_particle(
                 for branch in branches {
                     let branch_name = program.strings.get(branch.name).map_err(|_| ())?;
                     if branch_name == discriminator.as_str() {
-                        return walk_particle(schema, program, branch.node, branch_value, errors);
+                        return walk_particle(
+                            schema,
+                            program,
+                            branch.node,
+                            branch_value,
+                            full_xerces_style,
+                            errors,
+                        );
                     }
                 }
                 return Ok(());
@@ -121,7 +254,7 @@ fn walk_particle(
             for branch in branches {
                 let branch_name = program.strings.get(branch.name).map_err(|_| ())?;
                 if let Some(v) = seq.fields.get(branch_name) {
-                    return walk_particle(schema, program, branch.node, v, errors);
+                    return walk_particle(schema, program, branch.node, v, full_xerces_style, errors);
                 }
             }
             Ok(())
@@ -129,10 +262,50 @@ fn walk_particle(
     }
 }
 
+fn format_xerces_float_bound(v: f64) -> alloc::string::String {
+    if v.fract() == 0.0 && v.is_finite() {
+        alloc::format!("{v:.1}")
+    } else {
+        alloc::format!("{v}")
+    }
+}
+
+fn resolve_root_field_value<'a>(root_value: &'a DfdlValue, root_element: &str) -> &'a DfdlValue {
+    if let Some(seq) = root_value.sequence_value() {
+        if let Some(inner) = seq.fields.get(root_element) {
+            return inner;
+        }
+        if seq.fields.len() == 1 {
+            if let Some((name, inner)) = seq.fields.iter().next() {
+                if name == root_element {
+                    return inner;
+                }
+            }
+        }
+    }
+    root_value
+}
+
 fn value_lexical<'a>(value: &'a DfdlValue, kind: ValueKind) -> Option<&'a str> {
     match (kind, value) {
         (ValueKind::String, DfdlValue::String(s)) => Some(s.text.as_str()),
         (_, DfdlValue::String(s)) => Some(s.text.as_str()),
+        _ => None,
+    }
+}
+
+fn value_lexical_any(value: &DfdlValue, kind: ValueKind) -> Option<alloc::string::String> {
+    if let Some(s) = value_lexical(value, kind) {
+        return Some(s.to_string());
+    }
+    match (kind, value) {
+        (ValueKind::Int, DfdlValue::Int(v)) => Some(v.to_string()),
+        (ValueKind::Long, DfdlValue::Long(v)) => Some(v.to_string()),
+        (ValueKind::Short, DfdlValue::Short(v)) => Some(v.to_string()),
+        (ValueKind::Byte, DfdlValue::Byte(v)) => Some(v.to_string()),
+        (ValueKind::UnsignedInt, DfdlValue::UnsignedInt(v)) => Some(v.to_string()),
+        (ValueKind::UnsignedShort, DfdlValue::UnsignedShort(v)) => Some(v.to_string()),
+        (ValueKind::UnsignedByte, DfdlValue::UnsignedByte(v)) => Some(v.to_string()),
         _ => None,
     }
 }
@@ -148,7 +321,11 @@ fn complex_element_value<'a>(
             }
         }
         if seq.fields.len() == 1 {
-            return Ok(seq.fields.values().next().expect("one field"));
+            if let Some((key, inner)) = seq.fields.iter().next() {
+                if element_name.is_none() || element_name == Some(key.as_str()) {
+                    return Ok(inner);
+                }
+            }
         }
     }
     Ok(value)

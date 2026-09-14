@@ -1,7 +1,8 @@
 use crate::error::SchemaError;
 use crate::length_validate::{DaffodilTunables, InvalidRestrictionPolicy};
 use crate::schema::{
-    ComplexContent, ElementDecl, GroupDecl, Particle, SchemaDocument, SimpleBase, TypeDef, TypeName,
+    BuiltinType, ComplexContent, ElementDecl, GroupDecl, Particle, SchemaDocument, SimpleBase,
+    TypeDef, TypeName,
 };
 
 pub fn validate_compiled_schema(
@@ -170,20 +171,22 @@ fn validate_invalid_restrictions(
     }
     for td in schema.types.values() {
         let TypeDef::Simple {
-            base: SimpleBase::Restriction { patterns, base, .. },
+            base: simple_base,
             name,
             ..
         } = td
         else {
             continue;
         };
+        let SimpleBase::Restriction { patterns, .. } = simple_base else {
+            continue;
+        };
         if patterns.is_empty() {
             continue;
         }
-        let is_stringy = matches!(
-            base,
-            crate::schema::RestrictionBase::Builtin(crate::schema::BuiltinType::String)
-        );
+        let is_stringy = schema
+            .builtin_for_simple_base(simple_base)
+            .is_some_and(|b| b == BuiltinType::String);
         if !is_stringy {
             return Err(SchemaError::InvalidProperty {
                 message: alloc::format!(

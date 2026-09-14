@@ -9,6 +9,15 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use xml_no_std::reader::XmlEvent;
 
+/// TDML `@validation` on parser test cases (Daffodil default suite value is `off`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TdmlValidationMode {
+    #[default]
+    Off,
+    Limited,
+    On,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoundTrip {
     /// Use the suite-level `defaultRoundTrip` attribute.
@@ -27,6 +36,7 @@ pub struct TdmlSuite {
     pub tests: Vec<ParserTestCase>,
     pub unparser_tests: Vec<UnparserTestCase>,
     pub default_round_trip: RoundTrip,
+    pub default_validation: TdmlValidationMode,
     /// Set when loading a suite from disk (resolves `documentPart type="file"`).
     pub resource_context: super::resources::TdmlResourceContext,
 }
@@ -52,6 +62,7 @@ pub struct ParserTestCase {
     pub expected_validation_errors: Option<Vec<String>>,
     pub config: Option<String>,
     pub round_trip: RoundTrip,
+    pub validation: Option<TdmlValidationMode>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +130,9 @@ pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
         .cloned()
         .unwrap_or_else(|| "unnamed".into());
     let default_round_trip = parse_round_trip(attrs.get("defaultRoundTrip").map(String::as_str));
+    let default_validation =
+        parse_validation_mode(attrs.get("defaultValidation").map(String::as_str))
+            .unwrap_or(TdmlValidationMode::Off);
 
     let mut schemas = BTreeMap::new();
     let mut configs = BTreeMap::new();
@@ -154,6 +168,7 @@ pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
         tests,
         unparser_tests,
         default_round_trip,
+        default_validation,
         resource_context: super::resources::TdmlResourceContext::default(),
     })
 }
@@ -274,6 +289,10 @@ fn parse_parser_test_case(
         attribute: "model".into(),
     })?;
     let round_trip = parse_round_trip(attrs.get("roundTrip").map(String::as_str));
+    let validation = attrs
+        .get("validation")
+        .map(|s| parse_validation_mode(Some(s.as_str())))
+        .transpose()?;
     let config = attrs.get("config").cloned();
 
     let mut documents = Vec::new();
@@ -315,7 +334,27 @@ fn parse_parser_test_case(
         expected_validation_errors,
         config,
         round_trip,
+        validation,
     })
+}
+
+pub fn effective_validation(
+    test: &ParserTestCase,
+    suite: &TdmlSuite,
+) -> TdmlValidationMode {
+    test.validation.unwrap_or(suite.default_validation)
+}
+
+fn parse_validation_mode(raw: Option<&str>) -> Result<TdmlValidationMode> {
+    match raw.unwrap_or("off").trim() {
+        "" | "off" => Ok(TdmlValidationMode::Off),
+        "limited" => Ok(TdmlValidationMode::Limited),
+        "on" => Ok(TdmlValidationMode::On),
+        other => Err(ParseError::InvalidXml {
+            message: alloc::format!("unknown validation mode `{other}`"),
+        }
+        .into()),
+    }
 }
 
 fn parse_unparser_test_case(

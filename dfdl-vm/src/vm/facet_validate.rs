@@ -34,6 +34,9 @@ pub fn needs_facet_validation(props: &IrProps) -> bool {
     }
     !props.facet_pattern_groups.is_empty()
         || !props.facet_enumeration.is_empty()
+        || props.min_length.is_some()
+        || props.max_length.is_some()
+        || props.facet_length.is_some()
         || props.value_min_inclusive.is_some()
         || props.value_max_inclusive.is_some()
         || props.value_min_exclusive.is_some()
@@ -71,12 +74,16 @@ pub fn validate_decoded_facets(
     tunables: &crate::length_validate::DaffodilTunables,
 ) -> Result<(), VmError> {
     if kind == ValueKind::String || kind == ValueKind::HexBinary {
-        let text = match value {
-            DfdlValue::String(s) => s.text.as_str(),
-            DfdlValue::HexBinary(_) => return Ok(()),
+        match value {
+            DfdlValue::String(s) => {
+                validate_string_facets(s.text.as_str(), props, strings)?;
+                validate_facet_length_count(s.text.chars().count(), props, strings)?;
+            }
+            DfdlValue::HexBinary(bytes) => {
+                validate_facet_length_count(bytes.len(), props, strings)?;
+            }
             _ => return Ok(()),
         };
-        validate_string_facets(text, props, strings)?;
     } else if matches!(kind, ValueKind::Float | ValueKind::Double) {
         validate_float_facets(value, kind, props, strings)?;
     } else if kind == ValueKind::Decimal {
@@ -396,6 +403,23 @@ fn validate_enumeration_numeric(
         strings,
         "failed facet checks due to: enumeration".into(),
     ))
+}
+
+fn validate_facet_length_count(
+    count: usize,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), VmError> {
+    if let Some(exact) = props.facet_length {
+        if count as u64 != exact {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: length ({exact})"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_string_facets(text: &str, props: &IrProps, strings: &StringPool) -> Result<(), VmError> {

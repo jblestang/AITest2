@@ -2,8 +2,8 @@ use super::infoset::{compare_infoset_with_context, infoset_xml_to_root_value, re
 use super::resources::load_tdml_resource;
 use super::validation::collect_post_decode_validation_errors;
 use super::parser::{
-    effective_round_trip, parse_tdml, DocumentKind, ParserTestCase, RoundTrip, TdmlDocument,
-    TdmlSuite, UnparserTestCase,
+    effective_round_trip, effective_validation, parse_tdml, DocumentKind, ParserTestCase,
+    RoundTrip, TdmlDocument, TdmlSuite, TdmlValidationMode, UnparserTestCase,
 };
 use crate::api::DfdlSpec;
 use crate::vm::RuntimeConfig;
@@ -178,9 +178,12 @@ pub fn run_parser_test_with_options(
             outcome: TestOutcome::Fail(alloc::format!("infoset load error: {msg}")),
         });
     }
+    let validation_mode = effective_validation(test, suite);
+    let defer_facet_validation = matches!(validation_mode, TdmlValidationMode::Off)
+        || test.expected_validation_errors.is_some();
     let config = RuntimeConfig {
         strict_eos: true,
-        defer_facet_validation: test.expected_validation_errors.is_some(),
+        defer_facet_validation,
         ..RuntimeConfig::default()
     };
 
@@ -273,8 +276,13 @@ pub fn run_parser_test_with_options(
     };
 
     if let Some(expected_validation) = &test.expected_validation_errors {
-        let collected =
-            collect_post_decode_validation_errors(spec.schema(), spec.program(), &decoded);
+        let full_xerces = validation_mode == TdmlValidationMode::On;
+        let collected = collect_post_decode_validation_errors(
+            spec.schema(),
+            spec.program(),
+            &decoded,
+            full_xerces,
+        );
         let combined = collected.join("\n");
         if collected.is_empty() {
             return Ok(TestResult {
@@ -289,6 +297,25 @@ pub fn run_parser_test_with_options(
                 name: test.name.clone(),
                 outcome: TestOutcome::Fail(alloc::format!(
                     "validation error mismatch: {combined}"
+                )),
+            });
+        }
+    } else if matches!(
+        validation_mode,
+        TdmlValidationMode::Limited | TdmlValidationMode::On
+    ) {
+        let collected = collect_post_decode_validation_errors(
+            spec.schema(),
+            spec.program(),
+            &decoded,
+            validation_mode == TdmlValidationMode::On,
+        );
+        if !collected.is_empty() {
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!(
+                    "unexpected validation errors: {}",
+                    collected.join("\n")
                 )),
             });
         }
