@@ -4851,10 +4851,25 @@ pub(crate) fn consume_alignment_values(
         }
         return Ok(());
     }
-    if alignment_units != LengthUnits::Bytes {
+    if !matches!(
+        alignment_units,
+        crate::schema::LengthUnits::Bytes | crate::schema::LengthUnits::Characters
+    ) {
         return Err(VmError::UnsupportedOperation {
             op: "non-byte alignment".into(),
         });
+    }
+    if crate::vm::alignment::cursor_uses_bitstream_alignment(cursor) {
+        let align_bits = (alignment as usize).saturating_mul(8);
+        if align_bits <= 1 {
+            return Ok(());
+        }
+        let pos = cursor.absolute_bit_index();
+        let skip = (align_bits - (pos % align_bits)) % align_bits;
+        if skip > 0 {
+            cursor.skip_stream_bits(skip, props.bit_order)?;
+        }
+        return Ok(());
     }
     if cursor.bit_count != 0 {
         let pad = 8 - cursor.bit_count as usize;
@@ -4870,19 +4885,6 @@ pub(crate) fn consume_alignment_values(
     }
     if cursor.pos + skip > cursor.data.len() {
         return Err(VmError::UnexpectedEof);
-    }
-    if props.fill_byte != 0 {
-        for byte in &cursor.data[cursor.pos..cursor.pos + skip] {
-            if *byte != props.fill_byte {
-                return Err(VmError::InvalidValue {
-                    message: alloc::format!(
-                        "alignment fill expected 0x{:02X}, got 0x{:02X}",
-                        props.fill_byte,
-                        byte
-                    ),
-                });
-            }
-        }
     }
     cursor.advance(skip);
     Ok(())
@@ -5082,18 +5084,22 @@ pub(crate) fn read_simple(
             LengthKind::Delimited | LengthKind::Prefixed
         )
     {
-        let (align, units) =
-            crate::vm::alignment::resolved_alignment(kind, props, encoding);
-        if !props.alignment_implicit && align > 1 && units == LengthUnits::Bits {
+        let (align, units) = crate::vm::alignment::post_read_alignment(props);
+        if !props.alignment_implicit && align > 1 {
             let pos = cursor.absolute_bit_index();
-            let align_bits = align as usize;
-            let skip = (align_bits - (pos % align_bits)) % align_bits;
-            let within_frame = cursor
-                .frame_bit_limit
-                .map(|limit| pos + skip <= limit)
-                .unwrap_or(true);
-            if skip > 0 && within_frame {
-                consume_alignment_values(cursor, props, align, units)?;
+            let align_bits = match units {
+                LengthUnits::Bits => align as usize,
+                LengthUnits::Bytes | LengthUnits::Characters => (align as usize).saturating_mul(8),
+            };
+            if align_bits > 1 {
+                let skip = (align_bits - (pos % align_bits)) % align_bits;
+                let within_frame = cursor
+                    .frame_bit_limit
+                    .map(|limit| pos + skip <= limit)
+                    .unwrap_or(true);
+                if skip > 0 && within_frame {
+                    consume_alignment_values(cursor, props, align, units)?;
+                }
             }
         }
     }

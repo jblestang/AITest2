@@ -72,6 +72,18 @@ pub fn resolved_alignment(kind: ValueKind, props: &IrProps, encoding: &str) -> (
     }
 }
 
+/// Post-data alignment after reading a simple element (may differ from pre-element `alignment`).
+pub fn post_read_alignment(props: &IrProps) -> (u64, LengthUnits) {
+    if props.framing_alignment != 0 {
+        return (props.framing_alignment, props.framing_alignment_units);
+    }
+    (props.alignment, props.alignment_units)
+}
+
+pub(crate) fn cursor_uses_bitstream_alignment(cursor: &Cursor<'_>) -> bool {
+    cursor.frame_bit_limit.is_some() || cursor.bit_count != 0
+}
+
 /// Align the bit stream to the encoding boundary before reading text delimiters or text data.
 pub fn align_cursor_to_text_encoding(
     cursor: &mut Cursor<'_>,

@@ -281,7 +281,7 @@ impl<'a> IrBuilder<'a> {
                     {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
-                            let mut merged_ir = merge_ir_props(&overlay, &child_props);
+                            let mut merged_ir = merge_ir_props(&child_props, &overlay);
                             if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
                                 if let TypeDef::Simple { props: type_props, .. } = type_def {
                                     if element.props.leading_skip.is_none() {
@@ -2131,6 +2131,14 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
         out.alignment_implicit = true;
         out.alignment = 0;
     } else if overlay.alignment != 0 {
+        if out.alignment != 0
+            && !out.alignment_implicit
+            && overlay.alignment != out.alignment
+            && out.framing_alignment == 0
+        {
+            out.framing_alignment = out.alignment;
+            out.framing_alignment_units = out.alignment_units;
+        }
         out.alignment = overlay.alignment;
         out.alignment_implicit = false;
     }
