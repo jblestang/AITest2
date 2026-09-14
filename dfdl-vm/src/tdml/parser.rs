@@ -46,6 +46,8 @@ pub struct ParserTestCase {
     pub expected_infoset: String,
     /// When set, compile/decode/encode must fail and error text must contain each message.
     pub expected_errors: Option<Vec<String>>,
+    /// When set, parse succeeds but XSD facet validation must fail with these messages.
+    pub expected_validation_errors: Option<Vec<String>>,
     pub config: Option<String>,
     pub round_trip: RoundTrip,
 }
@@ -226,6 +228,7 @@ fn parse_parser_test_case(
     let mut documents = Vec::new();
     let mut expected_infoset = String::new();
     let mut expected_errors = None;
+    let mut expected_validation_errors = None;
 
     reader.for_each_child("parserTestCase", |local, doc_attrs, r| match local {
         "document" => {
@@ -237,7 +240,11 @@ fn parse_parser_test_case(
             Ok(())
         }
         "errors" => {
-            expected_errors = Some(parse_errors(r)?);
+            expected_errors = Some(parse_error_messages(r, "errors")?);
+            Ok(())
+        }
+        "validationErrors" => {
+            expected_validation_errors = Some(parse_error_messages(r, "validationErrors")?);
             Ok(())
         }
         _ => r.skip_current_subtree(),
@@ -254,6 +261,7 @@ fn parse_parser_test_case(
         documents,
         expected_infoset,
         expected_errors,
+        expected_validation_errors,
         config,
         round_trip,
     })
@@ -285,7 +293,7 @@ fn parse_unparser_test_case(
             Ok(())
         }
         "errors" => {
-            expected_errors = Some(parse_errors(r)?);
+            expected_errors = Some(parse_error_messages(r, "errors")?);
             Ok(())
         }
         _ => r.skip_current_subtree(),
@@ -711,9 +719,9 @@ fn parse_document_part(
     })
 }
 
-fn parse_errors(reader: &mut XmlReader<'_>) -> Result<Vec<String>> {
+fn parse_error_messages(reader: &mut XmlReader<'_>, container: &str) -> Result<Vec<String>> {
     let mut messages = Vec::new();
-    reader.for_each_child("errors", |local, _, r| {
+    reader.for_each_child(container, |local, _, r| {
         if local == "error" {
             let text = r.read_text_until_end("error")?;
             messages.push(text.trim().to_string());

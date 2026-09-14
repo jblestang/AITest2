@@ -3542,7 +3542,17 @@ pub(crate) fn read_text_scalar(
             expected: "complex".into(),
         }),
     }?;
-    if needs_facet_validation(props) {
+    Ok(value)
+}
+
+pub(crate) fn finalize_simple_value(
+    value: crate::value::DfdlValue,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+    defer_facet_validation: bool,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    if needs_facet_validation(props) && !defer_facet_validation {
         crate::vm::facet_validate::validate_decoded_facets(&value, kind, props, strings)?;
     }
     Ok(value)
@@ -6542,7 +6552,7 @@ pub(crate) fn read_simple(
         }
     }
     crate::vm::alignment::consume_trailing_skip(cursor, props)?;
-    Ok(value)
+    finalize_simple_value(value, kind, props, strings, false)
 }
 
 fn encode_binary_payload_bytes(

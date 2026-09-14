@@ -392,8 +392,19 @@ pub enum RestrictionBase {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum UnionMember {
+    /// `memberTypes="ex:foo ex:bar"`.
+    Named(TypeName),
+    /// Inline `<xs:simpleType>` under `<xs:union>`.
+    Inline(SimpleBase),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum SimpleBase {
     Builtin(BuiltinType),
+    Union {
+        members: alloc::vec::Vec<UnionMember>,
+    },
     Restriction {
         base: RestrictionBase,
         length: Option<u64>,
@@ -421,6 +432,16 @@ impl SchemaDocument {
     pub fn builtin_for_simple_base(&self, base: &SimpleBase) -> Option<BuiltinType> {
         match base {
             SimpleBase::Builtin(b) => Some(*b),
+            SimpleBase::Union { members } => members.iter().find_map(|member| match member {
+                UnionMember::Inline(inner) => self.builtin_for_simple_base(inner),
+                UnionMember::Named(name) => self.types.get(name).and_then(|def| {
+                    if let TypeDef::Simple { base: inner, .. } = def {
+                        self.builtin_for_simple_base(inner)
+                    } else {
+                        None
+                    }
+                }),
+            }),
             SimpleBase::Restriction { base, .. } => match base {
                 RestrictionBase::Builtin(b) => Some(*b),
                 RestrictionBase::Named(name) => self
@@ -584,7 +605,12 @@ impl SchemaDocument {
             } => self
                 .effective_simple_type_props(parent)
                 .unwrap_or_default(),
-            _ => DfdlProps::default(),
+            SimpleBase::Restriction {
+                base: RestrictionBase::Builtin(_),
+                ..
+            }
+            | SimpleBase::Union { .. }
+            | SimpleBase::Builtin(_) => DfdlProps::default(),
         };
         out = crate::schema::parser::merge_dfdl_props(out, props.clone());
         Some(out)

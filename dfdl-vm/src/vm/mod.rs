@@ -7,7 +7,7 @@ pub(crate) mod packed_decimal;
 pub(crate) mod text_number;
 pub(crate) mod text_number_format;
 pub(crate) mod zoned_text;
-mod facet_validate;
+pub(crate) mod facet_validate;
 mod runtime;
 
 pub use decoder::Decoder;

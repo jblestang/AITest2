@@ -363,8 +363,8 @@ impl<'a> XsdParser<'a> {
             return Ok(());
         }
 
-        props = self.parse_inline_content(props, &["restriction", "annotation"])?;
-        let base = self.parse_restriction()?;
+        props = self.parse_inline_content(props, &["restriction", "union", "annotation"])?;
+        let base = self.parse_simple_base()?;
         self.expect_end_local("simpleType")?;
 
         if let Some(type_name) = name {
@@ -712,7 +712,7 @@ impl<'a> XsdParser<'a> {
         }
     }
 
-    fn parse_restriction(&mut self) -> Result<SimpleBase> {
+    fn parse_simple_base(&mut self) -> Result<SimpleBase> {
         loop {
             self.reader.skip_insignificant_ws()?;
             match self.reader.peek()? {
@@ -726,6 +726,10 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     let child_attrs = self.reader.take_start_attributes()?;
+                    if local == "union" {
+                        let members = self.parse_union_body(child_attrs)?;
+                        return Ok(SimpleBase::Union { members });
+                    }
                     if local == "restriction" {
                         let base = if let Some(base_name) = child_attrs.get("base") {
                             if base_name.chars().any(char::is_whitespace) {
@@ -773,7 +777,7 @@ impl<'a> XsdParser<'a> {
                 other => {
                     return Err(ParseError::InvalidXml {
                         message: alloc::format!(
-                            "expected restriction, found {:?}",
+                            "expected restriction or union, found {:?}",
                             event_kind(other)
                         ),
                     }
@@ -781,6 +785,62 @@ impl<'a> XsdParser<'a> {
                 }
             }
         }
+    }
+
+    fn parse_union_body(
+        &mut self,
+        attrs: BTreeMap<String, String>,
+    ) -> Result<alloc::vec::Vec<crate::schema::UnionMember>> {
+        use crate::schema::UnionMember;
+        let mut members = alloc::vec::Vec::new();
+        if let Some(raw) = attrs.get("memberTypes") {
+            for part in raw.split_whitespace() {
+                members.push(UnionMember::Named(TypeName::new(normalize_qname(part))));
+            }
+        }
+        loop {
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { name } if name.local_name == "union" => {
+                    let _ = self.reader.next_event()?;
+                    break;
+                }
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    let _child_attrs = self.reader.take_start_attributes()?;
+                    if local == "simpleType" {
+                        self.reader.skip_insignificant_ws()?;
+                        let inner = self.parse_simple_base()?;
+                        self.expect_end_local("simpleType")?;
+                        members.push(UnionMember::Inline(inner));
+                    } else if local == "annotation" {
+                        self.skip_element_body("annotation")?;
+                    } else {
+                        self.skip_element_body(&local)?;
+                    }
+                }
+                XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                    let _ = self.reader.next_event()?;
+                }
+                other => {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "expected union child, found {:?}",
+                            event_kind(other)
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+        if members.is_empty() {
+            return Err(ParseError::InvalidXml {
+                message: "union must have memberTypes and/or inline simpleType members".into(),
+            }
+            .into());
+        }
+        Ok(members)
     }
 
     fn parse_restriction_body(&mut self) -> Result<ParsedRestrictionFacets> {

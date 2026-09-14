@@ -35,7 +35,7 @@ impl SchemaDocument {
 
     fn collect_facets(&self, base: &SimpleBase, out: &mut EffectiveFacets) {
         match base {
-            SimpleBase::Builtin(_) => {}
+            SimpleBase::Builtin(_) | SimpleBase::Union { .. } => {}
             SimpleBase::Restriction {
                 base: parent,
                 length,

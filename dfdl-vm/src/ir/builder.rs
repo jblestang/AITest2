@@ -711,7 +711,7 @@ impl<'a> IrBuilder<'a> {
                 max_inclusive,
                 ..
             } => (*min_inclusive, *max_inclusive),
-            SimpleBase::Builtin(_) => (None, None),
+            SimpleBase::Builtin(_) | SimpleBase::Union { .. } => (None, None),
         };
         let mut prefix_props = merge_dfdl_props(
             &self.defaults.clone(),
