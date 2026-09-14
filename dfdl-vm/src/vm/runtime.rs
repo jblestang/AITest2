@@ -3630,6 +3630,16 @@ fn should_defer_infix_sequence_separator(
         && field_props.terminator.is_none()
 }
 
+fn should_defer_prefix_sequence_separator(
+    seq_props: &IrProps,
+    separator_id: StringId,
+    field_props: &IrProps,
+) -> bool {
+    seq_props.separator_position == SeparatorPosition::Prefix
+        && seq_props.separator == Some(separator_id)
+        && field_props.terminator.is_none()
+}
+
 fn should_defer_sequence_stop_delimiter_in_field(
     seq_props: &IrProps,
     pattern_id: StringId,
@@ -3639,6 +3649,9 @@ fn should_defer_sequence_stop_delimiter_in_field(
         return false;
     }
     if Some(pattern_id) == seq_props.terminator {
+        return true;
+    }
+    if should_defer_prefix_sequence_separator(seq_props, pattern_id, field_props) {
         return true;
     }
     should_defer_infix_sequence_separator(seq_props, pattern_id, field_props)

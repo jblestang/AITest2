@@ -429,6 +429,90 @@ pub fn validate_delimiter_es_restriction(prop: &str, raw: &str) -> Result<(), St
     })
 }
 
+/// Extract quoted string literals from a simple `if ... then 'a' else 'b'` expression.
+fn delimiter_expression_string_literals(expr: &str) -> alloc::vec::Vec<alloc::string::String> {
+    let inner = expr
+        .trim()
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(expr)
+        .trim();
+    let mut out = alloc::vec::Vec::new();
+    let bytes = inner.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            let start = i + 1;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\'' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                        i += 2;
+                        continue;
+                    }
+                    out.push(inner[start..i].replace("''", "'"));
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Evaluate a compile-time constant delimiter expression (subset of XPath).
+fn eval_compile_time_delimiter_expression(expr: &str) -> Option<alloc::string::String> {
+    let inner = expr
+        .trim()
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(expr)
+        .trim();
+    let lower = inner.to_ascii_lowercase();
+    if lower.starts_with("if") {
+        let rest = inner
+            .strip_prefix("if")
+            .unwrap_or(inner)
+            .trim_start();
+        let rest = rest.strip_prefix('(').unwrap_or(rest);
+        let cond_end = rest.find(')')?;
+        let cond = rest[..cond_end].trim();
+        let tail = rest[cond_end + 1..].trim();
+        let then_lit = tail.strip_prefix("then")?.trim();
+        let (then_val, else_tail) = then_lit.split_once("else")?;
+        let then_s = then_val.trim().trim_matches('\'').replace("''", "'");
+        let else_s = else_tail.trim().trim_matches('\'').replace("''", "'");
+        let cond_true = matches!(cond, "'true'" | "'1'" | "true()" | "fn:true()");
+        return Some(if cond_true { then_s } else { else_s });
+    }
+    None
+}
+
+/// True when a runtime delimiter expression can evaluate to a zero-length pattern.
+pub fn runtime_delimiter_expression_may_be_zero_length(expr: &str) -> bool {
+    for lit in delimiter_expression_string_literals(expr) {
+        if is_zero_length_delimiter(&lit) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Validate `{...}` delimiter property expressions at schema compile time.
+pub fn validate_runtime_delimiter_expression(prop: &str, expr: &str) -> Result<(), String> {
+    if let Some(lit) = eval_compile_time_delimiter_expression(expr) {
+        validate_delimiter_property_value(&lit)?;
+        validate_delimiter_es_restriction(prop, &lit)?;
+        if lit.trim() == "%" && prop == "terminator" {
+            return Err(format!("Invalid DFDL Entity (%) found\n%%"));
+        }
+    }
+    Ok(())
+}
+
 /// Validate initiator/separator/terminator literals at schema compile time.
 pub fn validate_delimiter_property_value(raw: &str) -> Result<(), String> {
     if raw == "%" {

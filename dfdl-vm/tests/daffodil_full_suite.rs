@@ -149,10 +149,9 @@ fn daffodil_section12_length_kind_regression_gate() {
     assert!(stats.pass >= 300, "expected ~305 passing cases, got {}", stats.pass);
 }
 
-/// Track progress on Section 12 delimiter_properties (not yet fully passing).
+/// CI gate: Section 12 delimiter_properties (full TDML directory).
 #[test]
-#[ignore = "work in progress toward full section coverage"]
-fn daffodil_section12_delimiter_properties_progress_gate() {
+fn daffodil_section12_delimiter_properties_regression_gate() {
     let root = assert_tdml_root().join("section12/delimiter_properties");
     let mut files = Vec::new();
     collect_tdml_files(&root, &mut files);
@@ -164,11 +163,9 @@ fn daffodil_section12_delimiter_properties_progress_gate() {
         "delimiter_properties: pass={} fail={} skip={} parse_fail={}",
         stats.pass, stats.fail, stats.skip, stats.parse_fail
     );
-    assert!(
-        stats.pass >= 41,
-        "expected at least 41 passing delimiter_properties cases, got {}",
-        stats.pass
-    );
+    assert_eq!(stats.fail, 0, "section12 delimiter_properties failures");
+    assert_eq!(stats.parse_fail, 0);
+    assert!(stats.pass >= 48, "expected 48 passing delimiter_properties cases, got {}", stats.pass);
 }
 
 /// CI gate: Section 12 length_properties (explicit/bit length cases).

@@ -1040,10 +1040,13 @@ fn daffodil_section12_length_kind_full_regression_suite() {
 fn daffodil_section12_delimiter_properties_suite() {
     let tdml = daffodil_delimiter_tdml!("DelimiterProperties.tdml");
     for name in [
+        "DelimProp_01",
         "DelimProp_02",
         "DelimProp_03",
         "DelimProp_04",
         "DelimProp_05",
+        "DelimProp_07",
+        "E1",
         "delims_ignorecase_01",
         "delims_ignorecase_02",
         "Lesson4_initiators_terminators",
@@ -1052,6 +1055,9 @@ fn daffodil_section12_delimiter_properties_suite() {
         "ReqFieldMissingAndSepIsPrefixOfTerminator_Prefix",
         "ReqFieldMissingAndSepIsPrefixOfTerminator_Infix",
         "ReqFieldMissingAndSepIsPrefixOfTerminator_Postfix",
+        "percentTerminator",
+        "percentExpression",
+        "emptyInitiator4",
     ] {
         assert_named_test_passes(tdml, name);
     }

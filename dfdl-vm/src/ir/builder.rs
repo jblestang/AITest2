@@ -330,7 +330,7 @@ impl<'a> IrBuilder<'a> {
                     })?;
                 let ir_props = inherited.clone();
                 let child_inherited =
-                    particle_inherited_for_children(&ir_props, &group.props, &self.defaults);
+                    particle_inherited_for_children(inherited, &group.props, &self.defaults);
                 let mut children = Vec::new();
                 let mut prior_element_names: Vec<String> = Vec::new();
                 for particle in &group.particles {
@@ -352,7 +352,7 @@ impl<'a> IrBuilder<'a> {
             Particle::Sequence(sequence) => {
                 let ir_props = self.merge_props_full(inherited, &sequence.props, &DfdlProps::default())?;
                 let child_inherited =
-                    particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
+                    particle_inherited_for_children(inherited, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
                 let mut prior_element_names: Vec<String> = Vec::new();
                 if let Some(ref href) = sequence.props.hidden_group_ref {
@@ -399,7 +399,7 @@ impl<'a> IrBuilder<'a> {
             Particle::Choice(choice) => {
                 let ir_props = self.merge_props_full(inherited, &choice.props, &DfdlProps::default())?;
                 let child_inherited =
-                    particle_inherited_for_children(&ir_props, &choice.props, &self.defaults);
+                    particle_inherited_for_children(inherited, &choice.props, &self.defaults);
                 let mut branches = Vec::new();
                 for branch in &choice.branches {
                     let node = self.compile_particle(branch, &child_inherited, &[])?;
@@ -428,7 +428,7 @@ impl<'a> IrBuilder<'a> {
                     &DfdlProps::default(),
                 )?;
                 let child_inherited =
-                    particle_inherited_for_children(&ir_props, &sequence.props, &self.defaults);
+                    particle_inherited_for_children(type_base, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
                 let mut prior_element_names: Vec<String> = Vec::new();
                 for particle in &sequence.particles {
@@ -454,7 +454,7 @@ impl<'a> IrBuilder<'a> {
                     &DfdlProps::default(),
                 )?;
                 let child_inherited =
-                    particle_inherited_for_children(&ir_props, &choice.props, &self.defaults);
+                    particle_inherited_for_children(type_base, &choice.props, &self.defaults);
                 let mut branches = Vec::new();
                 for branch in &choice.branches {
                     let node = self.compile_particle(branch, &child_inherited, &[])?;
@@ -1169,10 +1169,22 @@ fn apply_integer_type_flags(type_name: &TypeName, props: &mut IrProps) {
 }
 
 fn validate_delimiter_at_compile(prop: &str, raw: &str) -> Result<()> {
-    if raw.trim_start().starts_with('{') {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        if let Err(msg) = crate::schema::validate_runtime_delimiter_expression(prop, trimmed) {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error. {msg}"),
+            }
+            .into());
+        }
         return Ok(());
     }
     if let Err(msg) = crate::schema::validate_delimiter_property_value(raw) {
+        let msg = if raw.trim() == "%" && prop == "terminator" {
+            alloc::format!("{msg}\n%%")
+        } else {
+            msg
+        };
         return Err(SchemaError::InvalidProperty {
             message: alloc::format!("Schema Definition Error. {msg}"),
         }
@@ -1229,7 +1241,16 @@ fn validate_initiated_content_particle(sequence_props: &DfdlProps, particle: &Pa
         }
         .into());
     }
-    if crate::schema::is_zero_length_delimiter(initiator) {
+    let trimmed = initiator.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        if crate::schema::runtime_delimiter_expression_may_be_zero_length(trimmed) {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error. initiatedContent yes requires initiator zero length"
+                    .into(),
+            }
+            .into());
+        }
+    } else if crate::schema::is_zero_length_delimiter(initiator) {
         return Err(SchemaError::InvalidProperty {
             message: "Schema Definition Error. initiatedContent yes requires initiator zero length"
                 .into(),
@@ -1554,11 +1575,12 @@ fn element_props_for_complex_content(element_props: &DfdlProps) -> DfdlProps {
 }
 
 fn particle_inherited_for_children(
-    merged: &IrProps,
+    parent_inherited: &IrProps,
     group_props: &DfdlProps,
     defaults: &IrProps,
 ) -> IrProps {
-    let mut inherited = merged.clone();
+    // Group-level delimiter and ignoreCase properties apply to the group node, not descendants.
+    let mut inherited = parent_inherited.clone();
     if group_props.length_kind.is_none() {
         inherited.length_kind = defaults.length_kind;
     }

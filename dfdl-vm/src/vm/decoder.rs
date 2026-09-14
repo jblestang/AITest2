@@ -727,7 +727,19 @@ impl<'a> Decoder<'a> {
                         if let Some(parent) = parent_sequence {
                             if let Some(sep_id) = parent.separator {
                                 let sep = self.ctx.strings().get(sep_id)?;
-                                if self.inner_sequence_separator(*child_id)?.as_deref() != Some(sep)
+                                let child_is_sequence = matches!(
+                                    self.ctx.program.node(*child_id),
+                                    Ok(IrNode::Sequence { .. })
+                                );
+                                let parent_sep_scopes_child = parent_sequence.is_some_and(|p| {
+                                    matches!(
+                                        p.separator_position,
+                                        SeparatorPosition::Postfix
+                                    )
+                                });
+                                if (!child_is_sequence || parent_sep_scopes_child)
+                                    && self.inner_sequence_separator(*child_id)?.as_deref()
+                                        != Some(sep)
                                 {
                                     let bytes =
                                         read_until_separator(cursor, sep, false, parent.ignore_case)?;
