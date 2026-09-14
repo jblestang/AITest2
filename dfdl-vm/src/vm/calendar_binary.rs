@@ -17,14 +17,125 @@ pub fn parse_calendar_epoch_unix(iso: &str) -> Result<i64, VmError> {
 fn split_epoch_timezone(iso: &str) -> (&str, i64) {
     if let Some(idx) = iso.rfind('+').filter(|&i| i > 10) {
         let (core, off) = iso.split_at(idx);
-        return (core, -parse_tz_offset_secs(&off[1..]).unwrap_or(0));
+        return (core, parse_tz_offset_secs(&off[1..]).unwrap_or(0));
     }
     if let Some(idx) = iso[10..].rfind('-') {
         let idx = idx + 10;
         let (core, off) = iso.split_at(idx);
-        return (core, parse_tz_offset_secs(&off[1..]).unwrap_or(0));
+        return (core, -parse_tz_offset_secs(&off[1..]).unwrap_or(0));
     }
     (iso, 0)
+}
+
+fn format_tz_suffix(offset_secs: i64) -> alloc::string::String {
+    if offset_secs == 0 {
+        return alloc::string::String::new();
+    }
+    let sign = if offset_secs >= 0 { '+' } else { '-' };
+    let abs = offset_secs.abs();
+    let hh = abs / 3600;
+    let mm = (abs % 3600) / 60;
+    alloc::format!("{sign}{hh:02}:{mm:02}")
+}
+
+/// Format absolute unix time using the timezone from `binaryCalendarEpoch` when present.
+pub fn format_binary_calendar_datetime(
+    secs: i64,
+    micros: u32,
+    epoch_raw: &str,
+) -> alloc::string::String {
+    let (_, offset_secs) = split_epoch_timezone(epoch_raw.trim());
+    let display_secs = secs + offset_secs;
+    let mut out = format_unix_datetime_utc_millis(display_secs, micros);
+    out.push_str(&format_tz_suffix(offset_secs));
+    out
+}
+
+/// Compile-time validation for `dfdl:binaryCalendarEpoch` on binary calendars.
+pub fn validate_binary_calendar_epoch(iso: &str) -> Result<(), VmError> {
+    let iso = iso.trim();
+    if iso.is_empty() {
+        return Err(VmError::InvalidValue {
+            message: "Schema Definition Error: Failed to parse binaryCalendarEpoch - Format must match the pattern 'uuuu-MM-dd'T'HH:mm:ss' or 'uuuu-MM-dd'T'HH:mm:ssZZZZ'".into(),
+        });
+    }
+    if !iso.contains('T') {
+        return Err(VmError::InvalidValue {
+            message: "Schema Definition Error: Failed to parse binaryCalendarEpoch - Format must match the pattern 'uuuu-MM-dd'T'HH:mm:ss' or 'uuuu-MM-dd'T'HH:mm:ssZZZZ'".into(),
+        });
+    }
+    let (core, _tz) = split_epoch_timezone(iso);
+    let (date, time) = core.split_once('T').ok_or_else(|| VmError::InvalidValue {
+        message: "Schema Definition Error: Failed to parse binaryCalendarEpoch - Format must match the pattern 'uuuu-MM-dd'T'HH:mm:ss' or 'uuuu-MM-dd'T'HH:mm:ssZZZZ'".into(),
+    })?;
+    let mut date_parts = date.split('-');
+    let y = date_parts.next().unwrap_or("");
+    let mo = date_parts.next().unwrap_or("");
+    let d = date_parts.next().unwrap_or("");
+    if date_parts.next().is_some()
+        || y.is_empty()
+        || mo.is_empty()
+        || d.is_empty()
+        || !y.chars().all(|c| c.is_ascii_digit())
+        || !mo.chars().all(|c| c.is_ascii_digit())
+        || !d.chars().all(|c| c.is_ascii_digit())
+    {
+        return Err(VmError::InvalidValue {
+            message: "Schema Definition Error: Failed to parse binaryCalendarEpoch - Format must match the pattern 'uuuu-MM-dd'T'HH:mm:ss' or 'uuuu-MM-dd'T'HH:mm:ssZZZZ'".into(),
+        });
+    }
+    if y.len() != 4 {
+        if d.len() == 4 {
+            if let Ok(day_val) = d.parse::<u32>() {
+                if day_val > 31 {
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!(
+                            "Schema Definition Error: Failed to parse binaryCalendarEpoch: DAY_OF_MONTH={day_val}, valid range=1..31"
+                        ),
+                    });
+                }
+            }
+        }
+        return Err(VmError::InvalidValue {
+            message: "Schema Definition Error: Failed to parse binaryCalendarEpoch - Format must match the pattern 'uuuu-MM-dd'T'HH:mm:ss' or 'uuuu-MM-dd'T'HH:mm:ssZZZZ'".into(),
+        });
+    }
+    if mo.len() != 2 || d.len() != 2 {
+        return Err(VmError::InvalidValue {
+            message: "Schema Definition Error: Failed to parse binaryCalendarEpoch - Format must match the pattern 'uuuu-MM-dd'T'HH:mm:ss' or 'uuuu-MM-dd'T'HH:mm:ssZZZZ'".into(),
+        });
+    }
+    let day: u32 = d.parse().map_err(|_| VmError::InvalidValue {
+        message: alloc::format!(
+            "Schema Definition Error: Failed to parse binaryCalendarEpoch: DAY_OF_MONTH={d}, valid range=1..31"
+        ),
+    })?;
+    if !(1..=31).contains(&day) {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Schema Definition Error: Failed to parse binaryCalendarEpoch: DAY_OF_MONTH={day}, valid range=1..31"
+            ),
+        });
+    }
+    let time = time.split('.').next().unwrap_or(time);
+    let mut time_parts = time.split(':');
+    let hh = time_parts.next().unwrap_or("");
+    let mm = time_parts.next().unwrap_or("");
+    let ss = time_parts.next().unwrap_or("");
+    if time_parts.next().is_some()
+        || hh.len() != 2
+        || mm.len() != 2
+        || ss.len() != 2
+        || !hh.chars().all(|c| c.is_ascii_digit())
+        || !mm.chars().all(|c| c.is_ascii_digit())
+        || !ss.chars().all(|c| c.is_ascii_digit())
+    {
+        return Err(VmError::InvalidValue {
+            message: "Schema Definition Error: Failed to parse binaryCalendarEpoch - Format must match the pattern 'uuuu-MM-dd'T'HH:mm:ss' or 'uuuu-MM-dd'T'HH:mm:ssZZZZ'".into(),
+        });
+    }
+    let _ = parse_calendar_epoch_unix(iso)?;
+    Ok(())
 }
 
 fn parse_tz_offset_secs(off: &str) -> Option<i64> {
@@ -329,5 +440,12 @@ mod calendar_tests {
         let base = parse_calendar_epoch_unix("1977-01-01T00:00:07").unwrap();
         let out = format_unix_datetime_utc(base + 62);
         assert_eq!(out, "1977-01-01T00:01:09");
+    }
+
+    #[test]
+    fn binary_calendar_epoch_timezone_display() {
+        let base = parse_calendar_epoch_unix("2018-01-01T09:13:42+09:00").unwrap();
+        let out = format_binary_calendar_datetime(base + 1, 0, "2018-01-01T09:13:42+09:00");
+        assert_eq!(out, "2018-01-01T09:13:43+09:00");
     }
 }

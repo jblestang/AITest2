@@ -981,16 +981,21 @@ fn decode_binary_datetime(
             BinaryNumberRep::BinarySeconds => {
                 let delta = crate::vm::calendar_binary::decode_binary_seconds_value(bytes, le)?;
                 Ok(DfdlValue::DateTime(
-                    crate::vm::calendar_binary::format_unix_datetime_utc(base + delta),
+                    crate::vm::calendar_binary::format_binary_calendar_datetime(
+                        base + delta,
+                        0,
+                        epoch_raw,
+                    ),
                 ))
             }
             BinaryNumberRep::BinaryMilliseconds => {
                 let (secs, micros) =
                     crate::vm::calendar_binary::decode_binary_milliseconds_value(bytes, le)?;
                 Ok(DfdlValue::DateTime(
-                    crate::vm::calendar_binary::format_unix_datetime_utc_millis(
+                    crate::vm::calendar_binary::format_binary_calendar_datetime(
                         base + secs,
                         micros,
+                        epoch_raw,
                     ),
                 ))
             }

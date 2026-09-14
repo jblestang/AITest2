@@ -1273,16 +1273,39 @@ fn finalize_element_props(
             }
         })?;
     }
-    validate_binary_calendar_compile(kind, &ir)?;
+    validate_binary_calendar_compile(kind, &ir, strings)?;
     Ok(ir)
 }
 
-fn validate_binary_calendar_compile(kind: ValueKind, props: &IrProps) -> Result<()> {
+fn validate_binary_calendar_compile(
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<()> {
     if props.representation != Representation::Binary {
         return Ok(());
     }
     if kind != ValueKind::DateTime {
         return Ok(());
+    }
+    if matches!(
+        props.binary_calendar_rep,
+        crate::schema::BinaryNumberRep::BinarySeconds
+            | crate::schema::BinaryNumberRep::BinaryMilliseconds
+    ) {
+        if let Some(id) = props.binary_calendar_epoch {
+            let raw = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
+                message: e.to_string(),
+            })?;
+            crate::vm::calendar_binary::validate_binary_calendar_epoch(raw).map_err(|e| {
+                SchemaError::InvalidProperty {
+                    message: match e {
+                        crate::error::VmError::InvalidValue { message } => message,
+                        other => other.to_string(),
+                    },
+                }
+            })?;
+        }
     }
     if props.binary_calendar_rep != crate::schema::BinaryNumberRep::BinarySeconds {
         return Ok(());

@@ -277,10 +277,17 @@ impl<'a> XsdParser<'a> {
         };
 
         self.reader.skip_insignificant_ws()?;
+        let mut resolved_type = type_name;
         if self.reader.peek_is_end("element")? {
             self.expect_end_local("element")?;
         } else {
-            props = self.parse_inline_content(props, &["annotation"])?;
+            props = self.parse_inline_content(props, &["annotation", "simpleType"])?;
+            self.reader.skip_insignificant_ws()?;
+            if !self.reader.peek_is_end("element")? {
+                let inline = self.parse_inline_type()?;
+                resolved_type = inline.0;
+                props = merge_props(props, inline.1);
+            }
             self.expect_end_local("element")?;
         }
 
@@ -288,7 +295,7 @@ impl<'a> XsdParser<'a> {
             name.clone(),
             GlobalElement {
                 name,
-                type_name,
+                type_name: resolved_type,
                 props: self.finalize_props(props),
             },
         );
