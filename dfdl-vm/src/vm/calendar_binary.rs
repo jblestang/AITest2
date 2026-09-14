@@ -306,10 +306,15 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
 }
 
 pub fn validate_calendar_year_tunables(text: &str, tunables: &DaffodilTunables) -> Result<(), VmError> {
-    if text.len() < 4 || !text.as_bytes()[0..4].iter().all(|b| b.is_ascii_digit()) {
+    let year_str = text
+        .split('-')
+        .next()
+        .filter(|y| !y.is_empty() && y.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(text);
+    if year_str.len() < 4 {
         return Ok(());
     }
-    let year: i32 = text[0..4].parse().unwrap_or(0);
+    let year: i32 = year_str.parse().unwrap_or(0);
     if year < tunables.min_valid_year || year > tunables.max_valid_year {
         return Err(VmError::InvalidValue {
             message: alloc::format!(
@@ -691,6 +696,14 @@ pub fn validate_binary_calendar_schema(
 
     let rep = props.binary_calendar_rep;
     if matches!(rep, BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds) {
+        if props.calendar_date_only {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: binaryCalendarRep='{}' is not allowed with type Date",
+                    binary_calendar_rep_name(rep)
+                ),
+            });
+        }
         if let Some(id) = props.binary_calendar_epoch {
             let raw = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
                 message: e.to_string(),

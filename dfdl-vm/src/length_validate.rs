@@ -527,6 +527,36 @@ fn validate_decimal_length_inner(length: u64, units: LengthUnits) -> Result<(), 
     Ok(())
 }
 
+/// Compile-time `binaryDecimalVirtualPoint` tunable limits (±200).
+pub fn validate_binary_decimal_virtual_point_schema(
+    kind: ValueKind,
+    props: &IrProps,
+) -> Result<(), SchemaError> {
+    if kind != ValueKind::Decimal || props.representation != Representation::Binary {
+        return Ok(());
+    }
+    let vp = props
+        .binary_decimal_virtual_point_signed
+        .unwrap_or(props.binary_decimal_virtual_point as i32);
+    const MIN: i32 = -200;
+    const MAX: i32 = 200;
+    if vp < MIN {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Tunable Limit Exceeded Error: Property binaryDecimalVirtualPoint {vp} is less than limit {MIN}"
+            ),
+        });
+    }
+    if vp > MAX {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Tunable Limit Exceeded Error: Property binaryDecimalVirtualPoint {vp} is greater than limit {MAX}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Compile-time decimal explicit/fixed length validation.
 pub fn validate_decimal_data_length_schema(
     signed: bool,

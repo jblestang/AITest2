@@ -1161,6 +1161,7 @@ fn finalize_element_props(
         ir.nil_kind = Some(NilKind::LiteralValue);
     }
     validate_binary_delimited(kind, &ir)?;
+    crate::length_validate::validate_binary_decimal_virtual_point_schema(kind, &ir)?;
     crate::vm::calendar_binary::validate_implicit_binary_length_schema(kind, &ir, strings)?;
     validate_trailing_skip_delimited(&ir)?;
     validate_bcd_signed_integer_type(kind, &ir)?;

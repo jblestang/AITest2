@@ -3561,6 +3561,7 @@ pub(crate) fn read_text_scalar(
     stop_sequences: &[&IrProps],
     field_name: Option<&str>,
     sibling_env: Option<&crate::schema::boolean_reps::BooleanSiblingEnv<'_>>,
+    tunables: &DaffodilTunables,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -3875,7 +3876,12 @@ pub(crate) fn read_text_scalar(
             if props.calendar_pattern.is_none()
                 && props.calendar_pattern_kind == crate::schema::CalendarPatternKind::Implicit
             {
-                validate_implicit_calendar_lexical(kind, props.calendar_date_only, trimmed)?;
+                validate_implicit_calendar_lexical(
+                    kind,
+                    props.calendar_date_only,
+                    trimmed,
+                    tunables,
+                )?;
             }
             if let Some(pat_id) = props.calendar_pattern {
                 let pattern = strings.get(pat_id)?;
@@ -6029,56 +6035,107 @@ fn pad_char_for_kind(
         .unwrap_or_else(|| alloc::string::String::from(" "))
 }
 
+fn calendar_lexical_error(type_name: &str, text: &str) -> crate::error::VmError {
+    crate::error::VmError::InvalidValue {
+        message: alloc::format!("Parse Error: Unable to parse {type_name} from text: {text}"),
+    }
+}
+
+fn validate_implicit_date_part(
+    text: &str,
+    tunables: &DaffodilTunables,
+    err_type: &str,
+    err_text: &str,
+) -> Result<(), crate::error::VmError> {
+    let mut parts = text.split('-');
+    let Some(y) = parts.next() else {
+        return Err(calendar_lexical_error(err_type, err_text));
+    };
+    let Some(m) = parts.next() else {
+        return Err(calendar_lexical_error(err_type, err_text));
+    };
+    let Some(d) = parts.next() else {
+        return Err(calendar_lexical_error(err_type, err_text));
+    };
+    if parts.next().is_some() {
+        return Err(calendar_lexical_error(err_type, err_text));
+    }
+    if !y.chars().all(|c| c.is_ascii_digit()) || y.len() < 4 {
+        return Err(calendar_lexical_error(err_type, err_text));
+    }
+    if m.len() != 2
+        || d.len() != 2
+        || !m.chars().all(|c| c.is_ascii_digit())
+        || !d.chars().all(|c| c.is_ascii_digit())
+    {
+        return Err(calendar_lexical_error(err_type, err_text));
+    }
+    crate::vm::calendar_binary::validate_calendar_year_tunables(y, tunables)?;
+    Ok(())
+}
+
+fn validate_implicit_time_part(text: &str, date_time: bool) -> Result<(), crate::error::VmError> {
+    if text == "Z" {
+        return Ok(());
+    }
+    let tz_start = if text.len() > 8 {
+        text[8..]
+            .find(['+', '-'])
+            .map(|i| i + 8)
+            .or_else(|| text[8..].find('Z').map(|i| i + 8))
+    } else {
+        None
+    };
+    let core_end = tz_start.unwrap_or(text.len());
+    let core = &text[..core_end];
+    if core.len() != 8
+        || core.as_bytes().get(2) != Some(&b':')
+        || core.as_bytes().get(5) != Some(&b':')
+        || !core[..2].chars().all(|c| c.is_ascii_digit())
+        || !core[3..5].chars().all(|c| c.is_ascii_digit())
+        || !core[6..8].chars().all(|c| c.is_ascii_digit())
+    {
+        let type_name = if date_time { "xs:dateTime" } else { "xs:time" };
+        return Err(calendar_lexical_error(type_name, text));
+    }
+    if let Some(off) = tz_start {
+        let tz = &text[off..];
+        if tz == "Z" {
+            return Ok(());
+        }
+        if !(tz.starts_with('+') || tz.starts_with('-')) || tz.len() != 6 || tz.as_bytes()[3] != b':' {
+            return Err(calendar_lexical_error("xs:dateTime", text));
+        }
+        if tz == "+00:00" || tz == "-00:00" {
+            return Err(calendar_lexical_error("xs:dateTime", text));
+        }
+        if !tz[1..].chars().all(|c| c.is_ascii_digit() || c == ':') {
+            return Err(calendar_lexical_error("xs:dateTime", text));
+        }
+    } else if text.len() > 8 {
+        return Err(calendar_lexical_error("xs:dateTime", text));
+    }
+    Ok(())
+}
+
 fn validate_implicit_calendar_lexical(
     kind: crate::ir::ValueKind,
     date_only: bool,
     text: &str,
+    tunables: &DaffodilTunables,
 ) -> Result<(), crate::error::VmError> {
-    use crate::error::VmError;
     use crate::ir::ValueKind;
-    let type_name = if date_only {
-        "xs:date"
-    } else if kind == ValueKind::Time {
-        "xs:time"
-    } else {
-        "xs:dateTime"
-    };
-    let ok = match type_name {
-        "xs:date" => {
-            text.len() == 10
-                && text.as_bytes().get(4) == Some(&b'-')
-                && text.as_bytes().get(7) == Some(&b'-')
-                && text[..4].chars().all(|c| c.is_ascii_digit())
-                && text[5..7].chars().all(|c| c.is_ascii_digit())
-                && text[8..10].chars().all(|c| c.is_ascii_digit())
-        }
-        "xs:time" => {
-            text.len() >= 8
-                && text.as_bytes().get(2) == Some(&b':')
-                && text.as_bytes().get(5) == Some(&b':')
-                && text[..2].chars().all(|c| c.is_ascii_digit())
-                && text[3..5].chars().all(|c| c.is_ascii_digit())
-                && text[6..8].chars().all(|c| c.is_ascii_digit())
-        }
-        _ => {
-            // xs:dateTime: ISO-like `YYYY-MM-DD` + `T` or space + time + optional zone.
-            let Some(sep) = text.find('T').or_else(|| text.find(' ')) else {
-                return Err(VmError::InvalidValue {
-                    message: alloc::format!(
-                        "Parse Error: Unable to parse xs:dateTime from text: {text}"
-                    ),
-                });
-            };
-            validate_implicit_calendar_lexical(ValueKind::DateTime, true, &text[..sep]).is_ok()
-                && validate_implicit_calendar_lexical(ValueKind::Time, false, &text[sep + 1..])
-                    .is_ok()
-        }
-    };
-    if !ok {
-        return Err(VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Unable to parse {type_name} from text: {text}"),
-        });
+    if date_only {
+        return validate_implicit_date_part(text, tunables, "xs:date", text);
     }
+    if kind == ValueKind::Time {
+        return validate_implicit_time_part(text, false);
+    }
+    let Some(sep) = text.find('T').or_else(|| text.find(' ')) else {
+        return Err(calendar_lexical_error("xs:dateTime", text));
+    };
+    validate_implicit_date_part(&text[..sep], tunables, "xs:dateTime", text)?;
+    validate_implicit_time_part(&text[sep + 1..], true)?;
     Ok(())
 }
 
@@ -6919,6 +6976,7 @@ pub(crate) fn read_simple(
             stop_sequences,
             field_name,
             sibling_env,
+            tunables,
         )?
     } else {
         read_binary_scalar(
