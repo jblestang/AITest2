@@ -3000,15 +3000,21 @@ pub(crate) fn read_text_scalar(
             } else {
                 trimmed.to_string()
             };
-            parse_int_typed_with_base(&num, "xs:byte", base).map(DfdlValue::Byte)
+            parse_int_typed_with_base(&num, "xs:byte", base, trimmed).map(DfdlValue::Byte)
         }
         UnsignedByte => {
             let num = if base == 10 && props.custom_text_number_pattern {
                 parse_field_text_number(trimmed, kind, props, strings)?
+            } else if base == 10 {
+                lax_numeric_field_text(trimmed, props).to_string()
             } else {
                 trimmed.to_string()
             };
-            parse_unsigned_radix(&num, base).map(DfdlValue::UnsignedByte)
+            parse_unsigned_radix_typed(&num, "xs:unsignedByte", base, trimmed).and_then(|v| {
+                u8::try_from(v)
+                    .map(DfdlValue::UnsignedByte)
+                    .map_err(|_| parse_out_of_range("xs:unsignedByte", trimmed))
+            })
         }
         Short => {
             let num = if base == 10 {
@@ -3016,24 +3022,31 @@ pub(crate) fn read_text_scalar(
             } else {
                 trimmed.to_string()
             };
-            parse_int_typed_with_base(&num, "xs:short", base).map(DfdlValue::Short)
+            parse_int_typed_with_base(&num, "xs:short", base, trimmed).map(DfdlValue::Short)
         }
         UnsignedShort => {
             let num = if base == 10 && props.custom_text_number_pattern {
                 parse_field_text_number(trimmed, kind, props, strings)?
+            } else if base == 10 {
+                lax_numeric_field_text(trimmed, props).to_string()
             } else {
                 trimmed.to_string()
             };
-            parse_unsigned_radix(&num, base).map(DfdlValue::UnsignedShort)
+            parse_unsigned_radix_typed(&num, "xs:unsignedShort", base, trimmed).and_then(|v| {
+                u16::try_from(v)
+                    .map(DfdlValue::UnsignedShort)
+                    .map_err(|_| parse_out_of_range("xs:unsignedShort", trimmed))
+            })
         }
         Int => {
             reject_text_standard_special_for_integer(trimmed, props, strings, "xs:int")?;
+            reject_internal_whitespace_explicit_field(trimmed, "xs:int", props, base)?;
             let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
                 trimmed.to_string()
             };
-            parse_int_typed_with_base(&num, "xs:int", base).map(DfdlValue::Int)
+            parse_int_typed_with_base(&num, "xs:int", base, trimmed).map(DfdlValue::Int)
         }
         Integer => {
             let num = if base == 10 && props.custom_text_number_pattern {
@@ -3045,25 +3058,42 @@ pub(crate) fn read_text_scalar(
                 .map(DfdlValue::Integer)
         }
         UnsignedInt => {
+            reject_internal_whitespace_explicit_field(trimmed, "xs:unsignedInt", props, base)?;
             let num = if base == 10 && props.custom_text_number_pattern {
                 parse_field_text_number(trimmed, kind, props, strings)?
+            } else if base == 10 {
+                lax_numeric_field_text(trimmed, props).to_string()
             } else {
                 trimmed.to_string()
             };
-            parse_unsigned_radix(&num, base).map(DfdlValue::UnsignedInt)
+            parse_unsigned_radix_typed(&num, "xs:unsignedInt", base, trimmed).and_then(|v| {
+                u32::try_from(v)
+                    .map(DfdlValue::UnsignedInt)
+                    .map_err(|_| parse_out_of_range("xs:unsignedInt", trimmed))
+            })
         }
         Long => {
             reject_text_standard_special_for_integer(trimmed, props, strings, "xs:long")?;
+            reject_internal_whitespace_explicit_field(
+                trimmed,
+                if props.unsigned_integer {
+                    "xs:unsignedLong"
+                } else {
+                    "xs:long"
+                },
+                props,
+                base,
+            )?;
             let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
                 trimmed.to_string()
             };
             if props.unsigned_integer {
-                let v = parse_unsigned_radix_typed(&num, "xs:unsignedLong", base)?;
+                let v = parse_unsigned_radix_typed(&num, "xs:unsignedLong", base, trimmed)?;
                 Ok(DfdlValue::UnsignedLong(v))
             } else {
-                parse_int_typed_with_base(&num, "xs:long", base).map(DfdlValue::Long)
+                parse_int_typed_with_base(&num, "xs:long", base, trimmed).map(DfdlValue::Long)
             }
         }
         Float => {
@@ -4903,7 +4933,38 @@ where
     T: TryFrom<i64>,
     <T as TryFrom<i64>>::Error: core::fmt::Debug,
 {
-    parse_int_typed_with_base(s, type_name, base)
+    parse_int_typed_with_base(s, type_name, base, s)
+}
+
+fn lax_numeric_field_text<'a>(text: &'a str, props: &IrProps) -> &'a str {
+    use crate::schema::BinaryNumberCheckPolicy;
+    if props.text_standard_base == 10 && props.text_number_check_policy == BinaryNumberCheckPolicy::Lax {
+        text.trim()
+    } else {
+        text
+    }
+}
+
+fn reject_internal_whitespace_explicit_field(
+    text: &str,
+    type_name: &str,
+    props: &IrProps,
+    base: u32,
+) -> Result<(), crate::error::VmError> {
+    if base != 10 {
+        return Ok(());
+    }
+    if !matches!(
+        props.length_kind,
+        LengthKind::Explicit | LengthKind::Fixed
+    ) {
+        return Ok(());
+    }
+    let t = text.trim();
+    if t.chars().any(char::is_whitespace) {
+        return Err(unable_parse_from_text(type_name, text));
+    }
+    Ok(())
 }
 
 fn parse_out_of_range(type_name: &str, decimal_value: &str) -> crate::error::VmError {
@@ -5041,21 +5102,45 @@ fn parse_unbounded_integer_decimal(s: &str, base: u32, non_negative: bool) -> Re
     if non_negative && sign < 0 {
         return Err(unable_parse_from_text(type_name, s));
     }
-    let abs = parse_u128_radix(digits, base)
-        .map_err(|_| unable_parse_from_text(type_name, s))?;
+    let abs = parse_u128_radix_base10(digits, base, type_name, s)?;
     Ok(decimal_from_sign_magnitude(sign, abs))
+}
+
+fn parse_u128_radix_base10(
+    digits: &str,
+    base: u32,
+    type_name: &str,
+    field_text: &str,
+) -> Result<u128, crate::error::VmError> {
+    u128::from_str_radix(digits, base).map_err(|_| {
+        if base == 10 && field_has_non_digit(field_text) {
+            unable_parse_from_text(type_name, field_text)
+        } else {
+            crate::error::VmError::InvalidValue {
+                message: alloc::format!("invalid integer `{digits}`"),
+            }
+        }
+    })
+}
+
+fn field_has_non_digit(field_text: &str) -> bool {
+    field_text
+        .trim()
+        .chars()
+        .any(|c| c.is_ascii_alphabetic() || c.is_whitespace())
 }
 
 fn parse_int_typed_with_base_i64(
     s: &str,
     type_name: &str,
     base: u32,
+    field_text: &str,
 ) -> Result<i64, crate::error::VmError> {
     if base != 10 {
         return parse_non_base10_signed_i64(s, type_name, base);
     }
     let (sign, digits) = split_sign_digits(s)?;
-    let abs = parse_u128_radix(digits, base)?;
+    let abs = parse_u128_radix_base10(digits, base, type_name, field_text)?;
     let decimal = decimal_from_sign_magnitude(sign, abs);
     let (min_abs, max_abs): (u128, u128) = match type_name {
         "xs:byte" => (128, 127),
@@ -5077,15 +5162,20 @@ fn parse_int_typed_with_base_i64(
     }
 }
 
-fn parse_int_typed_with_base<T>(s: &str, type_name: &str, base: u32) -> Result<T, crate::error::VmError>
+fn parse_int_typed_with_base<T>(
+    s: &str,
+    type_name: &str,
+    base: u32,
+    field_text: &str,
+) -> Result<T, crate::error::VmError>
 where
     T: TryFrom<i64>,
     <T as TryFrom<i64>>::Error: core::fmt::Debug,
 {
-    let v = parse_int_typed_with_base_i64(s, type_name, base)?;
+    let v = parse_int_typed_with_base_i64(s, type_name, base, field_text)?;
     T::try_from(v).map_err(|_| {
         let (sign, digits) = split_sign_digits(s).unwrap_or((1, ""));
-        let abs = parse_u128_radix(digits, base).unwrap_or(0);
+        let abs = parse_u128_radix_base10(digits, base, type_name, field_text).unwrap_or(0);
         parse_out_of_range(type_name, &decimal_from_sign_magnitude(sign, abs))
     })
 }
@@ -5102,23 +5192,30 @@ where
         8 => "xs:unsignedLong",
         _ => "xs:unsignedInt",
     };
-    let v = parse_unsigned_radix_typed(s, type_name, base)?;
-    T::try_from(v).map_err(|_| crate::error::VmError::InvalidValue {
-        message: alloc::format!("invalid integer `{s}`"),
-    })
+    let v = parse_unsigned_radix_typed(s, type_name, base, s)?;
+    T::try_from(v).map_err(|_| parse_out_of_range(type_name, s))
 }
 
-fn parse_unsigned_radix_typed(s: &str, type_name: &str, base: u32) -> Result<u64, crate::error::VmError> {
+fn parse_unsigned_radix_typed(
+    s: &str,
+    type_name: &str,
+    base: u32,
+    field_text: &str,
+) -> Result<u64, crate::error::VmError> {
     let trimmed = s.trim();
     if trimmed.starts_with('-') {
         return Err(parse_out_of_range(type_name, trimmed));
     }
     if trimmed.starts_with('+') {
-        return Err(crate::error::VmError::InvalidValue {
-            message: alloc::format!("invalid integer `{s}`"),
+        return Err(if base == 10 {
+            unable_parse_from_text(type_name, field_text)
+        } else {
+            crate::error::VmError::InvalidValue {
+                message: alloc::format!("invalid integer `{s}`"),
+            }
         });
     }
-    let abs = parse_u128_radix(trimmed, base)?;
+    let abs = parse_u128_radix_base10(trimmed, base, type_name, field_text)?;
     let decimal = abs.to_string();
     let max = match type_name {
         "xs:unsignedByte" => u8::MAX as u128,
