@@ -261,13 +261,54 @@ pub fn run_parser_test_with_options(
             .decoder_with_config(config)
             .decode_with_tdml_options(&document_data, frame_bits, transmission, tdml_regions.clone())
         {
-            Ok(_) => Ok(TestResult {
-                name: test.name.clone(),
-                outcome: TestOutcome::Fail(alloc::format!(
-                    "expected decode error ({} message(s))",
-                    expected_errors.len()
-                )),
-            }),
+            Ok(decoded) => {
+                let raw = super::validation::collect_post_decode_raw_facet_errors(
+                    spec.schema(),
+                    spec.program(),
+                    &decoded,
+                );
+                if !raw.is_empty() {
+                    let msg = raw.join("\n");
+                    if error_messages_match(expected_errors, &msg) {
+                        return Ok(TestResult {
+                            name: test.name.clone(),
+                            outcome: TestOutcome::Pass,
+                        });
+                    }
+                    return Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Fail(alloc::format!("decode error mismatch: {msg}")),
+                    });
+                }
+                let full_xerces = validation_mode == TdmlValidationMode::On;
+                let post = super::validation::collect_post_decode_validation_errors_with_document(
+                    spec.schema(),
+                    spec.program(),
+                    &decoded,
+                    full_xerces,
+                    core::str::from_utf8(&document_data).ok(),
+                );
+                if !post.is_empty() {
+                    let msg = post.join("\n");
+                    if error_messages_match(expected_errors, &msg) {
+                        return Ok(TestResult {
+                            name: test.name.clone(),
+                            outcome: TestOutcome::Pass,
+                        });
+                    }
+                    return Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Fail(alloc::format!("decode error mismatch: {msg}")),
+                    });
+                }
+                Ok(TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Fail(alloc::format!(
+                        "expected decode error ({} message(s))",
+                        expected_errors.len()
+                    )),
+                })
+            }
             Err(e) => {
                 let msg = e.to_string();
                 if error_messages_match(expected_errors, &msg) {

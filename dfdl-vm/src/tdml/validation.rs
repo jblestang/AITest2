@@ -34,6 +34,28 @@ pub fn collect_post_decode_validation_errors_with_document(
         root_field,
         full_xerces_style,
         document_text,
+        false,
+        &mut errors,
+    );
+    errors
+}
+
+/// Facet/assert messages as returned by the VM (for TDML `<tdml:errors>` matching).
+pub fn collect_post_decode_raw_facet_errors(
+    schema: &SchemaDocument,
+    program: &IrProgram,
+    root_value: &DfdlValue,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let root_field = resolve_root_field_value(root_value, &program.root_element);
+    let _ = walk_particle(
+        schema,
+        program,
+        program.root,
+        root_field,
+        false,
+        None,
+        true,
         &mut errors,
     );
     errors
@@ -46,6 +68,7 @@ fn walk_particle(
     value: &DfdlValue,
     full_xerces_style: bool,
     document_text: Option<&str>,
+    raw_facet_errors: bool,
     errors: &mut Vec<String>,
 ) -> Result<(), ()> {
     match program.node(node_id).map_err(|_| ())? {
@@ -65,6 +88,7 @@ fn walk_particle(
                         inner,
                         full_xerces_style,
                         document_text,
+                        raw_facet_errors,
                         errors,
                     )?;
                 }
@@ -84,6 +108,10 @@ fn walk_particle(
                     full_xerces_style,
                 ) {
                     let detail = e.to_string();
+                    if raw_facet_errors {
+                        errors.push(detail);
+                        return Ok(());
+                    }
                     if let Some(ename) = ename {
                         if detail.contains("facet pattern") {
                             if full_xerces_style || *kind == ValueKind::String {
@@ -454,13 +482,16 @@ fn walk_particle(
                     }
                 }
             }
-            if let (Some(type_id), Some(text)) = (props.xsd_type, value_lexical(value, *kind)) {
-                let type_name = TypeName::new(program.strings.get(type_id).map_err(|_| ())?);
-                if !validate_union_membership(schema, &type_name, text) {
-                    errors.push(text.to_string());
-                    errors.push(alloc::format!("not one of the union members"));
-                    if let Some(ename) = ename {
-                        errors.push(alloc::format!("ex:{ename}"));
+            if !raw_facet_errors {
+                if let (Some(type_id), Some(text)) = (props.xsd_type, value_lexical(value, *kind))
+                {
+                    let type_name = TypeName::new(program.strings.get(type_id).map_err(|_| ())?);
+                    if !validate_union_membership(schema, &type_name, text) {
+                        errors.push(text.to_string());
+                        errors.push(alloc::format!("not one of the union members"));
+                        if let Some(ename) = ename {
+                            errors.push(alloc::format!("ex:{ename}"));
+                        }
                     }
                 }
             }
@@ -514,6 +545,7 @@ fn walk_particle(
                                 item,
                                 full_xerces_style,
                                 document_text,
+                                raw_facet_errors,
                                 errors,
                             )?;
                         }
@@ -525,6 +557,7 @@ fn walk_particle(
                         other,
                         full_xerces_style,
                         document_text,
+                        raw_facet_errors,
                         errors,
                     )?,
                 }
@@ -547,6 +580,7 @@ fn walk_particle(
                             branch_value,
                             full_xerces_style,
                             document_text,
+                            raw_facet_errors,
                             errors,
                         );
                     }
@@ -566,6 +600,7 @@ fn walk_particle(
                         v,
                         full_xerces_style,
                         document_text,
+                        raw_facet_errors,
                         errors,
                     );
                 }
@@ -579,6 +614,7 @@ fn walk_particle(
                         value,
                         full_xerces_style,
                         document_text,
+                        raw_facet_errors,
                         errors,
                     );
                 }

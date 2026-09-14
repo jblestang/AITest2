@@ -1,9 +1,10 @@
 use crate::error::SchemaError;
 use crate::length_validate::{DaffodilTunables, InvalidRestrictionPolicy};
 use crate::schema::{
-    BuiltinType, ComplexContent, ElementDecl, GroupDecl, Particle, SchemaDocument, SimpleBase,
-    TypeDef, TypeName,
+    BuiltinType, ComplexContent, ElementDecl, GroupDecl, Particle, RestrictionBase, SchemaDocument,
+    SimpleBase, TypeDef, TypeName,
 };
+use alloc::collections::{BTreeSet, VecDeque};
 
 pub fn length_not_defined_message(schema: &SchemaDocument, element_name: Option<&str>) -> String {
     let mut msg = "Schema Definition Error: Property length is not defined".to_string();
@@ -50,7 +51,7 @@ pub fn validate_compiled_schema(
     validate_type_references(schema)?;
     validate_name_and_ref(schema)?;
     validate_escape_separator_distinct(schema)?;
-    validate_invalid_restrictions(schema, tunables)?;
+    validate_invalid_restrictions(schema, root, tunables)?;
     validate_max_hex_binary_length(schema, root, tunables)?;
     validate_unique_particle_attribution(schema)?;
     let _ = root;
@@ -235,13 +236,117 @@ fn validate_escape_separator_distinct(schema: &SchemaDocument) -> Result<(), Sch
     Ok(())
 }
 
+fn types_reachable_from_root(schema: &SchemaDocument, root: &str) -> BTreeSet<TypeName> {
+    let mut seen = BTreeSet::new();
+    let Some(ge) = schema.global_elements.get(root) else {
+        return seen;
+    };
+    let mut queue = VecDeque::new();
+    queue.push_back(ge.type_name.clone());
+    while let Some(tn) = queue.pop_front() {
+        if !seen.insert(tn.clone()) {
+            continue;
+        }
+        if BuiltinType::from_xsd(tn.as_str()).is_some() {
+            continue;
+        }
+        let Some(td) = schema.resolve_type(&tn) else {
+            continue;
+        };
+        match td {
+            TypeDef::Simple { base, .. } => enqueue_simple_base_types(schema, base, &mut queue),
+            TypeDef::Complex { content, .. } => {
+                enqueue_particle_types(schema, content, &mut queue);
+            }
+        }
+    }
+    seen
+}
+
+fn enqueue_simple_base_types(
+    schema: &SchemaDocument,
+    base: &SimpleBase,
+    queue: &mut VecDeque<TypeName>,
+) {
+    match base {
+        SimpleBase::Restriction {
+            base: RestrictionBase::Named(parent),
+            ..
+        } => {
+            if schema.resolve_type(parent).is_some() {
+                queue.push_back(parent.clone());
+            }
+        }
+        SimpleBase::Restriction {
+            base: RestrictionBase::Builtin(_),
+            ..
+        }
+        | SimpleBase::Builtin(_)
+        | SimpleBase::Union { .. } => {}
+    }
+}
+
+fn enqueue_particle_types(
+    schema: &SchemaDocument,
+    content: &ComplexContent,
+    queue: &mut VecDeque<TypeName>,
+) {
+    let particles = match content {
+        ComplexContent::Sequence(s) => &s.particles,
+        ComplexContent::Choice(c) => &c.branches,
+        ComplexContent::Empty => return,
+    };
+    for p in particles {
+        enqueue_particle(schema, p, queue);
+    }
+}
+
+fn enqueue_particle(schema: &SchemaDocument, particle: &Particle, queue: &mut VecDeque<TypeName>) {
+    match particle {
+        Particle::Element(el) => {
+            if BuiltinType::from_xsd(el.type_name.as_str()).is_none() {
+                queue.push_back(el.type_name.clone());
+            }
+        }
+        Particle::Sequence(s) => {
+            for p in &s.particles {
+                enqueue_particle(schema, p, queue);
+            }
+        }
+        Particle::Choice(c) => {
+            for p in &c.branches {
+                enqueue_particle(schema, p, queue);
+            }
+        }
+        Particle::GroupRef(gr) => {
+            let local = gr.name.rsplit(':').next().unwrap_or(gr.name.as_str());
+            if let Some(group) = schema.groups.get(local) {
+                match group {
+                    GroupDecl::Sequence(s) => {
+                        for p in &s.particles {
+                            enqueue_particle(schema, p, queue);
+                        }
+                    }
+                    GroupDecl::Choice(c) => {
+                        for p in &c.branches {
+                            enqueue_particle(schema, p, queue);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn validate_invalid_restrictions(
     schema: &SchemaDocument,
+    root: &str,
     tunables: &DaffodilTunables,
 ) -> Result<(), SchemaError> {
     if tunables.invalid_restriction_policy != InvalidRestrictionPolicy::Error {
         return Ok(());
     }
+    let reachable = types_reachable_from_root(schema, root);
     for td in schema.types.values() {
         let TypeDef::Simple {
             base: simple_base,
@@ -251,6 +356,9 @@ fn validate_invalid_restrictions(
         else {
             continue;
         };
+        if !reachable.contains(name) {
+            continue;
+        }
         let SimpleBase::Restriction { patterns, .. } = simple_base else {
             continue;
         };

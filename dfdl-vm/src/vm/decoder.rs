@@ -1,3 +1,4 @@
+use super::facet_validate::{needs_facet_validation, validate_decoded_facets_tdml};
 use super::runtime::{
     consume_element_framing, consume_element_trailing_framing, consume_enclosing_delimiter,
     default_value_for, encoding_name, has_non_empty_terminator,
@@ -398,6 +399,18 @@ impl<'a> Decoder<'a> {
                         stop_sequences,
                     ) {
                         Ok(value) => {
+                            if self.ctx.config.defer_facet_validation {
+                                if let Err(e) = self.validate_choice_branch_value(branch.node, &value)
+                                {
+                                    branch_errors.push(format_choice_branch_error(
+                                        branch,
+                                        self.ctx.strings(),
+                                        &e,
+                                    ));
+                                    *cursor = saved;
+                                    continue;
+                                }
+                            }
                             let name = self.ctx.strings().get(branch.name)?.to_string();
                             return Ok(DfdlValue::choice(name, value));
                         }
@@ -1455,6 +1468,28 @@ impl<'a> Decoder<'a> {
                 .transpose()?),
             _ => Ok(None),
         }
+    }
+
+    fn validate_choice_branch_value(
+        &self,
+        branch_node: u32,
+        value: &DfdlValue,
+    ) -> Result<()> {
+        let IrNode::Element { kind, props, .. } = self.ctx.program.node(branch_node)? else {
+            return Ok(());
+        };
+        if needs_facet_validation(props) {
+            validate_decoded_facets_tdml(
+                value,
+                *kind,
+                props,
+                self.ctx.strings(),
+                &self.ctx.program.tunables,
+                false,
+            )
+            .map_err(Error::from)?;
+        }
+        Ok(())
     }
 }
 

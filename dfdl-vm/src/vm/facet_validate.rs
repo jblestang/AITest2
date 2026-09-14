@@ -120,6 +120,11 @@ pub fn validate_decoded_facets_tdml(
         validate_float_facets(value, kind, props, strings)?;
     } else if kind == ValueKind::Decimal {
         validate_decimal_range_facets(value, props, strings)?;
+        if props.total_digits.is_some() || props.fraction_digits.is_some() {
+            if let DfdlValue::Decimal(lex) = value {
+                validate_digit_facets(lex, props, strings)?;
+            }
+        }
     } else if kind == ValueKind::DateTime {
         validate_datetime_range_facets(value, props, strings)?;
         validate_calendar_enumeration(value, props, strings)?;
