@@ -92,15 +92,15 @@ impl<'a> IrBuilder<'a> {
         let root = if let Some(builtin) = BuiltinType::from_xsd(root_element.type_name.as_str()) {
             let kind = value_kind_from_builtin(builtin);
             let defaults = self.defaults.clone();
+            let mut merged =
+                self.merge_props_full(&defaults, &DfdlProps::default(), &root_element.props)?;
+            apply_type_name_ir_flags(&root_element.type_name, &mut merged);
             let mut props = finalize_element_props(
                 kind,
-                self.merge_props_full(&defaults, &DfdlProps::default(), &root_element.props)?,
+                merged,
                 &mut self.strings,
                 self.tunables,
             )?;
-            apply_unsigned_long_flag(&root_element.type_name, &mut props);
-            apply_integer_type_flags(&root_element.type_name, &mut props);
-            apply_calendar_type_flags(&root_element.type_name, &mut props);
             validate_implicit_text_length(kind, &props)?;
             let name = self.strings.intern(root_name);
             self.push(IrNode::Element {
@@ -125,7 +125,8 @@ impl<'a> IrBuilder<'a> {
                     .effective_simple_type_props(&root_element.type_name)
                     .unwrap_or_default();
                 validate_dfdl_prop_overlap(&root_element.props, &type_props)?;
-                let merged = self.merge_props_full(&defaults, &type_props, &root_element.props)?;
+                let mut merged = self.merge_props_full(&defaults, &type_props, &root_element.props)?;
+                apply_type_name_ir_flags(&root_element.type_name, &mut merged);
                 validate_length_facets_for_type(&self.schema, base, kind, &merged)?;
                 let mut ir_props = finalize_element_props(
                     kind,
@@ -133,9 +134,6 @@ impl<'a> IrBuilder<'a> {
                     &mut self.strings,
                     self.tunables,
                 )?;
-                apply_unsigned_long_flag(&root_element.type_name, &mut ir_props);
-                apply_integer_type_flags(&root_element.type_name, &mut ir_props);
-                apply_calendar_type_flags(&root_element.type_name, &mut ir_props);
                 apply_restriction_facets(
                     &self.schema,
                     &mut ir_props,
@@ -223,9 +221,12 @@ impl<'a> IrBuilder<'a> {
                     .effective_simple_type_props(type_name)
                     .unwrap_or_default();
                 validate_dfdl_prop_overlap(element_props, &type_props)?;
+                let mut merged =
+                    self.merge_props_full(&defaults, &type_props, element_props)?;
+                apply_type_name_ir_flags(type_name, &mut merged);
                 let mut ir_props = finalize_element_props(
                     kind,
-                    self.merge_props_full(&defaults, &type_props, element_props)?,
+                    merged,
                     &mut self.strings,
                     self.tunables,
                 )?;
@@ -279,16 +280,15 @@ impl<'a> IrBuilder<'a> {
                 let name = self.strings.intern(&element.name);
                 if let Some(builtin) = BuiltinType::from_xsd(element.type_name.as_str()) {
                     let kind = value_kind_from_builtin(builtin);
+                    let mut ir_props = merged;
+                    apply_type_name_ir_flags(&element.type_name, &mut ir_props);
                     let mut ir_props = finalize_element_props(
                         kind,
-                        merged,
+                        ir_props,
                         &mut self.strings,
                         self.tunables,
                     )?;
                     ir_props.hidden = hidden;
-                    apply_unsigned_long_flag(&element.type_name, &mut ir_props);
-                    apply_integer_type_flags(&element.type_name, &mut ir_props);
-                    apply_calendar_type_flags(&element.type_name, &mut ir_props);
                     validate_implicit_text_length(kind, &ir_props)?;
                     ir_props.xsd_type = Some(self.strings.intern(element.type_name.as_str()));
                     Ok(self.push(IrNode::Element {
@@ -370,6 +370,7 @@ impl<'a> IrBuilder<'a> {
                                     )?;
                                 }
                             }
+                            apply_type_name_ir_flags(&element.type_name, &mut merged_ir);
                             let mut merged = finalize_element_props(
                                 kind,
                                 merged_ir,
@@ -1552,6 +1553,12 @@ fn apply_calendar_type_flags(type_name: &TypeName, props: &mut IrProps) {
     if matches!(local, "date") {
         props.calendar_date_only = true;
     }
+}
+
+fn apply_type_name_ir_flags(type_name: &TypeName, props: &mut IrProps) {
+    apply_unsigned_long_flag(type_name, props);
+    apply_integer_type_flags(type_name, props);
+    apply_calendar_type_flags(type_name, props);
 }
 
 fn validate_delimiter_at_compile(prop: &str, raw: &str) -> Result<()> {

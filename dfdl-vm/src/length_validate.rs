@@ -259,12 +259,18 @@ pub fn binary_length_validation_applies(kind: ValueKind, rep: BinaryNumberRep) -
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DaffodilTunables {
     pub allow_signed_integer_length1_bit: bool,
+    /// Daffodil `dafext:minValidYear` default (0).
+    pub min_valid_year: i32,
+    /// Daffodil `dafext:maxValidYear` default (9999).
+    pub max_valid_year: i32,
 }
 
 impl Default for DaffodilTunables {
     fn default() -> Self {
         Self {
             allow_signed_integer_length1_bit: true,
+            min_valid_year: 0,
+            max_valid_year: 9999,
         }
     }
 }

@@ -1,4 +1,5 @@
 use crate::error::VmError;
+use crate::length_validate::DaffodilTunables;
 
 /// Parse a subset of XSD dateTime epoch literals used in DFDL tests (UTC / fixed offset).
 pub fn parse_calendar_epoch_unix(iso: &str) -> Result<i64, VmError> {
@@ -260,6 +261,31 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
     let m = mp + if mp < 10 { 3 } else { -9 };
     let y = yoe + era * 400 + (m <= 2) as i64;
     (y as i32, m as u32, d as u32)
+}
+
+pub fn validate_calendar_year_tunables(text: &str, tunables: &DaffodilTunables) -> Result<(), VmError> {
+    if text.len() < 4 || !text.as_bytes()[0..4].iter().all(|b| b.is_ascii_digit()) {
+        return Ok(());
+    }
+    let year: i32 = text[0..4].parse().unwrap_or(0);
+    if year < tunables.min_valid_year || year > tunables.max_valid_year {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Tunable Limit Exceeded Error: Year value of {year} is not within the limits of the tunables minValidYear ({}) and maxValidYear ({})",
+                tunables.min_valid_year,
+                tunables.max_valid_year,
+            ),
+        });
+    }
+    Ok(())
+}
+
+pub fn binary_calendar_millis_delta_out_of_range(millis: i64) -> VmError {
+    VmError::InvalidValue {
+        message: alloc::format!(
+            "Parse Error. {millis} milliseconds from the binaryCalendarEpoch is out of range of valid values: millis value less than lower bounds for a Calendar"
+        ),
+    }
 }
 
 pub fn decode_binary_seconds_value(bytes: &[u8], le: bool) -> Result<i64, VmError> {

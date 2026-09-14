@@ -620,12 +620,12 @@ pub(crate) fn read_binary_scalar(
             stop_sequences,
             None,
         )?;
-        return decode_binary_scalar(kind, &bytes, props, strings, None);
+        return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
     }
 
     if props.length_kind == LengthKind::Prefixed {
         let bytes = read_prefixed_payload(cursor, props, strings, field_name)?;
-        return decode_binary_scalar(kind, &bytes, props, strings, None);
+        return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
     }
 
     if kind == ValueKind::Decimal {
@@ -649,11 +649,11 @@ pub(crate) fn read_binary_scalar(
         }
         if kind == ValueKind::String || kind == ValueKind::HexBinary {
             let bytes = cursor.read_stream_bits_as_bytes(len, props.bit_order)?;
-            return decode_binary_scalar(kind, &bytes, props, strings, None);
+            return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
         }
         let raw = cursor.read_stream_bits(len, props.bit_order)?;
         let raw = normalize_bit_field_raw(raw, len, props.byte_order, props.bit_order);
-        return decode_binary_from_raw_bits(kind, raw, len, props, strings);
+        return decode_binary_from_raw_bits(kind, raw, len, props, strings, tunables);
     }
 
     if cursor.frame_bit_limit.is_some()
@@ -668,10 +668,10 @@ pub(crate) fn read_binary_scalar(
         };
         if kind == ValueKind::String || kind == ValueKind::HexBinary {
             let bytes = cursor.read_stream_bits_as_bytes(bits, props.bit_order)?;
-            return decode_binary_scalar(kind, &bytes, props, strings, None);
+            return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
         }
         let raw = cursor.read_stream_bits(bits, props.bit_order)?;
-        return decode_binary_from_raw_bits(kind, raw, bits, props, strings);
+        return decode_binary_from_raw_bits(kind, raw, bits, props, strings, tunables);
     }
 
     if props.alignment_units == LengthUnits::Bits || cursor.bit_count != 0 {
@@ -710,11 +710,11 @@ pub(crate) fn read_binary_scalar(
             }
             if kind == ValueKind::String || kind == ValueKind::HexBinary {
                 let bytes = cursor.read_stream_bits_as_bytes(bit_len, props.bit_order)?;
-                return decode_binary_scalar(kind, &bytes, props, strings, None);
+                return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
             }
             let raw = cursor.read_stream_bits(bit_len, props.bit_order)?;
             let raw = normalize_bit_field_raw(raw, bit_len, props.byte_order, props.bit_order);
-            return decode_binary_from_raw_bits(kind, raw, bit_len, props, strings);
+            return decode_binary_from_raw_bits(kind, raw, bit_len, props, strings, tunables);
         }
     }
 
@@ -738,7 +738,7 @@ pub(crate) fn read_binary_scalar(
         cursor.read_bytes(size).ok_or(VmError::UnexpectedEof)?
     };
 
-    decode_binary_scalar(kind, &bytes, props, strings, None)
+    decode_binary_scalar(kind, &bytes, props, strings, None, tunables)
 }
 
 fn decode_binary_scalar(
@@ -747,6 +747,7 @@ fn decode_binary_scalar(
     props: &IrProps,
     strings: &StringPool,
     bit_width: Option<usize>,
+    tunables: &DaffodilTunables,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::ir::ValueKind;
     use crate::value::DfdlValue;
@@ -757,7 +758,7 @@ fn decode_binary_scalar(
     if matches!(kind, ValueKind::DateTime | ValueKind::Time)
         && calendar_binary_rep(props)
     {
-        return decode_binary_calendar(kind, bytes, props, strings);
+        return decode_binary_calendar(kind, bytes, props, strings, tunables);
     }
 
     match props.binary_number_rep {
@@ -1071,6 +1072,7 @@ fn decode_binary_calendar(
     bytes: &[u8],
     props: &IrProps,
     strings: &StringPool,
+    tunables: &DaffodilTunables,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::value::DfdlValue;
@@ -2664,6 +2666,7 @@ fn decode_binary_from_raw_bits(
     bit_width: usize,
     props: &IrProps,
     strings: &StringPool,
+    tunables: &DaffodilTunables,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -2677,7 +2680,7 @@ fn decode_binary_from_raw_bits(
     }
     if matches!(kind, DateTime | Time) && calendar_binary_rep(props) {
         let bytes = stream_bits_to_bytes(raw, bit_width, props.byte_order);
-        return decode_binary_calendar(kind, &bytes, props, strings);
+        return decode_binary_calendar(kind, &bytes, props, strings, tunables);
     }
 
     macro_rules! unsigned {
