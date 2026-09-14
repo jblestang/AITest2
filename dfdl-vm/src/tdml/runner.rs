@@ -104,6 +104,7 @@ pub fn run_parser_test_with_options(
         data: Vec::new(),
         last_byte_bit_count: None,
         transmission_bit_order: crate::schema::BitOrder::MostSignificantBitFirst,
+        document_transmission_bit_order: None,
         load_error: None,
     };
     if test.documents.is_empty() && test.expected_errors.is_none() {

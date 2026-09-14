@@ -70,6 +70,8 @@ pub struct TdmlDocument {
     pub last_byte_bit_count: Option<u8>,
     /// How bits are packed into `data` for `type="bits"` documents.
     pub transmission_bit_order: crate::schema::BitOrder,
+    /// When set, overrides schema format `bitOrder` for stream bit extraction (TDML `@bitOrder`).
+    pub document_transmission_bit_order: Option<crate::schema::BitOrder>,
     /// TDML document assembly error (e.g. illegal bitOrder transition between parts).
     pub load_error: Option<String>,
 }
@@ -339,7 +341,14 @@ fn effective_document_bit_order(
     }
 }
 
-fn document_transmission_bit_order(use_lsb_assembly: bool) -> BitOrder {
+fn document_bit_order_to_transmission(order: DocumentBitOrder) -> BitOrder {
+    match order {
+        DocumentBitOrder::LsbFirst => BitOrder::LeastSignificantBitFirst,
+        DocumentBitOrder::MsbFirst => BitOrder::MostSignificantBitFirst,
+    }
+}
+
+fn packed_document_transmission_bit_order(use_lsb_assembly: bool) -> BitOrder {
     if use_lsb_assembly {
         BitOrder::LeastSignificantBitFirst
     } else {
@@ -407,6 +416,11 @@ fn parse_document(
         .map(|s| parse_document_bit_order(s))
         .transpose()?
         .unwrap_or(DocumentBitOrder::MsbFirst);
+    let document_transmission_bit_order = doc_attrs
+        .get("bitOrder")
+        .map(|s| parse_document_bit_order(s))
+        .transpose()?
+        .map(document_bit_order_to_transmission);
 
     if reader.peek_is_end("document")? {
         reader.expect_end("document")?;
@@ -415,6 +429,7 @@ fn parse_document(
             data: Vec::new(),
             last_byte_bit_count: None,
             transmission_bit_order: BitOrder::MostSignificantBitFirst,
+            document_transmission_bit_order,
             load_error: None,
         });
     }
@@ -441,7 +456,7 @@ fn parse_document(
             };
 
         while reader.peek_start_local()? == Some("documentPart".to_string()) {
-            let part = parse_document_part(reader, default_bit_order)?;
+            let part = parse_document_part(reader, default_bit_order, document_bit_order_from_attr)?;
             part_transitions.push((part.bit_order, part.length_in_bits, part.explicit_bit_order));
             if let Some(chunks) = part.bit_chunks {
                 saw_bits_part = true;
@@ -454,6 +469,11 @@ fn parse_document(
                         pending_bits.push(if c == '1' { 1 } else { 0 });
                     }
                 }
+                bit_part_chunks.push(chunks);
+            } else if part.kind == DocumentKind::Hex && part.bit_chunks.is_some() {
+                let chunks = part.bit_chunks.unwrap();
+                saw_bits_part = true;
+                kind = DocumentKind::Bits;
                 bit_part_chunks.push(chunks);
             } else if saw_bits_part && part.kind == DocumentKind::Text {
                 // When the bit stream ends mid-byte, following text continues in the same stream;
@@ -499,18 +519,6 @@ fn parse_document(
             flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
             if saw_bits_part {
                 kind = DocumentKind::Bits;
-            } else if kind == DocumentKind::Hex
-                && assembly_order == DocumentBitOrder::LsbFirst
-                && !data.is_empty()
-            {
-                let chunks: Vec<String> = data
-                    .iter()
-                    .map(|b| alloc::format!("{:08b}", b))
-                    .collect();
-                let (packed, trailing) =
-                    assemble_tdml_document_bytes(&[chunks], DocumentBitOrder::LsbFirst);
-                data = packed;
-                last_byte_bit_count = Some(trailing);
             }
         }
         if let Err(e) = check_explicit_part_bit_order_mixture(document_bit_order_from_attr, &part_transitions) {
@@ -519,6 +527,7 @@ fn parse_document(
                 data: Vec::new(),
                 last_byte_bit_count: None,
                 transmission_bit_order: BitOrder::MostSignificantBitFirst,
+                document_transmission_bit_order,
                 load_error: Some(e.to_string()),
             });
         }
@@ -528,6 +537,7 @@ fn parse_document(
                 data: Vec::new(),
                 last_byte_bit_count: None,
                 transmission_bit_order: BitOrder::MostSignificantBitFirst,
+                document_transmission_bit_order,
                 load_error: Some(e.to_string()),
             });
         }
@@ -535,7 +545,8 @@ fn parse_document(
             kind,
             data,
             last_byte_bit_count,
-            transmission_bit_order: document_transmission_bit_order(use_lsb_assembly),
+            transmission_bit_order: packed_document_transmission_bit_order(use_lsb_assembly),
+            document_transmission_bit_order,
             load_error: None,
         });
     }
@@ -546,6 +557,7 @@ fn parse_document(
         data: text.into_bytes(),
         last_byte_bit_count: None,
         transmission_bit_order: BitOrder::MostSignificantBitFirst,
+        document_transmission_bit_order,
         load_error: None,
     })
 }
@@ -565,6 +577,7 @@ struct ParsedDocumentPart {
 fn parse_document_part(
     reader: &mut XmlReader<'_>,
     default_bit_order: DocumentBitOrder,
+    document_bit_order_from_attr: bool,
 ) -> Result<ParsedDocumentPart> {
     let XmlEvent::StartElement { attributes, .. } = reader.next_event()? else {
         return Err(ParseError::InvalidXml {
@@ -621,7 +634,18 @@ fn parse_document_part(
             };
             (data, None, None)
         }
-        DocumentKind::Hex => (parse_hex_document(&text)?, None, None),
+        DocumentKind::Hex => {
+            let data_bytes = parse_hex_document(&text)?;
+            if document_bit_order_from_attr && default_bit_order == DocumentBitOrder::LsbFirst {
+                let chunks = data_bytes
+                    .iter()
+                    .map(|b| alloc::format!("{:08b}", b))
+                    .collect();
+                (Vec::new(), None, Some(chunks))
+            } else {
+                (data_bytes, None, None)
+            }
+        }
         DocumentKind::Bits => {
             let digits = collect_bit_digits_from_text(&text);
             let chunks = bit_chunks_for_part(&digits, byte_order);
@@ -754,18 +778,24 @@ fn assemble_tdml_document_bytes(
             .map(|chunk| core::str::from_utf8(chunk).unwrap_or("").to_string())
             .collect(),
         DocumentBitOrder::LsbFirst => {
-            let reversed_parts: Vec<Vec<String>> = part_chunks
+            // Match Daffodil `Document.documentBits` for `LSBFirst`.
+            let flat: String = part_chunks
                 .iter()
-                .map(|part| {
+                .flat_map(|part| {
                     part.iter()
                         .map(|chunk| reverse_bit_string(chunk))
-                        .collect()
                 })
                 .collect();
-            let flat: String = reversed_parts.iter().flatten().cloned().collect();
-            flat.as_bytes()
+            let rtl_bits = reverse_bit_string(&flat);
+            rtl_bits
+                .chars()
+                .rev()
+                .collect::<String>()
+                .as_bytes()
                 .chunks(8)
-                .map(|chunk| reverse_bit_string(core::str::from_utf8(chunk).unwrap_or("")))
+                .map(|chunk| {
+                    reverse_bit_string(core::str::from_utf8(chunk).unwrap_or(""))
+                })
                 .collect()
         }
     };
@@ -971,6 +1001,23 @@ mod tests {
         let (data2, trailing2) = pack_bits_to_document(&bits2);
         assert_eq!(data2, vec![0x0E]);
         assert_eq!(trailing2, 0);
+    }
+
+    #[test]
+    fn lsb_document_bits_matches_daffodil_bit_order_change() {
+        let part1_chunks = bit_chunks_for_part(
+            &collect_bit_digits_from_text("01001|011"),
+            DocumentByteOrder::Ltr,
+        );
+        let part2_chunks = bit_chunks_for_part(
+            &collect_bit_digits_from_text("010101|00"),
+            DocumentByteOrder::Ltr,
+        );
+        let (bytes, _) = assemble_tdml_document_bytes(
+            &[part1_chunks, part2_chunks],
+            DocumentBitOrder::LsbFirst,
+        );
+        assert_eq!(bytes, vec![0x4B, 0x54]);
     }
 
     #[test]
