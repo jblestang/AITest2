@@ -2942,6 +2942,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if !overlay.facet_pattern_groups.is_empty() {
         out.facet_pattern_groups = overlay.facet_pattern_groups.clone();
     }
+    if !overlay.facet_enumeration.is_empty() {
+        out.facet_enumeration = overlay.facet_enumeration.clone();
+    }
     if overlay.value_min_inclusive.is_some() {
         out.value_min_inclusive = overlay.value_min_inclusive;
     }

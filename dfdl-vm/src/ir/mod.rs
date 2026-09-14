@@ -201,6 +201,7 @@ pub struct IrProps {
     pub implicit_facet_length: Option<u64>,
     /// Each entry is one restriction-level pattern group (OR within, AND across groups).
     pub facet_pattern_groups: alloc::vec::Vec<StringId>,
+    pub facet_enumeration: alloc::vec::Vec<StringId>,
     pub value_min_inclusive: Option<i64>,
     pub value_max_inclusive: Option<i64>,
     pub value_min_exclusive: Option<i64>,
@@ -335,6 +336,7 @@ impl Default for IrProps {
             facet_length: None,
             implicit_facet_length: None,
             facet_pattern_groups: alloc::vec::Vec::new(),
+            facet_enumeration: alloc::vec::Vec::new(),
             value_min_inclusive: None,
             value_max_inclusive: None,
             value_min_exclusive: None,

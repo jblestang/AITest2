@@ -432,6 +432,7 @@ pub enum SimpleBase {
         max_exclusive: Option<i64>,
         /// OR'd patterns within this restriction level.
         patterns: alloc::vec::Vec<alloc::string::String>,
+        enumerations: alloc::vec::Vec<alloc::string::String>,
         total_digits: Option<u64>,
         fraction_digits: Option<u64>,
         /// Raw facet value when not a valid non-negative integer (compile SDE).

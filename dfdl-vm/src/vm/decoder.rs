@@ -131,15 +131,21 @@ impl<'a> Decoder<'a> {
             &[],
         )?;
         self.consume_root_delimited_suffix(&mut cursor)?;
-        if self.ctx.config.strict_eos
-            && cursor.frame_bit_limit.is_none()
-            && cursor.bit_count == 0
-            && cursor.remaining() > 0
-        {
-            return Err(VmError::TrailingData {
-                remaining_bits: cursor.remaining() * 8,
+        if self.ctx.config.strict_eos {
+            if let Some(limit) = cursor.frame_bit_limit {
+                let consumed = cursor.absolute_bit_index();
+                if consumed < limit {
+                    return Err(VmError::TrailingData {
+                        remaining_bits: limit.saturating_sub(consumed),
+                    }
+                    .into());
+                }
+            } else if cursor.bit_count == 0 && cursor.remaining() > 0 {
+                return Err(VmError::TrailingData {
+                    remaining_bits: cursor.remaining() * 8,
+                }
+                .into());
             }
-            .into());
         }
         Ok(wrap_root(
             &self.ctx.program.root_element,

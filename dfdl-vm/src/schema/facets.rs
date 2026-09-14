@@ -16,6 +16,7 @@ pub struct EffectiveFacets {
     pub min_exclusive: Option<i64>,
     pub max_exclusive: Option<i64>,
     pub pattern_levels: Vec<Vec<String>>,
+    pub enumeration: Option<Vec<String>>,
     pub total_digits: Option<u64>,
     pub fraction_digits: Option<u64>,
     pub invalid_min_length: Option<String>,
@@ -46,6 +47,7 @@ impl SchemaDocument {
                 min_exclusive,
                 max_exclusive,
                 patterns,
+                enumerations,
                 total_digits,
                 fraction_digits,
                 invalid_min_length,
@@ -88,6 +90,9 @@ impl SchemaDocument {
                 out.fraction_digits = merge_min_u64(out.fraction_digits, *fraction_digits);
                 if !patterns.is_empty() {
                     out.pattern_levels.push(patterns.clone());
+                }
+                if !enumerations.is_empty() {
+                    out.enumeration = Some(enumerations.clone());
                 }
             }
         }
@@ -424,5 +429,11 @@ pub fn apply_effective_facets_to_ir(
         }
         let combined = level.join("|");
         props.facet_pattern_groups.push(strings.intern(combined));
+    }
+    if let Some(values) = &eff.enumeration {
+        props.facet_enumeration = values
+            .iter()
+            .map(|v| strings.intern(v.clone()))
+            .collect();
     }
 }

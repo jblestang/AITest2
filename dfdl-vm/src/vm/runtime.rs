@@ -656,22 +656,48 @@ pub(crate) fn read_binary_scalar(
         return decode_binary_from_raw_bits(kind, raw, len, props, strings, tunables);
     }
 
-    if cursor.frame_bit_limit.is_some()
-        && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
-        && props.length.is_some()
-    {
-        let len = props.length.unwrap_or(0) as usize;
-        let bits = if props.length_units == LengthUnits::Bits {
-            len
-        } else {
-            len.saturating_mul(8)
+    if cursor.frame_bit_limit.is_some() {
+        let bit_len = match props.length_kind {
+            LengthKind::Implicit | LengthKind::Fixed => {
+                implicit_binary_scalar_byte_length(kind, props).saturating_mul(8)
+            }
+            LengthKind::Explicit => {
+                let len = props.length.ok_or(VmError::InvalidValue {
+                    message: "explicit binary missing length".into(),
+                })? as usize;
+                if props.length_units == LengthUnits::Bits {
+                    len
+                } else {
+                    len.saturating_mul(8)
+                }
+            }
+            _ => 0,
         };
-        if kind == ValueKind::String || kind == ValueKind::HexBinary {
-            let bytes = cursor.read_stream_bits_as_bytes(bits, props.bit_order)?;
-            return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
+        if bit_len > 0
+            && matches!(
+                props.length_kind,
+                LengthKind::Implicit | LengthKind::Fixed | LengthKind::Explicit
+            )
+        {
+            if kind != ValueKind::String && kind != ValueKind::HexBinary {
+                if binary_length_validation_applies(kind, props.binary_number_rep) {
+                    validate_data_length_vm(
+                        kind,
+                        bit_len as u64,
+                        LengthUnits::Bits,
+                        props.binary_number_rep,
+                    )?;
+                }
+                validate_packed_binary_bit_length_parse(bit_len, kind, props.binary_number_rep)?;
+            }
+            if kind == ValueKind::String || kind == ValueKind::HexBinary {
+                let bytes = cursor.read_stream_bits_as_bytes(bit_len, props.bit_order)?;
+                return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
+            }
+            let raw = cursor.read_stream_bits(bit_len, props.bit_order)?;
+            let raw = normalize_bit_field_raw(raw, bit_len, props.byte_order, props.bit_order);
+            return decode_binary_from_raw_bits(kind, raw, bit_len, props, strings, tunables);
         }
-        let raw = cursor.read_stream_bits(bits, props.bit_order)?;
-        return decode_binary_from_raw_bits(kind, raw, bits, props, strings, tunables);
     }
 
     if props.alignment_units == LengthUnits::Bits || cursor.bit_count != 0 {

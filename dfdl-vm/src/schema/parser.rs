@@ -45,6 +45,7 @@ struct ParsedRestrictionFacets {
     min_exclusive: Option<i64>,
     max_exclusive: Option<i64>,
     patterns: Vec<String>,
+    enumerations: Vec<String>,
     total_digits: Option<u64>,
     fraction_digits: Option<u64>,
     invalid_min_length: Option<String>,
@@ -769,6 +770,7 @@ impl<'a> XsdParser<'a> {
                             min_exclusive: facets.min_exclusive,
                             max_exclusive: facets.max_exclusive,
                             patterns: facets.patterns,
+                            enumerations: facets.enumerations,
                             total_digits: facets.total_digits,
                             fraction_digits: facets.fraction_digits,
                             invalid_min_length: facets.invalid_min_length,
@@ -899,6 +901,12 @@ impl<'a> XsdParser<'a> {
                         "pattern" => {
                             if let Some(v) = child_attrs.get("value") {
                                 out.patterns.push(v.clone());
+                            }
+                            self.skip_element_body(&local)?;
+                        }
+                        "enumeration" => {
+                            if let Some(v) = child_attrs.get("value") {
+                                out.enumerations.push(v.clone());
                             }
                             self.skip_element_body(&local)?;
                         }

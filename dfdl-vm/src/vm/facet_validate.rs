@@ -33,6 +33,7 @@ pub fn needs_facet_validation(props: &IrProps) -> bool {
         return true;
     }
     !props.facet_pattern_groups.is_empty()
+        || !props.facet_enumeration.is_empty()
         || props.value_min_inclusive.is_some()
         || props.value_max_inclusive.is_some()
         || props.value_min_exclusive.is_some()
@@ -58,6 +59,7 @@ pub fn validate_decoded_facets(
         validate_float_facets(value, kind, props, strings)?;
     } else if let Some(n) = numeric_value_i64(value) {
         validate_numeric_facets(n, props, strings)?;
+        validate_enumeration_numeric(n, props, strings)?;
     }
     if props.total_digits.is_some() || props.fraction_digits.is_some() {
         if let Some(canon) = decimal_lexical_for_digit_facets(value, kind) {
@@ -65,6 +67,27 @@ pub fn validate_decoded_facets(
         }
     }
     Ok(())
+}
+
+fn validate_enumeration_numeric(
+    n: i64,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), VmError> {
+    if props.facet_enumeration.is_empty() {
+        return Ok(());
+    }
+    for id in &props.facet_enumeration {
+        let allowed = strings.get(*id)?;
+        if allowed.parse::<i64>() == Ok(n) {
+            return Ok(());
+        }
+    }
+    Err(facet_validation_error(
+        props,
+        strings,
+        "failed facet checks due to: enumeration".into(),
+    ))
 }
 
 fn validate_string_facets(text: &str, props: &IrProps, strings: &StringPool) -> Result<(), VmError> {
@@ -94,6 +117,23 @@ fn validate_string_facets(text: &str, props: &IrProps, strings: &StringPool) -> 
                 props,
                 strings,
                 alloc::format!("failed facet checks due to: facet pattern ({pat})"),
+            ));
+        }
+    }
+    if !props.facet_enumeration.is_empty() {
+        let mut allowed = false;
+        for id in &props.facet_enumeration {
+            let allowed_val = strings.get(*id)?;
+            if text == allowed_val {
+                allowed = true;
+                break;
+            }
+        }
+        if !allowed {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: enumeration"),
             ));
         }
     }
