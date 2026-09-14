@@ -1104,6 +1104,17 @@ fn finalize_element_props(
                 }
                 .into());
             }
+            for id in [ir.text_boolean_true_rep, ir.text_boolean_false_rep].into_iter().flatten() {
+                let raw = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
+                    message: e.to_string(),
+                })?;
+                if let Err(msg) = crate::schema::validate_text_boolean_rep_value(raw) {
+                    return Err(SchemaError::InvalidProperty {
+                        message: alloc::format!("Schema Definition Error. {msg}"),
+                    }
+                    .into());
+                }
+            }
             if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Implicit)
                 && (ir.text_pad_kind == TextPadKind::None
                     || ir.text_trim_kind == TextTrimKind::None)
@@ -1470,23 +1481,27 @@ fn validate_text_boolean_same_length(props: &IrProps, strings: &StringPool) -> R
     let false_tokens = crate::schema::boolean_reps::tokenize_text_boolean_rep_list(false_raw);
     let true_len = true_tokens
         .first()
-        .and_then(|t| crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None).ok())
+        .and_then(|t| {
+            crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None, None).ok()
+        })
         .map(|s| s.chars().count())
         .unwrap_or(0);
     let false_len = false_tokens
         .first()
-        .and_then(|t| crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None).ok())
+        .and_then(|t| {
+            crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None, None).ok()
+        })
         .map(|s| s.chars().count())
         .unwrap_or(0);
     if true_len != false_len
         || true_tokens.iter().any(|t| {
-            crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None)
+            crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None, None)
                 .map(|s| s.chars().count())
                 .unwrap_or(0)
                 != true_len
         })
         || false_tokens.iter().any(|t| {
-            crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None)
+            crate::schema::boolean_reps::resolve_text_boolean_rep_token(t, None, None)
                 .map(|s| s.chars().count())
                 .unwrap_or(0)
                 != false_len

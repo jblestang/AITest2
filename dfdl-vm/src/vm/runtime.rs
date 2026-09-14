@@ -3126,7 +3126,7 @@ pub(crate) fn read_text_scalar(
     require_delimiter: bool,
     stop_sequences: &[&IrProps],
     field_name: Option<&str>,
-    sibling_text: Option<&alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>>,
+    sibling_env: Option<&crate::schema::boolean_reps::BooleanSiblingEnv<'_>>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -3289,7 +3289,7 @@ pub(crate) fn read_text_scalar(
 
     let base = props.text_standard_base;
     let value = match kind {
-        Boolean => parse_text_boolean(trimmed, props, strings, sibling_text).map(DfdlValue::Boolean),
+        Boolean => parse_text_boolean(trimmed, props, strings, sibling_env).map(DfdlValue::Boolean),
         Byte => {
             reject_internal_whitespace_explicit_field(
                 trimmed, "xs:byte", props, base, trailing_input,
@@ -3515,7 +3515,7 @@ fn text_boolean_rep_candidates(
     props: &IrProps,
     strings: &StringPool,
     true_side: bool,
-    sibling_text: Option<&alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>>,
+    sibling_env: Option<&crate::schema::boolean_reps::BooleanSiblingEnv<'_>>,
 ) -> Result<alloc::vec::Vec<alloc::string::String>, crate::error::VmError> {
     use crate::error::VmError;
     let id = if true_side {
@@ -3530,7 +3530,14 @@ fn text_boolean_rep_candidates(
     let tokens = crate::schema::boolean_reps::tokenize_text_boolean_rep_list(raw);
     let mut out = alloc::vec::Vec::new();
     for tok in tokens {
-        let s = crate::schema::boolean_reps::resolve_text_boolean_rep_token(&tok, sibling_text)
+        let (sibling_text, sibling_bytes) = sibling_env
+            .map(|e| (Some(e.text), Some(e.content_bytes)))
+            .unwrap_or((None, None));
+        let s = crate::schema::boolean_reps::resolve_text_boolean_rep_token(
+            &tok,
+            sibling_text,
+            sibling_bytes,
+        )
             .map_err(|detail| VmError::InvalidValue {
                 message: detail,
             })?;
@@ -3539,16 +3546,45 @@ fn text_boolean_rep_candidates(
     Ok(out)
 }
 
+fn validate_runtime_text_boolean_same_length(
+    props: &IrProps,
+    true_reps: &[alloc::string::String],
+    false_reps: &[alloc::string::String],
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::schema::LengthKind;
+    if !matches!(props.length_kind, LengthKind::Explicit | LengthKind::Implicit) {
+        return Ok(());
+    }
+    if props.text_pad_kind != TextPadKind::None && props.text_trim_kind != TextTrimKind::None {
+        return Ok(());
+    }
+    let true_len = true_reps.first().map(|s| s.chars().count()).unwrap_or(0);
+    let false_len = false_reps.first().map(|s| s.chars().count()).unwrap_or(0);
+    if true_len != false_len
+        || true_reps.iter().any(|r| r.chars().count() != true_len)
+        || false_reps.iter().any(|r| r.chars().count() != false_len)
+    {
+        return Err(VmError::InvalidValue {
+            message:
+                "Schema Definition Error: dfdl:textBooleanTrueRep and dfdl:textBooleanFalseRep must have the same length"
+                    .into(),
+        });
+    }
+    Ok(())
+}
+
 fn parse_text_boolean(
     trimmed: &str,
     props: &IrProps,
     strings: &StringPool,
-    sibling_text: Option<&alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>>,
+    sibling_env: Option<&crate::schema::boolean_reps::BooleanSiblingEnv<'_>>,
 ) -> Result<bool, crate::error::VmError> {
     use crate::error::VmError;
     let ignore = props.ignore_case;
-    let true_reps = text_boolean_rep_candidates(props, strings, true, sibling_text)?;
-    let false_reps = text_boolean_rep_candidates(props, strings, false, sibling_text)?;
+    let true_reps = text_boolean_rep_candidates(props, strings, true, sibling_env)?;
+    let false_reps = text_boolean_rep_candidates(props, strings, false, sibling_env)?;
+    validate_runtime_text_boolean_same_length(props, &true_reps, &false_reps)?;
     let matches = |a: &str, b: &str| {
         if ignore {
             if a.eq_ignore_ascii_case(b) {
@@ -3566,6 +3602,24 @@ fn parse_text_boolean(
                 }
             } else if a == head {
                 return true;
+            }
+        }
+        // Single-character occurrences in a comma-separated list may match a word in a
+        // space-separated false rep (e.g. `b` vs `a b c` in textBoolean_0).
+        if a.chars().count() == 1 {
+            let ch = a.chars().next().unwrap();
+            for word in b.split_whitespace() {
+                let mut wch = word.chars();
+                let Some(first) = wch.next() else {
+                    continue;
+                };
+                if ignore {
+                    if first.eq_ignore_ascii_case(&ch) {
+                        return true;
+                    }
+                } else if first == ch {
+                    return true;
+                }
             }
         }
         false
@@ -4437,6 +4491,17 @@ fn pad_raw_text_field(
     }
 }
 
+pub(crate) fn has_non_empty_terminator(
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    use crate::error::VmError;
+    if let Some(id) = props.terminator {
+        return Ok(!strings.get(id)?.is_empty());
+    }
+    Ok(false)
+}
+
 fn delimiter_pattern_ids(props: &IrProps) -> alloc::vec::Vec<StringId> {
     let mut ids = alloc::vec::Vec::new();
     if let Some(t) = props.terminator {
@@ -4511,37 +4576,40 @@ fn should_defer_infix_sequence_separator(
     seq_props: &IrProps,
     separator_id: StringId,
     field_props: &IrProps,
-) -> bool {
-    seq_props.separator_position == SeparatorPosition::Infix
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    Ok(seq_props.separator_position == SeparatorPosition::Infix
         && seq_props.separator == Some(separator_id)
-        && field_props.terminator.is_none()
+        && !has_non_empty_terminator(field_props, strings)?)
 }
 
 fn should_defer_prefix_sequence_separator(
     seq_props: &IrProps,
     separator_id: StringId,
     field_props: &IrProps,
-) -> bool {
-    seq_props.separator_position == SeparatorPosition::Prefix
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    Ok(seq_props.separator_position == SeparatorPosition::Prefix
         && seq_props.separator == Some(separator_id)
-        && field_props.terminator.is_none()
+        && !has_non_empty_terminator(field_props, strings)?)
 }
 
 fn should_defer_sequence_stop_delimiter_in_field(
     seq_props: &IrProps,
     pattern_id: StringId,
     field_props: &IrProps,
-) -> bool {
-    if field_props.terminator.is_some() {
-        return false;
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    if has_non_empty_terminator(field_props, strings)? {
+        return Ok(false);
     }
     if Some(pattern_id) == seq_props.terminator {
-        return true;
+        return Ok(true);
     }
-    if should_defer_prefix_sequence_separator(seq_props, pattern_id, field_props) {
-        return true;
+    if should_defer_prefix_sequence_separator(seq_props, pattern_id, field_props, strings)? {
+        return Ok(true);
     }
-    should_defer_infix_sequence_separator(seq_props, pattern_id, field_props)
+    should_defer_infix_sequence_separator(seq_props, pattern_id, field_props, strings)
 }
 
 /// When decoding a sequence child, skip the infix separator before this index if
@@ -4866,7 +4934,7 @@ pub(crate) fn consume_enclosing_delimiter(
                         if n == 0 {
                             continue;
                         }
-                        if should_defer_sequence_stop_delimiter_in_field(seq, id, props) {
+                        if should_defer_sequence_stop_delimiter_in_field(seq, id, props, strings)? {
                             return Ok(());
                         }
                         cursor.advance(n);
@@ -5947,6 +6015,34 @@ fn ambiguous_delimiter_prefix_at_cursor(
     Ok(false)
 }
 
+fn cursor_at_deferred_sequence_terminator(
+    cursor: &Cursor<'_>,
+    field_props: &IrProps,
+    strings: &StringPool,
+    stop_sequences: &[&IrProps],
+) -> Result<bool, crate::error::VmError> {
+    for seq in stop_sequences {
+        let Some(tid) = seq.terminator else {
+            continue;
+        };
+        let pat = strings.get(tid)?;
+        if pat.is_empty() {
+            continue;
+        }
+        if crate::schema::match_delimiter_opts(
+            &cursor.data[cursor.pos..],
+            pat,
+            seq.ignore_case,
+        )
+        .is_some()
+            && should_defer_sequence_stop_delimiter_in_field(seq, tid, field_props, strings)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn defer_delimited_enclosing_consume(
     cursor: &Cursor<'_>,
     props: &IrProps,
@@ -5962,6 +6058,9 @@ fn defer_delimited_enclosing_consume(
     }
     if matches!(value, DfdlValue::Null) {
         return Ok(false);
+    }
+    if cursor_at_deferred_sequence_terminator(cursor, props, strings, stop_sequences)? {
+        return Ok(true);
     }
     if ambiguous_delimiter_prefix_at_cursor(cursor, props, strings, stop_sequences)? {
         return Ok(true);
@@ -5999,7 +6098,7 @@ pub(crate) fn read_simple(
     tunables: &DaffodilTunables,
     consume_delimited_enclosing: bool,
     mut delim_out: Option<&mut crate::value::FieldDelimiterMeta>,
-    sibling_text: Option<&alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>>,
+    sibling_env: Option<&crate::schema::boolean_reps::BooleanSiblingEnv<'_>>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -6019,7 +6118,8 @@ pub(crate) fn read_simple(
         }
     }
     let _ = field_name;
-    let require_enclosing = require_delimiter || props.terminator.is_some();
+    let require_enclosing =
+        require_delimiter || has_non_empty_terminator(props, strings)?;
     let use_text = match kind {
         ValueKind::String => true,
         ValueKind::HexBinary => false,
@@ -6034,7 +6134,7 @@ pub(crate) fn read_simple(
             require_enclosing,
             stop_sequences,
             field_name,
-            sibling_text,
+            sibling_env,
         )?
     } else {
         read_binary_scalar(

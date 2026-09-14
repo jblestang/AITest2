@@ -1,12 +1,13 @@
 use super::runtime::{
     consume_element_framing, consume_element_trailing_framing, consume_enclosing_delimiter,
-    default_value_for, encoding_name,
+    default_value_for, encoding_name, has_non_empty_terminator,
     is_suppressible_empty_representation, prefixed_payload_byte_length, read_delimited_bytes,
     read_length_span, read_prefixed_payload, read_simple, read_until_separator,
     should_suppress_decode_infix_separator, validate_explicit_decimal_before_decode,
     validate_unbounded_wsp_star_terminator, would_read_empty_delimited_field, Cursor,
     RuntimeConfig, VmContext,
 };
+use crate::schema::boolean_reps::BooleanSiblingEnv;
 use crate::length_validate::{binary_length_validation_applies, validate_data_length_vm};
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, StringId, ValueKind};
@@ -25,21 +26,34 @@ struct SiblingState {
     content_bytes: usize,
 }
 
-fn sibling_text_values(
+fn sibling_boolean_env<'a>(
+    siblings: Option<&'a BTreeMap<String, SiblingState>>,
+    text_map: &'a BTreeMap<String, String>,
+    bytes_map: &'a BTreeMap<String, usize>,
+) -> Option<BooleanSiblingEnv<'a>> {
+    if siblings.is_none() {
+        return None;
+    }
+    Some(BooleanSiblingEnv {
+        text: text_map,
+        content_bytes: bytes_map,
+    })
+}
+
+fn sibling_maps_for_boolean(
     siblings: Option<&BTreeMap<String, SiblingState>>,
-) -> Option<BTreeMap<String, String>> {
-    let sibs = siblings?;
-    let mut out = BTreeMap::new();
-    for (name, state) in sibs {
-        if let DfdlValue::String(s) = &state.value {
-            out.insert(name.clone(), s.text.clone());
+) -> (BTreeMap<String, String>, BTreeMap<String, usize>) {
+    let mut text = BTreeMap::new();
+    let mut bytes = BTreeMap::new();
+    if let Some(sibs) = siblings {
+        for (name, state) in sibs {
+            bytes.insert(name.clone(), state.content_bytes);
+            if let DfdlValue::String(s) = &state.value {
+                text.insert(name.clone(), s.text.clone());
+            }
         }
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    (text, bytes)
 }
 
 enum FramingExtraOccurrences {
@@ -817,7 +831,9 @@ impl<'a> Decoder<'a> {
                         }
                     }
                     let mut element_stops = stop_sequences.to_vec();
-                    if props.terminator.is_some() || props.separator.is_some() {
+                    if props.separator.is_some()
+                        || has_non_empty_terminator(&props, self.ctx.strings())?
+                    {
                         element_stops.push(&props);
                     }
                     self.enclosing.borrow_mut().push(props.clone());
@@ -870,7 +886,13 @@ impl<'a> Decoder<'a> {
                     }
                     let field_name = self.ctx.strings().get(*name)?.to_string();
                     let mut delim_meta = FieldDelimiterMeta::default();
-                    let sibling_text = sibling_text_values(siblings);
+                    let (sibling_text_map, sibling_bytes_map) =
+                        sibling_maps_for_boolean(siblings);
+                    let sibling_env = sibling_boolean_env(
+                        siblings,
+                        &sibling_text_map,
+                        &sibling_bytes_map,
+                    );
                     let value = read_simple(
                         cursor,
                         *kind,
@@ -882,7 +904,7 @@ impl<'a> Decoder<'a> {
                         &self.ctx.program.tunables,
                         false,
                         Some(&mut delim_meta),
-                        sibling_text.as_ref(),
+                        sibling_env.as_ref(),
                     )
                     .map_err(crate::error::Error::from)?;
                     if delim_meta.initiator_alt.is_some() || delim_meta.terminator_alt.is_some() {
@@ -907,7 +929,9 @@ impl<'a> Decoder<'a> {
         if props.nillable {
             return FramingExtraOccurrences::None;
         }
-        if props.length_kind == LengthKind::Delimited && props.terminator.is_some() {
+        if props.length_kind == LengthKind::Delimited
+            && has_non_empty_terminator(props, self.ctx.strings()).unwrap_or(false)
+        {
             let comma_sep = parent_sequence
                 .and_then(|p| p.separator)
                 .and_then(|id| self.ctx.strings().get(id).ok().map(|s| s == ","))

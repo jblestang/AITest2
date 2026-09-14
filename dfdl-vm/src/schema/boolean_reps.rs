@@ -64,10 +64,27 @@ fn sibling_text_value(
         .ok_or_else(|| alloc::format!("Schema Definition Error: {name} does not exist"))
 }
 
+fn sibling_content_byte_length(
+    content_bytes: Option<&BTreeMap<String, usize>>,
+    name: &str,
+) -> Result<String, String> {
+    content_bytes
+        .and_then(|m| m.get(name))
+        .map(|n| n.to_string())
+        .ok_or_else(|| alloc::format!("Schema Definition Error: {name} does not exist"))
+}
+
+/// Sibling context for resolving `{ ../ex:foo }` and `dfdl:valueLength(../ex:foo, 'bytes')`.
+pub struct BooleanSiblingEnv<'a> {
+    pub text: &'a BTreeMap<String, String>,
+    pub content_bytes: &'a BTreeMap<String, usize>,
+}
+
 /// Evaluate a single `{ ... }` or plain token to the comparison string at runtime.
 pub fn resolve_text_boolean_rep_token(
     token: &str,
     siblings: Option<&BTreeMap<String, String>>,
+    sibling_content_bytes: Option<&BTreeMap<String, usize>>,
 ) -> Result<String, String> {
     let trimmed = token.trim();
     if trimmed.starts_with('{') && trimmed.ends_with('}') {
@@ -90,6 +107,11 @@ pub fn resolve_text_boolean_rep_token(
                     .ok_or_else(|| alloc::format!("unsupported xs:string argument `{arg}`"))?;
                 let name = sibling_ref_name(sib_part.trim())
                     .ok_or_else(|| alloc::format!("unsupported xs:string argument `{arg}`"))?;
+                if let Some(units) = inner_arg.split(',').nth(1).map(|u| u.trim().trim_matches('\'')) {
+                    if units.eq_ignore_ascii_case("bytes") {
+                        return sibling_content_byte_length(sibling_content_bytes, &name);
+                    }
+                }
                 let text = sibling_text_value(siblings, &name)?;
                 return Ok(text.len().to_string());
             }
@@ -134,11 +156,11 @@ mod tests {
     #[test]
     fn resolve_xs_string_arithmetic() {
         assert_eq!(
-            resolve_text_boolean_rep_token("{ xs:string(5-3) }", None).unwrap(),
+            resolve_text_boolean_rep_token("{ xs:string(5-3) }", None, None).unwrap(),
             "2"
         );
         assert_eq!(
-            resolve_text_boolean_rep_token("{'a b c'}", None).unwrap(),
+            resolve_text_boolean_rep_token("{'a b c'}", None, None).unwrap(),
             "a b c"
         );
     }

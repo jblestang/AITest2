@@ -107,6 +107,12 @@ pub fn validate_dfdl_entities_in_property(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn validate_text_boolean_rep_value(raw: &str) -> Result<(), String> {
+    validate_dfdl_entities_in_property(raw)?;
+    reject_byte_entities_text_standard(raw)?;
+    Ok(())
+}
+
 fn reject_byte_entities_text_standard(raw: &str) -> Result<(), String> {
     let mut i = 0usize;
     while i < raw.len() {
