@@ -74,6 +74,8 @@ pub struct TdmlDocument {
     pub document_transmission_bit_order: Option<crate::schema::BitOrder>,
     /// Bits document with a following encoded `type="text"` part (MIL / 7-bit packed continuation).
     pub mixed_bits_text_document: bool,
+    /// Per-part `(bitOrder, lengthInBits)` for TDML decode when `@bitOrder` or part orders apply.
+    pub part_bit_order_regions: Vec<(crate::schema::BitOrder, usize)>,
     /// TDML document assembly error (e.g. illegal bitOrder transition between parts).
     pub load_error: Option<String>,
 }
@@ -433,6 +435,7 @@ fn parse_document(
             transmission_bit_order: BitOrder::MostSignificantBitFirst,
             document_transmission_bit_order,
             mixed_bits_text_document: false,
+            part_bit_order_regions: Vec::new(),
             load_error: None,
         });
     }
@@ -447,6 +450,7 @@ fn parse_document(
         let mut part_transitions: Vec<(DocumentBitOrder, usize, bool)> = Vec::new();
         let mut saw_rtl_byte_order = false;
         let mut mixed_bits_text_document = false;
+        let mut part_bit_order_regions: Vec<(BitOrder, usize)> = Vec::new();
 
         let flush_pending_bits =
             |pending: &mut Vec<u8>, data: &mut Vec<u8>, last: &mut Option<u8>| {
@@ -462,6 +466,10 @@ fn parse_document(
         while reader.peek_start_local()? == Some("documentPart".to_string()) {
             let part = parse_document_part(reader, default_bit_order, document_bit_order_from_attr)?;
             part_transitions.push((part.bit_order, part.length_in_bits, part.explicit_bit_order));
+            part_bit_order_regions.push((
+                document_bit_order_to_transmission(part.bit_order),
+                part.length_in_bits,
+            ));
             if let Some(chunks) = part.bit_chunks {
                 saw_bits_part = true;
                 kind = DocumentKind::Bits;
@@ -532,6 +540,12 @@ fn parse_document(
                 kind = DocumentKind::Bits;
             }
         }
+        let use_tdml_bit_regions = document_bit_order_from_attr
+            || part_transitions.iter().any(|(_, _, explicit)| *explicit)
+            || use_lsb_assembly;
+        if !use_tdml_bit_regions {
+            part_bit_order_regions.clear();
+        }
         if let Err(e) = check_explicit_part_bit_order_mixture(document_bit_order_from_attr, &part_transitions) {
             return Ok(TdmlDocument {
                 kind: DocumentKind::Text,
@@ -540,6 +554,7 @@ fn parse_document(
                 transmission_bit_order: BitOrder::MostSignificantBitFirst,
                 document_transmission_bit_order,
                 mixed_bits_text_document,
+                part_bit_order_regions: Vec::new(),
                 load_error: Some(e.to_string()),
             });
         }
@@ -551,6 +566,7 @@ fn parse_document(
                 transmission_bit_order: BitOrder::MostSignificantBitFirst,
                 document_transmission_bit_order,
                 mixed_bits_text_document,
+                part_bit_order_regions: Vec::new(),
                 load_error: Some(e.to_string()),
             });
         }
@@ -561,6 +577,7 @@ fn parse_document(
             transmission_bit_order: packed_document_transmission_bit_order(use_lsb_assembly),
             document_transmission_bit_order,
             mixed_bits_text_document,
+            part_bit_order_regions,
             load_error: None,
         });
     }
@@ -573,6 +590,7 @@ fn parse_document(
         transmission_bit_order: BitOrder::MostSignificantBitFirst,
         document_transmission_bit_order,
         mixed_bits_text_document: false,
+        part_bit_order_regions: Vec::new(),
         load_error: None,
     })
 }

@@ -106,6 +106,7 @@ pub fn run_parser_test_with_options(
         transmission_bit_order: crate::schema::BitOrder::MostSignificantBitFirst,
         document_transmission_bit_order: None,
         mixed_bits_text_document: false,
+        part_bit_order_regions: Vec::new(),
         load_error: None,
     };
     if test.documents.is_empty() && test.expected_errors.is_none() {
@@ -140,10 +141,15 @@ pub fn run_parser_test_with_options(
 
     let frame_bits = doc.significant_bit_length();
     let transmission = Some(spec.program().format_transmission_bit_order());
+    let tdml_regions = if doc.part_bit_order_regions.is_empty() {
+        None
+    } else {
+        Some(doc.part_bit_order_regions.clone())
+    };
     if let Some(expected_errors) = &test.expected_errors {
         return match spec
             .decoder_with_config(config)
-            .decode_with_bit_limit(&doc.data, frame_bits, transmission)
+            .decode_with_tdml_options(&doc.data, frame_bits, transmission, tdml_regions.clone())
         {
             Ok(_) => Ok(TestResult {
                 name: test.name.clone(),
@@ -171,7 +177,7 @@ pub fn run_parser_test_with_options(
 
     let decoded = match spec
         .decoder_with_config(config)
-        .decode_with_bit_limit(&doc.data, frame_bits, transmission)
+        .decode_with_tdml_options(&doc.data, frame_bits, transmission, tdml_regions)
     {
         Ok(v) => v,
         Err(e) => {

@@ -99,6 +99,16 @@ impl<'a> Decoder<'a> {
         frame_bits: Option<usize>,
         transmission_bit_order: Option<crate::schema::BitOrder>,
     ) -> Result<DfdlValue> {
+        self.decode_with_tdml_options(input, frame_bits, transmission_bit_order, None)
+    }
+
+    pub fn decode_with_tdml_options(
+        &self,
+        input: &[u8],
+        frame_bits: Option<usize>,
+        transmission_bit_order: Option<crate::schema::BitOrder>,
+        tdml_bit_order_regions: Option<alloc::vec::Vec<(crate::schema::BitOrder, usize)>>,
+    ) -> Result<DfdlValue> {
         use crate::schema::BitOrder;
         let transmission = transmission_bit_order.unwrap_or(BitOrder::MostSignificantBitFirst);
         let mut cursor = match frame_bits {
@@ -109,6 +119,7 @@ impl<'a> Decoder<'a> {
                 c
             }
         };
+        cursor.tdml_bit_order_regions = tdml_bit_order_regions;
         let value = self.decode_node(
             self.ctx.program.root,
             &mut cursor,

@@ -56,6 +56,8 @@ pub struct Cursor<'a> {
     pub frame_bit_limit: Option<usize>,
     /// How transmission bits are packed into bytes (TDML document assembly).
     pub transmission_bit_order: BitOrder,
+    /// TDML `@bitOrder` / per-part orders: `(order, lengthInBits)` in document order.
+    pub tdml_bit_order_regions: Option<alloc::vec::Vec<(BitOrder, usize)>>,
 }
 
 impl<'a> Cursor<'a> {
@@ -67,6 +69,7 @@ impl<'a> Cursor<'a> {
             bit_count: 0,
             frame_bit_limit: None,
             transmission_bit_order: BitOrder::MostSignificantBitFirst,
+            tdml_bit_order_regions: None,
         }
     }
 
@@ -78,6 +81,7 @@ impl<'a> Cursor<'a> {
             bit_count: 0,
             frame_bit_limit: Some(frame_bits),
             transmission_bit_order: BitOrder::MostSignificantBitFirst,
+            tdml_bit_order_regions: None,
         }
     }
 
@@ -93,6 +97,32 @@ impl<'a> Cursor<'a> {
             bit_count: 0,
             frame_bit_limit: Some(frame_bits),
             transmission_bit_order,
+            tdml_bit_order_regions: None,
+        }
+    }
+
+    fn tdml_bit_order_at(&self, bit_idx: usize) -> BitOrder {
+        if let Some(regions) = &self.tdml_bit_order_regions {
+            let mut end = 0usize;
+            for (order, len) in regions {
+                end = end.saturating_add(*len);
+                if bit_idx < end {
+                    return *order;
+                }
+            }
+            return regions
+                .last()
+                .map(|(order, _)| *order)
+                .unwrap_or(self.transmission_bit_order);
+        }
+        self.transmission_bit_order
+    }
+
+    pub fn effective_field_bit_order(&self, schema_order: BitOrder) -> BitOrder {
+        if self.tdml_bit_order_regions.is_some() {
+            self.tdml_bit_order_at(self.absolute_bit_index())
+        } else {
+            schema_order
         }
     }
 
@@ -179,17 +209,18 @@ impl<'a> Cursor<'a> {
             });
         }
         let start = self.absolute_bit_index();
+        let field_order = self.effective_field_bit_order(bit_order);
         let mut value = 0u64;
-        match bit_order {
+        match field_order {
             BitOrder::MostSignificantBitFirst => {
                 for _ in 0..n {
                     value = (value << 1)
-                        | self.read_stream_bit_with_hint(n, start, bit_order)?;
+                        | self.read_stream_bit_with_hint(n, start, field_order)?;
                 }
             }
             BitOrder::LeastSignificantBitFirst => {
                 for i in 0..n {
-                    value |= self.read_stream_bit_with_hint(n, start, bit_order)? << i;
+                    value |= self.read_stream_bit_with_hint(n, start, field_order)? << i;
                 }
             }
         }
@@ -253,7 +284,8 @@ impl<'a> Cursor<'a> {
             return Err(VmError::UnexpectedEof);
         }
         let byte = self.data[byte_idx];
-        let bit_in_byte = match self.transmission_bit_order {
+        let tx_order = self.tdml_bit_order_at(idx);
+        let bit_in_byte = match tx_order {
             BitOrder::MostSignificantBitFirst => 7 - (idx % 8),
             BitOrder::LeastSignificantBitFirst => idx % 8,
         };

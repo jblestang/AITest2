@@ -281,10 +281,10 @@ fn daffodil_section05_regression_gate() {
         stats.parse_fail, 0,
         "section05 TDML load errors: {stats:?}"
     );
-    // Baseline (2026-03): MIL Page70 mixed bits+7-bit text in documentBits; LSB document assembly regroup.
+    // Baseline (2026-03): TDML part bitOrder regions for decode; Page70 mixed bits+text documentBits.
     assert!(
-        stats.pass >= 461,
-        "section05: expected at least 461 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 464,
+        "section05: expected at least 464 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
