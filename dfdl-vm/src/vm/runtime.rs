@@ -2623,8 +2623,15 @@ fn text_matches_nil_literal(text: &str, props: &IrProps, strings: &StringPool) -
                     }
                     continue;
                 }
-                let nil_char = alt.chars().next().unwrap_or('\0');
-                if alt.len() == nil_char.len_utf8()
+                let expanded = crate::schema::expand_entities_str(alt.trim());
+                if expanded.is_empty() {
+                    if text.is_empty() {
+                        return Ok(true);
+                    }
+                    continue;
+                }
+                let nil_char = expanded.chars().next().unwrap_or('\0');
+                if expanded.chars().count() == 1
                     && !text.is_empty()
                     && text.chars().all(|c| {
                         if props.ignore_case {

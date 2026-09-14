@@ -885,6 +885,9 @@ impl<'a> Decoder<'a> {
         props: &IrProps,
         parent_sequence: Option<&IrProps>,
     ) -> FramingExtraOccurrences {
+        if props.nillable {
+            return FramingExtraOccurrences::None;
+        }
         if props.length_kind == LengthKind::Delimited && props.terminator.is_some() {
             let comma_sep = parent_sequence
                 .and_then(|p| p.separator)

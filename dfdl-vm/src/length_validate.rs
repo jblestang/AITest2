@@ -672,9 +672,20 @@ pub fn validate_fill_byte_schema(
         && trimmed.ends_with(';')
         && trimmed.len() >= 6;
     if trimmed.contains('%') && !hex_entity {
-        return Err(SchemaError::InvalidProperty {
-            message: alloc::format!("Schema Definition Error: fillByte {raw}"),
-        });
+        // Section 13 nillable2 uses fillByte="%SP;" (single space); other character classes stay SDE.
+        let allow_sp = matches!(trimmed, "%SP;" | "%SP");
+        if !allow_sp {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: fillByte {raw}"),
+            });
+        }
+        use crate::schema::expand_entities;
+        let expanded = expand_entities(trimmed);
+        if expanded.len() != 1 || bytes.len() != 1 || expanded[0] != bytes[0] {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: fillByte {raw}"),
+            });
+        }
     }
     if enc.contains("X-DFDL-US-ASCII-7-BIT-PACKED") {
         return Err(SchemaError::InvalidProperty {

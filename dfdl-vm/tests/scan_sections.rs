@@ -174,6 +174,7 @@ macro_rules! scan_test_skip {
     };
 }
 
+scan_test!(scan_section05, "section05");
 scan_test!(scan_section13, "section13");
 scan_test!(scan_section14, "section14");
 
