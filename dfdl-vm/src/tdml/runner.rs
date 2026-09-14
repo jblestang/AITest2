@@ -111,8 +111,12 @@ pub fn run_parser_test_with_options(
         strict_eos: true,
     };
 
+    let frame_bits = doc.significant_bit_length();
     if let Some(expected_errors) = &test.expected_errors {
-        return match spec.decoder_with_config(config).decode(&doc.data) {
+        return match spec
+            .decoder_with_config(config)
+            .decode_with_bit_limit(&doc.data, frame_bits)
+        {
             Ok(_) => Ok(TestResult {
                 name: test.name.clone(),
                 outcome: TestOutcome::Fail(alloc::format!(
@@ -137,7 +141,10 @@ pub fn run_parser_test_with_options(
         };
     }
 
-    let decoded = match spec.decoder_with_config(config).decode(&doc.data) {
+    let decoded = match spec
+        .decoder_with_config(config)
+        .decode_with_bit_limit(&doc.data, frame_bits)
+    {
         Ok(v) => v,
         Err(e) => {
             return Ok(TestResult {

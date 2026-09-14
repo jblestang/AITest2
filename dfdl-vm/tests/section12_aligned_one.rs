@@ -1,0 +1,36 @@
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome};
+
+const TDML: &str = include_str!(
+    "../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/Aligned_Data.tdml"
+);
+
+fn run(name: &str) {
+    let suite = parse_tdml(TDML).expect("parse");
+    let test = suite.tests.iter().find(|t| t.name == name).expect("test");
+    let r = run_parser_test(&suite, test).expect("run");
+    match r.outcome {
+        TestOutcome::Pass => {}
+        TestOutcome::Fail(msg) => panic!("{name}: {msg}"),
+        TestOutcome::Skip(msg) => panic!("skip: {msg}"),
+    }
+}
+
+#[test]
+fn alignment01() {
+    run("alignment01");
+}
+
+#[test]
+fn alignment02() {
+    run("alignment02");
+}
+
+#[test]
+fn explicit_alignment_no_skips01() {
+    run("explicitAlignmentNoSkips01");
+}
+
+#[test]
+fn imp_alignment_hex_binary() {
+    run("impAlignmentHexBinary");
+}

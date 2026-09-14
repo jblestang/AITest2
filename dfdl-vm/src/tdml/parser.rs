@@ -69,6 +69,23 @@ pub struct TdmlDocument {
     pub last_byte_bit_count: Option<u8>,
 }
 
+impl TdmlDocument {
+    /// Total significant bits for `type="bits"` documents (None for byte-aligned docs).
+    pub fn significant_bit_length(&self) -> Option<usize> {
+        if self.kind != DocumentKind::Bits {
+            return None;
+        }
+        if self.data.is_empty() {
+            return Some(0);
+        }
+        let trailing = self.last_byte_bit_count.unwrap_or(0) as usize;
+        if trailing == 0 {
+            return Some(self.data.len() * 8);
+        }
+        Some((self.data.len() - 1) * 8 + trailing)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentKind {
     Text,

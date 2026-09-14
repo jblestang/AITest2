@@ -52,7 +52,19 @@ impl<'a> Decoder<'a> {
 
     /// Decode one logical value from `input`.
     pub fn decode(&self, input: &[u8]) -> Result<DfdlValue> {
-        let mut cursor = Cursor::new(input);
+        self.decode_with_bit_limit(input, None)
+    }
+
+    /// Decode with an optional significant bit length (TDML `type="bits"` documents).
+    pub fn decode_with_bit_limit(
+        &self,
+        input: &[u8],
+        frame_bits: Option<usize>,
+    ) -> Result<DfdlValue> {
+        let mut cursor = match frame_bits {
+            Some(bits) => Cursor::with_frame_bits(input, bits),
+            None => Cursor::new(input),
+        };
         let value = self.decode_node(
             self.ctx.program.root,
             &mut cursor,
@@ -64,7 +76,11 @@ impl<'a> Decoder<'a> {
             &[],
         )?;
         self.consume_root_delimited_suffix(&mut cursor)?;
-        if self.ctx.config.strict_eos && cursor.bit_count == 0 && cursor.remaining() > 0 {
+        if self.ctx.config.strict_eos
+            && cursor.frame_bit_limit.is_none()
+            && cursor.bit_count == 0
+            && cursor.remaining() > 0
+        {
             return Err(VmError::TrailingData {
                 remaining_bits: cursor.remaining() * 8,
             }
@@ -1449,6 +1465,16 @@ fn sibling_string_value(
         }
         .into()),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn resolve_length_props_for_test(
+    props: &IrProps,
+    kind: ValueKind,
+    strings: &crate::ir::StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
+) -> Result<IrProps> {
+    resolve_length_props(props, None, kind, strings, tunables)
 }
 
 fn resolve_length_props(

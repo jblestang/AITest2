@@ -557,6 +557,48 @@ pub(crate) fn read_binary_scalar(
         return decode_binary_from_raw_bits(kind, raw, bits, props, strings);
     }
 
+    if props.alignment_units == LengthUnits::Bits || cursor.bit_count != 0 {
+        let bit_len = match props.length_kind {
+            LengthKind::Implicit | LengthKind::Fixed => type_size(kind).saturating_mul(8),
+            LengthKind::Explicit => {
+                let len = props.length.ok_or(VmError::InvalidValue {
+                    message: "explicit binary missing length".into(),
+                })? as usize;
+                if props.length_units == LengthUnits::Bytes {
+                    len.saturating_mul(8)
+                } else {
+                    len
+                }
+            }
+            _ => 0,
+        };
+        if bit_len > 0
+            && matches!(
+                props.length_kind,
+                LengthKind::Implicit | LengthKind::Fixed | LengthKind::Explicit
+            )
+        {
+            if kind != ValueKind::String && kind != ValueKind::HexBinary {
+                if binary_length_validation_applies(kind, props.binary_number_rep) {
+                    validate_data_length_vm(
+                        kind,
+                        bit_len as u64,
+                        LengthUnits::Bits,
+                        props.binary_number_rep,
+                    )?;
+                }
+                validate_packed_binary_bit_length_parse(bit_len, kind, props.binary_number_rep)?;
+            }
+            if kind == ValueKind::String || kind == ValueKind::HexBinary {
+                let bytes = cursor.read_stream_bits_as_bytes(bit_len, props.bit_order)?;
+                return decode_binary_scalar(kind, &bytes, props, strings, None);
+            }
+            let raw = cursor.read_stream_bits(bit_len, props.bit_order)?;
+            let raw = normalize_bit_field_raw(raw, bit_len, props.byte_order);
+            return decode_binary_from_raw_bits(kind, raw, bit_len, props, strings);
+        }
+    }
+
     let size = binary_byte_length(cursor, kind, props, strings)?;
 
     if kind != ValueKind::String && kind != ValueKind::HexBinary {
@@ -3733,8 +3775,32 @@ fn read_until_delimiters(
                 message: "delimited field missing enclosing delimiter".into(),
             });
         }
+        let abs = cursor.absolute_bit_index();
+        let total_bits = cursor
+            .frame_bit_limit
+            .unwrap_or_else(|| cursor.data.len().saturating_mul(8));
+        let remaining_bits = total_bits.saturating_sub(abs);
+        if remaining_bits == 0 {
+            return Ok(Vec::new());
+        }
+        if cursor.bit_count == 0 && remaining_bits % 8 == 0 {
+            let byte_len = remaining_bits / 8;
+            let end = cursor.pos.saturating_add(byte_len);
+            if end <= cursor.data.len() {
+                let out = cursor.data[cursor.pos..end].to_vec();
+                cursor.pos = end;
+                return Ok(out);
+            }
+        }
+        if cursor.bit_count != 0
+            || props.length_units == LengthUnits::Bits
+            || remaining_bits % 8 != 0
+        {
+            return cursor.read_stream_bits_as_bytes(remaining_bits, props.bit_order);
+        }
         let rest = cursor.data[cursor.pos..].to_vec();
         cursor.pos = cursor.data.len();
+        cursor.bit_count = 0;
         return Ok(rest);
     }
     read_until_any_delimiter(cursor, &patterns, require_delimiter)

@@ -51,6 +51,26 @@ fn categorize_aligned_data_failures() {
 
 #[test]
 #[ignore]
+fn list_aligned_data_failures() {
+    let dir = PathBuf::from(ROOT);
+    for entry in fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|x| x.to_str()) != Some("tdml") {
+            continue;
+        }
+        let tdml = fs::read_to_string(&path).unwrap();
+        let suite = parse_tdml(&tdml).expect("parse");
+        for t in &suite.tests {
+            let r = run_parser_test(&suite, t).expect("run");
+            if matches!(r.outcome, TestOutcome::Fail(_)) {
+                eprintln!("FAIL {}", t.name);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore]
 fn list_aligned_data_passes() {
     let dir = PathBuf::from(ROOT);
     for entry in fs::read_dir(&dir).unwrap() {

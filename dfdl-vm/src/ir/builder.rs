@@ -281,9 +281,39 @@ impl<'a> IrBuilder<'a> {
                     {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
+                            let mut merged_ir = merge_ir_props(&overlay, &child_props);
+                            if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
+                                if let TypeDef::Simple { props: type_props, .. } = type_def {
+                                    if element.props.leading_skip.is_none() {
+                                        if let Some(v) = type_props.leading_skip {
+                                            merged_ir.leading_skip = v;
+                                        }
+                                    }
+                                    if element.props.trailing_skip.is_none() {
+                                        if let Some(v) = type_props.trailing_skip {
+                                            merged_ir.trailing_skip = v;
+                                        }
+                                    }
+                                    if element.props.length_kind.is_none() {
+                                        if let Some(v) = type_props.length_kind {
+                                            merged_ir.length_kind = v;
+                                        }
+                                    }
+                                    if element.props.length.is_none() {
+                                        if let Some(v) = type_props.length {
+                                            merged_ir.length = Some(v);
+                                        }
+                                    }
+                                    if element.props.length_units.is_none() {
+                                        if let Some(v) = type_props.length_units {
+                                            merged_ir.length_units = v;
+                                        }
+                                    }
+                                }
+                            }
                             let mut merged = finalize_element_props(
                                 kind,
-                                merge_ir_props(&child_props, &overlay),
+                                merged_ir,
                                 &self.strings,
                                 self.tunables,
                             )?;
@@ -1990,7 +2020,17 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.length_expr_unparsed {
         out.length_expr_unparsed = true;
     }
-    out.length_units = overlay.length_units;
+    if matches!(
+        base.length_kind,
+        LengthKind::Explicit | LengthKind::Fixed | LengthKind::Prefixed
+    ) && matches!(overlay.length_kind, LengthKind::Implicit)
+        && overlay.length.is_none()
+        && overlay.length_pattern.is_none()
+    {
+        // Preserve type/element lengthUnits; ancestor overlay only carries format defaults.
+    } else {
+        out.length_units = overlay.length_units;
+    }
     out.encoding = overlay.encoding;
     out.encoding_error_policy = overlay.encoding_error_policy;
     out.nillable = overlay.nillable;
@@ -2200,5 +2240,99 @@ mod tests {
         }).expect("tag node");
         assert_eq!(tag_node.length_kind, LengthKind::Fixed);
         assert_eq!(tag_node.length, Some(3));
+    }
+
+    #[test]
+    fn simple_type_leading_skip_on_referenced_element() {
+        use crate::schema::LengthUnits;
+        let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+            xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
+            xmlns:ex="http://example.com">
+          <dfdl:format representation="binary" encoding="utf-8" alignmentUnits="bits"/>
+          <xs:simpleType name="uByte2Bits" dfdl:lengthKind="explicit" dfdl:lengthUnits="bits"
+            dfdl:length="2" dfdl:leadingSkip="4">
+            <xs:restriction base="xs:unsignedByte"/>
+          </xs:simpleType>
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:element name="one" type="ex:uByte2Bits"/>
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>"#;
+        let schema = crate::schema::parse_schema(xsd).expect("parse");
+        let program = compile_named(&schema, Some("root")).expect("compile");
+        let one = program
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                IrNode::Element { name, props, .. }
+                    if program.strings.get(*name).ok() == Some("one") =>
+                {
+                    Some(props.clone())
+                }
+                _ => None,
+            })
+            .expect("one");
+        assert_eq!(one.leading_skip, 4, "leadingSkip from simpleType");
+        assert_eq!(one.length_units, LengthUnits::Bits);
+        assert_eq!(one.length, Some(2));
+    }
+
+    #[test]
+    fn simple_type_leading_skip_decodes() {
+        use crate::DfdlSpec;
+        let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+            xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
+            xmlns:ex="http://example.com">
+          <dfdl:format representation="binary" encoding="utf-8" alignmentUnits="bits"/>
+          <xs:simpleType name="uByte2Bits" dfdl:lengthKind="explicit" dfdl:lengthUnits="bits"
+            dfdl:length="2" dfdl:leadingSkip="4">
+            <xs:restriction base="xs:unsignedByte"/>
+          </xs:simpleType>
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:element name="one" type="ex:uByte2Bits"/>
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>"#;
+        let schema = parse_schema(xsd).expect("parse");
+        let spec = DfdlSpec::from_schema_root_with_tunables(
+            schema,
+            Some("root"),
+            crate::length_validate::DaffodilTunables::default(),
+        )
+        .expect("spec");
+        let one_props = spec
+            .program()
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                IrNode::Element { name, props, .. }
+                    if spec.program().strings.get(*name).ok() == Some("one") =>
+                {
+                    Some(props.leading_skip)
+                }
+                _ => None,
+            })
+            .expect("one props");
+        assert_eq!(one_props, 4);
+        // skip 0000 then value 11 (3)
+        let data = [0x0E_u8];
+        let value = spec.decode(&data).expect("decode");
+        let crate::value::DfdlValue::Sequence(fields) = value else {
+            panic!("expected sequence");
+        };
+        let inner = match fields.fields.get("root") {
+            Some(crate::value::DfdlValue::Sequence(seq)) => seq,
+            other => panic!("expected root sequence, got {other:?}"),
+        };
+        assert_eq!(
+            inner.fields.get("one"),
+            Some(&crate::value::DfdlValue::UnsignedByte(3))
+        );
     }
 }

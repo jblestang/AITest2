@@ -76,6 +76,15 @@ impl DfdlSpec {
         self.decoder().decode(input)
     }
 
+    /// Decode with a TDML-style significant bit length (partial last byte).
+    pub fn decode_with_bit_limit(
+        &self,
+        input: &[u8],
+        frame_bits: Option<usize>,
+    ) -> Result<DfdlValue> {
+        self.decoder().decode_with_bit_limit(input, frame_bits)
+    }
+
     /// Convenience: encode a value using a fresh encoder instance.
     pub fn encode(&self, value: &DfdlValue) -> Result<Vec<u8>> {
         self.encoder().encode_to_vec(value)
