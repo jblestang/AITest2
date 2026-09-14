@@ -10,7 +10,7 @@ use super::runtime::{
 use crate::schema::boolean_reps::BooleanSiblingEnv;
 use crate::length_validate::{binary_length_validation_applies, validate_data_length_vm};
 use crate::error::{Error, Result, VmError};
-use crate::ir::{IrNode, IrProgram, IrProps, StringId, ValueKind};
+use crate::ir::{ChoiceBranch, IrNode, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
     match_length_pattern, BitOrder, InputValueCalc, LengthKind, LengthUnits, OccursCountKind,
     Representation, SeparatorPosition,
@@ -384,9 +384,10 @@ impl<'a> Decoder<'a> {
                 }))
             }
             IrNode::Choice { branches, props: _ } => {
+                let mut branch_errors = Vec::new();
                 for branch in branches {
                     let saved = cursor.clone();
-                    if let Ok(value) = self.decode_node(
+                    match self.decode_node(
                         branch.node,
                         cursor,
                         has_following_sibling,
@@ -396,12 +397,21 @@ impl<'a> Decoder<'a> {
                         pattern_text_frame,
                         stop_sequences,
                     ) {
-                        let name = self.ctx.strings().get(branch.name)?.to_string();
-                        return Ok(DfdlValue::choice(name, value));
+                        Ok(value) => {
+                            let name = self.ctx.strings().get(branch.name)?.to_string();
+                            return Ok(DfdlValue::choice(name, value));
+                        }
+                        Err(e) => {
+                            branch_errors.push(format_choice_branch_error(
+                                branch,
+                                self.ctx.strings(),
+                                &e,
+                            ));
+                            *cursor = saved;
+                        }
                     }
-                    *cursor = saved;
                 }
-                Err(VmError::InvalidChoice.into())
+                Err(VmError::InvalidChoice { branch_errors }.into())
             }
             IrNode::Element { props, .. } => self.decode_element_occurrences(
                 node_id,
@@ -1049,6 +1059,7 @@ impl<'a> Decoder<'a> {
                         false,
                         Some(&mut delim_meta),
                         sibling_env.as_ref(),
+                        self.ctx.config.enable_facet_validation,
                         self.ctx.config.defer_facet_validation,
                     )
                     .map_err(crate::error::Error::from)?;
@@ -1077,6 +1088,7 @@ impl<'a> Decoder<'a> {
             props,
             self.ctx.strings(),
             &self.ctx.program.tunables,
+            self.ctx.config.enable_facet_validation,
             self.ctx.config.defer_facet_validation,
         )
         .map_err(Into::into)
@@ -2171,4 +2183,24 @@ fn length_from_value(value: &DfdlValue, cast_long: bool) -> Result<u64> {
         }
         other => err(alloc::format!("length sibling has unsupported type: {other:?}")),
     }
+}
+
+fn format_choice_branch_error(branch: &ChoiceBranch, strings: &StringPool, err: &Error) -> String {
+    let branch_name = strings.get(branch.name).unwrap_or("?");
+    let msg = err.to_string();
+    let msg = msg.strip_prefix("vm error: ").unwrap_or(msg.as_str());
+    if msg.contains("Init('") || msg.contains("initiator mismatch") {
+        if let Some(id) = branch.initiator {
+            if let Ok(pat) = strings.get(id) {
+                if msg.contains("Was looking for") {
+                    return alloc::format!(
+                        "{branch_name}: Initiator '{pat}' not found. Alternative failed. Reason(s): List({msg})"
+                    );
+                }
+                return alloc::format!("{branch_name}: Initiator '{pat}' not found");
+            }
+        }
+        return alloc::format!("{branch_name}: Initiator not found");
+    }
+    msg.to_string()
 }

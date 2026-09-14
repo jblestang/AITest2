@@ -593,6 +593,7 @@ mod tests {
             true,
             None,
             None,
+            true,
             false,
         )
         .expect("read");

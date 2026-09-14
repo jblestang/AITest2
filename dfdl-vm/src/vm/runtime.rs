@@ -38,6 +38,8 @@ use core::iter;
 pub struct RuntimeConfig {
     /// When true, the decoder rejects input with leftover bytes after the root value.
     pub strict_eos: bool,
+    /// When false, XSD facet checks are skipped (TDML `validation="off"`).
+    pub enable_facet_validation: bool,
     /// When true, XSD facet checks run after parse (TDML `validationErrors` tests).
     pub defer_facet_validation: bool,
     /// When true, PUA code points in string values encode as UTF-8 (TDML text documents).
@@ -50,6 +52,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             strict_eos: true,
+            enable_facet_validation: true,
             defer_facet_validation: false,
             encode_pua_codepoints_as_utf8: false,
             encode_tdml_bit_regions: None,
@@ -4877,10 +4880,14 @@ pub(crate) fn finalize_simple_value(
     props: &IrProps,
     strings: &StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
+    enable_facet_validation: bool,
     defer_facet_validation: bool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     crate::vm::facet_validate::validate_assert_int_eq(&value, props)?;
-    if crate::vm::facet_validate::needs_facet_validation(props) && !defer_facet_validation {
+    if crate::vm::facet_validate::needs_facet_validation(props)
+        && enable_facet_validation
+        && !defer_facet_validation
+    {
         crate::vm::facet_validate::validate_decoded_facets(
             &value, kind, props, strings, tunables,
         )?;
@@ -6200,12 +6207,6 @@ fn read_until_delimiters_bits_charset(
         .map(|p| (delimiter_pat_as_text(&p.pat), p.ignore_case))
         .filter(|(t, _)| !t.is_empty())
         .collect();
-    if require_delimiter && terms.is_empty() {
-        return Err(VmError::InvalidValue {
-            message: "delimited field missing enclosing delimiter".into(),
-        });
-    }
-
     let start_pos = cursor.pos;
     let start_bit_count = cursor.bit_count;
     let mut decoded = alloc::string::String::new();
@@ -6272,11 +6273,6 @@ fn read_until_delimiters(
         }
     }
     if patterns.is_empty() {
-        if require_delimiter {
-            return Err(VmError::InvalidValue {
-                message: "delimited field missing enclosing delimiter".into(),
-            });
-        }
         let abs = cursor.absolute_bit_index();
         let total_bits = cursor
             .frame_bit_limit
@@ -6510,6 +6506,9 @@ fn read_until_any_delimiter(
             }
         }
         cursor.advance(1);
+    }
+    if cursor.pos == start {
+        return Ok(Vec::new());
     }
     if require_delimiter {
         let terms = delimiters
@@ -8010,6 +8009,7 @@ pub(crate) fn read_simple(
     consume_delimited_enclosing: bool,
     mut delim_out: Option<&mut crate::value::FieldDelimiterMeta>,
     sibling_env: Option<&crate::schema::boolean_reps::BooleanSiblingEnv<'_>>,
+    enable_facet_validation: bool,
     defer_facet_validation: bool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
@@ -8020,8 +8020,21 @@ pub(crate) fn read_simple(
         if !pat.is_empty() {
             crate::vm::alignment::align_cursor_to_text_encoding(cursor, props, encoding)?;
             let Some((_n, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) else {
+                let found = cursor
+                    .data
+                    .get(cursor.pos)
+                    .map(|b| *b as char)
+                    .unwrap_or('\0');
+                let found_display = if found.is_ascii() && !found.is_control() {
+                    alloc::format!("{found}")
+                } else {
+                    alloc::format!("\\x{b:02x}", b = cursor.data.get(cursor.pos).copied().unwrap_or(0))
+                };
+                let ctx = field_name.unwrap_or("element");
                 return Err(VmError::InvalidValue {
-                    message: "initiator mismatch".into(),
+                    message: alloc::format!(
+                        "Parse Error: Init('{pat}') - {ctx}: Delimiter not found!\nWas looking for ({pat}) but found \"{found_display}\" instead"
+                    ),
                 });
             };
             if let Some(out) = delim_out.as_mut() {
@@ -8146,7 +8159,15 @@ pub(crate) fn read_simple(
         }
     }
     crate::vm::alignment::consume_trailing_skip(cursor, props)?;
-    finalize_simple_value(value, kind, props, strings, tunables, defer_facet_validation)
+    finalize_simple_value(
+        value,
+        kind,
+        props,
+        strings,
+        tunables,
+        enable_facet_validation,
+        defer_facet_validation,
+    )
 }
 
 fn encode_binary_payload_bytes(

@@ -93,6 +93,19 @@ pub fn validate_decoded_facets(
     strings: &StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
 ) -> Result<(), VmError> {
+    validate_decoded_facets_tdml(value, kind, props, strings, tunables, false)
+}
+
+pub fn validate_decoded_facets_tdml(
+    value: &DfdlValue,
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
+    full_xerces_style: bool,
+) -> Result<(), VmError> {
+    let digits_before_range = full_xerces_style
+        && (props.value_min_inclusive.is_some() || props.value_max_inclusive.is_some());
     if kind == ValueKind::String || kind == ValueKind::HexBinary {
         match value {
             DfdlValue::String(s) => {
@@ -115,16 +128,40 @@ pub fn validate_decoded_facets(
         validate_calendar_enumeration(value, props, strings)?;
     } else if kind == ValueKind::Integer {
         if let DfdlValue::Integer(lex) = value {
-            if let Ok(n) = lex.parse::<i64>() {
-                validate_numeric_facets(n, props, strings)?;
-                validate_enumeration_numeric(n, props, strings)?;
-            }
-            if props.total_digits.is_some() || props.fraction_digits.is_some() {
-                validate_digit_facets(lex, props, strings)?;
+            if digits_before_range {
+                if props.total_digits.is_some() || props.fraction_digits.is_some() {
+                    validate_digit_facets(lex, props, strings)?;
+                }
+                if let Ok(n) = lex.parse::<i64>() {
+                    validate_numeric_facets(n, props, strings)?;
+                    validate_enumeration_numeric(n, props, strings)?;
+                }
+            } else {
+                if let Ok(n) = lex.parse::<i64>() {
+                    validate_numeric_facets(n, props, strings)?;
+                    validate_enumeration_numeric(n, props, strings)?;
+                }
+                if props.total_digits.is_some() || props.fraction_digits.is_some() {
+                    validate_digit_facets(lex, props, strings)?;
+                }
             }
         }
     } else if let Some(n) = numeric_value_i64(value) {
-        validate_numeric_facets(n, props, strings)?;
+        if digits_before_range {
+            if props.total_digits.is_some() || props.fraction_digits.is_some() {
+                if let Some(canon) = decimal_lexical_for_digit_facets(value, kind) {
+                    validate_digit_facets(&canon, props, strings)?;
+                }
+            }
+            validate_numeric_facets(n, props, strings)?;
+        } else {
+            validate_numeric_facets(n, props, strings)?;
+            if props.total_digits.is_some() || props.fraction_digits.is_some() {
+                if let Some(canon) = decimal_lexical_for_digit_facets(value, kind) {
+                    validate_digit_facets(&canon, props, strings)?;
+                }
+            }
+        }
         validate_enumeration_numeric(n, props, strings)?;
         if !props.facet_pattern_groups.is_empty()
             && tunables.invalid_restriction_policy
@@ -133,8 +170,7 @@ pub fn validate_decoded_facets(
             let lex = alloc::format!("{n}");
             validate_string_facets(&lex, props, strings)?;
         }
-    }
-    if props.total_digits.is_some() || props.fraction_digits.is_some() {
+    } else if props.total_digits.is_some() || props.fraction_digits.is_some() {
         if let Some(canon) = decimal_lexical_for_digit_facets(value, kind) {
             validate_digit_facets(&canon, props, strings)?;
         }

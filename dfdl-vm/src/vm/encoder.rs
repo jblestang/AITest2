@@ -120,7 +120,9 @@ impl<'a> Encoder<'a> {
                                 .map(|name| name == discriminator)
                                 .unwrap_or(false)
                         })
-                        .ok_or(VmError::InvalidChoice)?;
+                        .ok_or(VmError::InvalidChoice {
+                            branch_errors: alloc::vec::Vec::new(),
+                        })?;
                     return self.encode_node(branch.node, value, out, bit_count);
                 }
                 if let Some(map) = value.sequence_fields() {
@@ -131,7 +133,10 @@ impl<'a> Encoder<'a> {
                         }
                     }
                 }
-                Err(VmError::InvalidChoice.into())
+                Err(VmError::InvalidChoice {
+                    branch_errors: alloc::vec::Vec::new(),
+                }
+                .into())
             }
             IrNode::Element {
                 name,
@@ -445,7 +450,10 @@ impl<'a> Encoder<'a> {
                         );
                     }
                 }
-                Err(VmError::InvalidChoice.into())
+                Err(VmError::InvalidChoice {
+                    branch_errors: alloc::vec::Vec::new(),
+                }
+                .into())
             }
         }
     }

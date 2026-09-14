@@ -179,10 +179,12 @@ pub fn run_parser_test_with_options(
         });
     }
     let validation_mode = effective_validation(test, suite);
-    let defer_facet_validation = matches!(validation_mode, TdmlValidationMode::Off)
-        || test.expected_validation_errors.is_some();
+    // Match Daffodil: when validation is on/limited, facet checks run after parse.
+    let enable_facet_validation = !matches!(validation_mode, TdmlValidationMode::Off);
+    let defer_facet_validation = enable_facet_validation;
     let config = RuntimeConfig {
         strict_eos: true,
+        enable_facet_validation,
         defer_facet_validation,
         ..RuntimeConfig::default()
     };

@@ -69,7 +69,9 @@ pub enum VmError {
         consumed_bits: usize,
         remaining_bits: usize,
     },
-    InvalidChoice,
+    InvalidChoice {
+        branch_errors: alloc::vec::Vec<alloc::string::String>,
+    },
     LengthMismatch { expected: usize, actual: usize },
     InvalidValue { message: alloc::string::String },
     TypeMismatch { expected: alloc::string::String },
@@ -92,7 +94,22 @@ impl fmt::Display for VmError {
                     "Left over data. Consumed {consumed_bits} bit(s) with {remaining_bits} bit(s) remaining."
                 )
             }
-            VmError::InvalidChoice => write!(f, "All choice alternatives failed"),
+            VmError::InvalidChoice { branch_errors } => {
+                write!(f, "Parse Error. All choice alternatives failed")?;
+                for detail in branch_errors {
+                    if detail.is_empty() {
+                        continue;
+                    }
+                    let detail = detail
+                        .strip_prefix("vm error: ")
+                        .unwrap_or(detail.as_str());
+                    let detail = detail
+                        .strip_prefix("Parse Error. ")
+                        .unwrap_or(detail);
+                    write!(f, "\nParse Error. {detail}")?;
+                }
+                Ok(())
+            }
             VmError::LengthMismatch { expected, actual } => {
                 write!(f, "length mismatch: expected {expected}, got {actual}")
             }

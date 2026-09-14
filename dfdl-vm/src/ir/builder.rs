@@ -2260,6 +2260,11 @@ fn apply_restriction_facets(
 ) {
     let eff = schema.effective_facets(base);
     crate::schema::apply_effective_facets_to_ir(&eff, props, strings);
+    if let Some(builtin) = schema.builtin_for_simple_base(base) {
+        if builtin == crate::schema::BuiltinType::NonNegativeInteger {
+            props.non_negative_integer = true;
+        }
+    }
     if element_props.facet_check_constraints {
         props.facet_check_constraints = true;
     }
@@ -2885,6 +2890,11 @@ fn element_props_for_simple_type_compile(element: &DfdlProps) -> DfdlProps {
         length_pattern: element.length_pattern.clone(),
         prefix_length_type: element.prefix_length_type.clone(),
         prefix_includes_prefix_length: element.prefix_includes_prefix_length,
+        input_value_calc: element.input_value_calc,
+        input_value_calc_literal: element.input_value_calc_literal.clone(),
+        input_value_calc_sibling: element.input_value_calc_sibling.clone(),
+        input_value_calc_segments: element.input_value_calc_segments.clone(),
+        input_value_calc_path: element.input_value_calc_path.clone(),
         ..DfdlProps::default()
     }
 }

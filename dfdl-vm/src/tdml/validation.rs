@@ -1,7 +1,9 @@
 use crate::ir::{IrNode, IrProgram, ValueKind};
 use crate::schema::{SchemaDocument, TypeName, validate_union_membership};
 use crate::value::DfdlValue;
-use crate::vm::facet_validate::{needs_facet_validation, validate_decoded_facets};
+use crate::vm::facet_validate::{
+    needs_facet_validation, validate_decoded_facets_tdml,
+};
 use alloc::vec::Vec;
 
 /// Collect XSD facet validation messages for a successfully decoded value tree.
@@ -44,12 +46,13 @@ fn walk_particle(
             }
             let ename = program.strings.get(*name).ok();
             if needs_facet_validation(props) {
-                if let Err(e) = validate_decoded_facets(
+                if let Err(e) = validate_decoded_facets_tdml(
                     value,
                     *kind,
                     props,
                     &program.strings,
                     &program.tunables,
+                    full_xerces_style,
                 ) {
                     let detail = e.to_string();
                     if let Some(ename) = ename {
