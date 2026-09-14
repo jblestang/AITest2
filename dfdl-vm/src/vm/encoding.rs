@@ -1,5 +1,5 @@
 use crate::error::VmError;
-use crate::schema::EncodingErrorPolicy;
+use crate::schema::{BitOrder, EncodingErrorPolicy};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -29,6 +29,140 @@ pub(crate) fn hex_charset_order(name: &str) -> Option<HexCharsetOrder> {
     } else {
         None
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BitsCharsetSpec {
+    pub width: u8,
+    pub alphabet: &'static str,
+    pub bit_order: BitOrder,
+}
+
+pub(crate) fn bits_charset_spec(name: &str) -> Option<BitsCharsetSpec> {
+    if eq_ascii_ignore_case(name, "X-DFDL-BITS-MSBF") {
+        Some(BitsCharsetSpec {
+            width: 1,
+            alphabet: "01",
+            bit_order: BitOrder::MostSignificantBitFirst,
+        })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-BITS-LSBF") {
+        Some(BitsCharsetSpec {
+            width: 1,
+            alphabet: "01",
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-BASE4-MSBF") {
+        Some(BitsCharsetSpec {
+            width: 2,
+            alphabet: "0123",
+            bit_order: BitOrder::MostSignificantBitFirst,
+        })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-BASE4-LSBF") {
+        Some(BitsCharsetSpec {
+            width: 2,
+            alphabet: "0123",
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
+    } else {
+        None
+    }
+}
+
+pub(crate) fn bits_charset_code_unit_width(name: &str) -> Option<u64> {
+    bits_charset_spec(name).map(|s| s.width as u64)
+}
+
+fn read_bit_at(data: &[u8], bit_index: usize, order: BitOrder) -> u8 {
+    let byte = data[bit_index / 8];
+    let bit_in_byte = bit_index % 8;
+    match order {
+        BitOrder::MostSignificantBitFirst => (byte >> (7 - bit_in_byte)) & 1,
+        BitOrder::LeastSignificantBitFirst => (byte >> bit_in_byte) & 1,
+    }
+}
+
+fn write_bit_to_buffer(out: &mut Vec<u8>, bit_count: &mut u8, bit: u8, order: BitOrder) {
+    match order {
+        BitOrder::LeastSignificantBitFirst => {
+            if *bit_count == 0 {
+                out.push(0);
+            }
+            let idx = out.len() - 1;
+            out[idx] |= (bit & 1) << *bit_count;
+            *bit_count += 1;
+            if *bit_count == 8 {
+                *bit_count = 0;
+            }
+        }
+        BitOrder::MostSignificantBitFirst => {
+            if *bit_count == 0 {
+                out.push(0);
+            }
+            let idx = out.len() - 1;
+            out[idx] = (out[idx] << 1) | (bit & 1);
+            *bit_count += 1;
+            if *bit_count == 8 {
+                *bit_count = 0;
+            }
+        }
+    }
+}
+
+pub(crate) fn encode_bits_charset_text(text: &str, spec: BitsCharsetSpec) -> Result<Vec<u8>, VmError> {
+    let mut out = Vec::new();
+    let mut bit_count = 0u8;
+    for ch in text.chars() {
+        let idx = spec
+            .alphabet
+            .find(ch)
+            .ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!("character `{ch}` not in bits charset"),
+            })? as u8;
+        for i in 0..spec.width {
+            let bit = match spec.bit_order {
+                BitOrder::MostSignificantBitFirst => (idx >> (spec.width - 1 - i)) & 1,
+                BitOrder::LeastSignificantBitFirst => (idx >> i) & 1,
+            };
+            write_bit_to_buffer(&mut out, &mut bit_count, bit, spec.bit_order);
+        }
+    }
+    if bit_count != 0 {
+        match spec.bit_order {
+            BitOrder::MostSignificantBitFirst => {
+                let idx = out.len() - 1;
+                out[idx] <<= (8 - bit_count) as u8;
+            }
+            BitOrder::LeastSignificantBitFirst => {}
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn decode_bits_charset_payload(
+    raw: &[u8],
+    num_bits: usize,
+    spec: BitsCharsetSpec,
+) -> Result<String, VmError> {
+    let mut out = String::new();
+    let mut bit_pos = 0usize;
+    while bit_pos + spec.width as usize <= num_bits {
+        let mut idx = 0u8;
+        for i in 0..spec.width {
+            let bit = read_bit_at(raw, bit_pos, spec.bit_order);
+            bit_pos += 1;
+            match spec.bit_order {
+                BitOrder::MostSignificantBitFirst => idx = (idx << 1) | bit,
+                BitOrder::LeastSignificantBitFirst => idx |= bit << i,
+            }
+        }
+        let ch = spec.alphabet.chars().nth(idx as usize).ok_or_else(|| {
+            VmError::InvalidValue {
+                message: "invalid bits charset code unit".into(),
+            }
+        })?;
+        out.push(ch);
+    }
+    Ok(out)
 }
 
 pub(crate) fn normalize_encoding_name(name: &str) -> Option<&'static str> {
@@ -158,6 +292,9 @@ fn eq_ascii_ignore_case(a: &str, b: &str) -> bool {
 }
 
 pub(crate) fn encode_document_text(text: &str, encoding: &str) -> Result<Vec<u8>, VmError> {
+    if let Some(spec) = bits_charset_spec(encoding) {
+        return encode_bits_charset_text(text, spec);
+    }
     match normalize_encoding_name(encoding) {
         Some("utf-8") | Some("ascii") => Ok(text.as_bytes().to_vec()),
         Some("iso-8859-1") => encode_latin1(text),
@@ -175,6 +312,10 @@ pub(crate) fn decode_text_bytes(
     encoding: &str,
     policy: EncodingErrorPolicy,
 ) -> Result<String, VmError> {
+    if let Some(spec) = bits_charset_spec(encoding) {
+        let num_bits = bytes.len().saturating_mul(8);
+        return decode_bits_charset_payload(bytes, num_bits, spec);
+    }
     match normalize_encoding_name(encoding) {
         Some("utf-8") => decode_utf8_text(bytes, policy),
         Some("ascii") => {
@@ -228,6 +369,10 @@ pub(crate) fn count_characters(
     encoding: &str,
     policy: EncodingErrorPolicy,
 ) -> Result<usize, VmError> {
+    if let Some(spec) = bits_charset_spec(encoding) {
+        let num_bits = bytes.len().saturating_mul(8);
+        return Ok(num_bits / spec.width as usize);
+    }
     match normalize_encoding_name(encoding) {
         Some("utf-8") => count_utf8_characters(bytes, policy),
         Some("ascii") | Some("iso-8859-1") | Some("ebcdic-cp-us") => Ok(bytes.len()),

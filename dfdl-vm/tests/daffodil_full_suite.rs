@@ -165,8 +165,8 @@ fn daffodil_section12_aligned_data_regression_gate() {
     );
     assert_eq!(stats.parse_fail, 0);
     assert!(
-        stats.pass >= 127,
-        "expected at least 127 passing aligned_data cases, got pass={} fail={}",
+        stats.pass >= 141,
+        "expected at least 141 passing aligned_data cases, got pass={} fail={}",
         stats.pass,
         stats.fail
     );

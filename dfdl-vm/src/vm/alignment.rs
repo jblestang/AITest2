@@ -1,6 +1,7 @@
 use crate::ir::{IrProps, ValueKind};
 use crate::schema::{BinaryNumberRep, LengthUnits, Representation};
 use crate::vm::runtime::Cursor;
+use alloc::vec;
 
 /// Skip count in bits for `dfdl:leadingSkip` / `dfdl:trailingSkip` (uses `dfdl:alignmentUnits`).
 pub fn skip_units_to_bits(props: &IrProps, skip: u64) -> usize {
@@ -53,6 +54,9 @@ pub fn implicit_alignment_in_bits(kind: ValueKind, props: &IrProps, encoding: &s
 }
 
 fn text_encoding_alignment_bits(encoding: &str) -> usize {
+    if let Some(width) = crate::vm::encoding::bits_charset_code_unit_width(encoding) {
+        return width as usize;
+    }
     let enc = encoding.to_ascii_uppercase();
     if enc.contains("UTF-16") {
         16
@@ -178,6 +182,50 @@ pub fn write_leading_skip(
     let skip = skip_units_to_bits(props, props.leading_skip);
     for _ in 0..skip {
         write_stream_bit(out, bit_count, 0, props.bit_order);
+    }
+    Ok(())
+}
+
+pub fn write_trailing_skip(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    props: &IrProps,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::vm::runtime::{write_byte_aligned, write_stream_bit};
+    if props.trailing_skip == 0 {
+        return Ok(());
+    }
+    if props.trailing_skip > LEADING_TRAILING_SKIP_PROPERTY_LIMIT {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Tunable Limit Exceeded Error: Property trailingSkip {} is larger than limit {}",
+                props.trailing_skip,
+                LEADING_TRAILING_SKIP_PROPERTY_LIMIT
+            ),
+        });
+    }
+    let skip_bits = skip_units_to_bits(props, props.trailing_skip);
+    if skip_bits == 0 {
+        return Ok(());
+    }
+    if props.alignment_units == LengthUnits::Bytes && *bit_count != 0 {
+        if !props.fill_byte_defined {
+            return Err(VmError::InvalidValue {
+                message: "Schema Definition Error: Property fillByte is not defined".into(),
+            });
+        }
+        while *bit_count != 0 {
+            write_stream_bit(out, bit_count, props.fill_byte & 1, props.bit_order);
+        }
+    }
+    if props.alignment_units == LengthUnits::Bytes && *bit_count == 0 && skip_bits % 8 == 0 {
+        let nbytes = skip_bits / 8;
+        write_byte_aligned(out, bit_count, &alloc::vec![props.fill_byte; nbytes])?;
+        return Ok(());
+    }
+    for _ in 0..skip_bits {
+        write_stream_bit(out, bit_count, props.fill_byte & 1, props.bit_order);
     }
     Ok(())
 }

@@ -1,6 +1,7 @@
 use super::encoding::{
     character_span_byte_length, count_characters, decode_text_bytes, encode_document_text,
-    hex_charset_order, hex_charset_payload_to_text, HexCharsetOrder, normalize_encoding_name,
+    bits_charset_spec, decode_bits_charset_payload, hex_charset_order, hex_charset_payload_to_text,
+    HexCharsetOrder, normalize_encoding_name,
     read_character_bytes, read_one_utf8_char,
 };
 use super::text_number;
@@ -2927,6 +2928,14 @@ pub(crate) fn read_text_scalar(
 
     let text = if hex_charset_order(enc).is_some() {
         hex_charset_payload_to_text(&raw)
+    } else if let Some(spec) = bits_charset_spec(enc) {
+        let n_bits = match props.length_kind {
+            LengthKind::Fixed | LengthKind::Explicit if props.length_units == LengthUnits::Bits => {
+                props.length.unwrap_or(0) as usize
+            }
+            _ => raw.len().saturating_mul(8),
+        };
+        decode_bits_charset_payload(&raw, n_bits, spec)?
     } else {
         decode_text_bytes(&raw, enc, props.encoding_error_policy)?
     };
@@ -3174,15 +3183,21 @@ pub(crate) fn write_binary_scalar(
     let mut bytes = alloc::vec::Vec::new();
     match (kind, value) {
         (Boolean, DfdlValue::Boolean(v)) => bytes.push(u8::from(*v)),
-        (Byte, DfdlValue::Byte(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
-        (UnsignedByte, DfdlValue::UnsignedByte(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
-        (Short, DfdlValue::Short(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
-        (UnsignedShort, DfdlValue::UnsignedShort(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
-        (Int, DfdlValue::Int(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
-        (UnsignedInt, DfdlValue::UnsignedInt(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
-        (Long, DfdlValue::Long(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
-        (Float, DfdlValue::Float(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
-        (Double, DfdlValue::Double(v)) => bytes.extend_from_slice(&v.to_be_bytes()),
+        (Byte, DfdlValue::Byte(v)) => bytes = int_bytes(*v as i64, size, le),
+        (UnsignedByte, DfdlValue::UnsignedByte(v)) => {
+            bytes = int_bytes(*v as i64, size, le)
+        }
+        (Short, DfdlValue::Short(v)) => bytes = int_bytes(*v as i64, size, le),
+        (UnsignedShort, DfdlValue::UnsignedShort(v)) => {
+            bytes = int_bytes(*v as i64, size, le)
+        }
+        (Int, DfdlValue::Int(v)) => bytes = int_bytes(*v as i64, size, le),
+        (UnsignedInt, DfdlValue::UnsignedInt(v)) => {
+            bytes = int_bytes(*v as i64, size, le)
+        }
+        (Long, DfdlValue::Long(v)) => bytes = int_bytes(*v, size, le),
+        (Float, DfdlValue::Float(v)) => bytes = int_bytes(*v as i64, size, le),
+        (Double, DfdlValue::Double(v)) => bytes = int_bytes(*v as i64, size, le),
         (Decimal, DfdlValue::Decimal(v)) => {
             let (negative, raw) =
                 parse_virtual_decimal_signed(v, props.binary_decimal_virtual_point)?;
@@ -3201,19 +3216,13 @@ pub(crate) fn write_binary_scalar(
         }
     }
 
-    if le && kind != Decimal {
-        bytes.reverse();
-    }
-    if bytes.len() < size {
-        let pad = size - bytes.len();
-        let pad_byte = 0u8;
-        if le {
-            bytes.splice(0..0, iter::repeat(pad_byte).take(pad));
-        } else {
-            bytes.extend(iter::repeat(pad_byte).take(pad));
-        }
-    } else if bytes.len() > size {
-        bytes = bytes[bytes.len() - size..].to_vec();
+    if kind != Decimal && bytes.len() != size {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "binary value width {} does not match explicit length {size}",
+                bytes.len()
+            ),
+        });
     }
     write_byte_aligned(out, bit_count, &bytes)?;
     Ok(())
@@ -3679,7 +3688,13 @@ pub(crate) fn write_text_scalar(
             pad_text_field(&text, len, props.length_units, props, strings, kind, encoding)?
         }
         LengthKind::Delimited | LengthKind::Pattern | LengthKind::Implicit | LengthKind::EndOfParent => {
-            encode_document_text(&text, encoding)?
+            let encoded = encode_document_text(&text, encoding)?;
+            if let Some(spec) = bits_charset_spec(encoding) {
+                let len = text.chars().count().saturating_mul(spec.width as usize);
+                write_bits_from_stream(out, bit_count, &encoded, len, props.bit_order)?;
+                return Ok(());
+            }
+            encoded
         }
         other => {
             return Err(VmError::UnsupportedOperation {
@@ -5178,6 +5193,16 @@ fn write_alignment_values(
             op: "non-byte alignment encode".into(),
         });
     }
+    if *bit_count != 0 {
+        if !props.fill_byte_defined {
+            return Err(VmError::InvalidValue {
+                message: "Schema Definition Error: Property fillByte is not defined".into(),
+            });
+        }
+        while *bit_count != 0 {
+            write_stream_bit(out, bit_count, props.fill_byte & 1, props.bit_order);
+        }
+    }
     write_byte_aligned(out, bit_count, &[])?;
     let align = alignment as usize;
     if align <= 1 {
@@ -6360,6 +6385,7 @@ pub(crate) fn write_simple(
             write_byte_aligned(out, bit_count, &bytes)?;
         }
     }
+    crate::vm::alignment::write_trailing_skip(out, bit_count, props)?;
     Ok(())
 }
 

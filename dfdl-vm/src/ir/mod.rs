@@ -154,6 +154,8 @@ pub struct IrProps {
     pub fill_byte: u8,
     /// True when `dfdl:fillByte` was explicitly set (not cleared with `%NUL;`).
     pub fill_byte_defined: bool,
+    /// Expanded `dfdl:fillByte` bytes (for runtime SDE when encoding is computed).
+    pub fill_byte_utf8: Option<alloc::vec::Vec<u8>>,
     pub input_value_calc: Option<InputValueCalc>,
     pub input_value_calc_sibling: Option<StringId>,
     pub output_value_calc: Option<OutputValueCalc>,
@@ -252,6 +254,7 @@ impl Default for IrProps {
             trailing_skip: 0,
             fill_byte: 0,
             fill_byte_defined: false,
+            fill_byte_utf8: None,
             input_value_calc: None,
             input_value_calc_sibling: None,
             output_value_calc: None,
@@ -308,6 +311,13 @@ impl StringPool {
             .ok_or_else(|| VmError::InvalidValue {
                 message: alloc::format!("invalid string pool id {}", id.0),
             })
+    }
+
+    pub fn lookup(&self, value: &str) -> Option<StringId> {
+        self.values
+            .iter()
+            .position(|v| v == value)
+            .map(|idx| StringId(idx as u32))
     }
 }
 

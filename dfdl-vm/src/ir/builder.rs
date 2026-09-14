@@ -631,7 +631,8 @@ impl<'a> IrBuilder<'a> {
             &DfdlProps::default(),
             &mut self.strings,
         )?;
-        validate_prefix_length_type(type_name, props, &prefix_props)?;
+        let kind = value_kind_from_simple(base);
+        validate_prefix_length_type(type_name, props, &prefix_props, kind, &self.strings)?;
         if prefix_props.length_kind == LengthKind::Prefixed && depth >= 1 {
             return Err(SchemaError::InvalidProperty {
                 message: "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" not supported"
@@ -640,7 +641,6 @@ impl<'a> IrBuilder<'a> {
             .into());
         }
         self.attach_prefix_length(props, &DfdlProps::default(), &mut prefix_props, depth + 1)?;
-        let kind = value_kind_from_simple(base);
         if kind == ValueKind::Decimal {
             return Err(SchemaError::InvalidProperty {
                 message: alloc::format!(
@@ -1443,6 +1443,8 @@ fn validate_prefix_length_type(
     type_name: &TypeName,
     raw_props: &DfdlProps,
     prefix_props: &IrProps,
+    kind: ValueKind,
+    strings: &StringPool,
 ) -> Result<()> {
     let qname = alloc::format!("ex:{}", type_name.as_str());
     let prefix_label = alloc::format!("dfdl:prefixLengthType {qname}");
@@ -1517,6 +1519,39 @@ fn validate_prefix_length_type(
         return Err(SchemaError::InvalidProperty {
             message: alloc::format!(
                 "Schema Definition Error. {qname} {prefix_label} dfdl:trailingSkip"
+            ),
+        }
+        .into());
+    }
+
+    if prefix_props.length_kind == LengthKind::Prefixed {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" not supported"
+                .into(),
+        }
+        .into());
+    }
+    validate_text_alignment_schema(kind, prefix_props, strings)?;
+    let encoding = strings
+        .get(prefix_props.encoding)
+        .unwrap_or("utf-8");
+    let enc_align = crate::length_validate::implicit_text_encoding_alignment_bits_for_kind(
+        kind,
+        encoding,
+    );
+    let mut align = prefix_props.alignment;
+    if prefix_props.alignment_implicit && align == 0 {
+        align = 1;
+    }
+    let align_bits = match prefix_props.alignment_units {
+        LengthUnits::Bits => align,
+        LengthUnits::Bytes | LengthUnits::Characters => align.saturating_mul(8),
+    };
+    if enc_align != 0 && align_bits % enc_align != 0 {
+        let type_name = value_kind_type_name(kind);
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: The given alignment ({align_bits} bits) must be a multiple of the encoding specified alignment ({enc_align} bits) for {type_name} when representation='text'. Encoding: {encoding}"
             ),
         }
         .into());
@@ -2026,10 +2061,12 @@ fn overlay_dfdl_to_ir(
             validate_fill_byte_schema(raw, bytes, encoding)?;
             base.fill_byte = bytes.first().copied().unwrap_or(0);
             base.fill_byte_defined = true;
+            base.fill_byte_utf8 = Some(bytes.clone());
         }
     } else if let Some(ref bytes) = props.fill_byte {
         base.fill_byte = bytes.first().copied().unwrap_or(0);
         base.fill_byte_defined = true;
+        base.fill_byte_utf8 = Some(bytes.clone());
     }
     if let Some(v) = props.prefix_includes_prefix_length {
         base.prefix_includes_prefix_length = v;
@@ -2224,6 +2261,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.fill_byte_defined {
         out.fill_byte = overlay.fill_byte;
         out.fill_byte_defined = true;
+        if overlay.fill_byte_utf8.is_some() {
+            out.fill_byte_utf8 = overlay.fill_byte_utf8.clone();
+        }
     } else if overlay.fill_byte != 0 && !out.fill_byte_defined {
         out.fill_byte = overlay.fill_byte;
     }

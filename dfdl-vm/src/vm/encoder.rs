@@ -1,10 +1,12 @@
 use super::runtime::{
-    encoding_name, nil_unparse_bytes_for_encode, write_alignment, write_alignment_for_kind,
-    write_byte_aligned, write_framed_payload, write_simple, validate_explicit_decimal_before_encode,
-    trailing_suppressed_count, should_suppress_occurrence_separator, RuntimeConfig, VmContext,
+    encoding_name, is_suppressible_empty_representation, nil_unparse_bytes_for_encode,
+    write_alignment, write_alignment_for_kind, write_byte_aligned, write_framed_payload,
+    write_simple, validate_explicit_decimal_before_encode, trailing_suppressed_count,
+    should_suppress_occurrence_separator, RuntimeConfig, VmContext,
 };
 use super::alignment::write_leading_skip;
 use crate::error::{Error, Result, VmError};
+use crate::length_validate::validate_fill_byte_schema;
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
     encode_delimiter, encode_delimiter_by_alt, encode_property_delimiter, encode_sequence_separator,
@@ -294,14 +296,42 @@ impl<'a> Encoder<'a> {
             } => {
                 let key = self.ctx.strings().get(*name)?;
                 let field_delim = seq_meta.field_delimiters.get(key);
-                let value = self.element_encode_value(props, key, map)?;
-                let resolved = resolve_length_props_encode(props, map, self.ctx.strings())?;
+                let value = match self.element_encode_value(props, key, map) {
+                    Ok(v) => v,
+                    Err(Error::Vm(VmError::MissingField { .. })) if props.occurs_min == 0 => {
+                        return Ok(());
+                    }
+                    Err(Error::Vm(VmError::MissingField { .. }))
+                        if props.length == Some(0)
+                            && matches!(
+                                props.length_kind,
+                                LengthKind::Explicit | LengthKind::Fixed
+                            ) =>
+                    {
+                        DfdlValue::string("")
+                    }
+                    Err(e) => return Err(e),
+                };
+                let mut resolved = resolve_length_props_encode(props, map, self.ctx.strings())?;
+                resolved = resolve_encoding_for_encode(&resolved, map, self.ctx.strings())?;
+                validate_fill_byte_for_encode(&resolved, self.ctx.strings())?;
                 validate_explicit_decimal_before_encode(
                     *kind,
                     &resolved,
                     &self.ctx.program.tunables,
                     self.ctx.strings(),
                 )?;
+                if child.is_none()
+                    && is_suppressible_empty_representation(&value, &resolved, self.ctx.strings())?
+                {
+                    if resolved.trailing_skip == 0 {
+                        return Ok(());
+                    }
+                    write_alignment(out, bit_count, &resolved).map_err(Error::from)?;
+                    crate::vm::alignment::write_trailing_skip(out, bit_count, &resolved)
+                        .map_err(Error::from)?;
+                    return Ok(());
+                }
                 if matches!(&value, DfdlValue::Null) {
                     return self.encode_nil_element(*kind, props, out, bit_count);
                 }
@@ -389,16 +419,20 @@ impl<'a> Encoder<'a> {
         let encode_len = items.len().saturating_sub(suppressed);
         for (idx, item) in items.iter().take(encode_len).enumerate() {
             if sep_props.separator_position != SeparatorPosition::Postfix {
-                if !should_suppress_occurrence_separator(
+                let suppress = should_suppress_occurrence_separator(
                     sep_props,
                     props,
                     items,
                     idx,
                     true,
                     self.ctx.strings(),
-                )? {
+                )? || is_suppressible_empty_representation(item, props, self.ctx.strings())?;
+                if !suppress {
                     self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
                 }
+            }
+            if is_suppressible_empty_representation(item, props, self.ctx.strings())? {
+                continue;
             }
             write_alignment(out, bit_count, props)?;
             write_simple(
@@ -554,6 +588,22 @@ impl<'a> Encoder<'a> {
             return Ok(());
         }
         if let Some(id) = props.separator {
+            if *bit_count != 0 {
+                if !props.fill_byte_defined {
+                    return Err(VmError::InvalidValue {
+                        message: "Schema Definition Error: Property fillByte is not defined".into(),
+                    }
+                    .into());
+                }
+                while *bit_count != 0 {
+                    super::runtime::write_stream_bit(
+                        out,
+                        bit_count,
+                        props.fill_byte & 1,
+                        props.bit_order,
+                    );
+                }
+            }
             write_byte_aligned(out, bit_count, &encode_delimiter(self.ctx.strings().get(id)?))
                 .map_err(Error::from)?;
         }
@@ -631,6 +681,69 @@ fn eval_output_value_calc(
     Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {
         message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
     })?))
+}
+
+fn parse_sibling_property_expr(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let path = inner.strip_prefix("../")?;
+    Some(
+        path.rsplit(':')
+            .next()
+            .unwrap_or(path)
+            .trim()
+            .to_string(),
+    )
+}
+
+fn resolve_encoding_for_encode(
+    props: &IrProps,
+    map: &BTreeMap<String, DfdlValue>,
+    strings: &crate::ir::StringPool,
+) -> Result<IrProps> {
+    let raw = strings.get(props.encoding)?;
+    let Some(sibling) = parse_sibling_property_expr(raw) else {
+        return Ok(props.clone());
+    };
+    let sib_val = map.get(&sibling).ok_or_else(|| VmError::InvalidValue {
+        message: alloc::format!("encoding sibling `{sibling}` not available"),
+    })?;
+    let enc = match sib_val {
+        DfdlValue::String(s) => s.text.clone(),
+        DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => s.clone(),
+        other => {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("encoding sibling must be string, got `{other:?}`"),
+            }
+            .into())
+        }
+    };
+    let mut resolved = props.clone();
+    resolved.encoding = strings.lookup(&enc).ok_or_else(|| {
+        VmError::InvalidValue {
+            message: alloc::format!("resolved encoding `{enc}` not in string pool"),
+        }
+    })?;
+    Ok(resolved)
+}
+
+fn validate_fill_byte_for_encode(props: &IrProps, strings: &crate::ir::StringPool) -> Result<()> {
+    if !props.fill_byte_defined {
+        return Ok(());
+    }
+    let Some(ref bytes) = props.fill_byte_utf8 else {
+        return Ok(());
+    };
+    let encoding = strings.get(props.encoding)?;
+    validate_fill_byte_schema("fillByte", bytes, encoding).map_err(|e| {
+        VmError::InvalidValue {
+            message: e.to_string(),
+        }
+        .into()
+    })
 }
 
 fn resolve_length_props_encode(

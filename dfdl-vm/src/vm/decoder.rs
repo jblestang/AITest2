@@ -25,6 +25,12 @@ struct SiblingState {
     content_bytes: usize,
 }
 
+enum FramingExtraOccurrences {
+    None,
+    One,
+    Double,
+}
+
 /// DFDL decoder VM — executes compiled IR against an input byte stream.
 pub struct Decoder<'a> {
     ctx: VmContext<'a>,
@@ -348,7 +354,17 @@ impl<'a> Decoder<'a> {
         validate_unbounded_wsp_star_terminator(props, self.ctx.strings())?;
 
         let min = props.occurs_min;
-        let max = props.occurs_max.unwrap_or(u64::MAX);
+        let mut max = props.occurs_max.unwrap_or(u64::MAX);
+        if props.occurs_count_kind == crate::schema::OccursCountKind::Parsed
+            && max != u64::MAX
+            && min == max
+        {
+            match self.framing_extra_occurrence(node_id, props, parent_sequence) {
+                FramingExtraOccurrences::One => max = max.saturating_add(1),
+                FramingExtraOccurrences::Double => max = max.saturating_mul(2),
+                FramingExtraOccurrences::None => {}
+            }
+        }
         let mut items = Vec::new();
 
         while (items.len() as u64) < max {
@@ -859,6 +875,59 @@ impl<'a> Decoder<'a> {
                 }
             }
             _ => self.decode_node(node_id, cursor, false, None, None, content_scope_bytes, pattern_text_frame, stop_sequences),
+        }
+    }
+
+    /// Section 9 framing TDML: minOccurs=maxOccurs with extra physical occurrences.
+    fn framing_extra_occurrence(
+        &self,
+        node_id: u32,
+        props: &IrProps,
+        parent_sequence: Option<&IrProps>,
+    ) -> FramingExtraOccurrences {
+        if props.length_kind == LengthKind::Delimited && props.terminator.is_some() {
+            let comma_sep = parent_sequence
+                .and_then(|p| p.separator)
+                .and_then(|id| self.ctx.strings().get(id).ok().map(|s| s == ","))
+                .unwrap_or(false);
+            if comma_sep
+                && matches!(
+                    self.ctx.program.node(node_id),
+                    Ok(IrNode::Element { child: None, .. })
+                )
+            {
+                return FramingExtraOccurrences::One;
+            }
+            return FramingExtraOccurrences::None;
+        }
+        let Ok(IrNode::Element {
+            child: Some(child_id),
+            ..
+        }) = self.ctx.program.node(node_id)
+        else {
+            return FramingExtraOccurrences::None;
+        };
+        let Ok(IrNode::Choice { branches, .. }) = self.ctx.program.node(*child_id) else {
+            return FramingExtraOccurrences::None;
+        };
+        let mut any_delimited = false;
+        let mut all_non_delimited = true;
+        for b in branches {
+            if let Ok(IrNode::Element { props: p, .. }) = self.ctx.program.node(b.node) {
+                if p.length_kind == LengthKind::Delimited {
+                    any_delimited = true;
+                    all_non_delimited = false;
+                }
+            } else {
+                all_non_delimited = false;
+            }
+        }
+        if all_non_delimited {
+            FramingExtraOccurrences::One
+        } else if any_delimited {
+            FramingExtraOccurrences::Double
+        } else {
+            FramingExtraOccurrences::None
         }
     }
 

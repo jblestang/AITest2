@@ -1,4 +1,4 @@
-use crate::vm::encoding::hex_charset_order;
+use crate::vm::encoding::{bits_charset_code_unit_width, hex_charset_order};
 use crate::error::{SchemaError, VmError};
 use crate::ir::{IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{BinaryNumberRep, LengthKind, LengthUnits, Representation};
@@ -12,6 +12,9 @@ fn uses_hex_charset_encoding(strings: &StringPool, enc: StringId) -> bool {
 }
 
 fn text_encoding_alignment_bits(encoding: &str) -> u64 {
+    if let Some(width) = bits_charset_code_unit_width(encoding) {
+        return width;
+    }
     let enc = encoding.to_ascii_uppercase();
     if enc.contains("UTF-16") {
         16
@@ -26,6 +29,10 @@ fn implicit_text_encoding_alignment_bits(kind: ValueKind, encoding: &str) -> u64
     } else {
         8
     }
+}
+
+pub fn implicit_text_encoding_alignment_bits_for_kind(kind: ValueKind, encoding: &str) -> u64 {
+    implicit_text_encoding_alignment_bits(kind, encoding)
 }
 
 fn alignment_in_bits(props: &IrProps) -> u64 {
@@ -69,9 +76,6 @@ pub fn validate_text_alignment_schema(
     if !text_field {
         return Ok(());
     }
-    if props.alignment_implicit {
-        return Ok(());
-    }
     let Some(type_name) = text_prim_type_name(kind) else {
         return Ok(());
     };
@@ -79,7 +83,12 @@ pub fn validate_text_alignment_schema(
         .get(props.encoding)
         .unwrap_or("utf-8");
     let enc_align = implicit_text_encoding_alignment_bits(kind, encoding);
-    let align_bits = alignment_in_bits(props);
+    let (align, units) =
+        crate::vm::alignment::resolved_alignment(kind, props, encoding);
+    let align_bits = match units {
+        LengthUnits::Bits => align,
+        LengthUnits::Bytes | LengthUnits::Characters => align.saturating_mul(8),
+    };
     if enc_align == 0 || align_bits % enc_align == 0 {
         return Ok(());
     }
