@@ -89,3 +89,13 @@ fn implicit_alignment_long() {
 fn implicit_alignment_unsigned_long() {
     run("implicitAlignmentUnsignedLong");
 }
+
+#[test]
+fn implicit_alignment_double_t() {
+    run("implicitAlignmentDoubleT");
+}
+
+#[test]
+fn implicit_alignment_double_t2() {
+    run("implicitAlignmentDoubleT2");
+}

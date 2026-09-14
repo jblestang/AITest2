@@ -973,6 +973,62 @@ fn parse_quoted_pattern_literal(chars: &[char], i: usize) -> Option<(String, usi
     None
 }
 
+struct TrailingExponent {
+    digits: String,
+    negative: bool,
+}
+
+/// Optional `E`/`e` exponent suffix when the pattern has no exponent section (GeneralFormat `###0.###`).
+fn try_parse_trailing_exponent(
+    suffix: &str,
+    props: &TextNumberFormatProps<'_>,
+) -> Option<(TrailingExponent, usize)> {
+    let leading_ws = suffix.len() - suffix.trim_start().len();
+    let t = suffix.trim_start();
+    let bytes = t.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut p = 0usize;
+    let b0 = bytes[p];
+    let is_exp = b0 == b'E'
+        || b0 == b'e'
+        || props.exponent_chars.contains(b0 as char);
+    if !is_exp {
+        return None;
+    }
+    p += 1;
+    let mut negative = false;
+    if p < bytes.len() && bytes[p] == b'+' {
+        p += 1;
+    } else if p < bytes.len() && bytes[p] == b'-' {
+        negative = true;
+        p += 1;
+    }
+    let start = p;
+    while p < bytes.len() && bytes[p].is_ascii_digit() {
+        p += 1;
+    }
+    if p == start {
+        return None;
+    }
+    let digits = core::str::from_utf8(&bytes[start..p]).ok()?.to_string();
+    let mut tail = p;
+    while tail < bytes.len() && (bytes[tail] as char).is_ascii_whitespace() {
+        tail += 1;
+    }
+    if tail != bytes.len() {
+        return None;
+    }
+    Some((
+        TrailingExponent {
+            digits,
+            negative,
+        },
+        leading_ws + p,
+    ))
+}
+
 fn match_subpattern(
     text: &mut String,
     pattern: &str,
@@ -1259,6 +1315,13 @@ fn match_subpattern(
     }
 
     skip_ws(bytes, &mut pos, lax);
+    if pos != bytes.len() && exponent.is_none() {
+        if let Some((te, consumed)) = try_parse_trailing_exponent(&text[pos..], props) {
+            exponent = Some(te.digits);
+            exp_negative = te.negative;
+            pos += consumed;
+        }
+    }
     if pos != bytes.len() {
         if lax {
             // allow trailing junk only if all digits consumed — strict about leftover
@@ -1615,6 +1678,25 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn general_format_trailing_exponent_without_e_in_pattern() {
+        let dec = default_decimal_separators();
+        let props = TextNumberFormatProps {
+            check_policy: BinaryNumberCheckPolicy::Strict,
+            decimal_separators: &dec,
+            exponent_chars: "E",
+            pad_character: Some('0'),
+            ..TextNumberFormatProps::default()
+        };
+        let n = parse_standard_text_number(
+            "5.325762300373444E10",
+            "###0.###;-###0.###",
+            &props,
+        )
+        .unwrap();
+        assert_eq!(n, "5.325762300373444E10");
+    }
+
     fn scientific_notation_exp_sign() {
         let dec = default_decimal_separators();
         let props = TextNumberFormatProps {
