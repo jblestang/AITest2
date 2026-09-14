@@ -58,6 +58,7 @@ pub struct DfdlProps {
     pub calendar_pattern: Option<String>,
     pub calendar_pattern_kind: Option<CalendarPatternKind>,
     pub calendar_check_policy_lax: Option<bool>,
+    pub calendar_century_start: Option<u32>,
     pub calendar_time_zone: Option<String>,
     pub text_number_pattern: Option<String>,
     pub text_number_check_policy: Option<BinaryNumberCheckPolicy>,

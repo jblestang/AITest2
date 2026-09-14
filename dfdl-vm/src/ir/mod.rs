@@ -122,6 +122,8 @@ pub struct IrProps {
     pub calendar_pattern: Option<StringId>,
     pub calendar_pattern_kind: crate::schema::CalendarPatternKind,
     pub calendar_time_zone: Option<StringId>,
+    /// Two-digit year pivot (`dfdl:calendarCenturyStart`, default 53).
+    pub calendar_century_start: u32,
     pub text_number_pattern: Option<StringId>,
     pub text_number_check_policy: BinaryNumberCheckPolicy,
     pub text_number_rep: crate::schema::TextNumberRep,
@@ -275,6 +277,7 @@ impl Default for IrProps {
             calendar_pattern: None,
             calendar_pattern_kind: crate::schema::CalendarPatternKind::Implicit,
             calendar_time_zone: None,
+            calendar_century_start: 53,
             text_number_pattern: None,
             text_number_check_policy: BinaryNumberCheckPolicy::Lax,
             text_number_rep: crate::schema::TextNumberRep::Standard,

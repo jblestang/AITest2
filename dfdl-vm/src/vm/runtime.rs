@@ -1258,7 +1258,7 @@ fn decode_binary_calendar(
     })?;
     let pattern = strings.get(pat_id)?;
     let digits = pad_calendar_digit_field(&digits, pattern);
-    let text = format_calendar_pattern(&digits, pattern)?;
+    let text = format_calendar_pattern(&digits, pattern, props.calendar_century_start)?;
     let text = if rep == BinaryNumberRep::PackedBcd
         && (props.calendar_date_only
             || kind == crate::ir::ValueKind::Time
@@ -1330,6 +1330,7 @@ fn pad_calendar_digit_field(digits: &str, pattern: &str) -> alloc::string::Strin
 fn format_calendar_pattern(
     digits: &str,
     pattern: &str,
+    century_start: u32,
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -1357,7 +1358,8 @@ fn format_calendar_pattern(
     }
     let year = fields
         .get(&'y')
-        .map(|y| expand_calendar_year(y))
+        .or_else(|| fields.get(&'Y'))
+        .map(|y| expand_calendar_year(y, century_start))
         .transpose()?;
     let month = fields.get(&'M').cloned();
     let day = fields.get(&'d').cloned();
@@ -1418,6 +1420,7 @@ struct CalendarTextFields {
     hour12: bool,
     am_pm: Option<bool>,
     timezone: Option<alloc::string::String>,
+    era_is_bc: bool,
 }
 
 fn append_default_utc_offset(kind: crate::ir::ValueKind, date_only: bool, parsed: &str) -> alloc::string::String {
@@ -1532,20 +1535,24 @@ fn read_calendar_ampm(text: &str, ti: &mut usize) -> Result<bool, crate::error::
     Ok(pm)
 }
 
-fn read_calendar_era(text: &str, ti: &mut usize) -> Result<(), crate::error::VmError> {
+fn read_calendar_era(text: &str, ti: &mut usize) -> Result<bool, crate::error::VmError> {
     use crate::error::VmError;
     let rest = text[*ti..].trim_start();
     let word_end = rest
         .find(|c: char| c.is_whitespace())
         .unwrap_or(rest.len());
     let word = &rest[..word_end];
-    if !word.eq_ignore_ascii_case("AD") && !word.eq_ignore_ascii_case("BC") {
+    let bc = if word.eq_ignore_ascii_case("BC") {
+        true
+    } else if word.eq_ignore_ascii_case("AD") {
+        false
+    } else {
         return Err(VmError::InvalidValue {
             message: "calendar text mismatch".into(),
         });
-    }
+    };
     *ti += text[*ti..].len() - rest.len() + word.len();
-    Ok(())
+    Ok(bc)
 }
 
 fn apply_hour12(fields: &mut CalendarTextFields) -> Result<(), crate::error::VmError> {
@@ -1650,7 +1657,7 @@ fn read_calendar_field(
         message: "calendar text mismatch".into(),
     })?;
     let mut out = alloc::string::String::new();
-    let max_digits = if width == 1 && matches!(letters, 'd' | 'M' | 'y' | 'H' | 'h' | 'm' | 's') {
+    let max_digits = if width == 1 && matches!(letters, 'd' | 'M' | 'y' | 'Y' | 'H' | 'h' | 'm' | 's') {
         4
     } else {
         width
@@ -1677,6 +1684,7 @@ fn format_calendar_text(
     text: &str,
     pattern: &str,
     lax: bool,
+    century_start: u32,
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -1693,6 +1701,7 @@ fn format_calendar_text(
         hour12: false,
         am_pm: None,
         timezone: None,
+        era_is_bc: false,
     };
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0usize;
@@ -1758,7 +1767,7 @@ fn format_calendar_text(
             continue;
         }
         if c == 'G' {
-            read_calendar_era(text, &mut ti)?;
+            fields.era_is_bc = read_calendar_era(text, &mut ti)?;
             i += 1;
             continue;
         }
@@ -1767,7 +1776,7 @@ fn format_calendar_text(
             i += 1;
             continue;
         }
-        const FIELD: &str = "EMdmyHhs";
+        const FIELD: &str = "EMdmyYHhs";
         if !FIELD.contains(c) {
             let Some(ch) = text[ti..].chars().next() else {
                 return Err(VmError::InvalidValue {
@@ -1801,8 +1810,8 @@ fn format_calendar_text(
             'd' => {
                 fields.day = raw.parse().ok();
             }
-            'y' => {
-                let ys = expand_calendar_year(&raw)?;
+            'y' | 'Y' => {
+                let ys = expand_calendar_year(&raw, century_start)?;
                 fields.year = ys.parse().ok();
             }
             'H' => {
@@ -1855,9 +1864,12 @@ fn format_calendar_text(
         }
         return Ok(out);
     }
-    let year = fields.year.ok_or_else(|| VmError::InvalidValue {
+    let mut year = fields.year.ok_or_else(|| VmError::InvalidValue {
         message: alloc::format!("calendar `{pattern}` missing year"),
     })?;
+    if fields.era_is_bc {
+        year = -(year - 1);
+    }
     let month = fields.month.ok_or_else(|| VmError::InvalidValue {
         message: alloc::format!("calendar `{pattern}` missing month"),
     })?;
@@ -2536,14 +2548,20 @@ fn text_number_for_parse<'a>(
     parse_field_text_number(trimmed, kind, props, strings)
 }
 
-fn expand_calendar_year(y: &str) -> Result<alloc::string::String, crate::error::VmError> {
+fn expand_calendar_year(
+    y: &str,
+    century_start: u32,
+) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
     if y.len() == 2 {
         let yy: u32 = y.parse().map_err(|_| VmError::InvalidValue {
             message: alloc::format!("invalid calendar year `{y}`"),
         })?;
-        // Daffodil default `calendarCenturyStart` is 53 (see DFDLGeneralFormat).
-        let full = if yy >= 53 { 1900 + yy } else { 2000 + yy };
+        let full = if yy >= century_start {
+            1900 + yy
+        } else {
+            2000 + yy
+        };
         return Ok(alloc::format!("{full:04}"));
     }
     Ok(y.into())
@@ -3886,9 +3904,14 @@ pub(crate) fn read_text_scalar(
             if let Some(pat_id) = props.calendar_pattern {
                 let pattern = strings.get(pat_id)?;
                 let parsed = if trimmed.chars().all(|c| c.is_ascii_digit()) {
-                    format_calendar_pattern(trimmed, pattern)?
+                    format_calendar_pattern(trimmed, pattern, props.calendar_century_start)?
                 } else {
-                    format_calendar_text(trimmed, pattern, props.calendar_check_policy_lax)?
+                    format_calendar_text(
+                        trimmed,
+                        pattern,
+                        props.calendar_check_policy_lax,
+                        props.calendar_century_start,
+                    )?
                 };
                 let with_tz = append_packed_calendar_timezone(
                     props,
@@ -6075,6 +6098,7 @@ fn validate_implicit_date_part(
 }
 
 fn validate_implicit_time_part(text: &str, date_time: bool) -> Result<(), crate::error::VmError> {
+    let type_name = if date_time { "xs:dateTime" } else { "xs:time" };
     if text == "Z" {
         return Ok(());
     }
@@ -6095,7 +6119,6 @@ fn validate_implicit_time_part(text: &str, date_time: bool) -> Result<(), crate:
         || !core[3..5].chars().all(|c| c.is_ascii_digit())
         || !core[6..8].chars().all(|c| c.is_ascii_digit())
     {
-        let type_name = if date_time { "xs:dateTime" } else { "xs:time" };
         return Err(calendar_lexical_error(type_name, text));
     }
     if let Some(off) = tz_start {
@@ -6104,16 +6127,16 @@ fn validate_implicit_time_part(text: &str, date_time: bool) -> Result<(), crate:
             return Ok(());
         }
         if !(tz.starts_with('+') || tz.starts_with('-')) || tz.len() != 6 || tz.as_bytes()[3] != b':' {
-            return Err(calendar_lexical_error("xs:dateTime", text));
+            return Err(calendar_lexical_error(type_name, text));
         }
-        if tz == "+00:00" || tz == "-00:00" {
-            return Err(calendar_lexical_error("xs:dateTime", text));
+        if tz == "-00:00" {
+            return Err(calendar_lexical_error(type_name, text));
         }
         if !tz[1..].chars().all(|c| c.is_ascii_digit() || c == ':') {
-            return Err(calendar_lexical_error("xs:dateTime", text));
+            return Err(calendar_lexical_error(type_name, text));
         }
     } else if text.len() > 8 {
-        return Err(calendar_lexical_error("xs:dateTime", text));
+        return Err(calendar_lexical_error(type_name, text));
     }
     Ok(())
 }
@@ -8070,23 +8093,23 @@ mod delimited_stop_tests {
     #[test]
     fn format_calendar_text_time_and_datetime() {
         assert_eq!(
-            format_calendar_text("04:09:23", "hh:mm:ss", false)
+            format_calendar_text("04:09:23", "hh:mm:ss", false, 53)
                 .map_err(|e| e.to_string())
                 .unwrap(),
             "04:09:23"
         );
         assert_eq!(
-            format_calendar_text("Friday 05 2013 - 03:30:30", "EEEE MM yyyy - hh:mm:ss", false).unwrap(),
+            format_calendar_text("Friday 05 2013 - 03:30:30", "EEEE MM yyyy - hh:mm:ss", false, 53).unwrap(),
             "2013-05-03T03:30:30"
         );
     }
 
     #[test]
     fn format_calendar_text_section5_samples() {
-        let date = format_calendar_text("Wednesday, July 10, '96", "EEEE, MMM d, ''yy", false)
+        let date = format_calendar_text("Wednesday, July 10, '96", "EEEE, MMM d, ''yy", false, 53)
             .unwrap_or_else(|e| panic!("dateText: {e}"));
         assert_eq!(date, "1996-07-10");
-        let time = format_calendar_text("12:08 PM", "h:mm a", false).unwrap_or_else(|e| panic!("timeText: {e}"));
+        let time = format_calendar_text("12:08 PM", "h:mm a", false, 53).unwrap_or_else(|e| panic!("timeText: {e}"));
         assert_eq!(time, "12:08:00");
         let time_tz = append_default_utc_offset(crate::ir::ValueKind::Time, false, &time);
         assert_eq!(time_tz, "12:08:00+00:00");
@@ -8094,6 +8117,7 @@ mod delimited_stop_tests {
             "1996.07.10 AD at 15:08:56 GMT-05:00",
             "yyyy.MM.dd G 'at' HH:mm:ss ZZZZ",
             false,
+            53,
         )
         .unwrap_or_else(|e| panic!("dateTimeText: {e}"));
         assert_eq!(dt, "1996-07-10T15:08:56-05:00");

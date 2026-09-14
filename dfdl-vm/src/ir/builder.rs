@@ -2461,6 +2461,9 @@ fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if let Some(start) = props.calendar_century_start {
+        base.calendar_century_start = start;
+    }
     if props.calendar_check_policy_lax == Some(true) {
         base.calendar_check_policy_lax = true;
     }
@@ -2864,6 +2867,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.calendar_time_zone.is_some() {
         out.calendar_time_zone = overlay.calendar_time_zone;
     }
+    out.calendar_century_start = overlay.calendar_century_start;
     if overlay.calendar_check_policy_lax {
         out.calendar_check_policy_lax = true;
     }

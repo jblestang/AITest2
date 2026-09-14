@@ -1533,6 +1533,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.calendar_time_zone.is_some() {
         base.calendar_time_zone = overlay.calendar_time_zone;
     }
+    if overlay.calendar_century_start.is_some() {
+        base.calendar_century_start = overlay.calendar_century_start;
+    }
     if overlay.calendar_check_policy_lax == Some(true) {
         base.calendar_check_policy_lax = Some(true);
     }
@@ -2035,6 +2038,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "calendarPattern"
             | "calendarPatternKind"
             | "calendarTimeZone"
+            | "calendarCenturyStart"
             | "textNumberPattern"
             | "textNumberRounding"
             | "textNumberRoundingIncrement"
@@ -2412,6 +2416,12 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.calendar_check_policy_lax = Some(matches!(value.as_str(), "lax"));
             }
             "calendarTimeZone" => props.calendar_time_zone = Some(value.clone()),
+            "calendarCenturyStart" => {
+                let parsed: u32 = value.parse().map_err(|_| ParseError::InvalidXml {
+                    message: alloc::format!("invalid calendarCenturyStart `{value}`"),
+                })?;
+                props.calendar_century_start = Some(parsed);
+            }
             "textNumberPattern" => props.text_number_pattern = Some(value.clone()),
             "textNumberCheckPolicy" => {
                 props.text_number_check_policy = Some(match value.as_str() {
