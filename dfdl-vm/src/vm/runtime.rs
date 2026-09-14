@@ -34,12 +34,16 @@ use alloc::vec::Vec;
 use core::iter;
 
 /// Runtime configuration shared by encoder and decoder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
     /// When true, the decoder rejects input with leftover bytes after the root value.
     pub strict_eos: bool,
     /// When true, XSD facet checks run after parse (TDML `validationErrors` tests).
     pub defer_facet_validation: bool,
+    /// When true, PUA code points in string values encode as UTF-8 (TDML text documents).
+    pub encode_pua_codepoints_as_utf8: bool,
+    /// TDML unparser tests: per-region transmission bit order while encoding.
+    pub encode_tdml_bit_regions: Option<alloc::vec::Vec<(BitOrder, usize)>>,
 }
 
 impl Default for RuntimeConfig {
@@ -47,6 +51,8 @@ impl Default for RuntimeConfig {
         Self {
             strict_eos: true,
             defer_facet_validation: false,
+            encode_pua_codepoints_as_utf8: false,
+            encode_tdml_bit_regions: None,
         }
     }
 }
@@ -482,12 +488,48 @@ pub(crate) fn encode_absolute_bit_index(out: &[u8], bit_count: u8) -> usize {
     out.len() * 8 + bit_count as usize
 }
 
+pub(crate) fn effective_encode_bit_order(
+    out: &[u8],
+    bit_count: u8,
+    schema_order: BitOrder,
+    config: &RuntimeConfig,
+) -> BitOrder {
+    let Some(regions) = &config.encode_tdml_bit_regions else {
+        return schema_order;
+    };
+    let bit_idx = encode_absolute_bit_index(out, bit_count);
+    let mut end = 0usize;
+    for (order, len) in regions {
+        end = end.saturating_add(*len);
+        if bit_idx < end {
+            return *order;
+        }
+    }
+    regions
+        .last()
+        .map(|(order, _)| *order)
+        .unwrap_or(schema_order)
+}
+
 pub(crate) fn write_stream_bit(
     out: &mut alloc::vec::Vec<u8>,
     bit_count: &mut u8,
     bit: u8,
     bit_order: BitOrder,
 ) {
+    write_stream_bit_with_config(out, bit_count, bit, bit_order, None);
+}
+
+pub(crate) fn write_stream_bit_with_config(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    bit: u8,
+    schema_order: BitOrder,
+    config: Option<&RuntimeConfig>,
+) {
+    let bit_order = config
+        .map(|c| effective_encode_bit_order(out, *bit_count, schema_order, c))
+        .unwrap_or(schema_order);
     match bit_order {
         BitOrder::LeastSignificantBitFirst => {
             if *bit_count == 0 {
@@ -521,12 +563,23 @@ pub(crate) fn write_stream_bits(
     n: usize,
     bit_order: BitOrder,
 ) {
+    write_stream_bits_with_config(out, bit_count, value, n, bit_order, None);
+}
+
+pub(crate) fn write_stream_bits_with_config(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    value: u64,
+    n: usize,
+    schema_order: BitOrder,
+    config: Option<&RuntimeConfig>,
+) {
     for i in 0..n {
-        let bit = match bit_order {
+        let bit = match schema_order {
             BitOrder::MostSignificantBitFirst => ((value >> (n - 1 - i)) & 1) as u8,
             BitOrder::LeastSignificantBitFirst => ((value >> i) & 1) as u8,
         };
-        write_stream_bit(out, bit_count, bit, bit_order);
+        write_stream_bit_with_config(out, bit_count, bit, schema_order, config);
     }
 }
 
@@ -552,10 +605,21 @@ fn write_bits_from_stream(
     n: usize,
     bit_order: BitOrder,
 ) -> Result<(), crate::error::VmError> {
+    write_bits_from_stream_with_config(out, bit_count, src, n, bit_order, None)
+}
+
+fn write_bits_from_stream_with_config(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    src: &[u8],
+    n: usize,
+    schema_order: BitOrder,
+    config: Option<&RuntimeConfig>,
+) -> Result<(), crate::error::VmError> {
     let mut cursor = Cursor::new(src);
     for _ in 0..n {
-        let bit = cursor.read_stream_bit(bit_order)?;
-        write_stream_bit(out, bit_count, bit as u8, bit_order);
+        let bit = cursor.read_stream_bit(schema_order)?;
+        write_stream_bit_with_config(out, bit_count, bit as u8, schema_order, config);
     }
     Ok(())
 }
@@ -4800,10 +4864,13 @@ pub(crate) fn finalize_simple_value(
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
     defer_facet_validation: bool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     if crate::vm::facet_validate::needs_facet_validation(props) && !defer_facet_validation {
-        crate::vm::facet_validate::validate_decoded_facets(&value, kind, props, strings)?;
+        crate::vm::facet_validate::validate_decoded_facets(
+            &value, kind, props, strings, tunables,
+        )?;
     }
     Ok(value)
 }
@@ -4993,11 +5060,31 @@ pub(crate) fn write_binary_scalar(
     props: &IrProps,
     strings: &StringPool,
     tunables: &DaffodilTunables,
+    config: &RuntimeConfig,
     field_name: Option<&str>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
     use crate::value::DfdlValue;
+
+    if kind == HexBinary {
+        if let Some(max) = tunables.max_hex_binary_length_in_bytes {
+            let wire_len = props.length.unwrap_or_else(|| {
+                if let DfdlValue::HexBinary(v) = value {
+                    v.len() as u64
+                } else {
+                    0
+                }
+            });
+            if wire_len > u64::from(max) {
+                return Err(crate::length_validate::hex_binary_max_length_error(
+                    max,
+                    wire_len,
+                    true,
+                ));
+            }
+        }
+    }
 
     if props.length_kind == LengthKind::Prefixed {
         let payload = encode_binary_payload_bytes(value, kind, props, strings, field_name)?;
@@ -5028,7 +5115,7 @@ pub(crate) fn write_binary_scalar(
     if props.length_units == LengthUnits::Bits {
         let n = binary_encode_bit_length(kind, props, tunables, strings)?;
         let raw = scalar_to_raw_bits(value, kind, props, n)?;
-        write_stream_bits(out, bit_count, raw, n, props.bit_order);
+        write_stream_bits_with_config(out, bit_count, raw, n, props.bit_order, Some(config));
         return Ok(());
     }
 
@@ -5281,6 +5368,7 @@ fn truncate_string_for_explicit_length(
     encoding: &str,
     props: &IrProps,
     kind: crate::ir::ValueKind,
+    field_name: Option<&str>,
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
     use crate::vm::encoding::count_characters;
@@ -5296,9 +5384,13 @@ fn truncate_string_for_explicit_length(
         return Ok(text.to_string());
     }
     if !props.truncate_specified_length_string {
-        return Err(VmError::InvalidValue {
-            message: "Unparse Error: data too long for explicit length and unable to truncate".into(),
-        });
+        let mut message =
+            "Unparse Error: data too long for explicit length and unable to truncate".to_string();
+        if let Some(name) = field_name {
+            message.push_str("\nSchema context: ");
+            message.push_str(name);
+        }
+        return Err(VmError::InvalidValue { message });
     }
     match text_justification_for_kind(props, kind) {
         TextStringJustification::Center => Err(VmError::InvalidValue {
@@ -5441,6 +5533,7 @@ pub(crate) fn write_text_scalar(
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
+    config: &RuntimeConfig,
     field_name: Option<&str>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
@@ -5502,11 +5595,15 @@ pub(crate) fn write_text_scalar(
         (Decimal, DfdlValue::Decimal(v)) => v.clone(),
         (DateTime, DfdlValue::DateTime(v)) => v.clone(),
         (String, DfdlValue::String(v)) => {
-            let enc = encoding_name(props, strings)?;
-            if uses_xml_illegal_char_remap(&enc) {
-                remap_pua_to_xml_illegal_characters(&v.text)
-            } else {
+            if config.encode_pua_codepoints_as_utf8 {
                 v.text.clone()
+            } else {
+                let enc = encoding_name(props, strings)?;
+                if uses_xml_illegal_char_remap(&enc) {
+                    remap_pua_to_xml_illegal_characters(&v.text)
+                } else {
+                    v.text.clone()
+                }
             }
         }
         (HexBinary, DfdlValue::HexBinary(v)) => encode_hex(v),
@@ -5565,7 +5662,14 @@ pub(crate) fn write_text_scalar(
             })? as usize;
             if props.length_units == LengthUnits::Bits {
                 let encoded = encode_document_text(&text, encoding)?;
-                write_bits_from_stream(out, bit_count, &encoded, len, props.bit_order)?;
+                write_bits_from_stream_with_config(
+                    out,
+                    bit_count,
+                    &encoded,
+                    len,
+                    props.bit_order,
+                    Some(&config),
+                )?;
                 return Ok(());
             }
             let text = truncate_string_for_explicit_length(
@@ -5575,6 +5679,7 @@ pub(crate) fn write_text_scalar(
                 encoding,
                 props,
                 kind,
+                field_name,
             )?;
             pad_text_field(&text, len, props.length_units, props, strings, kind, encoding)?
         }
@@ -5582,7 +5687,14 @@ pub(crate) fn write_text_scalar(
             let encoded = encode_document_text(&text, encoding)?;
             if let Some(spec) = bits_charset_spec(encoding) {
                 let len = text.chars().count().saturating_mul(spec.width as usize);
-                write_bits_from_stream(out, bit_count, &encoded, len, props.bit_order)?;
+                write_bits_from_stream_with_config(
+                    out,
+                    bit_count,
+                    &encoded,
+                    len,
+                    props.bit_order,
+                    Some(&config),
+                )?;
                 return Ok(());
             }
             encoded
@@ -7563,7 +7675,23 @@ pub(crate) fn write_alignment(
     bit_count: &mut u8,
     props: &IrProps,
 ) -> Result<(), crate::error::VmError> {
-    write_alignment_values(out, bit_count, props, props.alignment, props.alignment_units)
+    write_alignment_with_config(out, bit_count, props, None)
+}
+
+pub(crate) fn write_alignment_with_config(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    props: &IrProps,
+    config: Option<&RuntimeConfig>,
+) -> Result<(), crate::error::VmError> {
+    write_alignment_values(
+        out,
+        bit_count,
+        props,
+        props.alignment,
+        props.alignment_units,
+        config,
+    )
 }
 
 pub(crate) fn write_alignment_for_kind(
@@ -7574,7 +7702,7 @@ pub(crate) fn write_alignment_for_kind(
     encoding: &str,
 ) -> Result<(), crate::error::VmError> {
     let (align, units) = crate::vm::alignment::resolved_alignment(kind, props, encoding);
-    write_alignment_values(out, bit_count, props, align, units)
+    write_alignment_values(out, bit_count, props, align, units, None)
 }
 
 fn write_alignment_values(
@@ -7583,6 +7711,7 @@ fn write_alignment_values(
     props: &IrProps,
     alignment: u64,
     alignment_units: crate::schema::LengthUnits,
+    config: Option<&RuntimeConfig>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::schema::LengthUnits;
@@ -7609,12 +7738,18 @@ fn write_alignment_values(
                 write_byte_aligned(out, bit_count, &[props.fill_byte])?;
             }
             for _ in 0..rem_bits {
-                write_stream_bit(out, bit_count, (props.fill_byte >> 7) & 1, props.bit_order);
+                write_stream_bit_with_config(
+                    out,
+                    bit_count,
+                    (props.fill_byte >> 7) & 1,
+                    props.bit_order,
+                    config,
+                );
             }
             return Ok(());
         }
         for _ in 0..skip {
-            write_stream_bit(out, bit_count, props.fill_byte & 1, props.bit_order);
+            write_stream_bit_with_config(out, bit_count, props.fill_byte & 1, props.bit_order, config);
         }
         return Ok(());
     }
@@ -7630,7 +7765,7 @@ fn write_alignment_values(
             });
         }
         while *bit_count != 0 {
-            write_stream_bit(out, bit_count, props.fill_byte & 1, props.bit_order);
+            write_stream_bit_with_config(out, bit_count, props.fill_byte & 1, props.bit_order, config);
         }
     }
     write_byte_aligned(out, bit_count, &[])?;
@@ -7997,7 +8132,7 @@ pub(crate) fn read_simple(
         }
     }
     crate::vm::alignment::consume_trailing_skip(cursor, props)?;
-    finalize_simple_value(value, kind, props, strings, defer_facet_validation)
+    finalize_simple_value(value, kind, props, strings, tunables, defer_facet_validation)
 }
 
 fn encode_binary_payload_bytes(
@@ -8754,6 +8889,7 @@ pub(crate) fn write_framed_payload(
     payload_bit_count: u8,
     props: &IrProps,
     strings: &StringPool,
+    config: Option<&RuntimeConfig>,
     field_name: Option<&str>,
     delim_meta: Option<&crate::value::FieldDelimiterMeta>,
 ) -> Result<(), crate::error::VmError> {
@@ -8762,15 +8898,24 @@ pub(crate) fn write_framed_payload(
             write_prefixed_bytes(out, bit_count, payload, props, strings, field_name)
         }
         LengthKind::Explicit | LengthKind::Fixed => {
-            write_explicit_payload(out, bit_count, payload, payload_bit_count, props, strings)
+            write_explicit_payload(
+                out,
+                bit_count,
+                payload,
+                payload_bit_count,
+                props,
+                strings,
+                config,
+            )
         }
         LengthKind::Delimited => {
-            write_bits_from_stream(
+            write_bits_from_stream_with_config(
                 out,
                 bit_count,
                 payload,
                 payload_bit_length(payload, payload_bit_count),
                 props.bit_order,
+                config,
             )?;
             if let Some(id) = props.terminator {
                 let pat = strings.get(id)?;
@@ -8785,12 +8930,13 @@ pub(crate) fn write_framed_payload(
             Ok(())
         }
         LengthKind::Implicit | LengthKind::Pattern | LengthKind::EndOfParent => {
-            write_bits_from_stream(
+            write_bits_from_stream_with_config(
                 out,
                 bit_count,
                 payload,
                 payload_bit_length(payload, payload_bit_count),
                 props.bit_order,
+                config,
             )
         }
     }
@@ -8803,6 +8949,7 @@ fn write_explicit_payload(
     payload_bit_count: u8,
     props: &IrProps,
     strings: &StringPool,
+    config: Option<&RuntimeConfig>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     let len = props.length.ok_or(VmError::InvalidValue {
@@ -8826,9 +8973,16 @@ fn write_explicit_payload(
         }
         LengthUnits::Bits => {
             let available = payload_bit_length(payload, payload_bit_count);
-            write_bits_from_stream(out, bit_count, payload, available.min(len), props.bit_order)?;
+            write_bits_from_stream_with_config(
+                out,
+                bit_count,
+                payload,
+                available.min(len),
+                props.bit_order,
+                config,
+            )?;
             for _ in available..len {
-                write_stream_bit(out, bit_count, 0, props.bit_order);
+                write_stream_bit_with_config(out, bit_count, 0, props.bit_order, config);
             }
             Ok(())
         }
@@ -8900,6 +9054,7 @@ pub(crate) fn write_simple(
     props: &IrProps,
     strings: &StringPool,
     tunables: &DaffodilTunables,
+    config: &RuntimeConfig,
     field_name: Option<&str>,
     delim_meta: Option<&crate::value::FieldDelimiterMeta>,
 ) -> Result<(), crate::error::VmError> {
@@ -8926,10 +9081,11 @@ pub(crate) fn write_simple(
             props,
             strings,
             tunables,
+            &config,
             field_name,
         )?,
         Representation::Text => {
-            write_text_scalar(out, bit_count, &value, kind, props, strings, field_name)?
+            write_text_scalar(out, bit_count, &value, kind, props, strings, &config, field_name)?
         }
     }
     if let Some(id) = props.terminator {

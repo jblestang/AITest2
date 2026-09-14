@@ -1,6 +1,7 @@
 use super::runtime::{
     encoding_name, is_suppressible_empty_representation, nil_unparse_bytes_for_encode,
-    write_alignment, write_alignment_for_kind, write_byte_aligned, write_framed_payload,
+    write_alignment, write_alignment_for_kind, write_alignment_with_config, write_byte_aligned,
+    write_framed_payload,
     write_simple, validate_explicit_decimal_before_encode, trailing_suppressed_count,
     should_suppress_occurrence_separator, RuntimeConfig, VmContext,
 };
@@ -17,6 +18,10 @@ use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+
+fn schema_context_field_name(local_name: &str) -> String {
+    alloc::format!("ex:{local_name}")
+}
 
 /// DFDL encoder VM — executes compiled IR to serialize logical values.
 pub struct Encoder<'a> {
@@ -144,13 +149,38 @@ impl<'a> Encoder<'a> {
                         None => value,
                     };
                     if needs_length_frame(props) {
+                        if *kind == crate::ir::ValueKind::Complex
+                            && matches!(
+                                props.length_kind,
+                                LengthKind::Explicit | LengthKind::Fixed
+                            )
+                            && props.length_units == LengthUnits::Characters
+                        {
+                            let enc = encoding_name(props, self.ctx.strings())?;
+                            if crate::vm::encoding::normalize_encoding_name(&enc)
+                                .is_some_and(|e| matches!(e, "utf-8" | "utf-16be" | "utf-16le"))
+                            {
+                                return Err(VmError::InvalidValue {
+                                    message: alloc::format!(
+                                        "Runtime Schema Definition Error. Variable width character lengthKind '{}' with lengthUnits 'characters' not supported for complex types",
+                                        match props.length_kind {
+                                            LengthKind::Explicit => "explicit",
+                                            LengthKind::Fixed => "fixed",
+                                            _ => "explicit",
+                                        }
+                                    ),
+                                }
+                                .into());
+                            }
+                        }
+                        let schema_ctx = schema_context_field_name(name_str);
                         self.encode_framed_element(
                             *child_id,
                             props,
                             field,
                             out,
                             bit_count,
-                            Some(name_str),
+                            Some(&schema_ctx),
                             None,
                         )
                     } else {
@@ -166,6 +196,8 @@ impl<'a> Encoder<'a> {
                         encoding_name(props, self.ctx.strings())?,
                     )
                     .map_err(Error::from)?;
+                    let schema_ctx =
+                        schema_context_field_name(self.ctx.strings().get(*name)?);
                     write_simple(
                         out,
                         bit_count,
@@ -174,7 +206,8 @@ impl<'a> Encoder<'a> {
                         props,
                         self.ctx.strings(),
                         &self.ctx.program.tunables,
-                        Some(self.ctx.strings().get(*name)?),
+                        &self.ctx.config,
+                        Some(&schema_ctx),
                         None,
                     )
                     .map_err(Into::into)
@@ -201,7 +234,7 @@ impl<'a> Encoder<'a> {
         let encode_len = items.len().saturating_sub(suppressed);
         for (idx, item) in items.iter().take(encode_len).enumerate() {
             self.write_occurrence_separator(props, out, bit_count, idx, encode_len)?;
-            write_alignment(out, bit_count, props)?;
+            write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
             if let Some(id) = props.initiator {
                 let pat = self.ctx.strings().get(id)?;
                 if !pat.is_empty() {
@@ -229,6 +262,7 @@ impl<'a> Encoder<'a> {
                 payload_bit_count,
                 props,
                 self.ctx.strings(),
+                Some(&self.ctx.config),
                 field_name,
                 delim_meta,
             )?;
@@ -265,7 +299,7 @@ impl<'a> Encoder<'a> {
                     self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
                 }
             }
-            write_alignment(out, bit_count, props)?;
+            write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
             self.write_initiator(props, out, bit_count, None)?;
             if matches!(item, DfdlValue::Null) {
                 let nil_bytes =
@@ -340,7 +374,8 @@ impl<'a> Encoder<'a> {
                     if resolved.trailing_skip == 0 {
                         return Ok(());
                     }
-                    write_alignment(out, bit_count, &resolved).map_err(Error::from)?;
+                    write_alignment_with_config(out, bit_count, &resolved, Some(&self.ctx.config))
+                        .map_err(Error::from)?;
                     crate::vm::alignment::write_trailing_skip(out, bit_count, &resolved)
                         .map_err(Error::from)?;
                     return Ok(());
@@ -358,13 +393,14 @@ impl<'a> Encoder<'a> {
                         }
                     };
                     if needs_length_frame(&resolved) {
+                        let schema_ctx = schema_context_field_name(key);
                         self.encode_framed_element(
                             *child_id,
                             &resolved,
                             field,
                             out,
                             bit_count,
-                            Some(key),
+                            Some(&schema_ctx),
                             field_delim,
                         )
                     } else {
@@ -378,13 +414,14 @@ impl<'a> Encoder<'a> {
                         )
                     }
                 } else {
+                    let schema_ctx = schema_context_field_name(key);
                     self.encode_simple_occurrences(
                         *kind,
                         &resolved,
                         &value,
                         out,
                         bit_count,
-                        Some(key),
+                        Some(&schema_ctx),
                         field_delim,
                         parent_props,
                     )
@@ -447,7 +484,7 @@ impl<'a> Encoder<'a> {
             if is_suppressible_empty_representation(item, props, self.ctx.strings())? {
                 continue;
             }
-            write_alignment(out, bit_count, props)?;
+            write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
             write_simple(
                 out,
                 bit_count,
@@ -456,6 +493,7 @@ impl<'a> Encoder<'a> {
                 props,
                 self.ctx.strings(),
                 &self.ctx.program.tunables,
+                &self.ctx.config,
                 field_name,
                 delim_meta,
             )
@@ -631,7 +669,7 @@ impl<'a> Encoder<'a> {
         out: &mut Vec<u8>,
         bit_count: &mut u8,
     ) -> Result<()> {
-        write_alignment(out, bit_count, props).map_err(Error::from)?;
+        write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config)).map_err(Error::from)?;
         self.write_initiator(props, out, bit_count, None)?;
         let payload = nil_unparse_bytes_for_encode(props, self.ctx.strings()).map_err(Error::from)?;
         write_byte_aligned(out, bit_count, &payload).map_err(Error::from)?;
@@ -642,7 +680,12 @@ impl<'a> Encoder<'a> {
 
 fn child_skips_encode(enc: &Encoder<'_>, node_id: u32) -> Result<bool> {
     match enc.ctx.program.node(node_id)? {
-        IrNode::Element { props, .. } => Ok(props.input_value_calc.is_some()),
+        IrNode::Element { props, .. } => Ok(
+            props.input_value_calc.is_some()
+                || props.input_value_calc_sibling.is_some()
+                || props.input_value_calc_segments.is_some()
+                || props.input_value_calc_path.is_some(),
+        ),
         _ => Ok(false),
     }
 }
@@ -742,6 +785,10 @@ fn precompute_output_values<'a>(
                 continue;
             }
             let key = enc.ctx.strings().get(*name)?.to_string();
+            // Unparse uses infoset values when present; OVC fills absent fields only.
+            if effective.contains_key(&key) {
+                continue;
+            }
             let computed =
                 eval_output_value_calc(enc, props, &effective, children, parent_props)?;
             effective.insert(key, computed);

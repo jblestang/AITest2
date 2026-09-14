@@ -47,7 +47,13 @@ fn walk_particle(
             }
             let ename = program.strings.get(*name).ok();
             if needs_facet_validation(props) {
-                if let Err(e) = validate_decoded_facets(value, *kind, props, &program.strings) {
+                if let Err(e) = validate_decoded_facets(
+                    value,
+                    *kind,
+                    props,
+                    &program.strings,
+                    &program.tunables,
+                ) {
                     let detail = e.to_string();
                     if let Some(ename) = ename {
                         errors.push(alloc::format!("Validation Error"));

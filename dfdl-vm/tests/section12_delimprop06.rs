@@ -36,7 +36,10 @@ fn delimprop_06_expected_error() {
     let doc = &test.documents[0];
     let t1 = Instant::now();
     let err = spec
-        .decoder_with_config(RuntimeConfig { strict_eos: true })
+        .decoder_with_config(RuntimeConfig {
+            strict_eos: true,
+            ..RuntimeConfig::default()
+        })
         .decode(&doc.data)
         .err();
     eprintln!("decode {:?} err={err:?}", t1.elapsed());

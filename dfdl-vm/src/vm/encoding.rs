@@ -63,6 +63,12 @@ pub(crate) fn bits_charset_spec(name: &str) -> Option<BitsCharsetSpec> {
             alphabet: "0123",
             bit_order: BitOrder::LeastSignificantBitFirst,
         })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-5-BIT-PACKED-LSBF") {
+        Some(BitsCharsetSpec {
+            width: 5,
+            alphabet: "01234567ABCDEFGHJKLMNPQRSTUVWXYZ",
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
     } else if eq_ascii_ignore_case(name, "X-DFDL-OCTAL-LSBF") {
         Some(BitsCharsetSpec {
             width: 3,
@@ -175,13 +181,23 @@ fn write_bit_to_buffer(out: &mut Vec<u8>, bit_count: &mut u8, bit: u8, order: Bi
     }
 }
 
+fn five_bit_packed_code(ch: char, spec: &BitsCharsetSpec) -> Option<usize> {
+    if spec.width == 5 && spec.alphabet == "01234567ABCDEFGHJKLMNPQRSTUVWXYZ" {
+        if ch == 'I' {
+            return Some(1);
+        }
+        if ch == 'O' {
+            return Some(0);
+        }
+    }
+    spec.alphabet.find(ch)
+}
+
 pub(crate) fn encode_bits_charset_text(text: &str, spec: BitsCharsetSpec) -> Result<Vec<u8>, VmError> {
     let mut out = Vec::new();
     let mut bit_count = 0u8;
     for ch in text.chars() {
-        let idx = spec
-            .alphabet
-            .find(ch)
+        let idx = five_bit_packed_code(ch, &spec)
             .ok_or_else(|| VmError::InvalidValue {
                 message: alloc::format!("character `{ch}` not in bits charset"),
             })? as u8;
@@ -458,6 +474,19 @@ pub(crate) fn decode_text_bytes(
             if bytes.iter().any(|b| *b > 0x7f) {
                 if let Ok(text) = decode_utf8_text(bytes, policy) {
                     return Ok(text);
+                }
+                // Daffodil treats `encodingErrorPolicy="error"` as replace for ASCII (not fully implemented).
+                if matches!(policy, EncodingErrorPolicy::Replace | EncodingErrorPolicy::Error) {
+                    return Ok(bytes
+                        .iter()
+                        .map(|&b| {
+                            if b <= 0x7f {
+                                b as char
+                            } else {
+                                '\u{FFFD}'
+                            }
+                        })
+                        .collect());
                 }
                 return Err(VmError::InvalidValue {
                     message: "invalid ASCII".into(),

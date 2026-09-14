@@ -39,6 +39,7 @@ pub mod error;
 pub mod ir;
 pub mod length_validate;
 mod parse_unparse_policy;
+mod schema_validate;
 mod tunable_validate;
 mod unparse_validate;
 pub mod schema;

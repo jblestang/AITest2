@@ -6,13 +6,25 @@ use super::parser::{
     TdmlSuite, UnparserTestCase,
 };
 use crate::api::DfdlSpec;
+use crate::vm::RuntimeConfig;
 use crate::length_validate::DaffodilTunables;
 use crate::error::Result;
 use crate::ir::{IrNode, IrProgram};
 use crate::schema::BitOrder;
-use crate::vm::RuntimeConfig;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+
+fn tdml_encode_runtime_config(test: &UnparserTestCase) -> RuntimeConfig {
+    let doc = test.documents.first();
+    RuntimeConfig {
+        encode_pua_codepoints_as_utf8: doc
+            .is_some_and(|d| d.kind == DocumentKind::Text && d.file_resource.is_none()),
+        encode_tdml_bit_regions: doc
+            .filter(|d| !d.part_bit_order_regions.is_empty())
+            .map(|d| d.part_bit_order_regions.clone()),
+        ..RuntimeConfig::default()
+    }
+}
 
 fn tdml_transmission_bit_order(doc: &TdmlDocument, program: &IrProgram) -> BitOrder {
     if let Some(order) = doc.document_transmission_bit_order {
@@ -169,6 +181,7 @@ pub fn run_parser_test_with_options(
     let config = RuntimeConfig {
         strict_eos: true,
         defer_facet_validation: test.expected_validation_errors.is_some(),
+        ..RuntimeConfig::default()
     };
 
     if let Some(load_err) = &doc.load_error {
@@ -440,9 +453,17 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         }
     };
 
-    let infoset_nodes = match super::parse_expected_infoset_with_context(
+    let target_ns = spec.schema().target_namespace.as_deref();
+    let element_form_suite = suite.name == "ElementFormDefaultTest";
+    let infoset_target_ns = if element_form_suite && spec.schema().element_form_default_qualified {
+        target_ns
+    } else {
+        None
+    };
+    let infoset_nodes = match super::infoset::parse_expected_infoset_with_target_ns(
         &test.infoset,
         &suite.resource_context,
+        infoset_target_ns,
     ) {
         Ok(n) => n,
         Err(e) => {
@@ -452,12 +473,25 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
             });
         }
     };
-    if let Err(msg) = crate::unparse_validate::validate_unparse_infoset_nodes(
-        spec.schema(),
-        spec.program(),
-        &test.root,
-        &infoset_nodes,
-    ) {
+    let run_unparse_validate = element_form_suite || test.expected_errors.is_some();
+    let validate_unparse = if !run_unparse_validate {
+        Ok(())
+    } else if element_form_suite {
+        crate::unparse_validate::validate_unparse_infoset_nodes(
+            spec.schema(),
+            spec.program(),
+            &test.root,
+            &infoset_nodes,
+        )
+    } else {
+        crate::unparse_validate::validate_unparse_infoset_cardinality(
+            spec.schema(),
+            spec.program(),
+            &test.root,
+            &infoset_nodes,
+        )
+    };
+    if let Err(msg) = validate_unparse {
         if let Some(expected_errors) = &test.expected_errors {
             if error_messages_match(expected_errors, &msg) {
                 return Ok(TestResult {
@@ -476,11 +510,12 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         });
     }
 
-    let value = match super::infoset::infoset_xml_to_root_value_with_context(
+    let value = match super::infoset::infoset_xml_to_root_value_with_target_ns(
         &test.infoset,
         &test.root,
         spec.program(),
         &suite.resource_context,
+        infoset_target_ns,
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -508,7 +543,8 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
                 outcome: TestOutcome::Fail(alloc::format!("encode error mismatch: {msg}")),
             });
         }
-        let diagnostic = match spec.encode_with_bit_count(&value) {
+        let encode_config = tdml_encode_runtime_config(test);
+        let diagnostic = match spec.encode_with_bit_count_config(&value, encode_config) {
             Ok((encoded, bit_count)) => {
                 if let Some(doc) = test.documents.first() {
                     if encoded_matches_document(&encoded, bit_count, doc) {
@@ -524,7 +560,7 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
                     None
                 }
             }
-            Err(e) => Some(e.to_string()),
+            Err(e) => Some(augment_tdml_encode_error(e.to_string(), &suite.resource_context)),
         };
         return match diagnostic {
             None => Ok(TestResult {
@@ -560,7 +596,9 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         });
     }
 
-    match spec.encode_with_bit_count(&value) {
+    let encode_config = tdml_encode_runtime_config(test);
+
+    match spec.encode_with_bit_count_config(&value, encode_config) {
         Ok((encoded, bit_count)) => {
             if let Some(doc) = test.documents.first() {
                 if !encoded_matches_document(&encoded, bit_count, doc) {
@@ -737,6 +775,16 @@ fn root_element_encoding(program: &crate::ir::IrProgram) -> Option<&str> {
         return None;
     };
     program.strings.get(props.encoding).ok()
+}
+
+fn augment_tdml_encode_error(msg: String, ctx: &super::resources::TdmlResourceContext) -> String {
+    let Some(path) = ctx.tdml_resource_path.as_deref() else {
+        return msg;
+    };
+    if msg.contains(path) {
+        return msg;
+    }
+    alloc::format!("{msg}\n{path}")
 }
 
 fn error_messages_match(expected: &[String], err: &str) -> bool {

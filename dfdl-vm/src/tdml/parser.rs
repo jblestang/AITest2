@@ -232,9 +232,13 @@ fn parse_define_config(
                         let text = r.read_text_until_end(local)?;
                         tunables.require_floating_property = Some(text.trim() == "true");
                     }
-                    "requireEncodingErrorPolicy" => {
+                    "requireEncodingErrorPolicy" | "requireEncodingErrorPolicyProperty" => {
                         let text = r.read_text_until_end(local)?;
                         tunables.require_encoding_error_policy = Some(text.trim() == "true");
+                    }
+                    "maxHexBinaryLengthInBytes" => {
+                        let text = r.read_text_until_end(local)?;
+                        tunables.max_hex_binary_length_in_bytes = text.trim().parse().ok();
                     }
                     "invalidRestrictionPolicy" => {
                         let text = r.read_text_until_end(local)?;

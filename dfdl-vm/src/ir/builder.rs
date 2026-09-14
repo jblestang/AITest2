@@ -1265,6 +1265,10 @@ fn finalize_element_props(
         && ir.length_sibling.is_none()
         && ir.length_pattern.is_none()
         && !ir.length_expr_unparsed
+        && ir.input_value_calc.is_none()
+        && ir.input_value_calc_sibling.is_none()
+        && ir.input_value_calc_segments.is_none()
+        && ir.input_value_calc_path.is_none()
     {
         return Err(SchemaError::InvalidProperty {
             message: "Schema Definition Error: Property length is not defined".into(),
@@ -3194,6 +3198,15 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.escape_scheme.is_some() {
         out.escape_scheme = overlay.escape_scheme.clone();
     }
+    if (out.input_value_calc.is_some()
+        || out.input_value_calc_sibling.is_some()
+        || out.input_value_calc_segments.is_some()
+        || out.input_value_calc_path.is_some())
+        && out.length.is_none()
+        && matches!(out.length_kind, LengthKind::Explicit | LengthKind::Fixed)
+    {
+        out.length_kind = LengthKind::Implicit;
+    }
     out
 }
 
@@ -3233,6 +3246,7 @@ pub fn compile_named_with_tunables(
 
     crate::parse_unparse_policy::validate_parse_unparse_policy(schema, &root_name)?;
     crate::tunable_validate::validate_tunable_schema_requirements(schema, &root_name, &tunables)?;
+    crate::schema_validate::validate_compiled_schema(schema, &root_name, &tunables)?;
     IrBuilder::new(schema, tunables)?.build(&root_name)
 }
 

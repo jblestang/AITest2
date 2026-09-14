@@ -38,6 +38,8 @@ pub struct DfdlProps {
     pub length_units: Option<LengthUnits>,
     pub encoding: Option<String>,
     pub encoding_error_policy: Option<EncodingErrorPolicy>,
+    /// Set when `encodingErrorPolicy` appears on a DFDL format in this schema document.
+    pub encoding_error_policy_defined: bool,
     pub text_trim_kind: Option<TextTrimKind>,
     pub text_pad_kind: Option<TextPadKind>,
     /// When false, explicit-length fields may leave unconsumed data in their frame.
@@ -422,6 +424,10 @@ pub enum Particle {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElementDecl {
     pub name: String,
+    /// Local name from `ref="..."` when present.
+    pub element_ref: Option<String>,
+    /// True when the XSD `name="..."` attribute was present (not only `ref`).
+    pub has_element_name_attr: bool,
     pub type_name: TypeName,
     pub props: DfdlProps,
     pub particle: Option<Box<Particle>>,
@@ -615,6 +621,8 @@ pub enum TypeDef {
 pub struct GlobalElement {
     pub name: String,
     pub type_name: TypeName,
+    /// True when the XSD `type="..."` attribute used a prefixed QName (e.g. `ex:itemType`).
+    pub type_qname_prefixed: bool,
     pub props: DfdlProps,
 }
 
@@ -626,9 +634,15 @@ pub struct FormatDefaults {
 /// Parsed XSD + DFDL schema document.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SchemaDocument {
+    /// True when the schema declares or uses the DFDL namespace (elements or xmlns).
+    pub dfdl_annotations_seen: bool,
+    /// Set when a top-level `dfdl:format` explicitly declares `encodingErrorPolicy`.
+    pub explicit_encoding_error_policy_on_format: bool,
     pub target_namespace: Option<String>,
     /// `xs:schema/@elementFormDefault` (default unqualified).
     pub element_form_default_qualified: bool,
+    /// True when `elementFormDefault` was present on `xs:schema`.
+    pub element_form_default_explicit: bool,
     pub format_defaults: FormatDefaults,
     /// Named DFDL formats from `dfdl:defineFormat`.
     pub named_formats: BTreeMap<String, DfdlProps>,

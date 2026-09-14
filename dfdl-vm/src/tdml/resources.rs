@@ -5,14 +5,26 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TdmlResourceContext {
     pub tdml_dir: Option<String>,
+    /// Classpath-style path to the `.tdml` file (for error diagnostics).
+    pub tdml_resource_path: Option<String>,
 }
 
 impl TdmlResourceContext {
     pub fn from_tdml_path(path: &str) -> Self {
         let path = path.replace('\\', "/");
         let tdml_dir = path.rsplit_once('/').map(|(dir, _)| dir.to_string());
-        Self { tdml_dir }
+        Self {
+            tdml_dir,
+            tdml_resource_path: tdml_resource_path_from_fs_path(&path),
+        }
     }
+}
+
+pub fn tdml_resource_path_from_fs_path(path: &str) -> Option<String> {
+    let path = path.replace('\\', "/");
+    let marker = "org/apache/daffodil/";
+    path.find(marker)
+        .map(|i| path[i..].to_string())
 }
 
 fn daffodil_test_resources_root() -> String {

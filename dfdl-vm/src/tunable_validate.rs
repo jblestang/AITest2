@@ -24,11 +24,6 @@ fn check_format_props(props: &crate::schema::DfdlProps, tunables: &DaffodilTunab
             message: "Schema Definition Error: Property value floating='yes' is not supported.".into(),
         });
     }
-    if tunables.require_encoding_error_policy == Some(true) && props.encoding_error_policy.is_none() {
-        return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error: Property encodingErrorPolicy is not defined.".into(),
-        });
-    }
     Ok(())
 }
 
@@ -100,6 +95,14 @@ pub fn validate_tunable_schema_requirements(
     root: &str,
     tunables: &DaffodilTunables,
 ) -> Result<(), SchemaError> {
+    if tunables.require_encoding_error_policy == Some(true)
+        && !schema.explicit_encoding_error_policy_on_format
+    {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Property encodingErrorPolicy is not defined.".into(),
+        });
+    }
+    check_format_props(&schema.format_defaults.props, tunables)?;
     let Some(g) = schema.global_elements.get(root) else {
         return Ok(());
     };

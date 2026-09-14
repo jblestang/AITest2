@@ -68,6 +68,7 @@ pub fn validate_decoded_facets(
     kind: ValueKind,
     props: &IrProps,
     strings: &StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
 ) -> Result<(), VmError> {
     if kind == ValueKind::String || kind == ValueKind::HexBinary {
         let text = match value {
@@ -89,6 +90,13 @@ pub fn validate_decoded_facets(
     } else if let Some(n) = numeric_value_i64(value) {
         validate_numeric_facets(n, props, strings)?;
         validate_enumeration_numeric(n, props, strings)?;
+        if !props.facet_pattern_groups.is_empty()
+            && tunables.invalid_restriction_policy
+                != crate::length_validate::InvalidRestrictionPolicy::Ignore
+        {
+            let lex = alloc::format!("{n}");
+            validate_string_facets(&lex, props, strings)?;
+        }
     }
     if props.total_digits.is_some() || props.fraction_digits.is_some() {
         if let Some(canon) = decimal_lexical_for_digit_facets(value, kind) {

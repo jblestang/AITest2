@@ -281,6 +281,7 @@ pub enum InvalidRestrictionPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DaffodilTunables {
     pub allow_signed_integer_length1_bit: bool,
+    pub max_hex_binary_length_in_bytes: Option<u32>,
     pub min_valid_year: i32,
     pub max_valid_year: i32,
     pub unqualified_path_step_policy: UnqualifiedPathStepPolicy,
@@ -295,6 +296,7 @@ impl Default for DaffodilTunables {
     fn default() -> Self {
         Self {
             allow_signed_integer_length1_bit: true,
+            max_hex_binary_length_in_bytes: None,
             min_valid_year: 0,
             max_valid_year: 9999,
             unqualified_path_step_policy: UnqualifiedPathStepPolicy::DefaultNamespace,
@@ -304,6 +306,21 @@ impl Default for DaffodilTunables {
             require_encoding_error_policy: None,
             invalid_restriction_policy: InvalidRestrictionPolicy::Error,
         }
+    }
+}
+
+pub fn hex_binary_max_length_error(
+    max: u32,
+    len: u64,
+    unparse: bool,
+) -> crate::error::VmError {
+    let prefix = if unparse {
+        "Unparse Error"
+    } else {
+        "Parse Error"
+    };
+    crate::error::VmError::InvalidValue {
+        message: alloc::format!("{prefix}: xs:hexBinary maximum {max} {len}"),
     }
 }
 

@@ -64,7 +64,17 @@ pub fn infoset_xml_to_root_value_with_context(
     program: &IrProgram,
     ctx: &TdmlResourceContext,
 ) -> Result<DfdlValue, String> {
-    let nodes = parse_expected_infoset_with_context(infoset_xml, ctx)?;
+    infoset_xml_to_root_value_with_target_ns(infoset_xml, root, program, ctx, None)
+}
+
+pub fn infoset_xml_to_root_value_with_target_ns(
+    infoset_xml: &str,
+    root: &str,
+    program: &IrProgram,
+    ctx: &TdmlResourceContext,
+    target_namespace: Option<&str>,
+) -> Result<DfdlValue, String> {
+    let nodes = parse_expected_infoset_with_target_ns(infoset_xml, ctx, target_namespace)?;
     let node = nodes
         .iter()
         .find(|n| local_name_str(&n.name) == root)
@@ -187,9 +197,7 @@ fn find_infoset_children<'a>(node: &'a InfosetNode, local_name: &str) -> Vec<&'a
 fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, String> {
     let trimmed = text.trim();
     match kind {
-        ValueKind::String => Ok(DfdlValue::string(
-            crate::vm::encoding::remap_pua_to_xml_illegal_characters(trimmed),
-        )),
+        ValueKind::String => Ok(DfdlValue::string(trimmed)),
         ValueKind::Boolean => trimmed
             .parse::<bool>()
             .or_else(|_| match trimmed {
@@ -285,8 +293,25 @@ pub fn parse_expected_infoset_with_context(
     xml: &str,
     ctx: &TdmlResourceContext,
 ) -> Result<Vec<InfosetNode>, String> {
+    parse_expected_infoset_with_target_ns(xml, ctx, None)
+}
+
+pub fn parse_expected_infoset_with_target_ns(
+    xml: &str,
+    ctx: &TdmlResourceContext,
+    target_namespace: Option<&str>,
+) -> Result<Vec<InfosetNode>, String> {
     let inner = resolve_infoset_inner_xml(xml, ctx)?;
-    parse_infoset_elements(&inner)
+    parse_infoset_elements_with_target_ns(&inner, target_namespace)
+}
+
+fn parse_infoset_elements_with_target_ns(
+    xml: &str,
+    target_namespace: Option<&str>,
+) -> Result<Vec<InfosetNode>, String> {
+    let _ = target_namespace;
+    // Only declare `xmlns:ex` on the wrapper; do not treat targetNamespace as default element NS.
+    parse_infoset_elements_with_default_ns(xml, None)
 }
 
 fn reject_doctype_in_resource(text: &str, resource_name: &str) -> Result<(), String> {
@@ -369,11 +394,18 @@ fn parse_infoset_elements(xml: &str) -> Result<Vec<InfosetNode>, String> {
     parse_infoset_elements_with_default_ns(xml, None)
 }
 
+fn infoset_root_xmlns(target_namespace: Option<&str>, inner: &str) -> String {
+    match target_namespace.filter(|u| !u.is_empty()) {
+        Some(ns) => alloc::format!("<infosetRoot xmlns:ex=\"{ns}\">{inner}</infosetRoot>"),
+        None => alloc::format!("<infosetRoot>{inner}</infosetRoot>"),
+    }
+}
+
 fn parse_infoset_elements_with_default_ns(
     xml: &str,
     default_ns: Option<String>,
 ) -> Result<Vec<InfosetNode>, String> {
-    let wrapped = alloc::format!("<infosetRoot>{xml}</infosetRoot>");
+    let wrapped = infoset_root_xmlns(default_ns.as_deref(), xml);
     let mut reader = XmlReader::new(&wrapped);
     reader.expect_start("infosetRoot").map_err(|e| e.to_string())?;
 

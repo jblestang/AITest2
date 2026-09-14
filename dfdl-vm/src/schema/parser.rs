@@ -50,6 +50,9 @@ fn parse_schema_with_resolver_and_label(
         return Err(crate::error::SchemaError::InvalidProperty { message }.into());
     }
     let mut parser = XsdParser::new(input, resolver);
+    if input.contains(DFDL_NS) {
+        parser.doc.dfdl_annotations_seen = true;
+    }
     parser.parse_document()
 }
 
@@ -118,6 +121,7 @@ impl<'a> XsdParser<'a> {
         for (k, v) in other.groups {
             self.doc.groups.insert(k, v);
         }
+        self.doc.dfdl_annotations_seen |= other.dfdl_annotations_seen;
         self.doc.format_defaults.props =
             merge_dfdl_props(self.doc.format_defaults.props.clone(), other.format_defaults.props);
         self.doc.format_defaults.props.calendar_time_zone_defined = false;
@@ -163,7 +167,23 @@ impl<'a> XsdParser<'a> {
                     if local_name_str(&name.local_name) == "schema" {
                         self.parse_schema_element(attrs_to_map(&attributes))?;
                     } else {
+                        let local = local_name_str(&name.local_name).to_string();
+                        let ns = name
+                            .namespace
+                            .as_deref()
+                            .filter(|u| !u.is_empty())
+                            .map(String::from);
                         self.reader.skip_current_subtree()?;
+                        let qname = match ns.as_deref() {
+                            Some(uri) => alloc::format!("{{{uri}}}{local}"),
+                            None => alloc::format!("{{}}{local}"),
+                        };
+                        return Err(crate::error::SchemaError::InvalidProperty {
+                            message: alloc::format!(
+                                "Schema Definition Error: {qname} in no namespace"
+                            ),
+                        }
+                        .into());
                     }
                 }
                 XmlEvent::EndDocument => break,
@@ -188,8 +208,16 @@ impl<'a> XsdParser<'a> {
 
     fn parse_schema_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
         self.doc.target_namespace = attrs.get("targetNamespace").cloned();
-        self.doc.element_form_default_qualified =
-            attrs.get("elementFormDefault").map(|v| v == "qualified").unwrap_or(false);
+        if attrs.keys().any(|k| k.contains("dfdl") || k.ends_with(":dfdl"))
+            || attrs.values().any(|v| v.as_str() == DFDL_NS)
+        {
+            self.doc.dfdl_annotations_seen = true;
+        }
+        self.doc.element_form_default_explicit = attrs.contains_key("elementFormDefault");
+        self.doc.element_form_default_qualified = attrs
+            .get("elementFormDefault")
+            .map(|v| v == "qualified")
+            .unwrap_or(false);
         self.pending_props = DfdlProps::default();
 
         self.reader.skip_insignificant_ws()?;
@@ -217,8 +245,15 @@ impl<'a> XsdParser<'a> {
                         "include" => self.parse_include_or_import("include", child_attrs)?,
                         "import" => self.parse_include_or_import("import", child_attrs)?,
                         "format" => {
+                            let enc_explicit = child_attrs.keys().any(|k| {
+                                local_tag(k) == "encodingErrorPolicy"
+                                    || k.ends_with(":encodingErrorPolicy")
+                            });
                             let props =
                                 self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
+                            if enc_explicit {
+                                self.doc.explicit_encoding_error_policy_on_format = true;
+                            }
                             self.doc.format_defaults.props =
                                 merge_dfdl_props(self.doc.format_defaults.props.clone(), props);
                         }
@@ -298,11 +333,16 @@ impl<'a> XsdParser<'a> {
             self.reader.skip_insignificant_ws()?;
             if self.reader.peek_is_end("element")? {
                 self.expect_end_local("element")?;
-                return Err(ParseError::MissingAttribute {
-                    element: "element".into(),
-                    attribute: "type".into(),
-                }
-                .into());
+                self.doc.global_elements.insert(
+                    name.clone(),
+                    GlobalElement {
+                        name,
+                        type_qname_prefixed: false,
+                        type_name: TypeName::new("xs:string"),
+                        props: self.finalize_props(props),
+                    },
+                );
+                return Ok(());
             }
             props = self.parse_inline_content(props, &["complexType", "simpleType", "annotation"])?;
             let inline = self.parse_inline_type()?;
@@ -312,6 +352,7 @@ impl<'a> XsdParser<'a> {
                 name.clone(),
                 GlobalElement {
                     name,
+                    type_qname_prefixed: true,
                     type_name: inline.0,
                     props: self.finalize_props(props),
                 },
@@ -334,10 +375,14 @@ impl<'a> XsdParser<'a> {
             self.expect_end_local("element")?;
         }
 
+        let type_qname_prefixed = xsd_attrs
+            .get("type")
+            .is_some_and(|t| t.contains(':'));
         self.doc.global_elements.insert(
             name.clone(),
             GlobalElement {
                 name,
+                type_qname_prefixed,
                 type_name: resolved_type,
                 props: self.finalize_props(props),
             },
@@ -649,6 +694,14 @@ impl<'a> XsdParser<'a> {
     fn parse_element_decl(&mut self, attrs: BTreeMap<String, String>) -> Result<ElementDecl> {
         let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("element", &attrs)?;
         let is_ref = xsd_attrs.contains_key("ref");
+        let has_element_name_attr = xsd_attrs.contains_key("name");
+        let element_ref = xsd_attrs.get("ref").cloned();
+        if is_ref && (has_element_name_attr || xsd_attrs.contains_key("type")) {
+            return Err(crate::error::SchemaError::InvalidProperty {
+                message: "Schema Definition Error: name and type attributes cannot appear together with ref attribute".into(),
+            }
+            .into());
+        }
         let name = xsd_attrs
             .get("name")
             .cloned()
@@ -673,6 +726,7 @@ impl<'a> XsdParser<'a> {
             } else {
                 let stub = GlobalElement {
                     name: name.clone(),
+                    type_qname_prefixed: false,
                     type_name: TypeName::new("xs:string"),
                     props: DfdlProps::default(),
                 };
@@ -704,6 +758,8 @@ impl<'a> XsdParser<'a> {
             }
             return Ok(ElementDecl {
                 name,
+                element_ref: None,
+                has_element_name_attr,
                 type_name: inline.0,
                 props,
                 particle: None,
@@ -733,6 +789,8 @@ impl<'a> XsdParser<'a> {
         }
         Ok(ElementDecl {
             name,
+            element_ref,
+            has_element_name_attr,
             type_name: resolved_type,
             props: self.finalize_props(props),
             particle: None,
@@ -1174,6 +1232,18 @@ impl<'a> XsdParser<'a> {
         _prefix: Option<&str>,
         attrs: BTreeMap<String, String>,
     ) -> Result<DfdlProps> {
+        self.doc.dfdl_annotations_seen = true;
+        for key in attrs.keys() {
+            if key.starts_with("dfdl:") || key.starts_with("dfdlx:") {
+                let attr_local = key.rsplit(':').next().unwrap_or(key.as_str());
+                return Err(crate::error::SchemaError::InvalidProperty {
+                    message: alloc::format!(
+                        "Schema Definition Error: dfdl:{attr_local} attribute must not use the dfdl: prefix on DFDL annotation elements"
+                    ),
+                }
+                .into());
+            }
+        }
         if local == "defineFormat" {
             return self.parse_define_format(attrs);
         }
@@ -1196,11 +1266,17 @@ impl<'a> XsdParser<'a> {
         }
 
         if local == "format" {
+            let enc_policy_explicit = attrs.keys().any(|k| {
+                local_tag(k) == "encodingErrorPolicy" || k.ends_with(":encodingErrorPolicy")
+            });
             if let Some(ref_name) = attrs.get("ref") {
                 let key = normalize_qname(ref_name);
                 if let Some(base) = self.doc.named_formats.get(&key).cloned() {
                     props = merge_dfdl_props(base, props);
                 }
+            }
+            if !enc_policy_explicit {
+                props.encoding_error_policy_defined = false;
             }
             if !self.in_define_format {
                 let mut format_props = props.clone();
@@ -2313,6 +2389,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             }
             "encoding" => props.encoding = Some(value.clone()),
             "encodingErrorPolicy" => {
+                props.encoding_error_policy_defined = true;
                 props.encoding_error_policy = Some(match value.as_str() {
                     "error" => EncodingErrorPolicy::Error,
                     "replace" => EncodingErrorPolicy::Replace,
@@ -2754,7 +2831,16 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 let lit = parse_delimiter_literal(value)?;
                 props.separator = Some(lit);
             }
-            "outputNewLine" => props.output_new_line = Some(parse_delimiter_literal(value)?),
+            "outputNewLine" => {
+                let lit = parse_delimiter_literal(value)?;
+                if lit.is_empty() {
+                    return Err(ParseError::InvalidXml {
+                        message: "For property dfdl:outputNewLine, the length of string must be exactly 1 character, except for CRLF case when it can be 2 characters.".into(),
+                    }
+                    .into());
+                }
+                props.output_new_line = Some(lit);
+            }
             "initiatedContent" => {
                 props.initiated_content = Some(matches!(value.as_str(), "yes" | "true" | "1"));
             }

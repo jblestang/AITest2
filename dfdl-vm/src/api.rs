@@ -92,8 +92,18 @@ impl DfdlSpec {
 
     /// Encode a value and return trailing bit count in the last byte (0 if byte-aligned).
     pub fn encode_with_bit_count(&self, value: &DfdlValue) -> Result<(Vec<u8>, u8)> {
+        self.encode_with_bit_count_config(value, RuntimeConfig::default())
+    }
+
+    pub fn encode_with_bit_count_config(
+        &self,
+        value: &DfdlValue,
+        config: RuntimeConfig,
+    ) -> Result<(Vec<u8>, u8)> {
         let mut out = Vec::new();
-        let bit_count = self.encoder().encode_with_bit_count(value, &mut out)?;
+        let bit_count = self
+            .encoder_with_config(config)
+            .encode_with_bit_count(value, &mut out)?;
         Ok((out, bit_count))
     }
 }
