@@ -20,10 +20,9 @@ fn text_encoding_alignment_bits(encoding: &str) -> u64 {
     if enc.starts_with("X-DFDL-") {
         return 1;
     }
-    if enc.contains("UTF-32") {
-        32
-    } else if enc.contains("UTF-16") {
-        16
+    // Daffodil `BitsCharset.mandatoryBitAlignment` (UTF-16/32 included).
+    if enc.contains("UTF-32") || enc.contains("UTF-16") {
+        8
     } else {
         8
     }
@@ -79,13 +78,6 @@ pub fn validate_text_alignment_schema(
         return Ok(());
     }
     if props.length_kind == LengthKind::Prefixed || props.length_kind == LengthKind::Delimited {
-        return Ok(());
-    }
-    if props.alignment_implicit {
-        return Ok(());
-    }
-    // Bit-granular layouts (Encodings.tdml): explicit alignment is in bits, not byte charset boundaries.
-    if props.alignment_units == LengthUnits::Bits {
         return Ok(());
     }
     if props.alignment_implicit {

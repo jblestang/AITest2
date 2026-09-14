@@ -138,14 +138,19 @@ impl<'a> Decoder<'a> {
             if let Some(limit) = cursor.frame_bit_limit {
                 let consumed = cursor.absolute_bit_index();
                 if consumed < limit {
+                    let remaining_bits = limit.saturating_sub(consumed);
                     return Err(VmError::TrailingData {
-                        remaining_bits: limit.saturating_sub(consumed),
+                        consumed_bits: consumed,
+                        remaining_bits,
                     }
                     .into());
                 }
             } else if cursor.bit_count == 0 && cursor.remaining() > 0 {
+                let total_bits = cursor.data.len().saturating_mul(8);
+                let remaining_bits = cursor.remaining().saturating_mul(8);
                 return Err(VmError::TrailingData {
-                    remaining_bits: cursor.remaining() * 8,
+                    consumed_bits: total_bits.saturating_sub(remaining_bits),
+                    remaining_bits,
                 }
                 .into());
             }
@@ -283,7 +288,9 @@ impl<'a> Decoder<'a> {
                             if let Ok(IrNode::Element { props, .. }) =
                                 self.ctx.program.node(child)
                             {
-                                if props.occurs_min > 0 {
+                                let zero_len = props.length_kind == LengthKind::Explicit
+                                    && props.length == Some(0);
+                                if props.occurs_min > 0 && !zero_len {
                                     return Err(e);
                                 }
                             }
@@ -411,7 +418,10 @@ impl<'a> Decoder<'a> {
     ) -> Result<DfdlValue> {
         validate_unbounded_wsp_star_terminator(props, self.ctx.strings())?;
 
-        let min = props.occurs_min;
+        let mut min = props.occurs_min;
+        if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
+            min = 0;
+        }
         let mut max = props.occurs_max.unwrap_or(u64::MAX);
         if props.occurs_count_kind == OccursCountKind::Parsed {
             if max != u64::MAX && min == max {
@@ -430,6 +440,9 @@ impl<'a> Decoder<'a> {
         let mut items = Vec::new();
 
         while (items.len() as u64) < max {
+            if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
+                break;
+            }
             if items.len() as u64 >= min && cursor.is_empty() {
                 break;
             }

@@ -691,11 +691,8 @@ fn count_utf16_code_units(bytes: &[u8], label: &str) -> Result<usize, VmError> {
 
 fn decode_utf32(bytes: &[u8], le: bool) -> Result<String, VmError> {
     let label = if le { "UTF-32LE" } else { "UTF-32BE" };
-    if bytes.len() % 4 != 0 {
-        return Err(VmError::InvalidValue {
-            message: alloc::format!("invalid {label} byte length"),
-        });
-    }
+    let usable = bytes.len() - (bytes.len() % 4);
+    let bytes = &bytes[..usable];
     let mut out = String::with_capacity(bytes.len() / 4);
     for chunk in bytes.chunks_exact(4) {
         let unit = if le {
@@ -719,11 +716,8 @@ fn decode_utf32(bytes: &[u8], le: bool) -> Result<String, VmError> {
 
 fn decode_utf16(bytes: &[u8], le: bool) -> Result<String, VmError> {
     let label = if le { "UTF-16LE" } else { "UTF-16BE" };
-    if bytes.len() % 2 != 0 {
-        return Err(VmError::InvalidValue {
-            message: alloc::format!("invalid {label} byte length"),
-        });
-    }
+    let usable = bytes.len() - (bytes.len() % 2);
+    let bytes = &bytes[..usable];
     let mut out = String::with_capacity(bytes.len() / 2);
     for chunk in bytes.chunks_exact(2) {
         let unit = if le {

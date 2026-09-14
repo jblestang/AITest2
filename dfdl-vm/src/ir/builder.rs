@@ -2073,9 +2073,6 @@ fn validate_prefix_length_type(
     }
 
     validate_text_alignment_schema(kind, prefix_props, strings)?;
-    if prefix_props.alignment_implicit || prefix_props.alignment_units == LengthUnits::Bits {
-        return Ok(());
-    }
     let encoding = strings
         .get(prefix_props.encoding)
         .unwrap_or("utf-8");
@@ -2083,9 +2080,11 @@ fn validate_prefix_length_type(
         kind,
         encoding,
     );
-    let align_bits = match prefix_props.alignment_units {
-        LengthUnits::Bits => prefix_props.alignment,
-        LengthUnits::Bytes | LengthUnits::Characters => prefix_props.alignment.saturating_mul(8),
+    let (align, units) =
+        crate::vm::alignment::resolved_alignment(kind, prefix_props, encoding);
+    let align_bits = match units {
+        LengthUnits::Bits => align,
+        LengthUnits::Bytes | LengthUnits::Characters => align.saturating_mul(8),
     };
     if enc_align != 0 && align_bits % enc_align != 0 {
         let type_name = value_kind_type_name(kind);
@@ -2774,8 +2773,24 @@ fn overlay_dfdl_to_ir(
                 .get(base.encoding)
                 .unwrap_or("ISO-8859-1");
             validate_fill_byte_schema(raw, bytes, encoding)?;
+            let char_literal = !raw.trim().starts_with('%');
+            if char_literal
+                && (crate::vm::encoding::bits_charset_spec(encoding).is_some()
+                    || encoding
+                        .to_ascii_uppercase()
+                        .contains("US-ASCII-7-BIT-PACKED"))
+            {
+                let ch = core::str::from_utf8(bytes).unwrap_or("");
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!(
+                        "Schema Definition Error: The fillByte property cannot be specified as a character ('{ch}') when the dfdl:encoding property is '{encoding}' because that encoding is not a single-byte character set."
+                    ),
+                }
+                .into());
+            }
             base.fill_byte = bytes.first().copied().unwrap_or(0);
             base.fill_byte_defined = true;
+            base.fill_byte_explicit = true;
             base.fill_byte_utf8 = Some(bytes.clone());
         }
     } else if let Some(ref bytes) = props.fill_byte {
@@ -3035,6 +3050,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.fill_byte_defined {
         out.fill_byte = overlay.fill_byte;
         out.fill_byte_defined = true;
+        if overlay.fill_byte_explicit {
+            out.fill_byte_explicit = true;
+        }
         if overlay.fill_byte_utf8.is_some() {
             out.fill_byte_utf8 = overlay.fill_byte_utf8.clone();
         }

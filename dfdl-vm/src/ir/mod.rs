@@ -188,6 +188,8 @@ pub struct IrProps {
     pub fill_byte: u8,
     /// True when `dfdl:fillByte` was explicitly set (not cleared with `%NUL;`).
     pub fill_byte_defined: bool,
+    /// True when this element's XSD carried `dfdl:fillByte` (not inherited from format only).
+    pub fill_byte_explicit: bool,
     /// Expanded `dfdl:fillByte` bytes (for runtime SDE when encoding is computed).
     pub fill_byte_utf8: Option<alloc::vec::Vec<u8>>,
     pub input_value_calc: Option<InputValueCalc>,
@@ -343,6 +345,7 @@ impl Default for IrProps {
             trailing_skip: 0,
             fill_byte: 0,
             fill_byte_defined: false,
+            fill_byte_explicit: false,
             fill_byte_utf8: None,
             input_value_calc: None,
             input_value_calc_literal: None,

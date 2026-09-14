@@ -757,7 +757,7 @@ fn resolve_encoding_for_encode(
 }
 
 fn validate_fill_byte_for_encode(props: &IrProps, strings: &crate::ir::StringPool) -> Result<()> {
-    if !props.fill_byte_defined {
+    if !props.fill_byte_explicit {
         return Ok(());
     }
     let Some(ref bytes) = props.fill_byte_utf8 else {

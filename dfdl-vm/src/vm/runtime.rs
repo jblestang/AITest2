@@ -804,10 +804,6 @@ pub(crate) fn read_binary_scalar(
                 let bytes = cursor.read_stream_bits_as_bytes(bit_len, props.bit_order)?;
                 return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
             }
-            if bit_len >= 8 && props.byte_order == ByteOrder::LittleEndian {
-                let bytes = cursor.read_hex_binary_bits(bit_len, props.bit_order)?;
-                return decode_binary_scalar(kind, &bytes, props, strings, Some(bit_len), tunables);
-            }
             let raw = cursor.read_stream_bits(bit_len, props.bit_order)?;
             let raw = normalize_bit_field_raw(raw, bit_len, props.byte_order, props.bit_order);
             return decode_binary_from_raw_bits(kind, raw, bit_len, props, strings, tunables);
@@ -956,6 +952,56 @@ fn binary_payload_to_u64(
             })
         }
     }
+}
+
+fn stream_raw_to_msbf_bytes(raw: u64, bit_width: usize) -> Vec<u8> {
+    let nbytes = bit_width.div_ceil(8);
+    let mut bytes = vec![0u8; nbytes];
+    for i in 0..bit_width {
+        let bit = (raw >> (bit_width - 1 - i)) & 1;
+        bytes[i / 8] |= (bit as u8) << (7 - (i % 8));
+    }
+    bytes
+}
+
+/// Daffodil `InputSourceDataInputStream.getUnsignedLong` / `fillByteArray` fragment handling.
+fn decode_packed_bit_field_u64(
+    bytes: &[u8],
+    bit_width: usize,
+    byte_order: ByteOrder,
+    bit_order: BitOrder,
+) -> u64 {
+    if bit_width == 0 {
+        return 0;
+    }
+    let fragment = bit_width % 8;
+    if fragment == 0 {
+        return decode_unsigned_binary_bytes(bytes, byte_order == ByteOrder::LittleEndian)
+            & bit_mask(bit_width);
+    }
+    let mut buf = bytes.to_vec();
+    if fragment != 0 {
+        if byte_order == ByteOrder::LittleEndian && bit_order == BitOrder::MostSignificantBitFirst {
+            if let Some(first) = buf.first_mut() {
+                *first >>= 8 - fragment;
+            }
+        } else if byte_order == ByteOrder::BigEndian && bit_order == BitOrder::LeastSignificantBitFirst {
+            if let Some(last) = buf.last_mut() {
+                *last <<= 8 - fragment;
+            }
+        } else if byte_order == ByteOrder::BigEndian && bit_order == BitOrder::MostSignificantBitFirst {
+            let mut v = 0u64;
+            for b in &buf {
+                v = (v << 8) | u64::from(*b);
+            }
+            return (v >> (8 - fragment)) & bit_mask(bit_width);
+        }
+    }
+    let mut v = 0u64;
+    for b in &buf {
+        v = (v << 8) | u64::from(*b);
+    }
+    v & bit_mask(bit_width)
 }
 
 fn decode_unsigned_binary_bytes(bytes: &[u8], le: bool) -> u64 {
@@ -3811,6 +3857,10 @@ fn normalize_bit_field_raw(
         return raw & bit_mask(bit_width);
     }
     if byte_order == ByteOrder::LittleEndian {
+        if bit_width >= 8 {
+            let bytes = stream_raw_to_msbf_bytes(raw, bit_width);
+            return decode_packed_bit_field_u64(&bytes, bit_width, byte_order, bit_order);
+        }
         let mut bytes = stream_bits_to_bytes(raw, bit_width, ByteOrder::BigEndian);
         bytes.reverse();
         let mut v = 0u64;
@@ -3874,7 +3924,10 @@ fn decode_binary_bytes(
             if bit_width == Some(1) {
                 Ok(DfdlValue::Short(decode_unsigned_binary_bytes(bytes, le) as i16))
             } else if let Some(bits) = bit_width {
-                Ok(DfdlValue::Short(sign_extend_u64(decode_unsigned_binary_bytes(bytes, le), bits) as i16))
+                Ok(DfdlValue::Short(sign_extend_u64(
+                    decode_packed_bit_field_u64(bytes, bits, props.byte_order, props.bit_order),
+                    bits,
+                ) as i16))
             } else {
                 Ok(DfdlValue::Short(int!(i16)))
             }
@@ -3882,7 +3935,8 @@ fn decode_binary_bytes(
         UnsignedShort => {
             if let Some(bits) = bit_width {
                 Ok(DfdlValue::UnsignedShort(
-                    (decode_unsigned_binary_bytes(bytes, le) & bit_mask(bits)) as u16,
+                    decode_packed_bit_field_u64(bytes, bits, props.byte_order, props.bit_order)
+                        as u16,
                 ))
             } else {
                 Ok(DfdlValue::UnsignedShort(int!(u16)))
@@ -3892,7 +3946,10 @@ fn decode_binary_bytes(
             if bit_width == Some(1) {
                 Ok(DfdlValue::Int(decode_unsigned_binary_bytes(bytes, le) as i32))
             } else if let Some(bits) = bit_width {
-                Ok(DfdlValue::Int(sign_extend_u64(decode_unsigned_binary_bytes(bytes, le), bits) as i32))
+                Ok(DfdlValue::Int(sign_extend_u64(
+                    decode_packed_bit_field_u64(bytes, bits, props.byte_order, props.bit_order),
+                    bits,
+                ) as i32))
             } else if bytes.len() < core::mem::size_of::<i32>() {
                 let bits = bytes.len().saturating_mul(8);
                 let raw = decode_unsigned_binary_bytes(bytes, le);

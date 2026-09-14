@@ -65,7 +65,10 @@ impl fmt::Display for SchemaError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmError {
     UnexpectedEof,
-    TrailingData { remaining_bits: usize },
+    TrailingData {
+        consumed_bits: usize,
+        remaining_bits: usize,
+    },
     InvalidChoice,
     LengthMismatch { expected: usize, actual: usize },
     InvalidValue { message: alloc::string::String },
@@ -80,8 +83,14 @@ impl fmt::Display for VmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             VmError::UnexpectedEof => write!(f, "unexpected end of input"),
-            VmError::TrailingData { remaining_bits } => {
-                write!(f, "Left over data. {remaining_bits} bit(s) remaining")
+            VmError::TrailingData {
+                consumed_bits,
+                remaining_bits,
+            } => {
+                write!(
+                    f,
+                    "Left over data. Consumed {consumed_bits} bit(s) with {remaining_bits} bit(s) remaining."
+                )
             }
             VmError::InvalidChoice => write!(f, "All choice alternatives failed"),
             VmError::LengthMismatch { expected, actual } => {

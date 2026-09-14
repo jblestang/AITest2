@@ -58,11 +58,7 @@ fn text_encoding_alignment_bits(encoding: &str) -> usize {
         return width as usize;
     }
     let enc = encoding.to_ascii_uppercase();
-    if enc.contains("UTF-16") {
-        16
-    } else {
-        8
-    }
+    8
 }
 
 /// Whether implicit/explicit pre-element alignment runs before a binary bit-length field.
