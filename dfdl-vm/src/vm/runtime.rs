@@ -548,7 +548,11 @@ pub(crate) fn read_binary_scalar(
         && props.length.is_some()
     {
         let len = props.length.unwrap_or(0) as usize;
-        let bits = len.saturating_mul(8);
+        let bits = if props.length_units == LengthUnits::Bits {
+            len
+        } else {
+            len.saturating_mul(8)
+        };
         if kind == ValueKind::String || kind == ValueKind::HexBinary {
             let bytes = cursor.read_stream_bits_as_bytes(bits, props.bit_order)?;
             return decode_binary_scalar(kind, &bytes, props, strings, None);
@@ -3792,10 +3796,7 @@ fn read_until_delimiters(
                 return Ok(out);
             }
         }
-        if cursor.bit_count != 0
-            || props.length_units == LengthUnits::Bits
-            || remaining_bits % 8 != 0
-        {
+        if cursor.bit_count != 0 || remaining_bits % 8 != 0 {
             return cursor.read_stream_bits_as_bytes(remaining_bits, props.bit_order);
         }
         let rest = cursor.data[cursor.pos..].to_vec();
@@ -5068,6 +5069,31 @@ pub(crate) fn read_simple(
                         )
                     },
                 });
+            }
+        }
+    }
+    if !use_text
+        && props.representation == Representation::Binary
+        && props.alignment_units == LengthUnits::Bits
+        && props.length_units == LengthUnits::Bits
+        && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
+        && !matches!(
+            props.length_kind,
+            LengthKind::Delimited | LengthKind::Prefixed
+        )
+    {
+        let (align, units) =
+            crate::vm::alignment::resolved_alignment(kind, props, encoding);
+        if !props.alignment_implicit && align > 1 && units == LengthUnits::Bits {
+            let pos = cursor.absolute_bit_index();
+            let align_bits = align as usize;
+            let skip = (align_bits - (pos % align_bits)) % align_bits;
+            let within_frame = cursor
+                .frame_bit_limit
+                .map(|limit| pos + skip <= limit)
+                .unwrap_or(true);
+            if skip > 0 && within_frame {
+                consume_alignment_values(cursor, props, align, units)?;
             }
         }
     }

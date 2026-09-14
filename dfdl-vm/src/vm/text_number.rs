@@ -925,6 +925,9 @@ fn skip_pad_chars(
         }
         let ch = bytes[*pos] as char;
         if Some(ch) == Some(pad) {
+            if after_decimal {
+                break;
+            }
             *pos += ch.len_utf8();
             continue;
         }
@@ -989,6 +992,7 @@ fn match_subpattern(
     let mut frac_digits = String::new();
     let mut exponent: Option<String> = None;
     let mut exp_negative = false;
+    let mut exp_explicit_sign = false;
     let mut negative = negative_subpattern;
     let mut saw_decimal = false;
     let mut in_exponent = false;
@@ -1043,8 +1047,10 @@ fn match_subpattern(
                 skip_pad(bytes, &mut pos, props.pad_character, lax, props, saw_decimal);
                 if in_exponent && exponent.as_ref().map_or(true, |e| e.is_empty()) {
                     if pos < bytes.len() && bytes[pos] == b'+' {
+                        exp_explicit_sign = true;
                         pos += 1;
                     } else if pos < bytes.len() && bytes[pos] == b'-' {
+                        exp_explicit_sign = true;
                         exp_negative = true;
                         pos += 1;
                     }
@@ -1201,6 +1207,7 @@ fn match_subpattern(
                 let lit = other;
                 if in_exponent && lit == '+' {
                     if text[pos..].starts_with('+') {
+                        exp_explicit_sign = true;
                         pos += 1;
                     } else if pos < bytes.len() && bytes[pos] == b'-' {
                         // optional '+' omitted when exponent is negative
@@ -1302,6 +1309,15 @@ fn match_subpattern(
     if let Some(exp) = exponent {
         if !exp.is_empty() {
             let bare = pattern_without_quoted_regions(pattern);
+            let exp_section = bare
+                .split(['E', 'e'])
+                .nth(1)
+                .unwrap_or("");
+            let pattern_signed_exp =
+                exp_section.contains('+') || exp_section.contains('-');
+            if exp_explicit_sign || exp_negative || pattern_signed_exp {
+                return Ok(apply_scientific_exponent(&out, &exp, exp_negative, negative));
+            }
             if saw_decimal
                 || !frac_digits.is_empty()
                 || bare.contains('E')

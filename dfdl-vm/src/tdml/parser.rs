@@ -311,16 +311,41 @@ fn parse_document(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
         let mut kind = DocumentKind::Text;
         let mut data = Vec::new();
         let mut last_byte_bit_count = None;
+        let mut pending_bits: Vec<u8> = Vec::new();
+        let mut saw_bits_part = false;
+
+        let flush_pending_bits =
+            |pending: &mut Vec<u8>, data: &mut Vec<u8>, last: &mut Option<u8>| {
+                if pending.is_empty() {
+                    return;
+                }
+                let (packed, trailing) = pack_bits_to_document(pending);
+                data.extend(packed);
+                *last = Some(trailing);
+                pending.clear();
+            };
+
         while reader.peek_start_local()? == Some("documentPart".to_string()) {
             let part = parse_document_part(reader)?;
-            if data.is_empty() {
-                kind = part.kind;
+            if let Some(bits) = part.expanded_bits {
+                saw_bits_part = true;
+                kind = DocumentKind::Bits;
+                pending_bits.extend(bits);
+            } else {
+                flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
+                if data.is_empty() && !saw_bits_part {
+                    kind = part.kind;
+                }
+                data.extend(part.data);
+                last_byte_bit_count = part.last_byte_bit_count;
             }
-            data.extend(part.data);
-            last_byte_bit_count = part.last_byte_bit_count;
             reader.skip_insignificant_ws()?;
         }
         reader.expect_end("document")?;
+        flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
+        if saw_bits_part {
+            kind = DocumentKind::Bits;
+        }
         return Ok(TdmlDocument {
             kind,
             data,
@@ -336,7 +361,15 @@ fn parse_document(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
     })
 }
 
-fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
+struct ParsedDocumentPart {
+    kind: DocumentKind,
+    data: Vec<u8>,
+    last_byte_bit_count: Option<u8>,
+    /// Expanded 0/1 bit stream when `kind == Bits` (for multi-part merge).
+    expanded_bits: Option<Vec<u8>>,
+}
+
+fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<ParsedDocumentPart> {
     let XmlEvent::StartElement { attributes, .. } = reader.next_event()? else {
         return Err(ParseError::InvalidXml {
             message: "expected documentPart".into(),
@@ -355,7 +388,7 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
         .unwrap_or(false);
     let encoding = attrs.get("encoding").map(String::as_str);
     let text = reader.read_text_until_end("documentPart")?;
-    let (data, last_byte_bit_count) = match kind {
+    let (data, last_byte_bit_count, expanded_bits) = match kind {
         DocumentKind::Text => {
             let data = if replace_entities {
                 expand_entities(&text)
@@ -366,18 +399,20 @@ fn parse_document_part(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
             } else {
                 text.into_bytes()
             };
-            (data, None)
+            (data, None, None)
         }
-        DocumentKind::Hex => (parse_hex_document(&text)?, None),
+        DocumentKind::Hex => (parse_hex_document(&text)?, None, None),
         DocumentKind::Bits => {
-            let (data, bit_count) = parse_bits_document_with_count(&text)?;
-            (data, Some(bit_count))
+            let bits = collect_bits_from_text(&text);
+            let (data, bit_count) = pack_bits_to_document(&bits);
+            (data, Some(bit_count), Some(bits))
         }
     };
-    Ok(TdmlDocument {
+    Ok(ParsedDocumentPart {
         kind,
         data,
         last_byte_bit_count,
+        expanded_bits,
     })
 }
 
@@ -428,7 +463,7 @@ fn parse_hex_document(text: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn parse_bits_document_with_count(text: &str) -> Result<(Vec<u8>, u8)> {
+fn collect_bits_from_text(text: &str) -> Vec<u8> {
     let mut bits = Vec::new();
     for c in text.chars() {
         match c {
@@ -438,6 +473,10 @@ fn parse_bits_document_with_count(text: &str) -> Result<(Vec<u8>, u8)> {
             _ => {}
         }
     }
+    bits
+}
+
+fn pack_bits_to_document(bits: &[u8]) -> (Vec<u8>, u8) {
     let trailing = (bits.len() % 8) as u8;
     let mut out = Vec::new();
     for chunk in bits.chunks(8) {
@@ -447,7 +486,12 @@ fn parse_bits_document_with_count(text: &str) -> Result<(Vec<u8>, u8)> {
         }
         out.push(byte);
     }
-    Ok((out, trailing as u8))
+    (out, trailing)
+}
+
+fn parse_bits_document_with_count(text: &str) -> Result<(Vec<u8>, u8)> {
+    let bits = collect_bits_from_text(text);
+    Ok(pack_bits_to_document(&bits))
 }
 
 #[allow(dead_code)]
@@ -585,6 +629,25 @@ mod tests {
         let (data, trailing) = parse_bits_document_with_count("1000 0000 1|100 0000 001").unwrap();
         assert_eq!(data, vec![0x80, 0xC0, 0x20]);
         assert_eq!(trailing, 3);
+    }
+
+    #[test]
+    fn merge_multi_part_bits_document_is_continuous_bit_stream() {
+        let bits: Vec<u8> = collect_bits_from_text("0101")
+            .into_iter()
+            .chain(collect_bits_from_text("1101"))
+            .chain(collect_bits_from_text("11110100"))
+            .collect();
+        let (data, trailing) = pack_bits_to_document(&bits);
+        assert_eq!(data, vec![0x5D, 0xF4]);
+        assert_eq!(trailing, 0);
+        let bits2: Vec<u8> = collect_bits_from_text("00 00")
+            .into_iter()
+            .chain(collect_bits_from_text("11 10"))
+            .collect();
+        let (data2, trailing2) = pack_bits_to_document(&bits2);
+        assert_eq!(data2, vec![0x0E]);
+        assert_eq!(trailing2, 0);
     }
 
     #[test]

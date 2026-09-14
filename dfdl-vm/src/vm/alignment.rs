@@ -322,6 +322,106 @@ mod tests {
         assert_eq!(program.strings.get(*name).ok(), Some("one"));
         assert_eq!(props.leading_skip, 4);
     }
+
+    #[test]
+    fn tdml_alignment02_first_field_manual() {
+        use crate::length_validate::DaffodilTunables;
+        use crate::vm::runtime::{read_binary_scalar, consume_element_framing, Cursor};
+        use crate::tdml::parse_tdml;
+        const TDML: &str = include_str!(
+            "../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/Aligned_Data.tdml"
+        );
+        let suite = parse_tdml(TDML).expect("tdml");
+        let test = suite.tests.iter().find(|t| t.name == "alignment02").expect("t");
+        let def = suite.schemas.get("alignmentSchema").expect("schema");
+        let schema = crate::schema::parse_schema_with_options(
+            &def.xsd,
+            &crate::schema::ParseOptions {
+                base_dir: def.compile_base_dir.clone(),
+            },
+        )
+        .expect("parse");
+        let program = compile_named(&schema, Some("e3")).expect("ir");
+        let root = program.node(program.root).expect("root");
+        let IrNode::Element { child: Some(seq_id), .. } = root else {
+            panic!("root");
+        };
+        let seq = program.node(*seq_id).expect("seq");
+        let IrNode::Sequence { children, .. } = seq else {
+            panic!("seq");
+        };
+        let child = program.node(children[0]).expect("child");
+        let IrNode::Element {
+            name,
+            kind,
+            props,
+            ..
+        } = child
+        else {
+            panic!("child");
+        };
+        assert_eq!(program.strings.get(*name).ok(), Some("one"));
+        assert_eq!(props.leading_skip, 4);
+        let doc = &test.documents[0];
+        let mut cursor = Cursor::with_frame_bits(
+            &doc.data,
+            doc.significant_bit_length().expect("bits"),
+        );
+        let enc = program.strings.get(props.encoding).expect("enc");
+        consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
+        assert_eq!(cursor.absolute_bit_index(), 4);
+        let v = read_binary_scalar(
+            &mut cursor,
+            *kind,
+            props,
+            &program.strings,
+            false,
+            &[],
+            Some("one"),
+            &DaffodilTunables::default(),
+        )
+        .expect("read");
+        assert!(matches!(v, crate::value::DfdlValue::UnsignedByte(3)));
+    }
+
+    #[test]
+    fn tdml_hb_delimited_after_framing() {
+        use crate::tdml::parse_tdml;
+        use crate::vm::runtime::{consume_element_framing, read_delimited_bytes, Cursor};
+        const TDML: &str = include_str!(
+            "../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/Aligned_Data.tdml"
+        );
+        let suite = parse_tdml(TDML).expect("tdml");
+        let test = suite
+            .tests
+            .iter()
+            .find(|t| t.name == "impAlignmentHexBinary")
+            .expect("t");
+        let def = suite.schemas.get("implicitAlignmentSchema").expect("schema");
+        let schema = crate::schema::parse_schema_with_options(
+            &def.xsd,
+            &crate::schema::ParseOptions {
+                base_dir: def.compile_base_dir.clone(),
+            },
+        )
+        .expect("parse");
+        let program = compile_named(&schema, Some("hB")).expect("ir");
+        let root = program.node(program.root).expect("root");
+        let IrNode::Element { props, kind, .. } = root else {
+            panic!("root");
+        };
+        let doc = &test.documents[0];
+        let mut cursor = Cursor::with_frame_bits(
+            &doc.data,
+            doc.significant_bit_length().expect("bits"),
+        );
+        let enc = program.strings.get(props.encoding).expect("enc");
+        consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
+        assert_eq!(cursor.absolute_bit_index(), 8, "skip+implicit align");
+        let bytes = read_delimited_bytes(&mut cursor, props, &program.strings, false, &[])
+            .expect("delim");
+        assert_eq!(bytes, [0xF4], "got {bytes:02x?}");
+    }
 }
 
 pub fn consume_trailing_skip(
