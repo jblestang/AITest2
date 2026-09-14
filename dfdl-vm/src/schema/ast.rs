@@ -549,4 +549,22 @@ impl SchemaDocument {
     pub fn resolve_type(&self, name: &TypeName) -> Option<&TypeDef> {
         self.types.get(name)
     }
+
+    /// Merge DFDL properties along `restriction base="ex:…"` simple type chains.
+    pub fn effective_simple_type_props(&self, name: &TypeName) -> Option<DfdlProps> {
+        let TypeDef::Simple { base, props, .. } = self.types.get(name)? else {
+            return None;
+        };
+        let mut out = match base {
+            SimpleBase::Restriction {
+                base: RestrictionBase::Named(parent),
+                ..
+            } => self
+                .effective_simple_type_props(parent)
+                .unwrap_or_default(),
+            _ => DfdlProps::default(),
+        };
+        out = crate::schema::parser::merge_dfdl_props(out, props.clone());
+        Some(out)
+    }
 }

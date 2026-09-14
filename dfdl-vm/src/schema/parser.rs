@@ -90,7 +90,7 @@ impl<'a> XsdParser<'a> {
             self.doc.groups.insert(k, v);
         }
         self.doc.format_defaults.props =
-            merge_props(self.doc.format_defaults.props.clone(), other.format_defaults.props);
+            merge_dfdl_props(self.doc.format_defaults.props.clone(), other.format_defaults.props);
     }
 
     fn consume_start(&mut self) -> Result<(String, Option<String>, BTreeMap<String, String>)> {
@@ -186,7 +186,7 @@ impl<'a> XsdParser<'a> {
                             let props =
                                 self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
                             self.doc.format_defaults.props =
-                                merge_props(self.doc.format_defaults.props.clone(), props);
+                                merge_dfdl_props(self.doc.format_defaults.props.clone(), props);
                         }
                         "defineFormat" => {
                             let _ = self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
@@ -194,7 +194,7 @@ impl<'a> XsdParser<'a> {
                         "annotation" => {
                             let props = self.parse_annotation(child_attrs)?;
                             self.doc.format_defaults.props =
-                                merge_props(self.doc.format_defaults.props.clone(), props);
+                                merge_dfdl_props(self.doc.format_defaults.props.clone(), props);
                         }
                         _ => self.skip_element_body(&local)?,
                     }
@@ -243,7 +243,7 @@ impl<'a> XsdParser<'a> {
                 attribute: "name".into(),
             })?;
         let pending = core::mem::take(&mut self.pending_props);
-        let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
+        let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &xsd_attrs);
         if xsd_attrs.get("nillable").is_some_and(|v| v == "true") {
             props.nillable = Some(true);
@@ -263,7 +263,7 @@ impl<'a> XsdParser<'a> {
             }
             props = self.parse_inline_content(props, &["complexType", "simpleType", "annotation"])?;
             let inline = self.parse_inline_type()?;
-            props = merge_props(props, inline.1);
+            props = merge_dfdl_props(props, inline.1);
             self.expect_end_local("element")?;
             self.doc.global_elements.insert(
                 name.clone(),
@@ -286,7 +286,7 @@ impl<'a> XsdParser<'a> {
             if !self.reader.peek_is_end("element")? {
                 let inline = self.parse_inline_type()?;
                 resolved_type = inline.0;
-                props = merge_props(props, inline.1);
+                props = merge_dfdl_props(props, inline.1);
             }
             self.expect_end_local("element")?;
         }
@@ -351,7 +351,7 @@ impl<'a> XsdParser<'a> {
         let (_xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("simpleType", &attrs)?;
         let name = inline_name.or_else(|| attrs.get("name").cloned());
         let pending = core::mem::take(&mut self.pending_props);
-        let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
+        let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
 
         self.reader.skip_insignificant_ws()?;
         if self.reader.peek_is_end("simpleType")? {
@@ -467,7 +467,7 @@ impl<'a> XsdParser<'a> {
     fn parse_sequence(&mut self, attrs: BTreeMap<String, String>) -> Result<SequenceDecl> {
         let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("sequence", &attrs)?;
         let pending = core::mem::take(&mut self.pending_props);
-        let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
+        let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);
 
         self.reader.skip_insignificant_ws()?;
@@ -532,7 +532,7 @@ impl<'a> XsdParser<'a> {
     fn parse_choice(&mut self, attrs: BTreeMap<String, String>) -> Result<ChoiceDecl> {
         let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("choice", &attrs)?;
         let pending = core::mem::take(&mut self.pending_props);
-        let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
+        let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);
 
         self.reader.skip_insignificant_ws()?;
@@ -607,7 +607,7 @@ impl<'a> XsdParser<'a> {
             })?;
         let default_value = xsd_attrs.get("default").cloned();
         let pending = core::mem::take(&mut self.pending_props);
-        let mut props = self.finalize_props(merge_props(pending, dfdl_from_attrs));
+        let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &xsd_attrs);
         if xsd_attrs.get("nillable").is_some_and(|v| v == "true") {
             props.nillable = Some(true);
@@ -616,14 +616,20 @@ impl<'a> XsdParser<'a> {
         let type_name = if let Some(t) = xsd_attrs.get("type") {
             TypeName::new(normalize_qname(t))
         } else if is_ref {
-            let global = self
-                .doc
-                .global_elements
-                .get(&name)
-                .ok_or_else(|| ParseError::UnknownElement {
+            let global = if let Some(g) = self.doc.global_elements.get(&name) {
+                g.clone()
+            } else {
+                let stub = GlobalElement {
                     name: name.clone(),
-                })?;
-            props = merge_props(global.props.clone(), props);
+                    type_name: TypeName::new("xs:string"),
+                    props: DfdlProps::default(),
+                };
+                self.doc
+                    .global_elements
+                    .insert(name.clone(), stub.clone());
+                stub
+            };
+            props = merge_dfdl_props(global.props.clone(), props);
             global.type_name.clone()
         } else {
             self.reader.skip_insignificant_ws()?;
@@ -638,7 +644,7 @@ impl<'a> XsdParser<'a> {
             props = self.parse_inline_content(props, &["complexType", "simpleType", "annotation"])?;
             let inline = self.parse_inline_type()?;
             self.expect_end_local("element")?;
-            let mut props = self.finalize_props(merge_props(props, inline.1));
+            let mut props = self.finalize_props(merge_dfdl_props(props, inline.1));
             if let Some(ref d) = default_value {
                 if props.default_value.is_none() {
                     props.default_value = Some(d.clone());
@@ -663,7 +669,7 @@ impl<'a> XsdParser<'a> {
             if !self.reader.peek_is_end("element")? {
                 let inline = self.parse_inline_type()?;
                 resolved_type = inline.0;
-                props = merge_props(props, inline.1);
+                props = merge_dfdl_props(props, inline.1);
             }
             self.expect_end_local("element")?;
         }
@@ -888,7 +894,7 @@ impl<'a> XsdParser<'a> {
                     let local = name.local_name.clone();
                     if local == "annotation" {
                         let child_attrs = self.reader.take_start_attributes()?;
-                        props = merge_props(props, self.parse_annotation(child_attrs)?);
+                        props = merge_dfdl_props(props, self.parse_annotation(child_attrs)?);
                     } else if allowed.iter().any(|a| *a == local.as_str()) {
                         break;
                     } else {
@@ -936,7 +942,7 @@ impl<'a> XsdParser<'a> {
                     let local = name.local_name.clone();
                     let child_attrs = self.reader.take_start_attributes()?;
                     if local == "appinfo" {
-                        props = merge_props(props, self.parse_appinfo(child_attrs)?);
+                        props = merge_dfdl_props(props, self.parse_appinfo(child_attrs)?);
                     } else {
                         self.skip_element_body(&local)?;
                     }
@@ -984,7 +990,7 @@ impl<'a> XsdParser<'a> {
                         if Self::is_dfdl_element(prefix.as_deref(), &local) {
                             let dfdl_props =
                                 self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
-                            props = merge_props(props, dfdl_props);
+                            props = merge_dfdl_props(props, dfdl_props);
                         } else {
                             self.skip_element_body(&local)?;
                         }
@@ -1013,7 +1019,7 @@ impl<'a> XsdParser<'a> {
         if let Some(ref_name) = props.format_ref.take() {
             let key = format_ref_key(&ref_name);
             if let Some(base) = self.doc.named_formats.get(&key) {
-                props = merge_props(base.clone(), props);
+                props = merge_dfdl_props(base.clone(), props);
             }
         }
         props
@@ -1046,12 +1052,12 @@ impl<'a> XsdParser<'a> {
             if let Some(ref_name) = attrs.get("ref") {
                 let key = normalize_qname(ref_name);
                 if let Some(base) = self.doc.named_formats.get(&key).cloned() {
-                    props = merge_props(base, props);
+                    props = merge_dfdl_props(base, props);
                 }
             }
             if !self.in_define_format {
                 self.doc.format_defaults.props =
-                    merge_props(self.doc.format_defaults.props.clone(), props.clone());
+                    merge_dfdl_props(self.doc.format_defaults.props.clone(), props.clone());
             }
         }
 
@@ -1083,7 +1089,7 @@ impl<'a> XsdParser<'a> {
                                 let value = self.read_simple_element_text("property")?;
                                 let mut map = BTreeMap::new();
                                 map.insert(prop_name.clone(), value);
-                                props = merge_props(props, props_from_attrs(&map)?);
+                                props = merge_dfdl_props(props, props_from_attrs(&map)?);
                                 if local_tag(&prop_name) == "textStringPadCharacter" {
                                     props.text_string_pad_character_property_form = true;
                                 }
@@ -1168,7 +1174,7 @@ impl<'a> XsdParser<'a> {
                     if Self::is_dfdl_element(prefix.as_deref(), &local) {
                         let child_props =
                             self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
-                        props = merge_props(props, child_props);
+                        props = merge_dfdl_props(props, child_props);
                     } else {
                         self.skip_element_body(&local)?;
                     }
@@ -1211,13 +1217,23 @@ fn event_kind(ev: &XmlEvent) -> &'static str {
     }
 }
 
+fn xsd_attr<'a>(attrs: &'a BTreeMap<String, String>, local: &str) -> Option<&'a String> {
+    if let Some(v) = attrs.get(local) {
+        return Some(v);
+    }
+    attrs
+        .iter()
+        .find(|(k, _)| k.as_str() == local || k.ends_with(&alloc::format!(":{local}")))
+        .map(|(_, v)| v)
+}
+
 fn merge_occurs(props: &mut DfdlProps, attrs: &BTreeMap<String, String>) {
-    if let Some(min) = attrs.get("minOccurs") {
+    if let Some(min) = xsd_attr(attrs, "minOccurs") {
         if let Ok(v) = min.parse() {
             props.occurs_min = Some(v);
         }
     }
-    if let Some(max) = attrs.get("maxOccurs") {
+    if let Some(max) = xsd_attr(attrs, "maxOccurs") {
         props.max_occurs_specified = true;
         if max == "unbounded" {
             props.occurs_max = None;
@@ -1227,7 +1243,7 @@ fn merge_occurs(props: &mut DfdlProps, attrs: &BTreeMap<String, String>) {
     }
 }
 
-fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
+pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.representation.is_some() {
         base.representation = overlay.representation;
     }

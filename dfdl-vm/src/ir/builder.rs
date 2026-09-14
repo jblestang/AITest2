@@ -117,10 +117,15 @@ impl<'a> IrBuilder<'a> {
                     name: root_element.type_name.as_str().to_string(),
                 })?;
 
-            if let TypeDef::Simple { base, props, .. } = type_def {
+            if let TypeDef::Simple { base, props: _, .. } = type_def {
                 let defaults = self.defaults.clone();
                 let kind = value_kind_from_simple(&self.schema, base);
-                let merged = self.merge_props_full(&defaults, props, &root_element.props)?;
+                let type_props = self
+                    .schema
+                    .effective_simple_type_props(&root_element.type_name)
+                    .unwrap_or_default();
+                validate_dfdl_prop_overlap(&root_element.props, &type_props)?;
+                let merged = self.merge_props_full(&defaults, &type_props, &root_element.props)?;
                 validate_length_facets_for_type(&self.schema, base, kind, &merged)?;
                 let mut ir_props = finalize_element_props(
                     kind,
@@ -207,12 +212,17 @@ impl<'a> IrBuilder<'a> {
             })?;
 
         match type_def {
-            TypeDef::Simple { base, props, .. } => {
+            TypeDef::Simple { base, props: _, .. } => {
                 let defaults = self.defaults.clone();
                 let kind = value_kind_from_simple(&self.schema, base);
+                let type_props = self
+                    .schema
+                    .effective_simple_type_props(type_name)
+                    .unwrap_or_default();
+                validate_dfdl_prop_overlap(element_props, &type_props)?;
                 let mut ir_props = finalize_element_props(
                     kind,
-                    self.merge_props_full(&defaults, props, element_props)?,
+                    self.merge_props_full(&defaults, &type_props, element_props)?,
                     &mut self.strings,
                     self.tunables,
                 )?;
@@ -455,6 +465,7 @@ impl<'a> IrBuilder<'a> {
                 }
             }
             Particle::Sequence(sequence) => {
+                validate_model_group_occurs("sequence", &sequence.props)?;
                 let ir_props = self.merge_props_full(inherited, &sequence.props, &DfdlProps::default())?;
                 let child_inherited =
                     particle_inherited_for_children(inherited, &sequence.props, &self.defaults);
@@ -516,6 +527,7 @@ impl<'a> IrBuilder<'a> {
                 }))
             }
             Particle::Choice(choice) => {
+                validate_model_group_occurs("choice", &choice.props)?;
                 let ir_props = self.merge_props_full(inherited, &choice.props, &DfdlProps::default())?;
                 let child_inherited =
                     particle_inherited_for_children(inherited, &choice.props, &self.defaults);
@@ -541,6 +553,7 @@ impl<'a> IrBuilder<'a> {
     fn compile_complex(&mut self, content: &ComplexContent, type_base: &IrProps) -> Result<u32> {
         match content {
             ComplexContent::Sequence(sequence) => {
+                validate_model_group_occurs("sequence", &sequence.props)?;
                 let ir_props = self.merge_props_full(
                     type_base,
                     &sequence.props,
@@ -567,6 +580,7 @@ impl<'a> IrBuilder<'a> {
                 }))
             }
             ComplexContent::Choice(choice) => {
+                validate_model_group_occurs("choice", &choice.props)?;
                 let ir_props = self.merge_props_full(
                     type_base,
                     &choice.props,
@@ -1621,6 +1635,85 @@ fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
         }
         .into());
     }
+    Ok(())
+}
+
+fn validate_model_group_occurs(group: &str, props: &DfdlProps) -> Result<()> {
+    let min = props.occurs_min.unwrap_or(1);
+    if min != 1 || props.max_occurs_specified {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. xs:minOccurs and xs:maxOccurs cannot appear in xs:{group} model group"
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_dfdl_prop_overlap(element: &DfdlProps, type_props: &DfdlProps) -> Result<()> {
+    let overlaps = |a: bool, b: bool| a && b;
+    let check = |prop: &str, a: bool, b: bool| -> Result<()> {
+        if overlaps(a, b) {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error. Property overlap on `{prop}` between element and simple type"
+                ),
+            }
+            .into());
+        }
+        Ok(())
+    };
+    check(
+        "byteOrder",
+        element.byte_order.is_some(),
+        type_props.byte_order.is_some(),
+    )?;
+    check(
+        "bitOrder",
+        element.bit_order.is_some(),
+        type_props.bit_order.is_some(),
+    )?;
+    check(
+        "representation",
+        element.representation.is_some(),
+        type_props.representation.is_some(),
+    )?;
+    check(
+        "lengthKind",
+        element.length_kind.is_some(),
+        type_props.length_kind.is_some(),
+    )?;
+    check(
+        "length",
+        element.length.is_some(),
+        type_props.length.is_some(),
+    )?;
+    check(
+        "encoding",
+        element.encoding.is_some(),
+        type_props.encoding.is_some(),
+    )?;
+    check(
+        "alignment",
+        element.alignment.is_some(),
+        type_props.alignment.is_some(),
+    )?;
+    check(
+        "initiator",
+        element.initiator.as_ref().is_some_and(|s| !s.is_empty()),
+        type_props.initiator.as_ref().is_some_and(|s| !s.is_empty()),
+    )?;
+    check(
+        "terminator",
+        element.terminator.as_ref().is_some_and(|s| !s.is_empty()),
+        type_props.terminator.as_ref().is_some_and(|s| !s.is_empty()),
+    )?;
+    check(
+        "separator",
+        element.separator.as_ref().is_some_and(|s| !s.is_empty()),
+        type_props.separator.as_ref().is_some_and(|s| !s.is_empty()),
+    )?;
     Ok(())
 }
 
