@@ -20,7 +20,9 @@ fn text_encoding_alignment_bits(encoding: &str) -> u64 {
     if enc.starts_with("X-DFDL-") {
         return 1;
     }
-    if enc.contains("UTF-16") {
+    if enc.contains("UTF-32") {
+        32
+    } else if enc.contains("UTF-16") {
         16
     } else {
         8
@@ -76,6 +78,9 @@ pub fn validate_text_alignment_schema(
     if kind == ValueKind::Complex {
         return Ok(());
     }
+    if props.length_kind == LengthKind::Prefixed || props.length_kind == LengthKind::Delimited {
+        return Ok(());
+    }
     if props.alignment_implicit {
         return Ok(());
     }
@@ -83,8 +88,10 @@ pub fn validate_text_alignment_schema(
     if props.alignment_units == LengthUnits::Bits {
         return Ok(());
     }
-    let text_field = props.representation == Representation::Text || kind == ValueKind::String;
-    if !text_field {
+    if props.alignment_implicit {
+        return Ok(());
+    }
+    if props.representation != Representation::Text && kind != ValueKind::String {
         return Ok(());
     }
     let Some(type_name) = text_prim_type_name(kind) else {
@@ -93,6 +100,13 @@ pub fn validate_text_alignment_schema(
     let encoding = strings
         .get(props.encoding)
         .unwrap_or("utf-8");
+    let enc_lower = encoding.to_ascii_lowercase();
+    if props.alignment_implicit
+        && props.representation == Representation::Binary
+        && (enc_lower.contains("utf-16") || enc_lower.contains("utf-32"))
+    {
+        return Ok(());
+    }
     let enc_align = implicit_text_encoding_alignment_bits(kind, encoding);
     let (align, units) =
         crate::vm::alignment::resolved_alignment(kind, props, encoding);

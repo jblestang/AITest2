@@ -78,7 +78,18 @@ impl<'a> Encoder<'a> {
                     if child_skips_encode(self, child)? {
                         continue;
                     }
-                    if !sequence_separator_deferred_to_child_occurrences(self, child)? {
+                    let defer_sep = sequence_separator_deferred_to_child_occurrences(self, child)?;
+                    if !defer_sep {
+                        self.write_sequence_separator(
+                            props,
+                            out,
+                            bit_count,
+                            idx,
+                            children.len(),
+                            &seq.meta,
+                        )?;
+                    } else if idx > 0 && props.separator_position == SeparatorPosition::Infix {
+                        // Leading infix separator before an unbounded/repeated child (NS_13a).
                         self.write_sequence_separator(
                             props,
                             out,

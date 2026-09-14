@@ -183,7 +183,8 @@ fn daffodil_section12_length_kind_regression_gate() {
     );
     assert_eq!(stats.skip, 0);
     assert_eq!(stats.parse_fail, 0);
-    assert!(stats.pass >= 300, "expected ~305 passing cases, got {}", stats.pass);
+    assert_eq!(stats.fail, 0, "section12 lengthKind failures: {stats:?}");
+    assert!(stats.pass >= 305, "expected ~305 passing cases, got {}", stats.pass);
 }
 
 /// CI gate: Section 12 aligned_data (full TDML directory).
@@ -245,16 +246,18 @@ fn daffodil_section12_length_properties_regression_gate() {
         stats.parse_fail, 0,
         "length_properties parse errors: {stats:?}"
     );
-    assert!(
-        stats.pass >= 44,
-        "length_properties: expected at least 44 passing cases, got pass={} fail={} skip={}",
+    assert_eq!(
+        stats.fail, 0,
+        "length_properties failures: pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
+    assert_eq!(stats.skip, 0);
+    assert_eq!(stats.parse_fail, 0);
     assert!(
-        stats.fail <= 16,
-        "length_properties regressions: pass={} fail={} skip={}",
+        stats.pass >= 60,
+        "length_properties: expected at least 60 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip

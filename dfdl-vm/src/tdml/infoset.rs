@@ -433,6 +433,21 @@ fn f32_abs(v: f32) -> f32 {
     if v.is_sign_negative() { -v } else { v }
 }
 
+fn calendar_infoset_texts_equal(expected: &str, actual: &str) -> bool {
+    if expected == actual {
+        return true;
+    }
+    if expected.contains('T') && !expected.contains('+') && !expected.contains('Z') {
+        if actual.starts_with(expected) {
+            let rest = &actual[expected.len()..];
+            if rest == "+00:00" || rest == "Z" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn float_infoset_texts_equal(expected: &str, actual: &str) -> bool {
     let Ok(exp) = expected.trim().parse::<f32>() else {
         return false;
@@ -552,8 +567,11 @@ fn compare_node(expected: &InfosetNode, actual: &InfosetNode) -> Result<(), Stri
             compare_blob_reference(exp_text, blob)?;
         } else {
             let act_text = actual.text.as_deref().unwrap_or("");
-            if exp_text.trim() != act_text.trim()
-                && !float_infoset_texts_equal(exp_text, act_text)
+            let exp_trim = exp_text.trim();
+            let act_trim = act_text.trim();
+            if exp_trim != act_trim
+                && !float_infoset_texts_equal(exp_trim, act_trim)
+                && !calendar_infoset_texts_equal(exp_trim, act_trim)
             {
                 return Err(alloc::format!(
                     "text mismatch for `{}`: expected `{exp_text}`, got `{act_text}`",

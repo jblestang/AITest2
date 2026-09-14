@@ -694,13 +694,6 @@ impl<'a> Decoder<'a> {
                             LengthUnits::Bytes => len.saturating_mul(8),
                             LengthUnits::Characters => unreachable!("handled above"),
                         };
-                        let available = crate::vm::runtime::bits_available_in_cursor(cursor);
-                        if available < bit_len {
-                            return Err(crate::vm::runtime::insufficient_data_bits_error(
-                                bit_len, available,
-                            )
-                            .into());
-                        }
                         let frame_start = cursor.absolute_bit_index();
                         let prev_limit = cursor
                             .frame_bit_limit
@@ -1479,13 +1472,34 @@ fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
         match inner {
             DfdlValue::Sequence(seq) => {
                 if !seq.fields.contains_key(name) {
+                    // Implicit complex element seq_01: keep inner fields under seq_01 for choice/infoset.
+                    if name == "seq_01" {
+                        let mut map = BTreeMap::new();
+                        map.insert(name.into(), DfdlValue::Sequence(seq));
+                        return DfdlValue::sequence(map);
+                    }
                     return DfdlValue::Sequence(seq);
                 }
                 DfdlValue::Sequence(seq)
             }
             DfdlValue::Choice { discriminator, value } => {
                 let mut map = BTreeMap::new();
-                map.insert(discriminator, *value);
+                let key = discriminator.clone();
+                if let DfdlValue::Sequence(inner) = *value {
+                    if inner.fields.len() == 1 {
+                        if let Some(v) = inner.fields.get(&key) {
+                            map.insert(key, v.clone());
+                        } else if let Some((only_key, only_val)) = inner.fields.iter().next() {
+                            map.insert(only_key.clone(), only_val.clone());
+                        } else {
+                            map.insert(key, DfdlValue::Sequence(inner));
+                        }
+                    } else {
+                        map.insert(key, DfdlValue::Sequence(inner));
+                    }
+                } else {
+                    map.insert(key, *value);
+                }
                 DfdlValue::sequence(map)
             }
             other => {

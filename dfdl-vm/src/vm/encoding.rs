@@ -233,7 +233,9 @@ pub(crate) fn decode_bits_charset_payload(
 }
 
 pub(crate) fn normalize_encoding_name(name: &str) -> Option<&'static str> {
-    if eq_ascii_ignore_case(name, "utf-16be") || eq_ascii_ignore_case(name, "utf_16be") {
+    if eq_ascii_ignore_case(name, "utf-32be") || eq_ascii_ignore_case(name, "utf_32be") {
+        Some("utf-32be")
+    } else if eq_ascii_ignore_case(name, "utf-16be") || eq_ascii_ignore_case(name, "utf_16be") {
         Some("utf-16be")
     } else if eq_ascii_ignore_case(name, "utf-16le") || eq_ascii_ignore_case(name, "utf_16le") {
         Some("utf-16le")
@@ -434,6 +436,7 @@ pub(crate) fn decode_text_bytes(
             }
             Ok(bytes.iter().map(|b| *b as char).collect())
         }
+        Some("utf-32be") => decode_utf32(bytes, false),
         Some("utf-16be") => decode_utf16(bytes, false),
         Some("utf-16le") => decode_utf16(bytes, true),
         Some("iso-8859-1") => Ok(decode_latin1(bytes)),
@@ -684,6 +687,34 @@ fn count_utf16_code_units(bytes: &[u8], label: &str) -> Result<usize, VmError> {
         });
     }
     Ok(bytes.len() / 2)
+}
+
+fn decode_utf32(bytes: &[u8], le: bool) -> Result<String, VmError> {
+    let label = if le { "UTF-32LE" } else { "UTF-32BE" };
+    if bytes.len() % 4 != 0 {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("invalid {label} byte length"),
+        });
+    }
+    let mut out = String::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks_exact(4) {
+        let unit = if le {
+            (chunk[0] as u32)
+                | ((chunk[1] as u32) << 8)
+                | ((chunk[2] as u32) << 16)
+                | ((chunk[3] as u32) << 24)
+        } else {
+            ((chunk[0] as u32) << 24)
+                | ((chunk[1] as u32) << 16)
+                | ((chunk[2] as u32) << 8)
+                | chunk[3] as u32
+        };
+        let ch = char::from_u32(unit).ok_or(VmError::InvalidValue {
+            message: alloc::format!("invalid {label} code unit `0x{unit:08x}`"),
+        })?;
+        out.push(ch);
+    }
+    Ok(out)
 }
 
 fn decode_utf16(bytes: &[u8], le: bool) -> Result<String, VmError> {

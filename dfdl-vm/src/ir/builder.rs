@@ -789,7 +789,7 @@ impl<'a> IrBuilder<'a> {
         )?;
         let kind = value_kind_from_simple(&self.schema, base);
         validate_prefix_length_type(type_name, props, &prefix_props, kind, &self.strings)?;
-        if prefix_props.length_kind == LengthKind::Prefixed && depth >= 1 {
+        if depth >= 1 && prefix_props.length_kind == LengthKind::Prefixed {
             return Err(SchemaError::InvalidProperty {
                 message: "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" not supported"
                     .into(),
@@ -2072,13 +2072,6 @@ fn validate_prefix_length_type(
         .into());
     }
 
-    if prefix_props.length_kind == LengthKind::Prefixed {
-        return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" not supported"
-                .into(),
-        }
-        .into());
-    }
     validate_text_alignment_schema(kind, prefix_props, strings)?;
     if prefix_props.alignment_implicit || prefix_props.alignment_units == LengthUnits::Bits {
         return Ok(());

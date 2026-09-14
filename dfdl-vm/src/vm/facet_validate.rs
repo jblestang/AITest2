@@ -1,6 +1,6 @@
 use crate::error::VmError;
 use crate::ir::{IrProps, StringPool, ValueKind};
-use crate::schema::{match_length_pattern, LengthUnits};
+use crate::schema::{match_length_pattern, LengthUnits, Representation};
 use crate::value::DfdlValue;
 use alloc::string::ToString;
 pub fn facet_validation_error(
@@ -371,6 +371,9 @@ fn validate_enumeration_numeric(
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<(), VmError> {
+    if props.representation == Representation::Binary {
+        return Ok(());
+    }
     if props.facet_enumeration.is_empty() {
         return Ok(());
     }

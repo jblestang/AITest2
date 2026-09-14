@@ -753,6 +753,10 @@ pub(crate) fn read_binary_scalar(
             let bytes = cursor.read_stream_bits_as_bytes(len, props.bit_order)?;
             return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
         }
+        if len >= 8 && props.byte_order == ByteOrder::LittleEndian {
+            let bytes = cursor.read_hex_binary_bits(len, props.bit_order)?;
+            return decode_binary_scalar(kind, &bytes, props, strings, Some(len), tunables);
+        }
         let raw = cursor.read_stream_bits(len, props.bit_order)?;
         let raw = normalize_bit_field_raw(raw, len, props.byte_order, props.bit_order);
         return decode_binary_from_raw_bits(kind, raw, len, props, strings, tunables);
@@ -799,6 +803,10 @@ pub(crate) fn read_binary_scalar(
             if kind == ValueKind::String {
                 let bytes = cursor.read_stream_bits_as_bytes(bit_len, props.bit_order)?;
                 return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
+            }
+            if bit_len >= 8 && props.byte_order == ByteOrder::LittleEndian {
+                let bytes = cursor.read_hex_binary_bits(bit_len, props.bit_order)?;
+                return decode_binary_scalar(kind, &bytes, props, strings, Some(bit_len), tunables);
             }
             let raw = cursor.read_stream_bits(bit_len, props.bit_order)?;
             let raw = normalize_bit_field_raw(raw, bit_len, props.byte_order, props.bit_order);
@@ -847,6 +855,10 @@ pub(crate) fn read_binary_scalar(
             if kind == ValueKind::String {
                 let bytes = cursor.read_stream_bits_as_bytes(bit_len, props.bit_order)?;
                 return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
+            }
+            if bit_len >= 8 && props.byte_order == ByteOrder::LittleEndian {
+                let bytes = cursor.read_hex_binary_bits(bit_len, props.bit_order)?;
+                return decode_binary_scalar(kind, &bytes, props, strings, Some(bit_len), tunables);
             }
             let raw = cursor.read_stream_bits(bit_len, props.bit_order)?;
             let raw = normalize_bit_field_raw(raw, bit_len, props.byte_order, props.bit_order);
@@ -3867,7 +3879,15 @@ fn decode_binary_bytes(
                 Ok(DfdlValue::Short(int!(i16)))
             }
         }
-        UnsignedShort => Ok(DfdlValue::UnsignedShort(int!(u16))),
+        UnsignedShort => {
+            if let Some(bits) = bit_width {
+                Ok(DfdlValue::UnsignedShort(
+                    (decode_unsigned_binary_bytes(bytes, le) & bit_mask(bits)) as u16,
+                ))
+            } else {
+                Ok(DfdlValue::UnsignedShort(int!(u16)))
+            }
+        }
         Int => {
             if bit_width == Some(1) {
                 Ok(DfdlValue::Int(decode_unsigned_binary_bytes(bytes, le) as i32))
@@ -6104,7 +6124,7 @@ pub(crate) fn insufficient_data_bits_error(needed_bits: usize, found_bits: usize
     use crate::error::VmError;
     VmError::InvalidValue {
         message: alloc::format!(
-            "Parse Error. Insufficient bits. Needed {needed_bits} but {found_bits} available"
+            "Parse Error. Insufficient bits in data. needed {needed_bits} bit(s). found only {found_bits} ({needed_bits} bit(s) but found only {found_bits})"
         ),
     }
 }
