@@ -619,12 +619,12 @@ pub fn validate_binary_calendar_schema(
         let type_name = binary_prim_type_label(kind, props);
         let msg = if matches!(kind, ValueKind::DateTime | ValueKind::Time) {
             alloc::format!(
-                "Schema Definition Error: Length of binary data '{type_name}' with binaryCalendarRep='{}' cannot be determined implicitly",
+                "Schema Definition Error: Length of binary data '{type_name}' with binaryCalendarRep='{}' cannot be determined implicitly.",
                 binary_calendar_rep_name(rep)
             )
         } else {
             alloc::format!(
-                "Schema Definition Error: Length of binary data '{type_name}' cannot be determined implicitly"
+                "Schema Definition Error: Length of binary data '{type_name}' cannot be determined implicitly."
             )
         };
         return Err(SchemaError::InvalidProperty { message: msg });

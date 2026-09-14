@@ -1056,6 +1056,21 @@ fn packed_digit_string(bytes: &[u8], le: bool, codes: &PackedSignCodes) -> alloc
     out
 }
 
+/// Magnitude string for packed binary calendars (matches Daffodil `packedToBigInteger` text).
+fn packed_calendar_magnitude_string(
+    bytes: &[u8],
+    le: bool,
+    codes: &PackedSignCodes,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    let (_neg, digits) = packed_to_digit_string(bytes, le, codes)?;
+    let trimmed = digits.trim_start_matches('0');
+    Ok(if trimmed.is_empty() {
+        "0".into()
+    } else {
+        trimmed.into()
+    })
+}
+
 fn calendar_binary_rep(props: &IrProps) -> bool {
     matches!(
         props.binary_calendar_rep,
@@ -1096,9 +1111,26 @@ fn decode_binary_calendar(
                     0,
                     epoch_raw,
                 );
+                crate::vm::calendar_binary::validate_calendar_year_tunables(&text, tunables)?;
                 return calendar_value_from_text(kind, text);
             }
             BinaryNumberRep::BinaryMilliseconds => {
+                if bytes.len() == 8 {
+                    let mut buf = [0u8; 8];
+                    buf.copy_from_slice(bytes);
+                    let delta_ms = if le {
+                        i64::from_le_bytes(buf)
+                    } else {
+                        i64::from_be_bytes(buf)
+                    };
+                    if let Some(epoch_ms) = base.checked_mul(1000) {
+                        if epoch_ms.checked_add(delta_ms).is_none() || epoch_ms.saturating_add(delta_ms) < 0 {
+                            return Err(crate::vm::calendar_binary::binary_calendar_millis_delta_out_of_range(
+                                delta_ms,
+                            ));
+                        }
+                    }
+                }
                 let (secs, micros) =
                     crate::vm::calendar_binary::decode_binary_milliseconds_value(bytes, le)?;
                 let text = crate::vm::calendar_binary::format_binary_calendar_datetime(
@@ -1106,6 +1138,7 @@ fn decode_binary_calendar(
                     micros,
                     epoch_raw,
                 );
+                crate::vm::calendar_binary::validate_calendar_year_tunables(&text, tunables)?;
                 return calendar_value_from_text(kind, text);
             }
             _ => unreachable!(),
@@ -1117,9 +1150,10 @@ fn decode_binary_calendar(
             .map(|(_n, d)| d)
             .unwrap_or_default(),
         BinaryNumberRep::PackedBcd => {
-            packed_digit_string(bytes, le, &packed_sign_codes(props, strings).unwrap_or_else(|_| {
+            let codes = packed_sign_codes(props, strings).unwrap_or_else(|_| {
                 PackedSignCodes::parse("C D F C", BinaryNumberCheckPolicy::Lax).unwrap()
-            }))
+            });
+            packed_calendar_magnitude_string(bytes, le, &codes)?
         }
         BinaryNumberRep::Binary => {
             return Err(VmError::InvalidValue {
@@ -1133,6 +1167,15 @@ fn decode_binary_calendar(
     })?;
     let pattern = strings.get(pat_id)?;
     let text = format_calendar_pattern(&digits, pattern)?;
+    let text = if rep == BinaryNumberRep::PackedBcd
+        && (props.calendar_date_only
+            || kind == crate::ir::ValueKind::Time
+            || text.contains('T'))
+    {
+        append_default_utc_offset(kind, props.calendar_date_only, &text)
+    } else {
+        text
+    };
     calendar_value_from_text(kind, text)
 }
 
