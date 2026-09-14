@@ -194,7 +194,8 @@ impl<'a> XsdParser<'a> {
                         "complexType" => self.parse_complex_type(None, child_attrs)?,
                         "simpleType" => self.parse_simple_type(None, child_attrs)?,
                         "group" => self.parse_global_group(child_attrs)?,
-                        "include" => self.parse_include(child_attrs)?,
+                        "include" => self.parse_include_or_import("include", child_attrs)?,
+                        "import" => self.parse_include_or_import("import", child_attrs)?,
                         "format" => {
                             let props =
                                 self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
@@ -232,16 +233,22 @@ impl<'a> XsdParser<'a> {
         Ok(())
     }
 
-    fn parse_include(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
+    fn parse_include_or_import(
+        &mut self,
+        local: &str,
+        attrs: BTreeMap<String, String>,
+    ) -> Result<()> {
         let location = attrs
             .get("schemaLocation")
             .ok_or_else(|| ParseError::MissingAttribute {
-                element: "include".into(),
+                element: local.into(),
                 attribute: "schemaLocation".into(),
             })?;
         self.reader.skip_insignificant_ws()?;
-        if self.reader.peek_is_end("include")? {
-            self.expect_end_local("include")?;
+        if self.reader.peek_is_end(local)? {
+            self.expect_end_local(local)?;
+        } else {
+            self.reader.skip_current_subtree()?;
         }
         let content = self.resolver.resolve(location)?;
         let included = parse_schema_with_resolver(&content, self.resolver.clone())?;

@@ -49,6 +49,18 @@ impl SchemaResolver {
             "InvalidAlignSchema.dfdl.xsd".into(),
             include_str!("../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/InvalidAlignSchema.dfdl.xsd"),
         );
+        bundled.insert(
+            "/IBMdefined/GeneralPurposeFormat.xsd".into(),
+            include_str!(
+                "../../../third_party/daffodil/daffodil-core/src/main/resources/IBMdefined/GeneralPurposeFormat.xsd"
+            ),
+        );
+        bundled.insert(
+            "GeneralPurposeFormat.xsd".into(),
+            include_str!(
+                "../../../third_party/daffodil/daffodil-core/src/main/resources/IBMdefined/GeneralPurposeFormat.xsd"
+            ),
+        );
         Self {
             bundled,
             base_dirs: Vec::new(),
