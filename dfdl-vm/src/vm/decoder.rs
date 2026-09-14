@@ -1582,10 +1582,19 @@ fn wrap_root(name: &str, value: DfdlValue) -> DfdlValue {
             DfdlValue::sequence(wrapped)
         }
         DfdlValue::Choice { discriminator, value } => {
-            let mut inner = BTreeMap::new();
-            inner.insert(discriminator, *value);
+            let inner = match (discriminator.as_str(), value.as_ref()) {
+                ("sequence", DfdlValue::Sequence(seq)) if seq.fields.is_empty() => {
+                    DfdlValue::sequence(BTreeMap::new())
+                }
+                ("sequence", DfdlValue::Sequence(seq)) => DfdlValue::sequence(seq.fields.clone()),
+                _ => {
+                    let mut fields = BTreeMap::new();
+                    fields.insert(discriminator, *value);
+                    DfdlValue::sequence(fields)
+                }
+            };
             let mut wrapped = BTreeMap::new();
-            wrapped.insert(name.into(), DfdlValue::sequence(inner));
+            wrapped.insert(name.into(), inner);
             DfdlValue::sequence(wrapped)
         }
         other => {
@@ -1618,6 +1627,9 @@ fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
                 let mut map = BTreeMap::new();
                 let key = discriminator.clone();
                 if let DfdlValue::Sequence(inner) = *value {
+                    if inner.fields.is_empty() && key == "sequence" {
+                        return DfdlValue::sequence(BTreeMap::new());
+                    }
                     if inner.fields.len() == 1 {
                         if let Some(v) = inner.fields.get(&key) {
                             map.insert(key, v.clone());

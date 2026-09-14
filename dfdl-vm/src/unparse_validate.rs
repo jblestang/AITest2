@@ -64,6 +64,17 @@ fn validate_unparse_infoset_nodes_inner(
         .iter()
         .find(|n| crate::xml_util::local_name_str(&n.name) == root)
         .ok_or_else(|| format!("infoset missing root `{root}`"))?;
+    if let Some(ns) = root_node.namespace.as_deref().filter(|u| !u.is_empty()) {
+        if tns.is_some_and(|expected| ns != expected) {
+            return Err(format!(
+                "Schema Definition Error: No global element {{{ns}}}{root}"
+            ));
+        }
+    } else if let Some(ns) = tns.filter(|u| !u.is_empty()) {
+        return Err(format!(
+            "Unparse Error: expected element start\n{{{ns}}}{root}\n{{}}{root}"
+        ));
+    }
     let root_parent = parent_qname(root, tns, qualified);
     if enforce_element_form && schema.global_elements.contains_key(root) {
         let local = crate::xml_util::local_name_str(&root_node.name);

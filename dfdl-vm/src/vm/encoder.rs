@@ -11,7 +11,7 @@ use crate::length_validate::validate_fill_byte_schema;
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
     encode_delimiter, encode_delimiter_by_alt, encode_property_delimiter, encode_sequence_separator,
-    LengthKind, LengthUnits,
+    LengthKind, LengthUnits, TextPadKind,
     OutputValueCalc, SeparatorPosition,
 };
 use crate::value::DfdlValue;
@@ -377,6 +377,25 @@ impl<'a> Encoder<'a> {
                 if child.is_none()
                     && is_suppressible_empty_representation(&value, &resolved, self.ctx.strings())?
                 {
+                    let fixed_len = matches!(
+                        resolved.length_kind,
+                        LengthKind::Explicit | LengthKind::Fixed
+                    ) && resolved.length.is_some_and(|l| l > 0);
+                    let pad_empty_string = *kind == crate::ir::ValueKind::String
+                        && resolved.text_pad_kind == TextPadKind::PadChar;
+                    if fixed_len || pad_empty_string {
+                        let schema_ctx = schema_context_field_name(key);
+                        return self.encode_simple_occurrences(
+                            *kind,
+                            &resolved,
+                            &value,
+                            out,
+                            bit_count,
+                            Some(&schema_ctx),
+                            field_delim,
+                            parent_props,
+                        );
+                    }
                     if resolved.trailing_skip == 0 {
                         return Ok(());
                     }
@@ -491,7 +510,11 @@ impl<'a> Encoder<'a> {
                 }
             }
             if is_suppressible_empty_representation(item, props, self.ctx.strings())? {
-                continue;
+                let pad_empty = kind == crate::ir::ValueKind::String
+                    && props.text_pad_kind == TextPadKind::PadChar;
+                if !pad_empty {
+                    continue;
+                }
             }
             write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
             write_simple(

@@ -168,6 +168,8 @@ pub struct DfdlProps {
     pub floating: Option<bool>,
     /// `dfdl:escapeSchemeRef` (empty string clears inherited scheme).
     pub escape_scheme_ref: Option<String>,
+    /// `daf:suppressSchemaDefinitionWarnings` on this construct.
+    pub suppress_schema_definition_warnings: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -656,6 +658,16 @@ pub struct SchemaDocument {
     pub global_elements: BTreeMap<String, GlobalElement>,
     /// Named `xs:group` model groups (local name → sequence or choice).
     pub groups: BTreeMap<String, GroupDecl>,
+    /// Non-fatal schema issues collected during parse (TDML multi-diagnostic tests).
+    pub schema_diagnostics: alloc::vec::Vec<String>,
+    /// Schema definition warnings not tied to a global element.
+    pub schema_warnings: alloc::vec::Vec<String>,
+    /// Warnings keyed by global element name (TDML escalate/suppress).
+    pub scoped_schema_warnings: BTreeMap<String, alloc::vec::Vec<String>>,
+    /// Original schema file label when parsed from an external path (TDML `model="*.xsd"`).
+    pub schema_source_label: Option<String>,
+    /// Raw schema text (for line/column in compile-time SDEs).
+    pub schema_source_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

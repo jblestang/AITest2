@@ -5,11 +5,43 @@ use crate::schema::{
     TypeDef, TypeName,
 };
 
+pub fn length_not_defined_message(schema: &SchemaDocument, element_name: Option<&str>) -> String {
+    let mut msg = "Schema Definition Error: Property length is not defined".to_string();
+    let Some(text) = schema.schema_source_text.as_deref() else {
+        return msg;
+    };
+    let Some(label) = schema.schema_source_label.as_deref() else {
+        return msg;
+    };
+    let needle = element_name
+        .map(|n| alloc::format!("name=\"{n}\""))
+        .unwrap_or_else(|| "lengthKind=\"explicit\"".to_string());
+    for (i, line) in text.lines().enumerate() {
+        if line.contains(&needle) {
+            msg.push('\n');
+            msg.push_str(label);
+            msg.push('\n');
+            msg.push_str(&alloc::format!("line {}", i + 1));
+            if let Some(col) = line.find("<xs:element").map(|c| c + 2) {
+                msg.push('\n');
+                msg.push_str(&alloc::format!("column {col}"));
+            }
+            break;
+        }
+    }
+    msg
+}
+
 pub fn validate_compiled_schema(
     schema: &SchemaDocument,
     root: &str,
     tunables: &DaffodilTunables,
 ) -> Result<(), SchemaError> {
+    if !schema.schema_diagnostics.is_empty() {
+        return Err(SchemaError::InvalidProperty {
+            message: schema.schema_diagnostics.join("\n"),
+        });
+    }
     if !schema.dfdl_annotations_seen {
         return Err(SchemaError::InvalidProperty {
             message: "Schema Definition Error: Non-DFDL Schema file".into(),

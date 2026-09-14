@@ -60,6 +60,8 @@ pub struct ParserTestCase {
     pub expected_errors: Option<Vec<String>>,
     /// When set, parse succeeds but XSD facet validation must fail with these messages.
     pub expected_validation_errors: Option<Vec<String>>,
+    /// When set, parse must succeed and warning text must contain each message.
+    pub expected_warnings: Option<Vec<String>>,
     pub config: Option<String>,
     pub round_trip: RoundTrip,
     pub validation: Option<TdmlValidationMode>,
@@ -265,6 +267,10 @@ fn parse_define_config(
                             _ => crate::length_validate::InvalidRestrictionPolicy::Error,
                         };
                     }
+                    "escalateWarningsToErrors" => {
+                        let text = r.read_text_until_end(local)?;
+                        tunables.escalate_warnings_to_errors = text.trim() == "true";
+                    }
                     _ => {
                         r.skip_current_subtree()?;
                     }
@@ -299,6 +305,7 @@ fn parse_parser_test_case(
     let mut expected_infoset = String::new();
     let mut expected_errors = None;
     let mut expected_validation_errors = None;
+    let mut expected_warnings = None;
 
     reader.for_each_child("parserTestCase", |local, doc_attrs, r| match local {
         "document" => {
@@ -317,6 +324,10 @@ fn parse_parser_test_case(
             expected_validation_errors = Some(parse_error_messages(r, "validationErrors")?);
             Ok(())
         }
+        "warnings" => {
+            expected_warnings = Some(parse_error_messages(r, "warnings")?);
+            Ok(())
+        }
         _ => r.skip_current_subtree(),
     })?;
 
@@ -332,6 +343,7 @@ fn parse_parser_test_case(
         expected_infoset,
         expected_errors,
         expected_validation_errors,
+        expected_warnings,
         config,
         round_trip,
         validation,

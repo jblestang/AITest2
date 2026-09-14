@@ -235,6 +235,27 @@ pub fn run_parser_test_with_options(
     } else {
         Some(doc.part_bit_order_regions.clone())
     };
+    let compile_warnings = schema_warnings_for_root(spec.schema(), &test.root);
+    if tunables.escalate_warnings_to_errors && !compile_warnings.is_empty() {
+        let msg = escalated_schema_warnings_message(&compile_warnings);
+        if let Some(expected_errors) = &test.expected_errors {
+            if error_messages_match(expected_errors, &msg) {
+                return Ok(TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Pass,
+                });
+            }
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!("decode error mismatch: {msg}")),
+            });
+        }
+        return Ok(TestResult {
+            name: test.name.clone(),
+            outcome: TestOutcome::Fail(alloc::format!("decode error: {msg}")),
+        });
+    }
+
     if let Some(expected_errors) = &test.expected_errors {
         return match spec
             .decoder_with_config(config)
@@ -331,6 +352,17 @@ pub fn run_parser_test_with_options(
 
     match compare_infoset_with_context(&decoded, &test.expected_infoset, &suite.resource_context) {
         Ok(()) => {
+            if let Some(expected_warnings) = &test.expected_warnings {
+                let combined = schema_warnings_message(&compile_warnings);
+                if !error_messages_match(expected_warnings, &combined) {
+                    return Ok(TestResult {
+                        name: test.name.clone(),
+                        outcome: TestOutcome::Fail(alloc::format!(
+                            "warning mismatch: {combined}"
+                        )),
+                    });
+                }
+            }
             let rt = effective_round_trip(test.round_trip, suite.default_round_trip);
             let should_verify = options.verify_round_trip
                 && matches!(rt, RoundTrip::TwoPass | RoundTrip::OnePass);
@@ -700,6 +732,28 @@ fn encoded_matches_document(encoded: &[u8], encoded_bit_count: u8, doc: &TdmlDoc
 
 fn absolute_bit_index(data: &[u8], bit_count: u8) -> usize {
     data.len() * 8 + bit_count as usize
+}
+
+fn schema_warnings_for_root(schema: &crate::schema::SchemaDocument, root: &str) -> Vec<String> {
+    let mut out = schema.schema_warnings.clone();
+    if let Some(scoped) = schema.scoped_schema_warnings.get(root) {
+        out.extend(scoped.iter().cloned());
+    }
+    out
+}
+
+fn schema_warnings_message(warnings: &[String]) -> String {
+    warnings.join("\n")
+}
+
+fn escalated_schema_warnings_message(warnings: &[String]) -> String {
+    let mut msg = String::from("Schema Definition Warning Escalated Error");
+    let body = schema_warnings_message(warnings);
+    if !body.is_empty() {
+        msg.push('\n');
+        msg.push_str(&body);
+    }
+    msg
 }
 
 fn normalize_error_text(text: &str) -> alloc::string::String {

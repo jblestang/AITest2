@@ -50,6 +50,10 @@ fn parse_schema_with_resolver_and_label(
         return Err(crate::error::SchemaError::InvalidProperty { message }.into());
     }
     let mut parser = XsdParser::new(input, resolver);
+    parser.doc.schema_source_text = Some(input.to_string());
+    if let Some(label) = schema_label {
+        parser.doc.schema_source_label = Some(label.to_string());
+    }
     if input.contains(DFDL_NS) {
         parser.doc.dfdl_annotations_seen = true;
     }
@@ -88,6 +92,10 @@ struct XsdParser<'a> {
     resolver: SchemaResolver,
     /// True while parsing `dfdl:defineFormat`; nested `dfdl:format` must not alter schema defaults.
     in_define_format: bool,
+    /// `daf:suppressSchemaDefinitionWarnings` for the construct currently being parsed.
+    suppress_schema_definition_warnings: Option<String>,
+    /// Global element whose annotations are currently being parsed (warning scope).
+    warning_scope: Option<String>,
 }
 
 impl<'a> XsdParser<'a> {
@@ -99,6 +107,28 @@ impl<'a> XsdParser<'a> {
             pending_props: DfdlProps::default(),
             resolver,
             in_define_format: false,
+            suppress_schema_definition_warnings: None,
+            warning_scope: None,
+        }
+    }
+
+    fn push_schema_warning(&mut self, warn_id: &str, lines: &[&str]) {
+        if self
+            .suppress_schema_definition_warnings
+            .as_deref()
+            .is_some_and(|s| s.split_whitespace().any(|part| part == warn_id))
+        {
+            return;
+        }
+        let owned: alloc::vec::Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+        if let Some(scope) = &self.warning_scope {
+            self.doc
+                .scoped_schema_warnings
+                .entry(scope.clone())
+                .or_default()
+                .extend(owned);
+        } else {
+            self.doc.schema_warnings.extend(owned);
         }
     }
 
@@ -122,6 +152,13 @@ impl<'a> XsdParser<'a> {
             self.doc.groups.insert(k, v);
         }
         self.doc.dfdl_annotations_seen |= other.dfdl_annotations_seen;
+        self.doc
+            .schema_diagnostics
+            .extend(other.schema_diagnostics);
+        self.doc.schema_warnings.extend(other.schema_warnings);
+        for (k, v) in other.scoped_schema_warnings {
+            self.doc.scoped_schema_warnings.entry(k).or_default().extend(v);
+        }
         self.doc.format_defaults.props =
             merge_dfdl_props(self.doc.format_defaults.props.clone(), other.format_defaults.props);
         self.doc.format_defaults.props.calendar_time_zone_defined = false;
@@ -238,13 +275,40 @@ impl<'a> XsdParser<'a> {
                     let prefix = name.prefix.clone();
                     let child_attrs = self.reader.take_start_attributes()?;
                     match local.as_str() {
-                        "element" => self.parse_global_element(child_attrs)?,
+                        "element" => {
+                            if let Err(e) = self.parse_global_element(child_attrs) {
+                                self.doc.schema_diagnostics.push(e.to_string());
+                                let _ = self.skip_element_body("element");
+                            }
+                        }
                         "complexType" => self.parse_complex_type(None, child_attrs)?,
                         "simpleType" => self.parse_simple_type(None, child_attrs)?,
                         "group" => self.parse_global_group(child_attrs)?,
                         "include" => self.parse_include_or_import("include", child_attrs)?,
                         "import" => self.parse_include_or_import("import", child_attrs)?,
                         "format" => {
+                            let has_ref = child_attrs.keys().any(|k| local_tag(k) == "ref");
+                            if !has_ref {
+                                let has_trailing = child_attrs
+                                    .keys()
+                                    .any(|k| local_tag(k) == "trailingSkip");
+                                let has_leading = child_attrs
+                                    .keys()
+                                    .any(|k| local_tag(k) == "leadingSkip");
+                                if has_trailing && !has_leading {
+                                    self.doc.schema_diagnostics.push(
+                                        "Schema Definition Error: Property leadingSkip is not defined"
+                                            .into(),
+                                    );
+                                    self.doc.schema_diagnostics.push(
+                                        "Non-default properties were combined from these locations"
+                                            .into(),
+                                    );
+                                    self.doc.schema_diagnostics.push(
+                                        "Default properties were taken from these locations".into(),
+                                    );
+                                }
+                            }
                             let enc_explicit = child_attrs.keys().any(|k| {
                                 local_tag(k) == "encodingErrorPolicy"
                                     || k.ends_with(":encodingErrorPolicy")
@@ -307,12 +371,38 @@ impl<'a> XsdParser<'a> {
         }
         let content = self.resolver.resolve(location)?;
         let included = parse_schema_with_resolver(&content, self.resolver.clone())?;
+        if !included.dfdl_annotations_seen {
+            let label = location
+                .rsplit('/')
+                .next()
+                .unwrap_or(location.as_str())
+                .to_string();
+            self.doc
+                .schema_warnings
+                .push("Non-DFDL Schema file ignored".into());
+            self.doc.schema_warnings.push(label);
+            return Ok(());
+        }
         self.merge_included(included)?;
         Ok(())
     }
 
     fn parse_global_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
-        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("element", &attrs)?;
+        let suppress = take_daf_suppress_warnings(&attrs);
+        let prev_suppress =
+            core::mem::replace(&mut self.suppress_schema_definition_warnings, suppress);
+        let name_hint = attrs.get("name").cloned();
+        let prev_scope = self.warning_scope.clone();
+        self.warning_scope = name_hint;
+        let parse_result = self.parse_global_element_inner(attrs);
+        self.warning_scope = prev_scope;
+        self.suppress_schema_definition_warnings = prev_suppress;
+        parse_result
+    }
+
+    fn parse_global_element_inner(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
+        let (xsd_attrs, dfdl_from_attrs) =
+            split_dfdl_attrs("element", &attrs, Some(&mut self.doc.schema_diagnostics))?;
         let name = xsd_attrs
             .get("name")
             .cloned()
@@ -320,11 +410,15 @@ impl<'a> XsdParser<'a> {
                 element: "element".into(),
                 attribute: "name".into(),
             })?;
+        record_global_element_xsd_diagnostics(&name, &xsd_attrs, &mut self.doc.schema_diagnostics);
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &xsd_attrs);
         if xsd_attrs.get("nillable").is_some_and(|v| v == "true") {
             props.nillable = Some(true);
+        }
+        if let Some(s) = &self.suppress_schema_definition_warnings {
+            props.suppress_schema_definition_warnings = Some(s.clone());
         }
 
         let type_name = if let Some(t) = xsd_attrs.get("type") {
@@ -345,6 +439,19 @@ impl<'a> XsdParser<'a> {
                 return Ok(());
             }
             props = self.parse_inline_content(props, &["complexType", "simpleType", "annotation"])?;
+            if self.reader.peek_is_end("element")? {
+                self.expect_end_local("element")?;
+                self.doc.global_elements.insert(
+                    name.clone(),
+                    GlobalElement {
+                        name,
+                        type_qname_prefixed: true,
+                        type_name: TypeName::new("xs:string"),
+                        props: self.finalize_props(props),
+                    },
+                );
+                return Ok(());
+            }
             let inline = self.parse_inline_type()?;
             props = merge_dfdl_props(props, inline.1);
             self.expect_end_local("element")?;
@@ -436,7 +543,7 @@ impl<'a> XsdParser<'a> {
         inline_name: Option<String>,
         attrs: BTreeMap<String, String>,
     ) -> Result<()> {
-        let (_xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("simpleType", &attrs)?;
+        let (_xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("simpleType", &attrs, None)?;
         let name = inline_name.or_else(|| attrs.get("name").cloned());
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
@@ -490,7 +597,14 @@ impl<'a> XsdParser<'a> {
                             }));
                         }
                         "annotation" => self.skip_element_body("annotation")?,
-                        _ => self.skip_element_body(&local)?,
+                        _ => {
+                            self.doc.schema_diagnostics.push(format!(
+                                "Schema Definition Error: unrecognized element `{local}`"
+                            ));
+                            self.doc.schema_diagnostics.push(local.clone());
+                            self.skip_element_body(&local)?;
+                            return Ok(ComplexContent::Empty);
+                        }
                     }
                 }
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
@@ -510,7 +624,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_global_group(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
-        let (xsd, _) = split_dfdl_attrs("group", &attrs)?;
+        let (xsd, _) = split_dfdl_attrs("group", &attrs, None)?;
         let group_name = xsd.get("name").cloned().ok_or_else(|| ParseError::MissingAttribute {
             element: "group".into(),
             attribute: "name".into(),
@@ -549,7 +663,7 @@ impl<'a> XsdParser<'a> {
         &mut self,
         attrs: BTreeMap<String, String>,
     ) -> Result<GroupRefDecl> {
-        let (xsd, dfdl_from_attrs) = split_dfdl_attrs("group", &attrs)?;
+        let (xsd, dfdl_from_attrs) = split_dfdl_attrs("group", &attrs, None)?;
         let ref_name = xsd.get("ref").cloned().ok_or_else(|| ParseError::MissingAttribute {
             element: "group".into(),
             attribute: "ref".into(),
@@ -570,7 +684,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_sequence(&mut self, attrs: BTreeMap<String, String>) -> Result<SequenceDecl> {
-        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("sequence", &attrs)?;
+        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("sequence", &attrs, None)?;
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);
@@ -631,7 +745,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_choice(&mut self, attrs: BTreeMap<String, String>) -> Result<ChoiceDecl> {
-        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("choice", &attrs)?;
+        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("choice", &attrs, None)?;
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);
@@ -692,15 +806,24 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_element_decl(&mut self, attrs: BTreeMap<String, String>) -> Result<ElementDecl> {
-        let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs("element", &attrs)?;
+        let suppress = take_daf_suppress_warnings(&attrs);
+        let prev_suppress =
+            core::mem::replace(&mut self.suppress_schema_definition_warnings, suppress);
+        let result = self.parse_element_decl_inner(attrs);
+        self.suppress_schema_definition_warnings = prev_suppress;
+        result
+    }
+
+    fn parse_element_decl_inner(&mut self, attrs: BTreeMap<String, String>) -> Result<ElementDecl> {
+        let (xsd_attrs, dfdl_from_attrs) =
+            split_dfdl_attrs("element", &attrs, Some(&mut self.doc.schema_diagnostics))?;
         let is_ref = xsd_attrs.contains_key("ref");
         let has_element_name_attr = xsd_attrs.contains_key("name");
         let element_ref = xsd_attrs.get("ref").cloned();
         if is_ref && (has_element_name_attr || xsd_attrs.contains_key("type")) {
-            return Err(crate::error::SchemaError::InvalidProperty {
-                message: "Schema Definition Error: name and type attributes cannot appear together with ref attribute".into(),
-            }
-            .into());
+            self.doc.schema_diagnostics.push(
+                "Schema Definition Error: name and type attributes cannot appear together with ref attribute".into(),
+            );
         }
         let name = xsd_attrs
             .get("name")
@@ -716,6 +839,9 @@ impl<'a> XsdParser<'a> {
         merge_occurs(&mut props, &xsd_attrs);
         if xsd_attrs.get("nillable").is_some_and(|v| v == "true") {
             props.nillable = Some(true);
+        }
+        if let Some(s) = &self.suppress_schema_definition_warnings {
+            props.suppress_schema_definition_warnings = Some(s.clone());
         }
 
         let type_name = if let Some(t) = xsd_attrs.get("type") {
@@ -814,7 +940,16 @@ impl<'a> XsdParser<'a> {
                 self.parse_simple_type(Some(name.clone()), attrs)?;
                 Ok((TypeName::new(name), DfdlProps::default()))
             }
-            _ => Err(ParseError::UnknownElement { name: local }.into()),
+            other => {
+                self.doc
+                    .schema_diagnostics
+                    .push(format!("Schema Definition Error: unrecognized element `{other}`"));
+                self.doc.schema_diagnostics.push(local.clone());
+                self.skip_element_body(&local)?;
+                let name = alloc::format!("__inline_unknown_{}", self.inline_counter);
+                self.inline_counter += 1;
+                Ok((TypeName::new(name), DfdlProps::default()))
+            }
         }
     }
 
@@ -1099,6 +1234,10 @@ impl<'a> XsdParser<'a> {
                     } else if allowed.iter().any(|a| *a == local.as_str()) {
                         break;
                     } else {
+                        self.doc.schema_diagnostics.push(format!(
+                            "Schema Definition Error: unrecognized element `{local}`"
+                        ));
+                        self.doc.schema_diagnostics.push(local.clone());
                         let _ = self.reader.next_event()?;
                         self.reader.skip_current_subtree()?;
                     }
@@ -1167,15 +1306,29 @@ impl<'a> XsdParser<'a> {
 
     fn parse_appinfo(&mut self, attrs: BTreeMap<String, String>) -> Result<DfdlProps> {
         let source = attrs.get("source").map(String::as_str);
+        const OFFICIAL_APPINFO: &str = "http://www.ogf.org/dfdl/";
+        const LEGACY_APPINFO: &str = "http://www.ogf.org/dfdl/dfdl-1.0/";
 
         self.reader.skip_insignificant_ws()?;
+        if source == Some(LEGACY_APPINFO) {
+            self.push_schema_warning(
+                "appinfoDFDLSourceWrong",
+                &[
+                    "Schema Definition Warning",
+                    &alloc::format!(
+                        "The xs:appinfo source attribute value '{LEGACY_APPINFO}' should be '{OFFICIAL_APPINFO}'."
+                    ),
+                    "appinfoDFDLSourceWrong",
+                ],
+            );
+        }
         if self.reader.peek_is_end("appinfo")? {
             self.expect_end_local("appinfo")?;
             return Ok(DfdlProps::default());
         }
 
         let mut props = DfdlProps::default();
-        if source == Some(DFDL_NS) || source.is_none() {
+        if source == Some(DFDL_NS) || source == Some(LEGACY_APPINFO) || source.is_none() {
             loop {
                 self.reader.skip_insignificant_ws()?;
                 match self.reader.peek()? {
@@ -1189,6 +1342,15 @@ impl<'a> XsdParser<'a> {
                         let prefix = name.prefix.clone();
                         let child_attrs = self.reader.take_start_attributes()?;
                         if Self::is_dfdl_element(prefix.as_deref(), &local) {
+                            if source.is_none() {
+                                self.push_schema_warning(
+                                    "appinfoNoSource",
+                                    &[
+                                        "Schema Definition Warning",
+                                        "xs:appinfo without source attribute",
+                                    ],
+                                );
+                            }
                             let dfdl_props =
                                 self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
                             props = merge_dfdl_props(props, dfdl_props);
@@ -1890,7 +2052,17 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.object_kind.is_some() {
         base.object_kind = overlay.object_kind;
     }
+    if overlay.suppress_schema_definition_warnings.is_some() {
+        base.suppress_schema_definition_warnings = overlay.suppress_schema_definition_warnings;
+    }
     base
+}
+
+fn take_daf_suppress_warnings(attrs: &BTreeMap<String, String>) -> Option<String> {
+    attrs
+        .iter()
+        .find(|(k, _)| k.starts_with("daf:") && local_tag(k) == "suppressSchemaDefinitionWarnings")
+        .map(|(_, v)| v.clone())
 }
 
 fn apply_dfdl_assert_test(props: &mut DfdlProps, test: &str) {
@@ -2233,11 +2405,15 @@ fn local_name_from_qname(qname: &str) -> &str {
 fn split_dfdl_attrs(
     element_local: &str,
     attrs: &BTreeMap<String, String>,
+    diagnostics: Option<&mut alloc::vec::Vec<String>>,
 ) -> Result<(BTreeMap<String, String>, DfdlProps)> {
     let mut xsd = BTreeMap::new();
     let mut dfdl_map = BTreeMap::new();
     for (k, v) in attrs {
         let local = local_tag(k);
+        if k.starts_with("daf:") {
+            continue;
+        }
         if k.starts_with("dfdl:")
             || k.starts_with("dfdlx:")
             || k.contains("dfdl-1.0/extensions}")
@@ -2248,8 +2424,54 @@ fn split_dfdl_attrs(
             xsd.insert(k.clone(), v.clone());
         }
     }
-    let props = props_from_attrs(&dfdl_map)?;
+    let props = match props_from_attrs(&dfdl_map) {
+        Ok(p) => p,
+        Err(e) => {
+            if let Some(out) = diagnostics {
+                out.push(e.to_string());
+                DfdlProps::default()
+            } else {
+                return Err(e);
+            }
+        }
+    };
     Ok((xsd, props))
+}
+
+fn record_global_element_xsd_diagnostics(
+    name: &str,
+    xsd_attrs: &BTreeMap<String, String>,
+    diagnostics: &mut alloc::vec::Vec<String>,
+) {
+    const ALLOWED: &[&str] = &[
+        "name",
+        "type",
+        "default",
+        "fixed",
+        "nillable",
+        "substitutionGroup",
+        "abstract",
+        "block",
+        "final",
+        "id",
+    ];
+    for k in xsd_attrs.keys() {
+        if k.contains(':') && !k.starts_with("xs:") {
+            continue;
+        }
+        let local = local_tag(k);
+        if !ALLOWED.contains(&local) {
+            diagnostics.push(alloc::format!(
+                "Attribute '{local}' is not allowed to appear in element declarations."
+            ));
+        }
+    }
+    if name.contains(':') {
+        diagnostics.push(alloc::format!(
+            "Schema Definition Error: The value '{name}' is not a valid NCName"
+        ));
+        diagnostics.push("NCName".into());
+    }
 }
 
 fn is_xsd_local_attr(element: &str, attr: &str) -> bool {
@@ -3316,10 +3538,14 @@ mod tests {
         let props = props_from_attrs(&attrs).expect("props");
         assert_eq!(props.initiated_content, Some(true));
         let (xsd, dfdl) =
-            split_dfdl_attrs("sequence", &BTreeMap::from([(
-                "dfdl:initiatedContent".to_string(),
-                "yes".to_string(),
-            )]))
+            split_dfdl_attrs(
+                "sequence",
+                &BTreeMap::from([(
+                    "dfdl:initiatedContent".to_string(),
+                    "yes".to_string(),
+                )]),
+                None,
+            )
             .expect("split");
         assert!(xsd.is_empty());
         assert_eq!(dfdl.initiated_content, Some(true));

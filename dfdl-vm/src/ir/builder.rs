@@ -100,6 +100,8 @@ impl<'a> IrBuilder<'a> {
                 merged,
                 &mut self.strings,
                 self.tunables,
+                Some(self.schema),
+                Some(root_name),
             )?;
             apply_restriction_facets(
                 &self.schema,
@@ -141,6 +143,8 @@ impl<'a> IrBuilder<'a> {
                     merged,
                     &mut self.strings,
                     self.tunables,
+                    Some(self.schema),
+                    Some(root_name),
                 )?;
                 apply_restriction_facets(
                     &self.schema,
@@ -174,6 +178,8 @@ impl<'a> IrBuilder<'a> {
                     ir_props,
                     &mut self.strings,
                     self.tunables,
+                    Some(self.schema),
+                    Some(root_name),
                 )?;
                 let name = self.strings.intern(root_name);
                 self.push(IrNode::Element {
@@ -237,6 +243,8 @@ impl<'a> IrBuilder<'a> {
                     merged,
                     &mut self.strings,
                     self.tunables,
+                    Some(self.schema),
+                    None,
                 )?;
                 apply_restriction_facets(
                     &self.schema,
@@ -290,26 +298,28 @@ impl<'a> IrBuilder<'a> {
                     let kind = value_kind_from_builtin(builtin);
                     let mut ir_props = merged;
                     apply_type_name_ir_flags(&element.type_name, &mut ir_props);
-                    let mut ir_props = finalize_element_props(
-                        kind,
-                        ir_props,
-                        &mut self.strings,
-                        self.tunables,
-                    )?;
-                    apply_restriction_facets(
-                        &self.schema,
-                        &mut ir_props,
-                        &SimpleBase::Builtin(builtin),
-                        &mut self.strings,
-                        &element.props,
-                    );
-                    validate_fixed_occurs_count(&ir_props)?;
-                    ir_props.hidden = hidden;
-                    validate_implicit_text_length(kind, &ir_props)?;
-                    ir_props.xsd_type = Some(self.strings.intern(element.type_name.as_str()));
-                    Ok(self.push(IrNode::Element {
-                        name,
-                        kind,
+                let mut ir_props = finalize_element_props(
+                    kind,
+                    ir_props,
+                    &mut self.strings,
+                    self.tunables,
+                    Some(self.schema),
+                    Some(element.name.as_str()),
+                )?;
+                apply_restriction_facets(
+                    &self.schema,
+                    &mut ir_props,
+                    &SimpleBase::Builtin(builtin),
+                    &mut self.strings,
+                    &element.props,
+                );
+                validate_fixed_occurs_count(&ir_props)?;
+                ir_props.hidden = hidden;
+                validate_implicit_text_length(kind, &ir_props)?;
+                ir_props.xsd_type = Some(self.strings.intern(element.type_name.as_str()));
+                Ok(self.push(IrNode::Element {
+                    name,
+                    kind,
                         props: ir_props,
                         child: None,
                     }))
@@ -405,6 +415,8 @@ impl<'a> IrBuilder<'a> {
                                 merged_ir,
                                 &mut self.strings,
                                 self.tunables,
+                                Some(self.schema),
+                                Some(element.name.as_str()),
                             )?;
                             validate_fixed_occurs_count(&merged)?;
                             if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
@@ -436,8 +448,14 @@ impl<'a> IrBuilder<'a> {
                     if element.props.length_kind.is_none() {
                         ir_props.length_kind = LengthKind::Implicit;
                     }
-                    let mut ir_props =
-                        finalize_element_props(ValueKind::Complex, ir_props, &mut self.strings, self.tunables)?;
+                    let mut ir_props = finalize_element_props(
+                        ValueKind::Complex,
+                        ir_props,
+                        &mut self.strings,
+                        self.tunables,
+                        Some(self.schema),
+                        Some(element.name.as_str()),
+                    )?;
                     validate_fixed_occurs_count(&ir_props)?;
                     ir_props.hidden = hidden;
                     Ok(self.push(IrNode::Element {
@@ -1150,6 +1168,8 @@ fn finalize_element_props(
     mut ir: IrProps,
     strings: &mut StringPool,
     tunables: DaffodilTunables,
+    schema: Option<&SchemaDocument>,
+    element_name: Option<&str>,
 ) -> Result<IrProps> {
     use crate::schema::{NilKind, ObjectKind, TextPadKind, TextTrimKind};
     if ir.object_kind == ObjectKind::Chars {
@@ -1285,10 +1305,10 @@ fn finalize_element_props(
         && ir.input_value_calc_segments.is_none()
         && ir.input_value_calc_path.is_none()
     {
-        return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error: Property length is not defined".into(),
-        }
-        .into());
+        let message = schema
+            .map(|s| crate::schema_validate::length_not_defined_message(s, element_name))
+            .unwrap_or_else(|| "Schema Definition Error: Property length is not defined".into());
+        return Err(SchemaError::InvalidProperty { message }.into());
     }
     if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
         if let Some(len) = ir.length {

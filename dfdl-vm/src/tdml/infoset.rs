@@ -152,15 +152,16 @@ fn infoset_sequence_children_to_value(
                 if infoset_children.is_empty() {
                     continue;
                 }
-                if infoset_children.len() == 1
+                let empty_present = infoset_children.len() == 1
                     && infoset_children[0].children.is_empty()
                     && !infoset_children[0].nil
                     && infoset_children[0]
                         .text
                         .as_ref()
                         .map(|t| t.is_empty())
-                        .unwrap_or(true)
-                {
+                        .unwrap_or(true);
+                if empty_present {
+                    map.insert(elem_name.to_string(), DfdlValue::string(""));
                     continue;
                 }
                 let value = if infoset_children.len() == 1 {
@@ -537,7 +538,29 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
             children: BTreeMap::from([(name.to_string(), items.iter().map(|v| value_to_node(name, v)).collect())]),
             blob_bytes: None,
         },
-        DfdlValue::Choice { discriminator, value } => value_to_node(discriminator, value),
+        DfdlValue::Choice { discriminator, value } => match (discriminator.as_str(), value.as_ref()) {
+            ("sequence", DfdlValue::Sequence(seq)) if seq.fields.is_empty() => InfosetNode {
+                name: name.to_string(),
+                namespace: None,
+                text: None,
+                nil: false,
+                children: BTreeMap::new(),
+                blob_bytes: None,
+            },
+            ("sequence", DfdlValue::Sequence(seq)) => InfosetNode {
+                name: name.to_string(),
+                namespace: None,
+                text: None,
+                nil: false,
+                children: seq
+                    .fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), field_values_to_infoset_nodes(k, v)))
+                    .collect(),
+                blob_bytes: None,
+            },
+            _ => value_to_node(discriminator, value),
+        },
         DfdlValue::Null => InfosetNode {
             name: name.to_string(),
             namespace: None,

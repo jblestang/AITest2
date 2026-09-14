@@ -290,6 +290,8 @@ pub struct DaffodilTunables {
     pub require_floating_property: Option<bool>,
     pub require_encoding_error_policy: Option<bool>,
     pub invalid_restriction_policy: InvalidRestrictionPolicy,
+    /// When true, schema definition warnings become decode-time errors (Daffodil tunable).
+    pub escalate_warnings_to_errors: bool,
 }
 
 impl Default for DaffodilTunables {
@@ -305,6 +307,7 @@ impl Default for DaffodilTunables {
             require_floating_property: None,
             require_encoding_error_policy: None,
             invalid_restriction_policy: InvalidRestrictionPolicy::Error,
+            escalate_warnings_to_errors: false,
         }
     }
 }
