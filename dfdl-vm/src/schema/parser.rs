@@ -1145,7 +1145,7 @@ impl<'a> XsdParser<'a> {
         }
 
         let mut props = props_from_attrs(&attrs)?;
-        if local == "assert" {
+        if local == "assert" || local == "discriminator" {
             props.has_statement_annotation = true;
             if let Some(msg) = attrs.get("message") {
                 props.assert_message = Some(msg.clone());
@@ -1407,6 +1407,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.separator_suppression_policy.is_some() {
         base.separator_suppression_policy = overlay.separator_suppression_policy;
     }
+    if overlay.occurs_count_kind.is_some() {
+        base.occurs_count_kind = overlay.occurs_count_kind;
+    }
     if overlay.initiated_content.is_some() {
         base.initiated_content = overlay.initiated_content;
     }
@@ -1460,6 +1463,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.calendar_time_zone.is_some() {
         base.calendar_time_zone = overlay.calendar_time_zone;
+    }
+    if overlay.calendar_check_policy_lax == Some(true) {
+        base.calendar_check_policy_lax = Some(true);
     }
     if overlay.text_number_pattern.is_some() {
         base.text_number_pattern = overlay.text_number_pattern;
@@ -2328,6 +2334,9 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                         .into())
                     }
                 });
+            }
+            "calendarCheckPolicy" => {
+                props.calendar_check_policy_lax = Some(matches!(value.as_str(), "lax"));
             }
             "calendarTimeZone" => props.calendar_time_zone = Some(value.clone()),
             "textNumberPattern" => props.text_number_pattern = Some(value.clone()),

@@ -188,6 +188,8 @@ pub struct IrProps {
     pub input_value_calc_segments: Option<Vec<IrInputValueCalcSegment>>,
     /// True when the XSD type is `xs:date` (vs `xs:dateTime`).
     pub calendar_date_only: bool,
+    /// `dfdl:calendarCheckPolicy="lax"` (lenient field normalization).
+    pub calendar_check_policy_lax: bool,
     pub output_value_calc: Option<OutputValueCalc>,
     pub output_value_calc_sibling: Option<StringId>,
     pub text_string_justification: TextStringJustification,
@@ -330,6 +332,7 @@ impl Default for IrProps {
             input_value_calc_sibling: None,
             input_value_calc_segments: None,
             calendar_date_only: false,
+            calendar_check_policy_lax: false,
             output_value_calc: None,
             output_value_calc_sibling: None,
             text_string_justification: TextStringJustification::Left,

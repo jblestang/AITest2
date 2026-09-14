@@ -83,7 +83,7 @@ impl fmt::Display for VmError {
             VmError::TrailingData { remaining_bits } => {
                 write!(f, "Left over data. {remaining_bits} bit(s) remaining")
             }
-            VmError::InvalidChoice => write!(f, "no choice branch matched"),
+            VmError::InvalidChoice => write!(f, "All choice alternatives failed"),
             VmError::LengthMismatch { expected, actual } => {
                 write!(f, "length mismatch: expected {expected}, got {actual}")
             }

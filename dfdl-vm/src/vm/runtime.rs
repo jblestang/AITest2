@@ -1676,6 +1676,7 @@ fn read_calendar_field(
 fn format_calendar_text(
     text: &str,
     pattern: &str,
+    lax: bool,
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -1843,6 +1844,11 @@ fn format_calendar_text(
             message: alloc::format!("calendar `{pattern}` missing minute"),
         })?;
         let second = fields.second.unwrap_or(0);
+        let (hour, minute, second) = if lax {
+            crate::vm::calendar_binary::normalize_lenient_hms(hour, minute, second)
+        } else {
+            (hour, minute, second)
+        };
         let mut out = alloc::format!("{hour:02}:{minute:02}:{second:02}");
         if let Some(tz) = fields.timezone {
             out.push_str(&tz);
@@ -1869,6 +1875,11 @@ fn format_calendar_text(
             message: alloc::format!("calendar `{pattern}` missing day"),
         });
     };
+    let (year, month, day) = if lax {
+        crate::vm::calendar_binary::normalize_lenient_ymd(year, month, day)
+    } else {
+        (year, month, day)
+    };
     if has_time {
         let hour = fields.hour.ok_or_else(|| VmError::InvalidValue {
             message: alloc::format!("calendar `{pattern}` missing hour"),
@@ -1877,6 +1888,11 @@ fn format_calendar_text(
             message: alloc::format!("calendar `{pattern}` missing minute"),
         })?;
         let second = fields.second.unwrap_or(0);
+        let (hour, minute, second) = if lax {
+            crate::vm::calendar_binary::normalize_lenient_hms(hour, minute, second)
+        } else {
+            (hour, minute, second)
+        };
         let mut out = alloc::format!(
             "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}"
         );
@@ -3851,7 +3867,7 @@ pub(crate) fn read_text_scalar(
                 let parsed = if trimmed.chars().all(|c| c.is_ascii_digit()) {
                     format_calendar_pattern(trimmed, pattern)?
                 } else {
-                    format_calendar_text(trimmed, pattern)?
+                    format_calendar_text(trimmed, pattern, props.calendar_check_policy_lax)?
                 };
                 let with_tz = append_packed_calendar_timezone(
                     props,
@@ -7928,29 +7944,30 @@ mod delimited_stop_tests {
     #[test]
     fn format_calendar_text_time_and_datetime() {
         assert_eq!(
-            format_calendar_text("04:09:23", "hh:mm:ss")
+            format_calendar_text("04:09:23", "hh:mm:ss", false)
                 .map_err(|e| e.to_string())
                 .unwrap(),
             "04:09:23"
         );
         assert_eq!(
-            format_calendar_text("Friday 05 2013 - 03:30:30", "EEEE MM yyyy - hh:mm:ss").unwrap(),
+            format_calendar_text("Friday 05 2013 - 03:30:30", "EEEE MM yyyy - hh:mm:ss", false).unwrap(),
             "2013-05-03T03:30:30"
         );
     }
 
     #[test]
     fn format_calendar_text_section5_samples() {
-        let date = format_calendar_text("Wednesday, July 10, '96", "EEEE, MMM d, ''yy")
+        let date = format_calendar_text("Wednesday, July 10, '96", "EEEE, MMM d, ''yy", false)
             .unwrap_or_else(|e| panic!("dateText: {e}"));
         assert_eq!(date, "1996-07-10");
-        let time = format_calendar_text("12:08 PM", "h:mm a").unwrap_or_else(|e| panic!("timeText: {e}"));
+        let time = format_calendar_text("12:08 PM", "h:mm a", false).unwrap_or_else(|e| panic!("timeText: {e}"));
         assert_eq!(time, "12:08:00");
         let time_tz = append_default_utc_offset(crate::ir::ValueKind::Time, false, &time);
         assert_eq!(time_tz, "12:08:00+00:00");
         let dt = format_calendar_text(
             "1996.07.10 AD at 15:08:56 GMT-05:00",
             "yyyy.MM.dd G 'at' HH:mm:ss ZZZZ",
+            false,
         )
         .unwrap_or_else(|e| panic!("dateTimeText: {e}"));
         assert_eq!(dt, "1996-07-10T15:08:56-05:00");

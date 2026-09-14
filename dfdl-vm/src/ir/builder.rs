@@ -288,6 +288,7 @@ impl<'a> IrBuilder<'a> {
                         &mut self.strings,
                         self.tunables,
                     )?;
+                    validate_fixed_occurs_count(&ir_props)?;
                     ir_props.hidden = hidden;
                     validate_implicit_text_length(kind, &ir_props)?;
                     ir_props.xsd_type = Some(self.strings.intern(element.type_name.as_str()));
@@ -387,6 +388,7 @@ impl<'a> IrBuilder<'a> {
                                 &mut self.strings,
                                 self.tunables,
                             )?;
+                            validate_fixed_occurs_count(&merged)?;
                             if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
                                 if let TypeDef::Simple { base, props: type_props, .. } = type_def {
                                     apply_restriction_facets(
@@ -418,6 +420,7 @@ impl<'a> IrBuilder<'a> {
                     }
                     let mut ir_props =
                         finalize_element_props(ValueKind::Complex, ir_props, &mut self.strings, self.tunables)?;
+                    validate_fixed_occurs_count(&ir_props)?;
                     ir_props.hidden = hidden;
                     Ok(self.push(IrNode::Element {
                         name,
@@ -2105,6 +2108,30 @@ fn group_local_name(qname: &str) -> &str {
     qname.rsplit(':').next().unwrap_or(qname)
 }
 
+fn validate_fixed_occurs_count(props: &IrProps) -> Result<()> {
+    if props.occurs_count_kind != OccursCountKind::Fixed {
+        return Ok(());
+    }
+    let Some(max) = props.occurs_max else {
+        return Err(SchemaError::InvalidProperty {
+            message:
+                "Schema Definition Error: occursCountKind='fixed' not allowed with unbounded maxOccurs"
+                    .into(),
+        }
+        .into());
+    };
+    if props.occurs_min != max {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: occursCountKind='fixed' requires minOccurs and maxOccurs to be equal ({} != {})",
+                props.occurs_min, max
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 fn validate_implicit_unbounded_in_sequence(
     particles: &[Particle],
     has_hidden_prefix: bool,
@@ -2408,6 +2435,9 @@ fn overlay_dfdl_to_ir(
             .calendar_time_zone
             .as_ref()
             .map(|s| strings.intern(s.clone()));
+    }
+    if props.calendar_check_policy_lax == Some(true) {
+        base.calendar_check_policy_lax = true;
     }
     if props.text_number_pattern.is_some() {
         base.text_number_pattern = props
@@ -2780,6 +2810,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.separator_suppression_policy.is_some() {
         out.separator_suppression_policy = overlay.separator_suppression_policy;
     }
+    out.occurs_count_kind = overlay.occurs_count_kind;
     out.ignore_case = overlay.ignore_case;
     out.text_trim_kind = overlay.text_trim_kind;
     out.text_pad_kind = overlay.text_pad_kind;
@@ -2807,6 +2838,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.calendar_pattern_kind = overlay.calendar_pattern_kind;
     if overlay.calendar_time_zone.is_some() {
         out.calendar_time_zone = overlay.calendar_time_zone;
+    }
+    if overlay.calendar_check_policy_lax {
+        out.calendar_check_policy_lax = true;
     }
     if overlay.text_number_pattern.is_some() {
         out.text_number_pattern = overlay.text_number_pattern;
@@ -3184,5 +3218,33 @@ mod tests {
             inner.fields.get("one"),
             Some(&crate::value::DfdlValue::UnsignedByte(3))
         );
+    }
+
+    #[test]
+    fn fixed_occurs_min_max_mismatch_is_sde() {
+        let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+            xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/" xmlns:ex="http://example.com">
+          <dfdl:format representation="text" encoding="utf-8" occursCountKind="fixed"
+            lengthKind="delimited" separatorSuppressionPolicy="never"/>
+          <xs:complexType name="basicType">
+            <xs:sequence dfdl:separator="|">
+              <xs:element name="data" type="xs:int"
+                dfdl:occursCountKind="fixed" minOccurs="2" maxOccurs="3"
+                dfdl:textNumberRep="standard" dfdl:lengthKind="delimited" />
+            </xs:sequence>
+          </xs:complexType>
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:element name="basic" type="ex:basicType" dfdl:lengthKind="implicit"/>
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>"#;
+        let schema = parse_schema(xsd).expect("parse");
+        let err = compile_named(&schema, Some("root")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("occursCountKind='fixed'"), "{msg}");
+        assert!(msg.contains("equal"), "{msg}");
     }
 }

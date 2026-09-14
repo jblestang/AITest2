@@ -473,6 +473,65 @@ fn parse_time_hms_frac(time: &str) -> Result<(u32, u32, u32, Option<u32>), VmErr
     Ok((hh, mm, ss, frac))
 }
 
+fn days_in_month(y: i32, m: u32) -> u32 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+            if leap { 29 } else { 28 }
+        }
+        _ => 30,
+    }
+}
+
+pub(crate) fn normalize_lenient_ymd(y: i32, m: u32, d: u32) -> (i32, u32, u32) {
+    let mut year = y as i64;
+    let mut month = m as i64;
+    let mut day = d as i64;
+    if month < 1 {
+        year += (month - 12).div_euclid(12);
+        month = (month - 1).rem_euclid(12) + 1;
+    } else if month > 12 {
+        year += (month - 1) / 12;
+        month = (month - 1) % 12 + 1;
+    }
+    for _ in 0..512 {
+        let dim = days_in_month(year as i32, month as u32) as i64;
+        if (1..=dim).contains(&day) {
+            break;
+        }
+        if day < 1 {
+            month -= 1;
+            if month < 1 {
+                month = 12;
+                year -= 1;
+            }
+            day += days_in_month(year as i32, month as u32) as i64;
+        } else {
+            day -= dim;
+            month += 1;
+            if month > 12 {
+                month = 1;
+                year += 1;
+            }
+        }
+    }
+    (year as i32, month as u32, day as u32)
+}
+
+pub(crate) fn normalize_lenient_hms(h: u32, m: u32, s: u32) -> (u32, u32, u32) {
+    let mut secs = h as i64 * 3600 + i64::from(m) * 60 + i64::from(s);
+    if secs < 0 {
+        secs = 0;
+    }
+    let h = (secs / 3600) as u32;
+    let rem = secs % 3600;
+    let m = (rem / 60) as u32;
+    let s = (rem % 60) as u32;
+    (h, m, s)
+}
+
 fn validate_ymd(y: i32, m: u32, d: u32) -> Result<(), VmError> {
     if !(1..=12).contains(&m) || d == 0 || d > 31 {
         return Err(invalid_epoch(""));
