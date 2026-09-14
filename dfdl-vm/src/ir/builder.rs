@@ -695,6 +695,7 @@ impl<'a> IrBuilder<'a> {
         validate_text_string_pad_props(type_props)?;
         validate_text_string_pad_props(element_props)?;
         let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings)?;
+        resolve_escape_scheme(&self.schema, type_props, element_props, &mut ir);
         self.attach_prefix_length(type_props, element_props, &mut ir, 0)?;
         Ok(ir)
     }
@@ -2108,6 +2109,29 @@ fn group_local_name(qname: &str) -> &str {
     qname.rsplit(':').next().unwrap_or(qname)
 }
 
+fn resolve_escape_scheme(
+    schema: &SchemaDocument,
+    type_props: &DfdlProps,
+    element_props: &DfdlProps,
+    ir: &mut IrProps,
+) {
+    let ref_name = element_props
+        .escape_scheme_ref
+        .as_ref()
+        .or(type_props.escape_scheme_ref.as_ref());
+    let Some(ref_name) = ref_name else {
+        return;
+    };
+    if ref_name.is_empty() {
+        ir.escape_scheme = None;
+        return;
+    }
+    let key = ref_name.rsplit(':').next().unwrap_or(ref_name.as_str());
+    if let Some(scheme) = schema.named_escape_schemes.get(key) {
+        ir.escape_scheme = Some(scheme.clone());
+    }
+}
+
 fn validate_fixed_occurs_count(props: &IrProps) -> Result<()> {
     if props.occurs_count_kind != OccursCountKind::Fixed {
         return Ok(());
@@ -3042,6 +3066,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.prefix_includes_prefix_length = overlay.prefix_includes_prefix_length;
     if overlay.xsd_type.is_some() {
         out.xsd_type = overlay.xsd_type;
+    }
+    if overlay.escape_scheme.is_some() {
+        out.escape_scheme = overlay.escape_scheme.clone();
     }
     out
 }

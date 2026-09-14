@@ -94,6 +94,9 @@ impl<'a> XsdParser<'a> {
             }
             self.doc.named_formats.insert(k, v);
         }
+        for (k, v) in other.named_escape_schemes {
+            self.doc.named_escape_schemes.insert(k, v);
+        }
         for (k, v) in other.groups {
             self.doc.groups.insert(k, v);
         }
@@ -198,6 +201,9 @@ impl<'a> XsdParser<'a> {
                                 merge_dfdl_props(self.doc.format_defaults.props.clone(), props);
                         }
                         "defineFormat" => {
+                            let _ = self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
+                        }
+                        "defineEscapeScheme" => {
                             let _ = self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
                         }
                         "annotation" => {
@@ -1143,6 +1149,10 @@ impl<'a> XsdParser<'a> {
         if local == "defineFormat" {
             return self.parse_define_format(attrs);
         }
+        if local == "defineEscapeScheme" {
+            let _ = self.parse_define_escape_scheme(attrs)?;
+            return Ok(DfdlProps::default());
+        }
 
         let mut props = props_from_attrs(&attrs)?;
         if local == "assert" || local == "discriminator" {
@@ -1313,6 +1323,62 @@ impl<'a> XsdParser<'a> {
         }
         Ok(props)
     }
+
+    fn parse_define_escape_scheme(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
+        let scheme_name = attrs.get("name").cloned();
+        self.reader.skip_insignificant_ws()?;
+        let mut scheme = EscapeSchemeDef::default();
+        loop {
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::EndElement { name } if name.local_name == "defineEscapeScheme" => {
+                    let _ = self.reader.next_event()?;
+                    break;
+                }
+                XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    let child_attrs = self.reader.take_start_attributes()?;
+                    if local == "escapeScheme" {
+                        scheme = escape_scheme_from_attrs(&child_attrs);
+                        self.reader.skip_current_subtree()?;
+                    } else {
+                        self.skip_element_body(&local)?;
+                    }
+                }
+                XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                    let _ = self.reader.next_event()?;
+                }
+                other => {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "expected defineEscapeScheme child, found {:?}",
+                            event_kind(other)
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+        if let Some(name) = scheme_name {
+            self.doc.named_escape_schemes.insert(name, scheme);
+        }
+        Ok(())
+    }
+}
+
+fn escape_scheme_from_attrs(attrs: &BTreeMap<String, String>) -> EscapeSchemeDef {
+    let escape_kind = match attrs.get("escapeKind").map(String::as_str) {
+        Some("escapeBlock") => EscapeKind::EscapeBlock,
+        _ => EscapeKind::EscapeCharacter,
+    };
+    EscapeSchemeDef {
+        escape_kind,
+        escape_character: attrs.get("escapeCharacter").cloned(),
+        escape_escape_character: attrs.get("escapeEscapeCharacter").cloned(),
+        escape_block_start: attrs.get("escapeBlockStart").cloned(),
+        escape_block_end: attrs.get("escapeBlockEnd").cloned(),
+    }
 }
 
 fn duplicate_format_definition(name: &str) -> ParseError {
@@ -1409,6 +1475,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.occurs_count_kind.is_some() {
         base.occurs_count_kind = overlay.occurs_count_kind;
+    }
+    if overlay.escape_scheme_ref.is_some() {
+        base.escape_scheme_ref = overlay.escape_scheme_ref.clone();
     }
     if overlay.initiated_content.is_some() {
         base.initiated_content = overlay.initiated_content;
@@ -1935,6 +2004,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "nilValue"
             | "separatorSuppressionPolicy"
             | "occursCountKind"
+            | "escapeSchemeRef"
             | "hiddenGroupRef"
             | "ignoreCase"
             | "textTrimKind"
@@ -2139,6 +2209,9 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                         .into())
                     }
                 });
+            }
+            "escapeSchemeRef" => {
+                props.escape_scheme_ref = Some(value.to_string());
             }
             "hiddenGroupRef" => {
                 props.hidden_group_ref = Some(normalize_qname(value));

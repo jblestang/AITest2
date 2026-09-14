@@ -4,7 +4,7 @@ pub use builder::{compile, compile_named, compile_named_with_tunables};
 use crate::error::VmError;
 use crate::schema::{
     BinaryFloatRep, BinaryNumberCheckPolicy, BinaryNumberRep, BitOrder, ByteOrder,
-    EncodingErrorPolicy, InputValueCalc, InputValueCalcSegment,
+    EncodingErrorPolicy, EscapeSchemeDef, InputValueCalc, InputValueCalcSegment,
     LengthKind, LengthUnits, NilKind, ObjectKind, OccursCountKind, OutputValueCalc,
     Representation, SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind,
     TextNumberJustification, TextPadKind, TextStringJustification, TextTrimKind,
@@ -68,7 +68,7 @@ pub enum ValueKind {
     Complex,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IrPrefixLength {
     pub kind: ValueKind,
     pub props: IrProps,
@@ -86,7 +86,7 @@ pub enum IrInputValueCalcSegment {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IrProps {
     pub representation: Representation,
     pub byte_order: ByteOrder,
@@ -236,6 +236,8 @@ pub struct IrProps {
     pub object_kind: ObjectKind,
     /// XSD type QName for union/facet post-decode validation (element declaration).
     pub xsd_type: Option<StringId>,
+    /// Resolved `dfdl:escapeSchemeRef` for post-trim unescape on text parse.
+    pub escape_scheme: Option<EscapeSchemeDef>,
 }
 
 impl Default for IrProps {
@@ -371,6 +373,7 @@ impl Default for IrProps {
             non_negative_integer: false,
             object_kind: ObjectKind::Normal,
             xsd_type: None,
+            escape_scheme: None,
         }
     }
 }

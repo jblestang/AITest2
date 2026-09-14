@@ -3696,6 +3696,16 @@ pub(crate) fn read_text_scalar(
         text
     };
     let trimmed = trim_text_value(&text, kind, props.text_trim_kind, props, strings);
+    let trimmed = if kind == crate::ir::ValueKind::String {
+        if let Some(ref scheme) = props.escape_scheme {
+            crate::vm::escape::unescape_field_text(trimmed, scheme)?
+        } else {
+            trimmed.to_string()
+        }
+    } else {
+        trimmed.to_string()
+    };
+    let trimmed = trimmed.as_str();
 
     if text_matches_nil_literal(trimmed, props, strings)? {
         return Ok(DfdlValue::Null);
@@ -3862,6 +3872,11 @@ pub(crate) fn read_text_scalar(
             Ok(DfdlValue::Decimal(canon.into()))
         }
         DateTime | Time => {
+            if props.calendar_pattern.is_none()
+                && props.calendar_pattern_kind == crate::schema::CalendarPatternKind::Implicit
+            {
+                validate_implicit_calendar_lexical(kind, props.calendar_date_only, trimmed)?;
+            }
             if let Some(pat_id) = props.calendar_pattern {
                 let pattern = strings.get(pat_id)?;
                 let parsed = if trimmed.chars().all(|c| c.is_ascii_digit()) {
@@ -6012,6 +6027,59 @@ fn pad_char_for_kind(
     pad_char_from_props(props, strings)
         .map(|s| s.to_string())
         .unwrap_or_else(|| alloc::string::String::from(" "))
+}
+
+fn validate_implicit_calendar_lexical(
+    kind: crate::ir::ValueKind,
+    date_only: bool,
+    text: &str,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::ir::ValueKind;
+    let type_name = if date_only {
+        "xs:date"
+    } else if kind == ValueKind::Time {
+        "xs:time"
+    } else {
+        "xs:dateTime"
+    };
+    let ok = match type_name {
+        "xs:date" => {
+            text.len() == 10
+                && text.as_bytes().get(4) == Some(&b'-')
+                && text.as_bytes().get(7) == Some(&b'-')
+                && text[..4].chars().all(|c| c.is_ascii_digit())
+                && text[5..7].chars().all(|c| c.is_ascii_digit())
+                && text[8..10].chars().all(|c| c.is_ascii_digit())
+        }
+        "xs:time" => {
+            text.len() >= 8
+                && text.as_bytes().get(2) == Some(&b':')
+                && text.as_bytes().get(5) == Some(&b':')
+                && text[..2].chars().all(|c| c.is_ascii_digit())
+                && text[3..5].chars().all(|c| c.is_ascii_digit())
+                && text[6..8].chars().all(|c| c.is_ascii_digit())
+        }
+        _ => {
+            // xs:dateTime: ISO-like `YYYY-MM-DD` + `T` or space + time + optional zone.
+            let Some(sep) = text.find('T').or_else(|| text.find(' ')) else {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Parse Error: Unable to parse xs:dateTime from text: {text}"
+                    ),
+                });
+            };
+            validate_implicit_calendar_lexical(ValueKind::DateTime, true, &text[..sep]).is_ok()
+                && validate_implicit_calendar_lexical(ValueKind::Time, false, &text[sep + 1..])
+                    .is_ok()
+        }
+    };
+    if !ok {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("Parse Error: Unable to parse {type_name} from text: {text}"),
+        });
+    }
+    Ok(())
 }
 
 fn trim_text_value<'a>(

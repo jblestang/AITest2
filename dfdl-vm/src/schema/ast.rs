@@ -143,6 +143,24 @@ pub struct DfdlProps {
     pub facet_check_constraints: bool,
     /// Daffodil extension `dfdlx:objectKind` (`bytes` / `chars`).
     pub object_kind: Option<ObjectKind>,
+    /// `dfdl:escapeSchemeRef` (empty string clears inherited scheme).
+    pub escape_scheme_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct EscapeSchemeDef {
+    pub escape_kind: EscapeKind,
+    pub escape_character: Option<String>,
+    pub escape_escape_character: Option<String>,
+    pub escape_block_start: Option<String>,
+    pub escape_block_end: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EscapeKind {
+    #[default]
+    EscapeCharacter,
+    EscapeBlock,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -585,6 +603,8 @@ pub struct SchemaDocument {
     pub format_defaults: FormatDefaults,
     /// Named DFDL formats from `dfdl:defineFormat`.
     pub named_formats: BTreeMap<String, DfdlProps>,
+    /// Named escape schemes from `dfdl:defineEscapeScheme`.
+    pub named_escape_schemes: BTreeMap<String, EscapeSchemeDef>,
     pub types: BTreeMap<TypeName, TypeDef>,
     pub global_elements: BTreeMap<String, GlobalElement>,
     /// Named `xs:group` model groups (local name → sequence or choice).
