@@ -51,7 +51,6 @@ impl<'a> IrBuilder<'a> {
                 .is_some_and(|s| s.is_empty())
         {
             defaults.text_standard_exponent_rep = strings.intern("E");
-            defaults.text_standard_exponent_rep_defined = true;
         }
         if schema
             .format_defaults
@@ -96,11 +95,12 @@ impl<'a> IrBuilder<'a> {
             let mut props = finalize_element_props(
                 kind,
                 self.merge_props_full(&defaults, &DfdlProps::default(), &root_element.props)?,
-                &self.strings,
+                &mut self.strings,
                 self.tunables,
             )?;
             apply_unsigned_long_flag(&root_element.type_name, &mut props);
             apply_integer_type_flags(&root_element.type_name, &mut props);
+            apply_calendar_type_flags(&root_element.type_name, &mut props);
             validate_implicit_text_length(kind, &props)?;
             let name = self.strings.intern(root_name);
             self.push(IrNode::Element {
@@ -123,11 +123,12 @@ impl<'a> IrBuilder<'a> {
                 let mut ir_props = finalize_element_props(
                     kind,
                     self.merge_props_full(&defaults, props, &root_element.props)?,
-                    &self.strings,
+                    &mut self.strings,
                     self.tunables,
                 )?;
                 apply_unsigned_long_flag(&root_element.type_name, &mut ir_props);
                 apply_integer_type_flags(&root_element.type_name, &mut ir_props);
+                apply_calendar_type_flags(&root_element.type_name, &mut ir_props);
                 apply_restriction_facets(
                     &self.schema,
                     &mut ir_props,
@@ -158,7 +159,7 @@ impl<'a> IrBuilder<'a> {
                 let ir_props = finalize_element_props(
                     ValueKind::Complex,
                     ir_props,
-                    &self.strings,
+                    &mut self.strings,
                     self.tunables,
                 )?;
                 let name = self.strings.intern(root_name);
@@ -211,7 +212,7 @@ impl<'a> IrBuilder<'a> {
                 let mut ir_props = finalize_element_props(
                     kind,
                     self.merge_props_full(&defaults, props, element_props)?,
-                    &self.strings,
+                    &mut self.strings,
                     self.tunables,
                 )?;
                 apply_restriction_facets(
@@ -267,12 +268,13 @@ impl<'a> IrBuilder<'a> {
                     let mut ir_props = finalize_element_props(
                         kind,
                         merged,
-                        &self.strings,
+                        &mut self.strings,
                         self.tunables,
                     )?;
                     ir_props.hidden = hidden;
                     apply_unsigned_long_flag(&element.type_name, &mut ir_props);
                     apply_integer_type_flags(&element.type_name, &mut ir_props);
+                    apply_calendar_type_flags(&element.type_name, &mut ir_props);
                     validate_implicit_text_length(kind, &ir_props)?;
                     Ok(self.push(IrNode::Element {
                         name,
@@ -346,7 +348,7 @@ impl<'a> IrBuilder<'a> {
                             let mut merged = finalize_element_props(
                                 kind,
                                 merged_ir,
-                                &self.strings,
+                                &mut self.strings,
                                 self.tunables,
                             )?;
                             if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
@@ -384,7 +386,7 @@ impl<'a> IrBuilder<'a> {
                         ir_props.length_kind = LengthKind::Implicit;
                     }
                     let mut ir_props =
-                        finalize_element_props(ValueKind::Complex, ir_props, &self.strings, self.tunables)?;
+                        finalize_element_props(ValueKind::Complex, ir_props, &mut self.strings, self.tunables)?;
                     ir_props.hidden = hidden;
                     Ok(self.push(IrNode::Element {
                         name,
@@ -1039,7 +1041,7 @@ fn text_number_pattern_requires_exponent(pattern: &str) -> bool {
 fn finalize_element_props(
     kind: ValueKind,
     mut ir: IrProps,
-    strings: &StringPool,
+    strings: &mut StringPool,
     tunables: DaffodilTunables,
 ) -> Result<IrProps> {
     use crate::schema::NilKind;
@@ -1312,6 +1314,13 @@ fn apply_integer_type_flags(type_name: &TypeName, props: &mut IrProps) {
     let local = type_name.as_str().rsplit(':').next().unwrap_or(type_name.as_str());
     if matches!(local, "nonNegativeInteger") {
         props.non_negative_integer = true;
+    }
+}
+
+fn apply_calendar_type_flags(type_name: &TypeName, props: &mut IrProps) {
+    let local = type_name.as_str().rsplit(':').next().unwrap_or(type_name.as_str());
+    if matches!(local, "date") {
+        props.calendar_date_only = true;
     }
 }
 
@@ -2152,6 +2161,12 @@ fn overlay_dfdl_to_ir(
     if let Some(v) = props.input_value_calc {
         base.input_value_calc = Some(v);
     }
+    if props.input_value_calc_literal.is_some() {
+        base.input_value_calc_literal = props
+            .input_value_calc_literal
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
     if props.input_value_calc_sibling.is_some() {
         base.input_value_calc_sibling = props
             .input_value_calc_sibling
@@ -2412,7 +2427,11 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
         out.fill_byte = overlay.fill_byte;
     }
     out.input_value_calc = overlay.input_value_calc;
+    out.input_value_calc_literal = overlay.input_value_calc_literal;
     out.input_value_calc_sibling = overlay.input_value_calc_sibling;
+    if overlay.calendar_date_only {
+        out.calendar_date_only = true;
+    }
     out.output_value_calc = overlay.output_value_calc;
     out.output_value_calc_sibling = overlay.output_value_calc_sibling;
     out.text_string_justification = overlay.text_string_justification;

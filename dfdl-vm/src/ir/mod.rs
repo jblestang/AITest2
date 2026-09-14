@@ -158,7 +158,10 @@ pub struct IrProps {
     /// Expanded `dfdl:fillByte` bytes (for runtime SDE when encoding is computed).
     pub fill_byte_utf8: Option<alloc::vec::Vec<u8>>,
     pub input_value_calc: Option<InputValueCalc>,
+    pub input_value_calc_literal: Option<StringId>,
     pub input_value_calc_sibling: Option<StringId>,
+    /// True when the XSD type is `xs:date` (vs `xs:dateTime`).
+    pub calendar_date_only: bool,
     pub output_value_calc: Option<OutputValueCalc>,
     pub output_value_calc_sibling: Option<StringId>,
     pub text_string_justification: TextStringJustification,
@@ -273,7 +276,9 @@ impl Default for IrProps {
             fill_byte_defined: false,
             fill_byte_utf8: None,
             input_value_calc: None,
+            input_value_calc_literal: None,
             input_value_calc_sibling: None,
+            calendar_date_only: false,
             output_value_calc: None,
             output_value_calc_sibling: None,
             text_string_justification: TextStringJustification::Left,

@@ -83,11 +83,11 @@ fn invalid_epoch(raw: &str) -> VmError {
 
 fn unix_from_utc_ymdhms(y: i32, m: u32, d: u32, hh: u32, mm: u32, ss: u32) -> Result<i64, VmError> {
     let days = days_from_civil(y, m, d)?;
-    let secs = (days as i64) * 86400 + (hh as i64) * 3600 + (mm as i64) * 60 + ss as i64;
+    let secs = days * 86400 + (hh as i64) * 3600 + (mm as i64) * 60 + ss as i64;
     Ok(secs)
 }
 
-fn days_from_civil(y: i32, m: u32, d: u32) -> Result<u32, VmError> {
+fn days_from_civil(y: i32, m: u32, d: u32) -> Result<i64, VmError> {
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return Err(invalid_epoch(""));
     }
@@ -99,17 +99,27 @@ fn days_from_civil(y: i32, m: u32, d: u32) -> Result<u32, VmError> {
     let yoe = y - era * 400;
     let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Ok((era * 146097 + doe) as u32)
+    Ok(era * 146097 + doe - 719468)
 }
 
 pub fn format_unix_datetime_utc(secs: i64) -> alloc::string::String {
+    format_unix_datetime_utc_millis(secs, 0)
+}
+
+pub fn format_unix_datetime_utc_millis(secs: i64, millis: u32) -> alloc::string::String {
     let days = secs.div_euclid(86400);
     let rem = secs.rem_euclid(86400);
     let hh = (rem / 3600) as u32;
     let mm = ((rem % 3600) / 60) as u32;
     let ss = (rem % 60) as u32;
     let (y, m, d) = civil_from_days(days as i64);
-    alloc::format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}")
+    if millis == 0 {
+        alloc::format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}")
+    } else {
+        alloc::format!(
+            "{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:06}"
+        )
+    }
 }
 
 fn civil_from_days(z: i64) -> (i32, u32, u32) {
@@ -144,7 +154,152 @@ pub fn decode_binary_seconds_value(bytes: &[u8], le: bool) -> Result<i64, VmErro
     Ok(v as i64)
 }
 
-pub fn decode_binary_milliseconds_value(bytes: &[u8], le: bool) -> Result<i64, VmError> {
+fn calendar_parse_error(type_name: &str, text: &str) -> VmError {
+    VmError::InvalidValue {
+        message: alloc::format!("Failed to parse {type_name} from string: {text}"),
+    }
+}
+
+/// Parse XSD lexical `xs:date` / `xs:dateTime` / `xs:time` (subset used in Section 5).
+pub fn parse_xs_calendar_lexical(
+    kind: crate::ir::ValueKind,
+    date_only: bool,
+    text: &str,
+) -> Result<alloc::string::String, VmError> {
+    use crate::ir::ValueKind;
+    let text = text.trim();
+    match kind {
+        ValueKind::Time => parse_xs_time_lexical(text),
+        ValueKind::DateTime if date_only => parse_xs_date_lexical(text),
+        ValueKind::DateTime => parse_xs_datetime_lexical(text),
+        _ => Err(VmError::InvalidValue {
+            message: alloc::format!("inputValueCalc string literal unsupported for `{kind:?}`"),
+        }),
+    }
+}
+
+fn parse_xs_date_lexical(text: &str) -> Result<alloc::string::String, VmError> {
+    let (core, tz) = split_date_timezone(text);
+    let (y, m, d) = parse_date_ymd(core).map_err(|_| calendar_parse_error("xs:date", text))?;
+    validate_ymd(y, m, d).map_err(|_| calendar_parse_error("xs:date", text))?;
+    Ok(format_iso_date(y, m, d, tz))
+}
+
+fn parse_xs_time_lexical(text: &str) -> Result<alloc::string::String, VmError> {
+    let (core, tz) = split_time_timezone(text);
+    let (hh, mm, ss, frac) = parse_time_hms_frac(core)
+        .map_err(|_| calendar_parse_error("xs:time", text))?;
+    validate_hms(hh, mm, ss).map_err(|_| calendar_parse_error("xs:time", text))?;
+    Ok(format_iso_time(hh, mm, ss, frac, tz))
+}
+
+fn parse_xs_datetime_lexical(text: &str) -> Result<alloc::string::String, VmError> {
+    let (date, rest) = text
+        .split_once('T')
+        .ok_or_else(|| calendar_parse_error("xs:dateTime", text))?;
+    let (y, m, d) = parse_date_ymd(date).map_err(|_| calendar_parse_error("xs:dateTime", text))?;
+    validate_ymd(y, m, d).map_err(|_| calendar_parse_error("xs:dateTime", text))?;
+    let (core, tz) = split_time_timezone(rest);
+    let (hh, mm, ss, frac) = parse_time_hms_frac(core)
+        .map_err(|_| calendar_parse_error("xs:dateTime", text))?;
+    validate_hms(hh, mm, ss).map_err(|_| calendar_parse_error("xs:dateTime", text))?;
+    let frac_s = frac
+        .filter(|&f| f != 0)
+        .map(|f| alloc::format!(".{f:06}"))
+        .unwrap_or_default();
+    Ok(alloc::format!(
+        "{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}{frac_s}{}",
+        tz.unwrap_or_else(|| "+00:00".into())
+    ))
+}
+
+fn split_date_timezone(text: &str) -> (&str, Option<alloc::string::String>) {
+    if let Some(idx) = text.find('+').filter(|&i| i > 4) {
+        let (core, off) = text.split_at(idx);
+        return (core, Some(off.into()));
+    }
+    if text.len() > 10 {
+        if let Some(idx) = text[10..].find('-') {
+            let idx = idx + 10;
+            let (core, off) = text.split_at(idx);
+            return (core, Some(off.into()));
+        }
+    }
+    (text, None)
+}
+
+fn split_time_timezone(text: &str) -> (&str, Option<alloc::string::String>) {
+    if let Some(idx) = text.rfind('+').filter(|&i| i > 0) {
+        let (core, off) = text.split_at(idx);
+        return (core, Some(off.into()));
+    }
+    if let Some(idx) = text.rfind('-').filter(|&i| i > 0 && text.contains(':')) {
+        let (core, off) = text.split_at(idx);
+        if off.contains(':') {
+            return (core, Some(off.into()));
+        }
+    }
+    (text, None)
+}
+
+fn parse_time_hms_frac(time: &str) -> Result<(u32, u32, u32, Option<u32>), VmError> {
+    let (base, frac) = if let Some((b, f)) = time.split_once('.') {
+        let digits: alloc::string::String = f.chars().take(6).collect();
+        if !digits.chars().all(|c| c.is_ascii_digit()) {
+            return Err(invalid_epoch(time));
+        }
+        let mut micros = digits.parse::<u32>().unwrap_or(0);
+        if f.len() > digits.len() {
+            micros *= 10u32.pow((f.len() - digits.len()) as u32);
+        }
+        (b, Some(micros))
+    } else {
+        (time, None)
+    };
+    let (hh, mm, ss) = parse_time_hms(base)?;
+    Ok((hh, mm, ss, frac))
+}
+
+fn validate_ymd(y: i32, m: u32, d: u32) -> Result<(), VmError> {
+    if !(1..=12).contains(&m) || d == 0 || d > 31 {
+        return Err(invalid_epoch(""));
+    }
+    let _ = days_from_civil(y, m, d)?;
+    Ok(())
+}
+
+fn validate_hms(hh: u32, mm: u32, ss: u32) -> Result<(), VmError> {
+    if hh > 23 || mm > 59 || ss > 59 {
+        return Err(invalid_epoch(""));
+    }
+    Ok(())
+}
+
+fn format_iso_date(y: i32, m: u32, d: u32, tz: Option<alloc::string::String>) -> alloc::string::String {
+    alloc::format!(
+        "{y:04}-{m:02}-{d:02}{}",
+        tz.unwrap_or_else(|| "+00:00".into())
+    )
+}
+
+fn format_iso_time(
+    hh: u32,
+    mm: u32,
+    ss: u32,
+    frac: Option<u32>,
+    tz: Option<alloc::string::String>,
+) -> alloc::string::String {
+    let frac_s = frac
+        .filter(|&f| f != 0)
+        .map(|f| alloc::format!(".{f:06}"))
+        .unwrap_or_default();
+    alloc::format!(
+        "{hh:02}:{mm:02}:{ss:02}{frac_s}{}",
+        tz.unwrap_or_else(|| "+00:00".into())
+    )
+}
+
+pub fn decode_binary_milliseconds_value(bytes: &[u8], le: bool) -> Result<(i64, u32), VmError> {
     if bytes.len() != 8 {
         return Err(VmError::InvalidValue {
             message: alloc::format!(
@@ -160,5 +315,19 @@ pub fn decode_binary_milliseconds_value(bytes: &[u8], le: bool) -> Result<i64, V
     } else {
         i64::from_be_bytes(buf)
     };
-    Ok(v / 1000)
+    let secs = v.div_euclid(1000);
+    let millis = v.rem_euclid(1000) as u32;
+    Ok((secs, millis * 1000))
+}
+
+#[cfg(test)]
+mod calendar_tests {
+    use super::*;
+
+    #[test]
+    fn epoch_plus_seconds_date_time_bin() {
+        let base = parse_calendar_epoch_unix("1977-01-01T00:00:07").unwrap();
+        let out = format_unix_datetime_utc(base + 62);
+        assert_eq!(out, "1977-01-01T00:01:09");
+    }
 }

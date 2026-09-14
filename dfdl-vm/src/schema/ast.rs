@@ -99,6 +99,8 @@ pub struct DfdlProps {
     pub prefix_length_type: Option<TypeName>,
     pub prefix_includes_prefix_length: Option<bool>,
     pub input_value_calc: Option<InputValueCalc>,
+    /// Literal from `{ xs:string('...') }` in inputValueCalc.
+    pub input_value_calc_literal: Option<String>,
     /// Local name of sibling referenced by `../name` in inputValueCalc.
     pub input_value_calc_sibling: Option<String>,
     pub output_value_calc: Option<OutputValueCalc>,
@@ -231,6 +233,8 @@ pub enum InputValueCalc {
     ContentLengthSibling(LengthUnits),
     ValueLengthSibling(LengthUnits),
     BooleanFromSibling,
+    /// `{ xs:string('...') }` — literal lexical value for calendar/text tests.
+    StringLiteral,
 }
 
 /// Narrow support for `dfdl:outputValueCalc` used on encode/unparse.

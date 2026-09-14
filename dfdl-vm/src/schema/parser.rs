@@ -1449,6 +1449,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.input_value_calc.is_some() {
         base.input_value_calc = overlay.input_value_calc;
     }
+    if overlay.input_value_calc_literal.is_some() {
+        base.input_value_calc_literal = overlay.input_value_calc_literal.clone();
+    }
     if overlay.input_value_calc_sibling.is_some() {
         base.input_value_calc_sibling = overlay.input_value_calc_sibling;
     }
@@ -1479,14 +1482,27 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     base
 }
 
-fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>)> {
+fn parse_xs_string_literal_arg(arg: &str) -> Option<String> {
+    let arg = arg.trim();
+    if arg.len() < 2 || !arg.starts_with('\'') || !arg.ends_with('\'') {
+        return None;
+    }
+    Some(arg[1..arg.len() - 1].to_string())
+}
+
+fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>, Option<String>)> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
+    if inner.starts_with("xs:string(") && inner.ends_with(')') {
+        let arg = &inner["xs:string(".len()..inner.len() - 1];
+        let lit = parse_xs_string_literal_arg(arg)?;
+        return Some((InputValueCalc::StringLiteral, None, Some(lit)));
+    }
     if let Ok(v) = inner.parse::<i64>() {
-        return Some((InputValueCalc::Constant(v), None));
+        return Some((InputValueCalc::Constant(v), None, None));
     }
     let (func, rest) = inner.split_once('(')?;
     let args = rest.strip_suffix(')')?;
@@ -1497,13 +1513,14 @@ fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>
     };
     let target = args.split(',').next()?.trim().trim_matches('"');
     match (func, target) {
-        ("dfdl:contentLength", "..") => Some((InputValueCalc::ContentLengthSelf(units), None)),
-        ("dfdl:valueLength", "..") => Some((InputValueCalc::ValueLengthSelf(units), None)),
+        ("dfdl:contentLength", "..") => Some((InputValueCalc::ContentLengthSelf(units), None, None)),
+        ("dfdl:valueLength", "..") => Some((InputValueCalc::ValueLengthSelf(units), None, None)),
         ("dfdl:contentLength", sib) => {
             let name = sib.strip_prefix("../")?;
             Some((
                 InputValueCalc::ContentLengthSibling(units),
                 Some(local_name_from_qname(name).to_string()),
+                None,
             ))
         }
         ("dfdl:valueLength", sib) => {
@@ -1511,11 +1528,16 @@ fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>
             Some((
                 InputValueCalc::ValueLengthSibling(units),
                 Some(local_name_from_qname(name).to_string()),
+                None,
             ))
         }
         ("xs:boolean", sib) => {
             let name = sib.strip_prefix("../")?;
-            Some((InputValueCalc::BooleanFromSibling, Some(local_name_from_qname(name).to_string())))
+            Some((
+                InputValueCalc::BooleanFromSibling,
+                Some(local_name_from_qname(name).to_string()),
+                None,
+            ))
         }
         _ => None,
     }
@@ -1975,6 +1997,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 if let Some(calc) = parse_input_value_calc(value) {
                     props.input_value_calc = Some(calc.0);
                     props.input_value_calc_sibling = calc.1;
+                    props.input_value_calc_literal = calc.2;
                 }
             }
             "binaryPackedSignCodes" => {

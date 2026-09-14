@@ -488,6 +488,17 @@ pub(crate) fn type_size(kind: crate::ir::ValueKind) -> usize {
     }
 }
 
+fn implicit_binary_scalar_byte_length(kind: crate::ir::ValueKind, props: &IrProps) -> usize {
+    if kind == crate::ir::ValueKind::DateTime {
+        match props.binary_calendar_rep {
+            BinaryNumberRep::BinarySeconds => return 4,
+            BinaryNumberRep::BinaryMilliseconds => return 8,
+            _ => {}
+        }
+    }
+    type_size(kind)
+}
+
 fn pattern_str(strings: &StringPool, id: StringId) -> Result<&str, crate::error::VmError> {
     strings.get(id)
 }
@@ -570,7 +581,9 @@ pub(crate) fn read_binary_scalar(
 
     if props.alignment_units == LengthUnits::Bits || cursor.bit_count != 0 {
         let bit_len = match props.length_kind {
-            LengthKind::Implicit | LengthKind::Fixed => type_size(kind).saturating_mul(8),
+            LengthKind::Implicit | LengthKind::Fixed => {
+                implicit_binary_scalar_byte_length(kind, props).saturating_mul(8)
+            }
             LengthKind::Explicit => {
                 let len = props.length.ok_or(VmError::InvalidValue {
                     message: "explicit binary missing length".into(),
@@ -959,24 +972,30 @@ fn decode_binary_datetime(
         rep,
         BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds
     ) {
-        let delta = match rep {
-            BinaryNumberRep::BinarySeconds => {
-                crate::vm::calendar_binary::decode_binary_seconds_value(bytes, le)?
-            }
-            BinaryNumberRep::BinaryMilliseconds => {
-                crate::vm::calendar_binary::decode_binary_milliseconds_value(bytes, le)?
-            }
-            _ => unreachable!(),
-        };
         let epoch_raw = props
             .binary_calendar_epoch
             .and_then(|id| strings.get(id).ok())
             .unwrap_or("1970-01-01T00:00:00");
-        let base =
-            crate::vm::calendar_binary::parse_calendar_epoch_unix(epoch_raw)?;
-        return Ok(DfdlValue::DateTime(
-            crate::vm::calendar_binary::format_unix_datetime_utc(base + delta),
-        ));
+        let base = crate::vm::calendar_binary::parse_calendar_epoch_unix(epoch_raw)?;
+        return match rep {
+            BinaryNumberRep::BinarySeconds => {
+                let delta = crate::vm::calendar_binary::decode_binary_seconds_value(bytes, le)?;
+                Ok(DfdlValue::DateTime(
+                    crate::vm::calendar_binary::format_unix_datetime_utc(base + delta),
+                ))
+            }
+            BinaryNumberRep::BinaryMilliseconds => {
+                let (secs, micros) =
+                    crate::vm::calendar_binary::decode_binary_milliseconds_value(bytes, le)?;
+                Ok(DfdlValue::DateTime(
+                    crate::vm::calendar_binary::format_unix_datetime_utc_millis(
+                        base + secs,
+                        micros,
+                    ),
+                ))
+            }
+            _ => unreachable!(),
+        };
     }
     let digits = match rep {
         BinaryNumberRep::Bcd => bcd_digit_string(bytes, le),
@@ -2209,8 +2228,10 @@ fn binary_bit_length(
     use crate::error::VmError;
 
     match props.length_kind {
-        LengthKind::Fixed => Ok(props.length.unwrap_or((type_size(kind) * 8) as u64) as usize),
-        LengthKind::Implicit => Ok(type_size(kind) * 8),
+        LengthKind::Fixed => Ok(props.length.unwrap_or(
+            (implicit_binary_scalar_byte_length(kind, props) * 8) as u64,
+        ) as usize),
+        LengthKind::Implicit => Ok(implicit_binary_scalar_byte_length(kind, props) * 8),
         LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
@@ -2249,8 +2270,12 @@ fn binary_byte_length(
     use crate::error::VmError;
 
     match props.length_kind {
-        LengthKind::Fixed => Ok(props.length.unwrap_or(type_size(kind) as u64) as usize),
-        LengthKind::Implicit => Ok(type_size(kind)),
+        LengthKind::Fixed => Ok(
+            props
+                .length
+                .unwrap_or(implicit_binary_scalar_byte_length(kind, props) as u64) as usize,
+        ),
+        LengthKind::Implicit => Ok(implicit_binary_scalar_byte_length(kind, props)),
         LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
@@ -3389,8 +3414,10 @@ fn binary_encode_bit_length(
 ) -> Result<usize, crate::error::VmError> {
     use crate::error::VmError;
     match props.length_kind {
-        LengthKind::Fixed => Ok(props.length.unwrap_or((type_size(kind) * 8) as u64) as usize),
-        LengthKind::Implicit => Ok(type_size(kind) * 8),
+        LengthKind::Fixed => Ok(props.length.unwrap_or(
+            (implicit_binary_scalar_byte_length(kind, props) * 8) as u64,
+        ) as usize),
+        LengthKind::Implicit => Ok(implicit_binary_scalar_byte_length(kind, props) * 8),
         LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),

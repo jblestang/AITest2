@@ -1365,6 +1365,18 @@ fn eval_input_value_calc(
     let calc = props.input_value_calc.ok_or_else(|| VmError::InvalidValue {
         message: "missing inputValueCalc".into(),
     })?;
+    if calc == InputValueCalc::StringLiteral {
+        let lit_id = props.input_value_calc_literal.ok_or_else(|| VmError::InvalidValue {
+            message: "missing inputValueCalc string literal".into(),
+        })?;
+        let text = strings.get(lit_id)?;
+        let parsed = super::calendar_binary::parse_xs_calendar_lexical(
+            kind,
+            props.calendar_date_only,
+            text,
+        )?;
+        return Ok(crate::value::DfdlValue::DateTime(parsed));
+    }
     if let InputValueCalc::Constant(v) = calc {
         return constant_input_value(kind, v);
     }
@@ -1383,6 +1395,7 @@ fn eval_input_value_calc(
     }
     let len = match calc {
         InputValueCalc::Constant(_) => unreachable!("handled above"),
+        InputValueCalc::StringLiteral => unreachable!("handled above"),
         InputValueCalc::BooleanFromSibling => unreachable!("handled above"),
         InputValueCalc::ContentLengthSelf(units) | InputValueCalc::ValueLengthSelf(units) => {
             let byte_len = content_scope_bytes.unwrap_or_else(|| cursor.remaining());
