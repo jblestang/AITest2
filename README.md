@@ -91,7 +91,7 @@ cargo test -p dfdl-vm daffodil_full_suite_report -- --ignored --nocapture
 
 **Sections in vendored corpus:** `section00`, `02`, `05`, `06`, `07`, `08`, `10`, `11`, `12`, `13`, `14`, `15`, `16`, `17`, `23`, `24`, `31`, plus `charsets`, `extensions`, `infoset`, `layers`, `udf`, `unparser`, `usertests`.
 
-Implementation proceeds section-by-section; `lengthKind` is complete. `length_properties` and `section13` are partially gated. Next targets: remaining length_properties cases, `packed` decimal (VM hang), `section12` alignment/delimiter properties, `section05` simple types, etc.
+Implementation proceeds section-by-section. **Section 12 (gated):** `lengthKind` **305/0** and `length_properties` (≥44 pass, ≤16 fail) are CI-green. Remaining Section 12 corpus work (non-gated): `delimiter_properties` (~41 pass), `aligned_data`, and extra `length_properties` cases. **Section 13** is partially gated (542 target). Next: Section 13 nillable regressions, `packed` decimal hang, `section05` simple types, etc.
 
 The crate uses `#![no_std]` with `extern crate alloc`. It has **zero required dependencies**.
 
