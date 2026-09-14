@@ -191,7 +191,8 @@ pub fn run_parser_test_with_options(
     };
 
     if let Some(expected_validation) = &test.expected_validation_errors {
-        let collected = collect_post_decode_validation_errors(spec.program(), &decoded);
+        let collected =
+            collect_post_decode_validation_errors(spec.schema(), spec.program(), &decoded);
         let combined = collected.join("\n");
         if collected.is_empty() {
             return Ok(TestResult {

@@ -222,6 +222,8 @@ pub struct IrProps {
     /// xs:nonNegativeInteger (unbounded, non-negative).
     pub non_negative_integer: bool,
     pub object_kind: ObjectKind,
+    /// XSD type QName for union/facet post-decode validation (element declaration).
+    pub xsd_type: Option<StringId>,
 }
 
 impl Default for IrProps {
@@ -346,6 +348,7 @@ impl Default for IrProps {
             unsigned_integer: false,
             non_negative_integer: false,
             object_kind: ObjectKind::Normal,
+            xsd_type: None,
         }
     }
 }

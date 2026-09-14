@@ -2,10 +2,12 @@ pub mod ast;
 pub mod boolean_reps;
 mod entities;
 mod facets;
+mod union_validate;
 mod parser;
 mod resolver;
 
 pub use ast::*;
+pub use union_validate::validate_union_membership;
 pub use facets::{
     apply_effective_facets_to_ir, validate_facet_literals, validate_length_facets_for_type,
     EffectiveFacets,

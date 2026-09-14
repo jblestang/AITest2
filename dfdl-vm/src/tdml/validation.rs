@@ -1,11 +1,12 @@
 use crate::ir::{IrNode, IrProgram, ValueKind};
+use crate::schema::{SchemaDocument, TypeName, validate_union_membership};
 use crate::value::DfdlValue;
 use crate::vm::facet_validate::{needs_facet_validation, validate_decoded_facets};
-use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Collect XSD facet validation messages for a successfully decoded value tree.
 pub fn collect_post_decode_validation_errors(
+    schema: &SchemaDocument,
     program: &IrProgram,
     root_value: &DfdlValue,
 ) -> Vec<String> {
@@ -16,11 +17,12 @@ pub fn collect_post_decode_validation_errors(
     let Some(root_field) = seq.fields.get(&program.root_element) else {
         return errors;
     };
-    let _ = walk_particle(program, program.root, root_field, &mut errors);
+    let _ = walk_particle(schema, program, program.root, root_field, &mut errors);
     errors
 }
 
 fn walk_particle(
+    schema: &SchemaDocument,
     program: &IrProgram,
     node_id: u32,
     value: &DfdlValue,
@@ -36,17 +38,18 @@ fn walk_particle(
             if *kind == ValueKind::Complex {
                 if let Some(child_id) = child {
                     let inner = complex_element_value(value, program.strings.get(*name).ok())?;
-                    walk_particle(program, *child_id, inner, errors)?;
+                    walk_particle(schema, program, *child_id, inner, errors)?;
                 }
                 return Ok(());
             }
             if matches!(value, DfdlValue::Null) {
                 return Ok(());
             }
+            let ename = program.strings.get(*name).ok();
             if needs_facet_validation(props) {
                 if let Err(e) = validate_decoded_facets(value, *kind, props, &program.strings) {
                     let detail = e.to_string();
-                    if let Ok(ename) = program.strings.get(*name) {
+                    if let Some(ename) = ename {
                         errors.push(alloc::format!("Validation Error"));
                         errors.push(ename.to_string());
                         errors.push(alloc::format!("not valid"));
@@ -54,6 +57,16 @@ fn walk_particle(
                         errors.push(alloc::format!("ex:{ename} {detail}"));
                     } else {
                         errors.push(detail);
+                    }
+                }
+            }
+            if let (Some(type_id), Some(text)) = (props.xsd_type, value_lexical(value, *kind)) {
+                let type_name = TypeName::new(program.strings.get(type_id).map_err(|_| ())?);
+                if !validate_union_membership(schema, &type_name, text) {
+                    errors.push(text.to_string());
+                    errors.push(alloc::format!("not one of the union members"));
+                    if let Some(ename) = ename {
+                        errors.push(alloc::format!("ex:{ename}"));
                     }
                 }
             }
@@ -74,10 +87,10 @@ fn walk_particle(
                 match field_value {
                     DfdlValue::Array(items) => {
                         for item in items {
-                            walk_particle(program, child_id, item, errors)?;
+                            walk_particle(schema, program, child_id, item, errors)?;
                         }
                     }
-                    other => walk_particle(program, child_id, other, errors)?,
+                    other => walk_particle(schema, program, child_id, other, errors)?,
                 }
             }
             Ok(())
@@ -91,7 +104,7 @@ fn walk_particle(
                 for branch in branches {
                     let branch_name = program.strings.get(branch.name).map_err(|_| ())?;
                     if branch_name == discriminator.as_str() {
-                        return walk_particle(program, branch.node, branch_value, errors);
+                        return walk_particle(schema, program, branch.node, branch_value, errors);
                     }
                 }
                 return Ok(());
@@ -102,11 +115,19 @@ fn walk_particle(
             for branch in branches {
                 let branch_name = program.strings.get(branch.name).map_err(|_| ())?;
                 if let Some(v) = seq.fields.get(branch_name) {
-                    return walk_particle(program, branch.node, v, errors);
+                    return walk_particle(schema, program, branch.node, v, errors);
                 }
             }
             Ok(())
         }
+    }
+}
+
+fn value_lexical<'a>(value: &'a DfdlValue, kind: ValueKind) -> Option<&'a str> {
+    match (kind, value) {
+        (ValueKind::String, DfdlValue::String(s)) => Some(s.text.as_str()),
+        (_, DfdlValue::String(s)) => Some(s.text.as_str()),
+        _ => None,
     }
 }
 

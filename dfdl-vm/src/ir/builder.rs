@@ -144,6 +144,7 @@ impl<'a> IrBuilder<'a> {
                     &root_element.props,
                 );
                 validate_implicit_text_length(kind, &ir_props)?;
+                ir_props.xsd_type = Some(self.strings.intern(root_element.type_name.as_str()));
                 let name = self.strings.intern(root_name);
                 self.push(IrNode::Element {
                     name,
@@ -289,6 +290,7 @@ impl<'a> IrBuilder<'a> {
                     apply_integer_type_flags(&element.type_name, &mut ir_props);
                     apply_calendar_type_flags(&element.type_name, &mut ir_props);
                     validate_implicit_text_length(kind, &ir_props)?;
+                    ir_props.xsd_type = Some(self.strings.intern(element.type_name.as_str()));
                     Ok(self.push(IrNode::Element {
                         name,
                         kind,
@@ -390,6 +392,7 @@ impl<'a> IrBuilder<'a> {
                             }
                             validate_implicit_text_length(kind, &merged)?;
                             merged.hidden = hidden;
+                            merged.xsd_type = Some(self.strings.intern(element.type_name.as_str()));
                             return Ok(self.push(IrNode::Element {
                                 name,
                                 kind,
@@ -2955,6 +2958,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
         out.prefix_length = overlay.prefix_length.clone();
     }
     out.prefix_includes_prefix_length = overlay.prefix_includes_prefix_length;
+    if overlay.xsd_type.is_some() {
+        out.xsd_type = overlay.xsd_type;
+    }
     out
 }
 
