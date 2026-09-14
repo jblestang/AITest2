@@ -1754,6 +1754,18 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.input_value_calc_segments.is_some() {
         base.input_value_calc_segments = overlay.input_value_calc_segments.clone();
     }
+    if overlay.input_value_calc_path.is_some() {
+        base.input_value_calc_path = overlay.input_value_calc_path.clone();
+    }
+    if overlay.parse_unparse_policy.is_some() {
+        base.parse_unparse_policy = overlay.parse_unparse_policy;
+    }
+    if overlay.text_bidi.is_some() {
+        base.text_bidi = overlay.text_bidi;
+    }
+    if overlay.floating.is_some() {
+        base.floating = overlay.floating;
+    }
     if overlay.output_value_calc.is_some() {
         base.output_value_calc = overlay.output_value_calc;
     }
@@ -1855,6 +1867,45 @@ fn parse_input_value_calc_concat(value: &str) -> Option<alloc::vec::Vec<crate::s
         return None;
     }
     Some(out)
+}
+
+fn parse_parse_unparse_policy(value: &str) -> Result<ParseUnparsePolicy> {
+    use ParseUnparsePolicy::*;
+    Ok(match value.trim() {
+        "both" => Both,
+        "parseOnly" => ParseOnly,
+        "unparseOnly" => UnparseOnly,
+        other => {
+            return Err(ParseError::InvalidXml {
+                message: alloc::format!("unknown parseUnparsePolicy `{other}`"),
+            }
+            .into())
+        }
+    })
+}
+
+fn parse_input_value_calc_relative_path(
+    value: &str,
+) -> Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let rest = inner.strip_prefix("../")?;
+    if rest.is_empty() {
+        return None;
+    }
+    let mut steps = alloc::vec::Vec::new();
+    for step in rest.split('/').filter(|s| !s.is_empty()) {
+        let (prefix, local) = if let Some((p, l)) = step.split_once(':') {
+            (Some(p.to_string()), l.to_string())
+        } else {
+            (None, step.to_string())
+        };
+        steps.push((prefix, local));
+    }
+    Some(steps)
 }
 
 fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>, Option<String>)> {
@@ -2117,6 +2168,9 @@ fn is_dfdl_property(name: &str) -> bool {
             | "prefixLengthType"
             | "prefixIncludesPrefixLength"
             | "objectKind"
+            | "parseUnparsePolicy"
+            | "textBidi"
+            | "floating"
     )
 }
 
@@ -2393,11 +2447,40 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             "inputValueCalc" => {
                 if let Some(segments) = parse_input_value_calc_concat(value) {
                     props.input_value_calc_segments = Some(segments);
+                } else if let Some(steps) = parse_input_value_calc_relative_path(value) {
+                    props.input_value_calc_path = Some(steps);
                 } else if let Some(calc) = parse_input_value_calc(value) {
                     props.input_value_calc = Some(calc.0);
                     props.input_value_calc_sibling = calc.1;
                     props.input_value_calc_literal = calc.2;
                 }
+            }
+            "parseUnparsePolicy" => {
+                props.parse_unparse_policy = Some(parse_parse_unparse_policy(value)?);
+            }
+            "textBidi" => {
+                props.text_bidi = Some(match value.trim() {
+                    "yes" | "true" => true,
+                    "no" | "false" => false,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("invalid textBidi `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "floating" => {
+                props.floating = Some(match value.trim() {
+                    "yes" | "true" => true,
+                    "no" | "false" => false,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("invalid floating `{other}`"),
+                        }
+                        .into())
+                    }
+                });
             }
             "binaryPackedSignCodes" => {
                 props.binary_packed_sign_codes_defined = true;

@@ -77,6 +77,12 @@ pub struct IrPrefixLength {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IrInputPathStep {
+    pub prefix: Option<StringId>,
+    pub local: StringId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IrInputValueCalcSegment {
     Sibling(StringId),
     Substring {
@@ -196,6 +202,7 @@ pub struct IrProps {
     pub input_value_calc_literal: Option<StringId>,
     pub input_value_calc_sibling: Option<StringId>,
     pub input_value_calc_segments: Option<Vec<IrInputValueCalcSegment>>,
+    pub input_value_calc_path: Option<Vec<IrInputPathStep>>,
     /// True when the XSD type is `xs:date` (vs `xs:dateTime`).
     pub calendar_date_only: bool,
     /// `dfdl:calendarCheckPolicy="lax"` (lenient field normalization).
@@ -351,6 +358,7 @@ impl Default for IrProps {
             input_value_calc_literal: None,
             input_value_calc_sibling: None,
             input_value_calc_segments: None,
+            input_value_calc_path: None,
             calendar_date_only: false,
             calendar_check_policy_lax: false,
             output_value_calc: None,

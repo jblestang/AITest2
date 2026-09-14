@@ -388,10 +388,35 @@ pub(crate) fn remap_xml_illegal_characters_to_pua(text: &str) -> String {
 }
 
 pub(crate) fn is_iso8859_1_encoding(name: &str) -> bool {
+    matches!(normalize_encoding_name(name), Some("iso-8859-1"))
+}
+
+/// Byte-oriented encodings where Daffodil remaps XML-illegal C0 controls ↔ PUA in the infoset.
+pub(crate) fn uses_xml_illegal_char_remap(encoding: &str) -> bool {
     matches!(
-        normalize_encoding_name(name),
-        Some("iso-8859-1")
+        normalize_encoding_name(encoding),
+        Some("ascii") | Some("iso-8859-1") | Some("ebcdic-cp-us")
     )
+}
+
+/// Reverse of [`remap_xml_illegal_characters_to_pua`] for unparse / infoset input.
+pub(crate) fn remap_pua_to_xml_illegal_characters(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            let cp = c as u32;
+            if (0xE000..=0xE01F).contains(&cp) {
+                char::from_u32(cp - 0xE000).unwrap_or(c)
+            } else if (0xE800..=0xEFFF).contains(&cp) {
+                char::from_u32(cp - 0x1000).unwrap_or(c)
+            } else if cp == 0xF0FE {
+                '\u{FFFE}'
+            } else if cp == 0xF0FF {
+                '\u{FFFF}'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 fn eq_ascii_ignore_case(a: &str, b: &str) -> bool {

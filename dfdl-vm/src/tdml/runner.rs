@@ -8,7 +8,7 @@ use super::parser::{
 use crate::api::DfdlSpec;
 use crate::length_validate::DaffodilTunables;
 use crate::error::Result;
-use crate::ir::IrProgram;
+use crate::ir::{IrNode, IrProgram};
 use crate::schema::BitOrder;
 use crate::vm::RuntimeConfig;
 use alloc::string::{String, ToString};
@@ -187,6 +187,26 @@ pub fn run_parser_test_with_options(
         return Ok(TestResult {
             name: test.name.clone(),
             outcome: TestOutcome::Fail(alloc::format!("document load error: {load_err}")),
+        });
+    }
+
+    if !crate::parse_unparse_policy::root_allows_parse(spec.schema(), &test.root) {
+        let msg = crate::parse_unparse_policy::parse_support_error().to_string();
+        if let Some(expected_errors) = &test.expected_errors {
+            if error_messages_match(expected_errors, &msg) {
+                return Ok(TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Pass,
+                });
+            }
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!("decode error mismatch: {msg}")),
+            });
+        }
+        return Ok(TestResult {
+            name: test.name.clone(),
+            outcome: TestOutcome::Fail(alloc::format!("decode error: {msg}")),
         });
     }
 
@@ -420,7 +440,12 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         }
     };
 
-    let value = match infoset_xml_to_root_value(&test.infoset, &test.root, spec.program()) {
+    let value = match super::infoset::infoset_xml_to_root_value_with_context(
+        &test.infoset,
+        &test.root,
+        spec.program(),
+        &suite.resource_context,
+    ) {
         Ok(v) => v,
         Err(e) => {
             return Ok(TestResult {
@@ -430,17 +455,50 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         }
     };
 
+    let unparse_blocked = !crate::parse_unparse_policy::root_allows_unparse(spec.schema(), &test.root)
+        || crate::parse_unparse_policy::subtree_has_parse_only(spec.schema(), &test.root);
+
     if let Some(expected_errors) = &test.expected_errors {
-        return match spec.encode(&value) {
-            Ok(_) => Ok(TestResult {
+        if unparse_blocked {
+            let msg = crate::parse_unparse_policy::unparse_support_error().to_string();
+            if error_messages_match(expected_errors, &msg) {
+                return Ok(TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Pass,
+                });
+            }
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!("encode error mismatch: {msg}")),
+            });
+        }
+        let diagnostic = match spec.encode_with_bit_count(&value) {
+            Ok((encoded, bit_count)) => {
+                if let Some(doc) = test.documents.first() {
+                    if encoded_matches_document(&encoded, bit_count, doc) {
+                        None
+                    } else {
+                        Some(tdml_unparse_document_mismatch_message(
+                            spec.program(),
+                            &encoded,
+                            doc,
+                        ))
+                    }
+                } else {
+                    None
+                }
+            }
+            Err(e) => Some(e.to_string()),
+        };
+        return match diagnostic {
+            None => Ok(TestResult {
                 name: test.name.clone(),
                 outcome: TestOutcome::Fail(alloc::format!(
                     "expected encode error ({} message(s))",
                     expected_errors.len()
                 )),
             }),
-            Err(e) => {
-                let msg = e.to_string();
+            Some(msg) => {
                 if error_messages_match(expected_errors, &msg) {
                     Ok(TestResult {
                         name: test.name.clone(),
@@ -454,6 +512,16 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
                 }
             }
         };
+    }
+
+    if unparse_blocked {
+        return Ok(TestResult {
+            name: test.name.clone(),
+            outcome: TestOutcome::Fail(alloc::format!(
+                "encode error: {}",
+                crate::parse_unparse_policy::unparse_support_error()
+            )),
+        });
     }
 
     match spec.encode_with_bit_count(&value) {
@@ -530,6 +598,109 @@ fn normalize_error_text(text: &str) -> alloc::string::String {
         .replace('\r', "%CR;")
         .replace('\t', "%HT;")
         .to_lowercase()
+}
+
+fn tdml_unparse_document_mismatch_message(
+    program: &crate::ir::IrProgram,
+    actual: &[u8],
+    doc: &TdmlDocument,
+) -> alloc::string::String {
+    let expected = doc.data.as_slice();
+    if actual == expected {
+        return "TDML Error: encoded document mismatch".into();
+    }
+    let prefix = "TDML Error: ";
+    let encoding = root_element_encoding(program).unwrap_or("US-ASCII");
+    if crate::vm::encoding::uses_xml_illegal_char_remap(encoding) {
+        let actual_text: alloc::string::String = actual.iter().map(|&b| b as char).collect();
+        let expected_text: alloc::string::String = expected.iter().map(|&b| b as char).collect();
+        return alloc::format!(
+            "{prefix}{}",
+            tdml_text_data_mismatch_message(&actual_text, &expected_text)
+        );
+    }
+    if actual.len() != expected.len() {
+        return alloc::format!(
+            "{prefix}output data length {} for {} doesn't match expected length {} for {}",
+            actual.len(),
+            hex_preview(actual),
+            expected.len(),
+            hex_preview(expected)
+        );
+    }
+    for (i, ((e, a), idx)) in expected
+        .iter()
+        .zip(actual.iter())
+        .zip(1usize..)
+        .enumerate()
+    {
+        if e != a {
+            return alloc::format!(
+                "{prefix}Unparsed data differs at byte {idx}. Expected 0x{e:02x}. Actual was 0x{a:02x}."
+            );
+        }
+        let _ = i;
+    }
+    alloc::format!("{prefix}encoded document mismatch")
+}
+
+fn tdml_text_data_mismatch_message(actual: &str, expected: &str) -> alloc::string::String {
+    const MAX: usize = 100;
+    let trim = |s: &str| {
+        if s.len() <= MAX {
+            s.to_string()
+        } else {
+            alloc::format!("{}...", &s[..MAX])
+        }
+    };
+    let actual_show = if actual.is_empty() {
+        alloc::string::String::new()
+    } else {
+        alloc::format!(" for '{}'", trim(actual))
+    };
+    let expected_show = if expected.is_empty() {
+        alloc::string::String::new()
+    } else {
+        alloc::format!(" for '{}'", trim(expected))
+    };
+    if actual.len() != expected.len() {
+        return alloc::format!(
+            "output data length {}{} doesn't match expected length {}{}",
+            actual.len(),
+            actual_show,
+            expected.len(),
+            expected_show
+        );
+    }
+    for (idx, (e, a)) in expected.chars().zip(actual.chars()).enumerate() {
+        if e != a {
+            return alloc::format!(
+                "Unparsed data differs at character {}. Expected '{}'. Actual was '{}'. Expected data {}, actual data {}",
+                idx + 1,
+                e,
+                a,
+                expected_show,
+                actual_show
+            );
+        }
+    }
+    alloc::format!("TDML Error: data differs. Expected '{}'. Actual was '{}'.", expected, actual)
+}
+
+fn hex_preview(bytes: &[u8]) -> alloc::string::String {
+    bytes
+        .iter()
+        .map(|b| alloc::format!("{b:02x}"))
+        .collect::<alloc::vec::Vec<_>>()
+        .join("")
+}
+
+fn root_element_encoding(program: &crate::ir::IrProgram) -> Option<&str> {
+    let node = program.node(program.root).ok()?;
+    let IrNode::Element { props, .. } = node else {
+        return None;
+    };
+    program.strings.get(props.encoding).ok()
 }
 
 fn error_messages_match(expected: &[String], err: &str) -> bool {

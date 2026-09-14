@@ -1905,6 +1905,7 @@ fn validate_implicit_text_length(kind: ValueKind, props: &IrProps) -> Result<()>
     if props.input_value_calc.is_some()
         || props.input_value_calc_sibling.is_some()
         || props.input_value_calc_segments.is_some()
+        || props.input_value_calc_path.is_some()
     {
         return Ok(());
     }
@@ -2745,6 +2746,17 @@ fn overlay_dfdl_to_ir(
                 .collect(),
         );
     }
+    if let Some(steps) = &props.input_value_calc_path {
+        base.input_value_calc_path = Some(
+            steps
+                .iter()
+                .map(|(prefix, local)| crate::ir::IrInputPathStep {
+                    prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
+                    local: strings.intern(local.clone()),
+                })
+                .collect(),
+        );
+    }
     if let Some(v) = props.output_value_calc {
         base.output_value_calc = Some(v);
     }
@@ -2781,7 +2793,10 @@ fn overlay_dfdl_to_ir(
     }
     if let Some(ref raw) = props.fill_byte_raw {
         if raw.trim() == "%NUL;" {
-            // `%NUL;` leaves inherited fillByte unchanged (DAFFODIL-2377).
+            base.fill_byte = 0;
+            base.fill_byte_defined = true;
+            base.fill_byte_explicit = true;
+            base.fill_byte_utf8 = Some(alloc::vec![0]);
         } else if let Some(ref bytes) = props.fill_byte {
             let encoding = strings
                 .get(base.encoding)
@@ -3190,6 +3205,8 @@ pub fn compile_named_with_tunables(
         }
     };
 
+    crate::parse_unparse_policy::validate_parse_unparse_policy(schema, &root_name)?;
+    crate::tunable_validate::validate_tunable_schema_requirements(schema, &root_name, &tunables)?;
     IrBuilder::new(schema, tunables)?.build(&root_name)
 }
 

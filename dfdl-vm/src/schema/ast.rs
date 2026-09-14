@@ -150,6 +150,12 @@ pub struct DfdlProps {
     pub facet_check_constraints: bool,
     /// Daffodil extension `dfdlx:objectKind` (`bytes` / `chars`).
     pub object_kind: Option<ObjectKind>,
+    /// `dfdlx:parseUnparsePolicy` (`both` / `parseOnly` / `unparseOnly`).
+    pub parse_unparse_policy: Option<ParseUnparsePolicy>,
+    /// `{ ../ex:a/b }` style inputValueCalc (path after `../`).
+    pub input_value_calc_path: Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>>,
+    pub text_bidi: Option<bool>,
+    pub floating: Option<bool>,
     /// `dfdl:escapeSchemeRef` (empty string clears inherited scheme).
     pub escape_scheme_ref: Option<String>,
 }
@@ -290,6 +296,13 @@ pub enum InputValueCalcSegment {
         start: usize,
         length: usize,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseUnparsePolicy {
+    Both,
+    ParseOnly,
+    UnparseOnly,
 }
 
 /// Narrow support for `dfdl:inputValueCalc` used in Daffodil prefixed length tests.

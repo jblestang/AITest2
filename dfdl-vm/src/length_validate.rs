@@ -261,14 +261,34 @@ pub fn binary_length_validation_applies(kind: ValueKind, rep: BinaryNumberRep) -
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnqualifiedPathStepPolicy {
+    #[default]
+    DefaultNamespace,
+    NoNamespace,
+    PreferDefaultNamespace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InvalidRestrictionPolicy {
+    #[default]
+    Error,
+    Ignore,
+    Validate,
+}
+
 /// Daffodil tunables affecting compile-time validation (from TDML `defineConfig`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DaffodilTunables {
     pub allow_signed_integer_length1_bit: bool,
-    /// Daffodil `dafext:minValidYear` default (0).
     pub min_valid_year: i32,
-    /// Daffodil `dafext:maxValidYear` default (9999).
     pub max_valid_year: i32,
+    pub unqualified_path_step_policy: UnqualifiedPathStepPolicy,
+    pub max_occurs_bounds: Option<u32>,
+    pub require_text_bidi_property: Option<bool>,
+    pub require_floating_property: Option<bool>,
+    pub require_encoding_error_policy: Option<bool>,
+    pub invalid_restriction_policy: InvalidRestrictionPolicy,
 }
 
 impl Default for DaffodilTunables {
@@ -277,6 +297,12 @@ impl Default for DaffodilTunables {
             allow_signed_integer_length1_bit: true,
             min_valid_year: 0,
             max_valid_year: 9999,
+            unqualified_path_step_policy: UnqualifiedPathStepPolicy::DefaultNamespace,
+            max_occurs_bounds: None,
+            require_text_bidi_property: None,
+            require_floating_property: None,
+            require_encoding_error_policy: None,
+            invalid_restriction_policy: InvalidRestrictionPolicy::Error,
         }
     }
 }

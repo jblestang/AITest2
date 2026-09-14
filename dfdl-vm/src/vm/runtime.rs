@@ -1,6 +1,7 @@
 use super::encoding::{
     character_span_byte_length, count_characters, decode_text_bytes, encode_document_text,
-    is_iso8859_1_encoding, remap_xml_illegal_characters_to_pua,
+    is_iso8859_1_encoding, remap_pua_to_xml_illegal_characters,
+    remap_xml_illegal_characters_to_pua, uses_xml_illegal_char_remap,
     bits_charset_spec, decode_bits_charset_payload, hex_charset_order, hex_charset_payload_to_text,
     HexCharsetOrder, normalize_encoding_name,
     read_character_bytes, read_one_utf8_char,
@@ -4528,7 +4529,7 @@ pub(crate) fn read_text_scalar(
     } else {
         decode_text_bytes(&raw, enc, props.encoding_error_policy)?
     };
-    let text = if kind == crate::ir::ValueKind::String && is_iso8859_1_encoding(enc) {
+    let text = if kind == crate::ir::ValueKind::String && uses_xml_illegal_char_remap(enc) {
         remap_xml_illegal_characters_to_pua(&text)
     } else {
         text
@@ -5499,7 +5500,14 @@ pub(crate) fn write_text_scalar(
         (Double, DfdlValue::Double(v)) => alloc::format!("{v}"),
         (Decimal, DfdlValue::Decimal(v)) => v.clone(),
         (DateTime, DfdlValue::DateTime(v)) => v.clone(),
-        (String, DfdlValue::String(v)) => v.text.clone(),
+        (String, DfdlValue::String(v)) => {
+            let enc = encoding_name(props, strings)?;
+            if uses_xml_illegal_char_remap(&enc) {
+                remap_pua_to_xml_illegal_characters(&v.text)
+            } else {
+                v.text.clone()
+            }
+        }
         (HexBinary, DfdlValue::HexBinary(v)) => encode_hex(v),
         (expected, _) => {
             return Err(VmError::TypeMismatch {

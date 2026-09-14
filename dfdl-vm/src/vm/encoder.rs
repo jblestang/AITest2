@@ -72,7 +72,7 @@ impl<'a> Encoder<'a> {
                     .sequence_value()
                     .ok_or_else(|| VmError::TypeMismatch { expected: "sequence".into() })?;
                 let map = &seq.fields;
-                let effective = precompute_output_values(self, children, map)?;
+                let effective = precompute_output_values(self, children, map, node_id)?;
                 self.write_initiator(props, out, bit_count, seq.meta.initiator_alt)?;
                 for (idx, &child) in children.iter().enumerate() {
                     if child_skips_encode(self, child)? {
@@ -482,12 +482,13 @@ impl<'a> Encoder<'a> {
         key: &str,
         map: &BTreeMap<String, DfdlValue>,
     ) -> Result<DfdlValue> {
+        if let Some(v) = map.get(key) {
+            return Ok(v.clone());
+        }
         if props.output_value_calc.is_some() {
-            eval_output_value_calc(props, map, self.ctx.strings())
+            eval_output_value_calc(self, props, map, &[])
         } else {
-            map.get(key)
-                .cloned()
-                .ok_or_else(|| VmError::MissingField { name: key.into() }.into())
+            Err(VmError::MissingField { name: key.into() }.into())
         }
     }
 
@@ -663,6 +664,7 @@ fn precompute_output_values<'a>(
     enc: &Encoder<'a>,
     children: &[u32],
     map: &BTreeMap<String, DfdlValue>,
+    _sequence_id: u32,
 ) -> Result<BTreeMap<String, DfdlValue>> {
     let mut effective = map.clone();
     for &child in children {
@@ -673,17 +675,60 @@ fn precompute_output_values<'a>(
             continue;
         }
         let key = enc.ctx.strings().get(*name)?.to_string();
-        let computed = eval_output_value_calc(props, &effective, enc.ctx.strings())?;
+        let computed = eval_output_value_calc(enc, props, &effective, children)?;
         effective.insert(key, computed);
     }
     Ok(effective)
 }
 
+fn encoded_bit_length(byte_len: usize, bit_count: u8) -> usize {
+    byte_len.saturating_mul(8) + bit_count as usize
+}
+
+fn find_child_element_by_name(
+    enc: &Encoder<'_>,
+    children: &[u32],
+    local_name: &str,
+) -> Result<Option<u32>> {
+    for &child in children {
+        let IrNode::Element { name, .. } = enc.ctx.program.node(child)? else {
+            continue;
+        };
+        let n = enc.ctx.strings().get(*name)?;
+        if n == local_name {
+            return Ok(Some(child));
+        }
+    }
+    Ok(None)
+}
+
+fn measure_value_length(
+    enc: &Encoder<'_>,
+    node_id: u32,
+    value: &DfdlValue,
+    units: LengthUnits,
+) -> Result<usize> {
+    let mut buf = Vec::new();
+    let mut bit_count = 0u8;
+    enc.encode_node(node_id, value, &mut buf, &mut bit_count)?;
+    let total_bits = encoded_bit_length(buf.len(), bit_count);
+    match units {
+        LengthUnits::Bits => Ok(total_bits),
+        LengthUnits::Bytes => Ok((total_bits + 7) / 8),
+        LengthUnits::Characters => Err(VmError::UnsupportedOperation {
+            op: "outputValueCalc character units".into(),
+        }
+        .into()),
+    }
+}
+
 fn eval_output_value_calc(
+    enc: &Encoder<'_>,
     props: &IrProps,
     map: &BTreeMap<String, DfdlValue>,
-    strings: &crate::ir::StringPool,
+    children: &[u32],
 ) -> Result<DfdlValue> {
+    let strings = enc.ctx.strings();
     let calc = props.output_value_calc.ok_or_else(|| VmError::InvalidValue {
         message: "missing outputValueCalc".into(),
     })?;
@@ -700,8 +745,21 @@ fn eval_output_value_calc(
             value_byte_length(sib)? as i64 + addend
         }
         OutputValueCalc::ValueLengthSibling(units, addend) => {
-            let sib = sibling_from_map(props.output_value_calc_sibling, map, strings)?;
-            length_in_units(value_byte_length(sib)?, units)? as i64 + addend
+            let sib_name = strings.get(
+                props
+                    .output_value_calc_sibling
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: "outputValueCalc sibling missing".into(),
+                    })?,
+            )?;
+            let sib_val = map.get(sib_name).ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!("outputValueCalc sibling `{sib_name}` not available"),
+            })?;
+            if let Some(child_id) = find_child_element_by_name(enc, children, sib_name)? {
+                measure_value_length(enc, child_id, sib_val, units)? as i64 + addend
+            } else {
+                length_in_units(value_byte_length(sib_val)?, units)? as i64 + addend
+            }
         }
     };
     Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {

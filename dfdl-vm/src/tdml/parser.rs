@@ -202,11 +202,52 @@ fn parse_define_config(
     reader.for_each_child("defineConfig", |local, _, r| match local {
         "tunables" => {
             r.for_each_child("tunables", |local, _, r| {
-                if local == "allowSignedIntegerLength1Bit" {
-                    let text = r.read_text_until_end("allowSignedIntegerLength1Bit")?;
-                    tunables.allow_signed_integer_length1_bit = text.trim() != "false";
-                } else {
-                    r.skip_current_subtree()?;
+                match local {
+                    "allowSignedIntegerLength1Bit" => {
+                        let text = r.read_text_until_end(local)?;
+                        tunables.allow_signed_integer_length1_bit = text.trim() != "false";
+                    }
+                    "unqualifiedPathStepPolicy" => {
+                        let text = r.read_text_until_end(local)?;
+                        tunables.unqualified_path_step_policy = match text.trim() {
+                            "noNamespace" => {
+                                crate::length_validate::UnqualifiedPathStepPolicy::NoNamespace
+                            }
+                            "preferDefaultNamespace" => {
+                                crate::length_validate::UnqualifiedPathStepPolicy::PreferDefaultNamespace
+                            }
+                            _ => crate::length_validate::UnqualifiedPathStepPolicy::DefaultNamespace,
+                        };
+                    }
+                    "maxOccursBounds" => {
+                        let text = r.read_text_until_end(local)?;
+                        tunables.max_occurs_bounds = text.trim().parse().ok();
+                    }
+                    "requireTextBidiProperty" => {
+                        let text = r.read_text_until_end(local)?;
+                        tunables.require_text_bidi_property = Some(text.trim() == "true");
+                    }
+                    "requireFloatingProperty" => {
+                        let text = r.read_text_until_end(local)?;
+                        tunables.require_floating_property = Some(text.trim() == "true");
+                    }
+                    "requireEncodingErrorPolicy" => {
+                        let text = r.read_text_until_end(local)?;
+                        tunables.require_encoding_error_policy = Some(text.trim() == "true");
+                    }
+                    "invalidRestrictionPolicy" => {
+                        let text = r.read_text_until_end(local)?;
+                        tunables.invalid_restriction_policy = match text.trim() {
+                            "ignore" => crate::length_validate::InvalidRestrictionPolicy::Ignore,
+                            "validate" => {
+                                crate::length_validate::InvalidRestrictionPolicy::Validate
+                            }
+                            _ => crate::length_validate::InvalidRestrictionPolicy::Error,
+                        };
+                    }
+                    _ => {
+                        r.skip_current_subtree()?;
+                    }
                 }
                 Ok(())
             })?;

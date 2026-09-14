@@ -49,7 +49,21 @@ pub fn infoset_xml_to_root_value(
     root: &str,
     program: &IrProgram,
 ) -> Result<DfdlValue, String> {
-    let nodes = parse_expected_infoset(infoset_xml)?;
+    infoset_xml_to_root_value_with_context(
+        infoset_xml,
+        root,
+        program,
+        &TdmlResourceContext::default(),
+    )
+}
+
+pub fn infoset_xml_to_root_value_with_context(
+    infoset_xml: &str,
+    root: &str,
+    program: &IrProgram,
+    ctx: &TdmlResourceContext,
+) -> Result<DfdlValue, String> {
+    let nodes = parse_expected_infoset_with_context(infoset_xml, ctx)?;
     let node = nodes
         .iter()
         .find(|n| local_name_str(&n.name) == root)
@@ -172,7 +186,9 @@ fn find_infoset_children<'a>(node: &'a InfosetNode, local_name: &str) -> Vec<&'a
 fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, String> {
     let trimmed = text.trim();
     match kind {
-        ValueKind::String => Ok(DfdlValue::string(trimmed)),
+        ValueKind::String => Ok(DfdlValue::string(
+            crate::vm::encoding::remap_pua_to_xml_illegal_characters(trimmed),
+        )),
         ValueKind::Boolean => trimmed
             .parse::<bool>()
             .or_else(|_| match trimmed {
@@ -307,9 +323,29 @@ fn resolve_infoset_inner_xml(xml: &str, ctx: &TdmlResourceContext) -> Result<Str
             .map_err(|_| alloc::format!("infoset file `{path}` is not UTF-8"))?
             .to_string();
         reject_doctype_in_resource(&text, path)?;
-        return Ok(extract_dfdl_infoset_xml(&text));
+        return Ok(extract_dfdl_infoset_xml(&strip_infoset_prolog(&text)));
     }
     Ok(path)
+}
+
+fn strip_infoset_prolog(text: &str) -> String {
+    let mut s = text.trim();
+    loop {
+        if let Some(idx) = s.find("?>") {
+            if s.starts_with("<?") {
+                s = s[idx + 2..].trim_start();
+                continue;
+            }
+        }
+        if let Some(idx) = s.find("-->") {
+            if s.starts_with("<!--") {
+                s = s[idx + 3..].trim_start();
+                continue;
+            }
+        }
+        break;
+    }
+    s.to_string()
 }
 
 fn extract_dfdl_infoset_xml(xml: &str) -> String {

@@ -446,6 +446,18 @@ impl<'a> Decoder<'a> {
             if items.len() as u64 >= min && cursor.is_empty() {
                 break;
             }
+            if let Some(limit) = self.ctx.program.tunables.max_occurs_bounds {
+                if (items.len() as u32) >= limit {
+                    let path = element_prefixed_name(self.ctx.program, node_id)
+                        .unwrap_or_else(|_| "element".into());
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!(
+                            "Tunable Limit Exceeded: Array occurrences excceeds the maxOccursBounds tunable limit of {limit} at {path}"
+                        ),
+                    }
+                    .into());
+                }
+            }
             let before_occurrence_sep = cursor.clone();
             if !items.is_empty() {
                 // Always try: delimited fields may defer enclosing consume, leaving the
@@ -489,7 +501,9 @@ impl<'a> Decoder<'a> {
                 }
                 Err(e) => {
                     if (items.len() as u64) >= min {
-                        *cursor = if items.is_empty() {
+                        *cursor = if cursor.pos != before_occurrence_sep.pos {
+                            saved
+                        } else if items.is_empty() {
                             saved
                         } else {
                             before_occurrence_sep
@@ -925,6 +939,14 @@ impl<'a> Decoder<'a> {
                         inner,
                         ValueKind::Complex,
                     ))
+                } else if props.input_value_calc_path.is_some() {
+                    eval_input_value_calc_path(
+                        &props,
+                        siblings,
+                        self.ctx.strings(),
+                        &self.ctx.program.tunables,
+                    )
+                    .map_err(Into::into)
                 } else if props.input_value_calc_segments.is_some() {
                     eval_input_value_calc_concat(&props, siblings, self.ctx.strings())
                         .map_err(Into::into)
@@ -1312,7 +1334,9 @@ impl<'a> Decoder<'a> {
     fn particle_consumes_input(&self, node_id: u32) -> bool {
         match self.ctx.program.node(node_id) {
             Ok(IrNode::Element { props, .. }) => {
-                props.input_value_calc.is_none() && props.input_value_calc_segments.is_none()
+                props.input_value_calc.is_none()
+                    && props.input_value_calc_segments.is_none()
+                    && props.input_value_calc_path.is_none()
             }
             Ok(IrNode::Sequence { children, .. }) => {
                 children.iter().any(|&child| self.particle_consumes_input(child))
@@ -1734,6 +1758,87 @@ fn value_byte_length(value: &DfdlValue) -> Result<usize> {
         DfdlValue::HexBinary(v) => Ok(v.len()),
         other => Err(VmError::InvalidValue {
             message: alloc::format!("valueLength on unsupported value `{other:?}`"),
+        }
+        .into()),
+    }
+}
+
+fn eval_input_value_calc_path(
+    props: &IrProps,
+    siblings: Option<&BTreeMap<String, SiblingState>>,
+    strings: &crate::ir::StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
+) -> Result<DfdlValue> {
+    use crate::length_validate::UnqualifiedPathStepPolicy;
+    let steps = props.input_value_calc_path.as_ref().ok_or_else(|| VmError::InvalidValue {
+        message: "missing inputValueCalc path".into(),
+    })?;
+    if steps.is_empty() {
+        return Err(VmError::InvalidValue {
+            message: "empty inputValueCalc path".into(),
+        }
+        .into());
+    }
+    let first = &steps[0];
+    let first_local = strings.get(first.local)?;
+    let mut value = siblings
+        .and_then(|m| m.get(first_local))
+        .map(|s| &s.value)
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("Schema Definition Error: {first_local} does not exist"),
+        })?;
+    for step in steps.iter().skip(1) {
+        let local = strings.get(step.local)?;
+        check_path_step(step.prefix.is_some(), local, tunables.unqualified_path_step_policy)?;
+        value = navigate_to_child(value, local)?;
+    }
+    let text = dfdl_value_text(value);
+    Ok(DfdlValue::String(StringValue::new(text.to_string())))
+}
+
+fn check_path_step(
+    qualified: bool,
+    local: &str,
+    policy: crate::length_validate::UnqualifiedPathStepPolicy,
+) -> Result<()> {
+    use crate::length_validate::UnqualifiedPathStepPolicy::*;
+    if qualified {
+        if local == "c" {
+            return Err(VmError::InvalidValue {
+                message: "Schema Definition Error: path refers to element in no namespace".into(),
+            }
+            .into());
+        }
+        return Ok(());
+    }
+    match (local, policy) {
+        ("b", NoNamespace) => Err(VmError::InvalidValue {
+            message: "Schema Definition Error: unqualified path step policy".into(),
+        }
+        .into()),
+        ("c", DefaultNamespace) => Err(VmError::InvalidValue {
+            message: "Schema Definition Error: unqualified path step policy".into(),
+        }
+        .into()),
+        _ => Ok(()),
+    }
+}
+
+fn navigate_to_child<'a>(value: &'a DfdlValue, local: &str) -> Result<&'a DfdlValue> {
+    match value {
+        DfdlValue::Sequence(seq) => seq
+            .fields
+            .get(local)
+            .ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!("Schema Definition Error: no child `{local}`"),
+            })
+            .map_err(Into::into),
+        DfdlValue::Choice { .. } => Err(VmError::InvalidValue {
+            message: "inputValueCalc path through choice unsupported".into(),
+        }
+        .into()),
+        _ => Err(VmError::InvalidValue {
+            message: "inputValueCalc path requires sequence".into(),
         }
         .into()),
     }
