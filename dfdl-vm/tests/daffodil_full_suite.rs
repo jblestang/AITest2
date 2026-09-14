@@ -149,7 +149,7 @@ fn daffodil_section12_length_kind_regression_gate() {
     assert!(stats.pass >= 300, "expected ~305 passing cases, got {}", stats.pass);
 }
 
-/// CI gate: Section 12 aligned_data (progress baseline; full suite not yet 0 fail).
+/// CI gate: Section 12 aligned_data (full TDML directory).
 #[test]
 fn daffodil_section12_aligned_data_regression_gate() {
     let root = assert_tdml_root().join("section12/aligned_data");
@@ -164,9 +164,10 @@ fn daffodil_section12_aligned_data_regression_gate() {
         stats.pass, stats.fail, stats.skip, stats.parse_fail
     );
     assert_eq!(stats.parse_fail, 0);
+    assert_eq!(stats.fail, 0, "aligned_data failures: {}", stats.fail);
     assert!(
-        stats.pass >= 141,
-        "expected at least 141 passing aligned_data cases, got pass={} fail={}",
+        stats.pass >= 142,
+        "expected 142 passing aligned_data cases, got pass={} fail={}",
         stats.pass,
         stats.fail
     );

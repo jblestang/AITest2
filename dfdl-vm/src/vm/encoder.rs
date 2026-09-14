@@ -78,14 +78,16 @@ impl<'a> Encoder<'a> {
                     if child_skips_encode(self, child)? {
                         continue;
                     }
-                    self.write_sequence_separator(
-                        props,
-                        out,
-                        bit_count,
-                        idx,
-                        children.len(),
-                        &seq.meta,
-                    )?;
+                    if !sequence_separator_deferred_to_child_occurrences(self, child)? {
+                        self.write_sequence_separator(
+                            props,
+                            out,
+                            bit_count,
+                            idx,
+                            children.len(),
+                            &seq.meta,
+                        )?;
+                    }
                     self.encode_sequence_particle(child, &effective, props, out, bit_count, &seq.meta)?;
                 }
                 self.write_terminator(props, out, bit_count, seq.meta.terminator_alt)?;
@@ -631,6 +633,19 @@ fn child_skips_encode(enc: &Encoder<'_>, node_id: u32) -> Result<bool> {
         IrNode::Element { props, .. } => Ok(props.input_value_calc.is_some()),
         _ => Ok(false),
     }
+}
+
+/// When a sequence separator applies between occurrences of one child, the occurrence encoder emits it.
+fn sequence_separator_deferred_to_child_occurrences(
+    enc: &Encoder<'_>,
+    child_id: u32,
+) -> Result<bool> {
+    let IrNode::Element { props, .. } = enc.ctx.program.node(child_id)? else {
+        return Ok(false);
+    };
+    Ok(props.occurs_max.is_none()
+        || props.occurs_max.is_some_and(|max| max > 1)
+        || props.occurs_min > 1)
 }
 
 fn precompute_output_values<'a>(
