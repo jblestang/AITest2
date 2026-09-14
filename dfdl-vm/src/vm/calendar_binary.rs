@@ -28,6 +28,48 @@ fn split_epoch_timezone(iso: &str) -> (&str, i64) {
     (iso, 0)
 }
 
+/// Map `dfdl:calendarTimeZone` to an XSD timezone suffix (`+00:00`, `-05:00`, …).
+/// Empty property value means no timezone in the lexical result.
+pub fn calendar_timezone_xsd_suffix(raw: &str) -> Option<alloc::string::String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.eq_ignore_ascii_case("UTC") {
+        return Some("+00:00".into());
+    }
+    if let Some(rest) = raw.strip_prefix("UTC").or_else(|| raw.strip_prefix("utc")) {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return Some("+00:00".into());
+        }
+        return normalize_xsd_tz_offset(rest);
+    }
+    normalize_xsd_tz_offset(raw)
+}
+
+fn normalize_xsd_tz_offset(off: &str) -> Option<alloc::string::String> {
+    let off = off.trim();
+    if off.is_empty() {
+        return None;
+    }
+    let (sign, body) = if let Some(body) = off.strip_prefix('+') {
+        ('+', body)
+    } else if let Some(body) = off.strip_prefix('-') {
+        ('-', body)
+    } else {
+        return None;
+    };
+    let (h, m) = if let Some((h, m)) = body.split_once(':') {
+        (h, m)
+    } else {
+        (body, "0")
+    };
+    let hh: u32 = h.parse().ok()?;
+    let mm: u32 = m.parse().ok()?;
+    Some(alloc::format!("{sign}{hh:02}:{mm:02}"))
+}
+
 fn format_tz_suffix(offset_secs: i64) -> alloc::string::String {
     if offset_secs == 0 {
         return alloc::string::String::new();
@@ -623,14 +665,14 @@ pub fn validate_binary_calendar_schema(
 
     if props.length_kind == LengthKind::Implicit {
         let type_name = binary_prim_type_label(kind, props);
-        let msg = if matches!(kind, ValueKind::DateTime | ValueKind::Time) {
+        let msg = if kind == ValueKind::Time {
             alloc::format!(
-                "Schema Definition Error: Length of binary data '{type_name}' with binaryCalendarRep='{}' cannot be determined implicitly.",
-                binary_calendar_rep_name(rep)
+                "Schema Definition Error: Length of binary data '{type_name}' cannot be determined implicitly"
             )
         } else {
             alloc::format!(
-                "Schema Definition Error: Length of binary data '{type_name}' cannot be determined implicitly."
+                "Schema Definition Error: Length of binary data '{type_name}' with binaryCalendarRep='{}' cannot be determined implicitly.",
+                binary_calendar_rep_name(rep)
             )
         };
         return Err(SchemaError::InvalidProperty { message: msg });
@@ -755,5 +797,18 @@ mod calendar_tests {
         let base = parse_calendar_epoch_unix("1870-01-01T00:05:00+00:00").unwrap();
         let out = format_binary_calendar_datetime(base - 1, 0, "1870-01-01T00:05:00+00:00");
         assert!(out.ends_with("+00:00"), "{out}");
+    }
+
+    #[test]
+    fn calendar_timezone_property_to_xsd_suffix() {
+        assert_eq!(
+            calendar_timezone_xsd_suffix("UTC-05:00").as_deref(),
+            Some("-05:00")
+        );
+        assert_eq!(
+            calendar_timezone_xsd_suffix("UTC").as_deref(),
+            Some("+00:00")
+        );
+        assert!(calendar_timezone_xsd_suffix("").is_none());
     }
 }

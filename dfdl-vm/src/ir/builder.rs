@@ -2159,6 +2159,11 @@ fn apply_restriction_facets(
     if let Some(msg) = &element_props.assert_message {
         props.facet_assert_message = Some(strings.intern(msg.clone()));
     }
+    if let SimpleBase::Restriction { base, .. } = base {
+        if matches!(base, crate::schema::RestrictionBase::Named(_)) {
+            props.facet_assert_daffodil_prefix = true;
+        }
+    }
 }
 
 fn value_kind_from_builtin(builtin: BuiltinType) -> ValueKind {
@@ -2373,6 +2378,12 @@ fn overlay_dfdl_to_ir(
     }
     if let Some(v) = props.calendar_pattern_kind {
         base.calendar_pattern_kind = v;
+    }
+    if props.calendar_time_zone.is_some() {
+        base.calendar_time_zone = props
+            .calendar_time_zone
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
     }
     if props.text_number_pattern.is_some() {
         base.text_number_pattern = props
@@ -2770,6 +2781,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.decimal_signed = overlay.decimal_signed;
     out.calendar_pattern = overlay.calendar_pattern;
     out.calendar_pattern_kind = overlay.calendar_pattern_kind;
+    if overlay.calendar_time_zone.is_some() {
+        out.calendar_time_zone = overlay.calendar_time_zone;
+    }
     if overlay.text_number_pattern.is_some() {
         out.text_number_pattern = overlay.text_number_pattern;
     }
@@ -2945,6 +2959,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.facet_assert_message.is_some() {
         out.facet_assert_message = overlay.facet_assert_message;
+    }
+    if overlay.facet_assert_daffodil_prefix {
+        out.facet_assert_daffodil_prefix = true;
     }
     if overlay.prefix_length.is_some() {
         out.prefix_length = overlay.prefix_length.clone();

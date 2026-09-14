@@ -11,9 +11,12 @@ pub fn facet_validation_error(
     if props.facet_check_constraints {
         if let Some(id) = props.facet_assert_message {
             if let Ok(msg) = strings.get(id) {
-                return VmError::InvalidValue {
-                    message: msg.to_string(),
+                let message = if props.facet_assert_daffodil_prefix {
+                    alloc::format!("Assertion failed: {msg}")
+                } else {
+                    msg.to_string()
                 };
+                return VmError::InvalidValue { message };
             }
         }
         return VmError::InvalidValue {

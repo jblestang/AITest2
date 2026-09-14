@@ -1202,7 +1202,7 @@ fn decode_binary_calendar(
             || kind == crate::ir::ValueKind::Time
             || text.contains('T'))
     {
-        append_default_utc_offset(kind, props.calendar_date_only, &text)
+        append_packed_calendar_timezone(props, strings, kind, props.calendar_date_only, &text)?
     } else {
         text
     };
@@ -1373,6 +1373,35 @@ fn append_default_utc_offset(kind: crate::ir::ValueKind, date_only: bool, parsed
         return alloc::format!("{parsed}+00:00");
     }
     parsed.into()
+}
+
+fn append_packed_calendar_timezone(
+    props: &IrProps,
+    strings: &StringPool,
+    kind: crate::ir::ValueKind,
+    date_only: bool,
+    parsed: &str,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    if parsed.contains('T') {
+        if parsed.contains('+')
+            || parsed
+                .rfind('-')
+                .is_some_and(|i| i > 10 && parsed[i + 1..].contains(':'))
+        {
+            return Ok(parsed.into());
+        }
+    } else if !(kind == crate::ir::ValueKind::Time || date_only) {
+        return Ok(parsed.into());
+    }
+    if let Some(id) = props.calendar_time_zone {
+        if let Ok(raw) = strings.get(id) {
+            if let Some(suffix) = crate::vm::calendar_binary::calendar_timezone_xsd_suffix(raw) {
+                return Ok(alloc::format!("{parsed}{suffix}"));
+            }
+            return Ok(parsed.into());
+        }
+    }
+    Ok(alloc::format!("{parsed}+00:00"))
 }
 
 fn read_calendar_timezone(text: &str, ti: &mut usize, z_width: usize) -> Result<alloc::string::String, crate::error::VmError> {

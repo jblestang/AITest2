@@ -57,6 +57,7 @@ pub struct DfdlProps {
     pub decimal_signed: Option<bool>,
     pub calendar_pattern: Option<String>,
     pub calendar_pattern_kind: Option<CalendarPatternKind>,
+    pub calendar_time_zone: Option<String>,
     pub text_number_pattern: Option<String>,
     pub text_number_check_policy: Option<BinaryNumberCheckPolicy>,
     pub text_number_rep: Option<TextNumberRep>,

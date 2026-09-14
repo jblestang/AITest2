@@ -1927,6 +1927,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "decimalSigned"
             | "calendarPattern"
             | "calendarPatternKind"
+            | "calendarTimeZone"
             | "textNumberPattern"
             | "textNumberRounding"
             | "textNumberRoundingIncrement"
@@ -2297,6 +2298,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     }
                 });
             }
+            "calendarTimeZone" => props.calendar_time_zone = Some(value.clone()),
             "textNumberPattern" => props.text_number_pattern = Some(value.clone()),
             "textNumberCheckPolicy" => {
                 props.text_number_check_policy = Some(match value.as_str() {
