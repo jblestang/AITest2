@@ -728,6 +728,14 @@ impl<'a> XsdParser<'a> {
                     let child_attrs = self.reader.take_start_attributes()?;
                     if local == "restriction" {
                         let base = if let Some(base_name) = child_attrs.get("base") {
+                            if base_name.chars().any(char::is_whitespace) {
+                                return Err(ParseError::InvalidXml {
+                                    message: alloc::format!(
+                                        "Schema Definition Error: Failed to resolve base property reference for xs:restriction: Invalid QName '{base_name}'"
+                                    ),
+                                }
+                                .into());
+                            }
                             let normalized = normalize_qname(base_name);
                             if let Some(b) = BuiltinType::from_xsd(&normalized) {
                                 RestrictionBase::Builtin(b)

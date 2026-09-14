@@ -1902,6 +1902,9 @@ fn validate_prefix_length_type(
         .into());
     }
     validate_text_alignment_schema(kind, prefix_props, strings)?;
+    if prefix_props.alignment_implicit {
+        return Ok(());
+    }
     let encoding = strings
         .get(prefix_props.encoding)
         .unwrap_or("utf-8");
@@ -1909,13 +1912,9 @@ fn validate_prefix_length_type(
         kind,
         encoding,
     );
-    let mut align = prefix_props.alignment;
-    if prefix_props.alignment_implicit && align == 0 {
-        align = 1;
-    }
     let align_bits = match prefix_props.alignment_units {
-        LengthUnits::Bits => align,
-        LengthUnits::Bytes | LengthUnits::Characters => align.saturating_mul(8),
+        LengthUnits::Bits => prefix_props.alignment,
+        LengthUnits::Bytes | LengthUnits::Characters => prefix_props.alignment.saturating_mul(8),
     };
     if enc_align != 0 && align_bits % enc_align != 0 {
         let type_name = value_kind_type_name(kind);

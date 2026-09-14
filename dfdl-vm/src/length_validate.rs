@@ -12,10 +12,14 @@ fn uses_hex_charset_encoding(strings: &StringPool, enc: StringId) -> bool {
 }
 
 fn text_encoding_alignment_bits(encoding: &str) -> u64 {
-    if let Some(width) = bits_charset_code_unit_width(encoding) {
-        return width;
+    if crate::vm::encoding::bits_charset_spec(encoding).is_some() {
+        // Daffodil `BitsCharsetNonByteSize.mandatoryBitAlignment`
+        return 1;
     }
     let enc = encoding.to_ascii_uppercase();
+    if enc.starts_with("X-DFDL-") {
+        return 1;
+    }
     if enc.contains("UTF-16") {
         16
     } else {
@@ -70,6 +74,9 @@ pub fn validate_text_alignment_schema(
     strings: &StringPool,
 ) -> Result<(), SchemaError> {
     if kind == ValueKind::Complex {
+        return Ok(());
+    }
+    if props.alignment_implicit {
         return Ok(());
     }
     let text_field = props.representation == Representation::Text || kind == ValueKind::String;

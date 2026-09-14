@@ -164,6 +164,31 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 #[ignore]
+fn section05_compile_unexpected_samples() {
+    let root = Path::new(TDML_ROOT);
+    let mut files = Vec::new();
+    collect(root, &mut files);
+    files.sort();
+    let mut n = 0;
+    for path in files {
+        let Ok(tdml) = fs::read_to_string(&path) else { continue };
+        let Ok(mut suite) = parse_tdml(&tdml) else { continue };
+        enrich(&mut suite, &path);
+        for t in &suite.tests {
+            let Ok(r) = run_parser_test(&suite, t) else { continue };
+            if let TestOutcome::Fail(msg) = r.outcome {
+                if msg.starts_with("compile error:") && t.expected_errors.is_none() {
+                    eprintln!("{}::{}: {msg}", path.strip_prefix(root).unwrap().display(), t.name);
+                    n += 1;
+                    if n >= 20 { return; }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore]
 fn section05_compile_mismatch_samples() {
     let root = Path::new(TDML_ROOT);
     let mut files = Vec::new();

@@ -63,6 +63,18 @@ pub(crate) fn bits_charset_spec(name: &str) -> Option<BitsCharsetSpec> {
             alphabet: "0123",
             bit_order: BitOrder::LeastSignificantBitFirst,
         })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-OCTAL-LSBF") {
+        Some(BitsCharsetSpec {
+            width: 3,
+            alphabet: "01234567",
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-OCTAL-MSBF") {
+        Some(BitsCharsetSpec {
+            width: 3,
+            alphabet: "01234567",
+            bit_order: BitOrder::MostSignificantBitFirst,
+        })
     } else if eq_ascii_ignore_case(name, "X-DFDL-US-ASCII-7-BIT-PACKED")
         || eq_ascii_ignore_case(name, "us-ascii-7-bit-packed")
     {
