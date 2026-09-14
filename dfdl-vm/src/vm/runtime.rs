@@ -832,7 +832,7 @@ fn signed_magnitude_to_dfdl(
     negative: bool,
     digits: &str,
     kind: crate::ir::ValueKind,
-    virtual_point: u32,
+    virtual_point: i32,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -840,7 +840,7 @@ fn signed_magnitude_to_dfdl(
 
     let abs = digits_to_u64(digits)?;
     if kind == Decimal {
-        let body = format_virtual_decimal(abs, virtual_point);
+        let body = format_binary_decimal_magnitude(abs, virtual_point);
         let text = if negative {
             alloc::format!("-{body}")
         } else {
@@ -897,9 +897,9 @@ fn decode_decimal_binary(
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::value::DfdlValue;
     let le = props.byte_order == ByteOrder::LittleEndian;
-    let vp = props.binary_decimal_virtual_point;
+    let vp = effective_binary_decimal_vp(props);
     match props.binary_number_rep {
-        BinaryNumberRep::Binary => Ok(DfdlValue::Decimal(format_virtual_decimal(
+        BinaryNumberRep::Binary => Ok(DfdlValue::Decimal(format_binary_decimal_magnitude(
             decode_unsigned_binary_bytes(bytes, le),
             vp,
         ))),
@@ -926,16 +926,45 @@ fn decode_decimal_binary(
     }
 }
 
+fn effective_binary_decimal_vp(props: &IrProps) -> i32 {
+    props
+        .binary_decimal_virtual_point_signed
+        .unwrap_or(props.binary_decimal_virtual_point as i32)
+}
+
 fn format_virtual_decimal(value: u64, virtual_point: u32) -> alloc::string::String {
-    if virtual_point == 0 {
-        return value.to_string();
+    format_binary_decimal_magnitude(value, virtual_point as i32)
+}
+
+fn format_binary_decimal_magnitude(mag: u64, vp: i32) -> alloc::string::String {
+    if vp == 0 {
+        return mag.to_string();
     }
-    let Some(scale) = 10u64.checked_pow(virtual_point) else {
-        return value.to_string();
-    };
-    let whole = value / scale;
-    let frac = value % scale;
-    alloc::format!("{whole}.{frac:0width$}", width = virtual_point as usize)
+    if vp < 0 {
+        let exp = vp.unsigned_abs() as usize;
+        let mut s = mag.to_string();
+        s.extend(core::iter::repeat_n('0', exp));
+        return s;
+    }
+    let vp = vp as usize;
+    if mag == 0 {
+        return if vp == 0 {
+            "0".into()
+        } else {
+            alloc::format!("0.{:0width$}", 0, width = vp)
+        };
+    }
+    if let Some(scale) = 10u64.checked_pow(vp as u32) {
+        let whole = mag / scale;
+        let frac = mag % scale;
+        return alloc::format!("{whole}.{frac:0width$}", width = vp);
+    }
+    let s = mag.to_string();
+    if s.len() <= vp {
+        return alloc::format!("0.{s:0>width$}", width = vp);
+    }
+    let split = s.len() - vp;
+    alloc::format!("{}.{:0width$}", &s[..split], &s[split..], width = vp)
 }
 
 fn validate_decimal_parse_sign(
@@ -1166,6 +1195,7 @@ fn decode_binary_calendar(
         message: "dateTime missing calendarPattern".into(),
     })?;
     let pattern = strings.get(pat_id)?;
+    let digits = pad_calendar_digit_field(&digits, pattern);
     let text = format_calendar_pattern(&digits, pattern)?;
     let text = if rep == BinaryNumberRep::PackedBcd
         && (props.calendar_date_only
@@ -1204,6 +1234,35 @@ fn field_chars(
         }
     }
     None
+}
+
+fn calendar_pattern_digit_count(pattern: &str) -> usize {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    let mut total = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if !c.is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+        let mut width = 1usize;
+        while i + width < chars.len() && chars[i + width] == c {
+            width += 1;
+        }
+        total += width;
+        i += width;
+    }
+    total
+}
+
+fn pad_calendar_digit_field(digits: &str, pattern: &str) -> alloc::string::String {
+    let need = calendar_pattern_digit_count(pattern);
+    if digits.len() >= need {
+        return digits.into();
+    }
+    let pad = need - digits.len();
+    alloc::format!("{}{digits}", "0".repeat(pad))
 }
 
 fn format_calendar_pattern(
@@ -2716,9 +2775,9 @@ fn decode_binary_from_raw_bits(
     use crate::value::DfdlValue;
 
     if kind == Decimal {
-        return Ok(DfdlValue::Decimal(format_virtual_decimal(
+        return Ok(DfdlValue::Decimal(format_binary_decimal_magnitude(
             raw,
-            props.binary_decimal_virtual_point,
+            effective_binary_decimal_vp(props),
         )));
     }
     if matches!(kind, DateTime | Time) && calendar_binary_rep(props) {

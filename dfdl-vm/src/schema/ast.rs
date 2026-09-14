@@ -46,6 +46,7 @@ pub struct DfdlProps {
     pub text_string_pad_character_property_form: bool,
     pub binary_number_rep: Option<BinaryNumberRep>,
     pub binary_packed_sign_codes: Option<String>,
+    pub binary_packed_sign_codes_defined: bool,
     pub binary_number_check_policy: Option<BinaryNumberCheckPolicy>,
     pub binary_calendar_rep: Option<BinaryNumberRep>,
     pub binary_calendar_epoch: Option<String>,

@@ -1400,6 +1400,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.binary_packed_sign_codes.is_some() {
         base.binary_packed_sign_codes = overlay.binary_packed_sign_codes;
     }
+    if overlay.binary_packed_sign_codes_defined {
+        base.binary_packed_sign_codes_defined = true;
+    }
     if overlay.binary_number_check_policy.is_some() {
         base.binary_number_check_policy = overlay.binary_number_check_policy;
     }
@@ -2211,6 +2214,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 }
             }
             "binaryPackedSignCodes" => {
+                props.binary_packed_sign_codes_defined = true;
                 props.binary_packed_sign_codes = Some(value.clone());
             }
             "binaryNumberCheckPolicy" => {

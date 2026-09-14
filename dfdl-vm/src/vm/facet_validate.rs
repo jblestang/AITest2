@@ -17,7 +17,7 @@ pub fn facet_validation_error(
             }
         }
         return VmError::InvalidValue {
-            message: "Assertion failed for dfdl:checkConstraints(.)".into(),
+            message: "Assertion failed: Assertion failed for dfdl:checkConstraints(.)".into(),
         };
     }
     VmError::InvalidValue {

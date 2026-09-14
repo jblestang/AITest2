@@ -2338,6 +2338,9 @@ fn overlay_dfdl_to_ir(
         base.binary_packed_sign_codes =
             strings.intern(props.binary_packed_sign_codes.as_deref().unwrap_or("C D F C"));
     }
+    if props.binary_packed_sign_codes_defined {
+        base.binary_packed_sign_codes_defined = true;
+    }
     if let Some(v) = props.binary_number_check_policy {
         base.binary_number_check_policy = v;
     }
@@ -2751,6 +2754,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
         overlay.text_string_pad_character_property_form;
     out.binary_number_rep = overlay.binary_number_rep;
     out.binary_packed_sign_codes = overlay.binary_packed_sign_codes;
+    if overlay.binary_packed_sign_codes_defined {
+        out.binary_packed_sign_codes_defined = true;
+    }
     out.binary_number_check_policy = overlay.binary_number_check_policy;
     out.binary_calendar_rep = overlay.binary_calendar_rep;
     if overlay.binary_calendar_epoch.is_some() {

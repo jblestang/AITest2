@@ -615,6 +615,12 @@ pub fn validate_binary_calendar_schema(
         return Ok(());
     }
 
+    if rep == BinaryNumberRep::PackedBcd && !props.binary_packed_sign_codes_defined {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Property binaryPackedSignCodes is not defined.".into(),
+        });
+    }
+
     if props.length_kind == LengthKind::Implicit {
         let type_name = binary_prim_type_label(kind, props);
         let msg = if matches!(kind, ValueKind::DateTime | ValueKind::Time) {
@@ -721,7 +727,7 @@ pub fn validate_implicit_binary_length_schema(
     let type_name = binary_prim_type_label(kind, props);
     Err(SchemaError::InvalidProperty {
         message: alloc::format!(
-            "Schema Definition Error: Length of binary data '{type_name}' cannot be determined implicitly"
+            "Schema Definition Error: Length of binary data '{type_name}' cannot be determined implicitly."
         ),
     })
 }
