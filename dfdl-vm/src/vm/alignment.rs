@@ -33,7 +33,10 @@ pub fn implicit_alignment_in_bits(kind: ValueKind, props: &IrProps, encoding: &s
         ValueKind::Float | ValueKind::Boolean => 32,
         ValueKind::Double => 64,
         ValueKind::HexBinary => 8,
-        ValueKind::Long | ValueKind::Integer => {
+        ValueKind::Long => {
+            if packed { 8 } else { 64 }
+        }
+        ValueKind::Integer => {
             if packed { 8 } else { 8 }
         }
         ValueKind::Int | ValueKind::UnsignedInt => {
@@ -513,6 +516,72 @@ mod tests {
     }
 
     #[test]
+    fn tdml_implicit_unsigned_long_framing_cursor() {
+        use crate::tdml::parse_tdml;
+        use crate::vm::runtime::{consume_element_framing, read_binary_scalar, Cursor};
+        use crate::length_validate::DaffodilTunables;
+        const TDML: &str = include_str!(
+            "../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/Aligned_Data.tdml"
+        );
+        let suite = parse_tdml(TDML).expect("tdml");
+        let test = suite
+            .tests
+            .iter()
+            .find(|t| t.name == "implicitAlignmentUnsignedLong")
+            .expect("t");
+        let def = suite.schemas.get("implicitAlignmentSchema").expect("schema");
+        let schema = crate::schema::parse_schema_with_options(
+            &def.xsd,
+            &crate::schema::ParseOptions {
+                base_dir: def.compile_base_dir.clone(),
+            },
+        )
+        .expect("parse");
+        let program = compile_named(&schema, Some("uLong")).expect("ir");
+        let root = program.node(program.root).expect("root");
+        let IrNode::Element { props, kind, .. } = root else {
+            panic!("root");
+        };
+        assert!(props.alignment_implicit, "uLong implicit align, got {}", props.alignment);
+        assert_eq!(props.alignment_units, LengthUnits::Bits);
+        let doc = &test.documents[0];
+        let mut cursor = Cursor::with_frame_bits(
+            &doc.data,
+            doc.significant_bit_length().expect("bits"),
+        );
+        let enc = program.strings.get(props.encoding).unwrap();
+        consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
+        assert_eq!(cursor.absolute_bit_index(), 64, "after skip+align");
+        let v = read_binary_scalar(
+            &mut cursor,
+            *kind,
+            props,
+            &program.strings,
+            false,
+            &[],
+            None,
+            &DaffodilTunables::default(),
+        )
+        .expect("read");
+        assert!(matches!(v, crate::value::DfdlValue::UnsignedLong(12_345_678)));
+    }
+
+    fn tdml_implicit_unsigned_long_document_layout() {
+        use crate::tdml::parse_tdml;
+        const TDML: &str = include_str!(
+            "../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/Aligned_Data.tdml"
+        );
+        let suite = parse_tdml(TDML).expect("tdml");
+        let test = suite
+            .tests
+            .iter()
+            .find(|t| t.name == "implicitAlignmentUnsignedLong")
+            .expect("t");
+        let doc = &test.documents[0];
+        assert_eq!(doc.data.len(), 16, "packed bits + byte long");
+        assert_eq!(doc.significant_bit_length(), Some(128));
+    }
+
     fn tdml_explicit_no_skips03_e7_props() {
         use crate::tdml::parse_tdml;
         const TDML: &str = include_str!(

@@ -69,3 +69,23 @@ fn alignment03() {
 fn explicit_alignment_no_skips03() {
     run("explicitAlignmentNoSkips03");
 }
+
+#[test]
+fn explicit_alignment_no_skips04() {
+    run("explicitAlignmentNoSkips04");
+}
+
+#[test]
+fn explicit_alignment_no_skips05() {
+    run("explicitAlignmentNoSkips05");
+}
+
+#[test]
+fn implicit_alignment_long() {
+    run("implicitAlignmentLong");
+}
+
+#[test]
+fn implicit_alignment_unsigned_long() {
+    run("implicitAlignmentUnsignedLong");
+}

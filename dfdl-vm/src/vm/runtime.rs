@@ -2028,7 +2028,11 @@ fn decode_binary_from_raw_bits(
             } else {
                 sign_extend_u64(raw, bit_width) as u64
             };
-            Ok(DfdlValue::Long(v as i64))
+            if props.unsigned_integer {
+                Ok(DfdlValue::UnsignedLong(v))
+            } else {
+                Ok(DfdlValue::Long(v as i64))
+            }
         }
         Float => Ok(DfdlValue::Float(f32::from_bits(raw as u32))),
         Double => Ok(DfdlValue::Double(f64::from_bits(raw))),
@@ -2189,12 +2193,26 @@ fn decode_binary_bytes(
         }
         Long => {
             if bit_width == Some(1) {
-                Ok(DfdlValue::Long(decode_unsigned_binary_bytes(bytes, le) as i64))
+                let raw = decode_unsigned_binary_bytes(bytes, le);
+                if props.unsigned_integer {
+                    Ok(DfdlValue::UnsignedLong(raw))
+                } else {
+                    Ok(DfdlValue::Long(raw as i64))
+                }
             } else if let Some(bits) = bit_width {
-                Ok(DfdlValue::Long(sign_extend_u64(
-                    decode_unsigned_binary_bytes(bytes, le),
-                    bits,
-                )))
+                let raw = decode_unsigned_binary_bytes(bytes, le);
+                let v = if props.unsigned_integer {
+                    raw & bit_mask(bits)
+                } else {
+                    sign_extend_u64(raw, bits) as u64
+                };
+                if props.unsigned_integer {
+                    Ok(DfdlValue::UnsignedLong(v))
+                } else {
+                    Ok(DfdlValue::Long(v as i64))
+                }
+            } else if props.unsigned_integer {
+                Ok(DfdlValue::UnsignedLong(int!(u64)))
             } else {
                 Ok(DfdlValue::Long(int!(i64)))
             }
