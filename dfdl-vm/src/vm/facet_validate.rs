@@ -25,6 +25,19 @@ pub fn facet_validation_error(
     }
 }
 
+pub fn needs_facet_validation(props: &IrProps) -> bool {
+    if props.facet_check_constraints {
+        return true;
+    }
+    !props.facet_pattern_groups.is_empty()
+        || props.value_min_inclusive.is_some()
+        || props.value_max_inclusive.is_some()
+        || props.value_min_exclusive.is_some()
+        || props.value_max_exclusive.is_some()
+        || props.total_digits.is_some()
+        || props.fraction_digits.is_some()
+}
+
 pub fn validate_decoded_facets(
     value: &DfdlValue,
     kind: ValueKind,
@@ -38,12 +51,12 @@ pub fn validate_decoded_facets(
             _ => return Ok(()),
         };
         validate_string_facets(text, props, strings)?;
+    } else if matches!(kind, ValueKind::Float | ValueKind::Double) {
+        validate_float_facets(value, kind, props, strings)?;
     } else if let Some(n) = numeric_value_i64(value) {
         validate_numeric_facets(n, props, strings)?;
     }
-    if props.facet_check_constraints
-        && (props.total_digits.is_some() || props.fraction_digits.is_some())
-    {
+    if props.total_digits.is_some() || props.fraction_digits.is_some() {
         if let Some(canon) = decimal_lexical_for_digit_facets(value, kind) {
             validate_digit_facets(&canon, props, strings)?;
         }
@@ -110,7 +123,7 @@ fn validate_digit_facets(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: totalDigits ({max})"),
+                alloc::format!("number of total digits has been limited to {max}"),
             ));
         }
     }
@@ -120,7 +133,7 @@ fn validate_digit_facets(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: fractionDigits ({max})"),
+                alloc::format!("number of fraction digits has been limited to {max}"),
             ));
         }
     }
@@ -162,6 +175,87 @@ fn decimal_lexical_for_digit_facets(value: &DfdlValue, kind: ValueKind) -> Optio
         (ValueKind::Integer, DfdlValue::Integer(s)) => Some(s.clone()),
         _ => numeric_value_i64(value).map(|n| n.to_string()),
     }
+}
+
+fn validate_float_facets(
+    value: &DfdlValue,
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), VmError> {
+    let f = match (kind, value) {
+        (ValueKind::Float, DfdlValue::Float(v)) => *v as f64,
+        (ValueKind::Double, DfdlValue::Double(v)) => *v,
+        _ => return Ok(()),
+    };
+    if f.is_nan() {
+        if props.value_min_inclusive.is_some() {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                "failed facet checks due to: minInclusive".into(),
+            ));
+        }
+        if props.value_max_inclusive.is_some() {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                "failed facet checks due to: maxInclusive".into(),
+            ));
+        }
+        if props.value_min_exclusive.is_some() {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                "failed facet checks due to: minExclusive".into(),
+            ));
+        }
+        if props.value_max_exclusive.is_some() {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                "failed facet checks due to: maxExclusive".into(),
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(min) = props.value_min_inclusive {
+        if f < min as f64 {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: minInclusive ({min})"),
+            ));
+        }
+    }
+    if let Some(max) = props.value_max_inclusive {
+        if f > max as f64 {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: maxInclusive ({max})"),
+            ));
+        }
+    }
+    if let Some(min) = props.value_min_exclusive {
+        if f <= min as f64 {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: minExclusive ({min})"),
+            ));
+        }
+    }
+    if let Some(max) = props.value_max_exclusive {
+        if f >= max as f64 {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: maxExclusive ({max})"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_numeric_facets(

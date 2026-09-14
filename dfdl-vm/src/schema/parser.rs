@@ -904,25 +904,25 @@ impl<'a> XsdParser<'a> {
                         }
                         "minInclusive" => {
                             if let Some(v) = child_attrs.get("value") {
-                                out.min_inclusive = v.parse().ok();
+                                out.min_inclusive = parse_numeric_facet_bound(v);
                             }
                             self.skip_element_body(&local)?;
                         }
                         "maxInclusive" => {
                             if let Some(v) = child_attrs.get("value") {
-                                out.max_inclusive = v.parse().ok();
+                                out.max_inclusive = parse_numeric_facet_bound(v);
                             }
                             self.skip_element_body(&local)?;
                         }
                         "minExclusive" => {
                             if let Some(v) = child_attrs.get("value") {
-                                out.min_exclusive = v.parse().ok();
+                                out.min_exclusive = parse_numeric_facet_bound(v);
                             }
                             self.skip_element_body(&local)?;
                         }
                         "maxExclusive" => {
                             if let Some(v) = child_attrs.get("value") {
-                                out.max_exclusive = v.parse().ok();
+                                out.max_exclusive = parse_numeric_facet_bound(v);
                             }
                             self.skip_element_body(&local)?;
                         }
@@ -2576,6 +2576,22 @@ fn format_ref_key(name: &str) -> String {
     normalize_qname(name)
 }
 
+/// Parse XSD numeric facet values (`0`, `0.0`, `-1.5`) into i64 when representable as integer.
+fn parse_numeric_facet_bound(v: &str) -> Option<i64> {
+    if let Ok(n) = v.parse::<i64>() {
+        return Some(n);
+    }
+    let f = v.parse::<f64>().ok()?;
+    if !f.is_finite() {
+        return None;
+    }
+    if f.fract().abs() < f64::EPSILON {
+        Some(f as i64)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2849,6 +2865,14 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("Schema Definition Error"), "{msg}");
         assert!(msg.contains("initiatedContent"), "{msg}");
+    }
+
+    #[test]
+    fn parse_numeric_facet_bound_accepts_decimal_lexical() {
+        assert_eq!(parse_numeric_facet_bound("0"), Some(0));
+        assert_eq!(parse_numeric_facet_bound("0.0"), Some(0));
+        assert_eq!(parse_numeric_facet_bound("-1"), Some(-1));
+        assert!(parse_numeric_facet_bound("1.5").is_none());
     }
 
     #[test]

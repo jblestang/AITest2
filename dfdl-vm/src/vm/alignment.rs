@@ -587,6 +587,7 @@ mod tests {
             true,
             None,
             None,
+            false,
         )
         .expect("read");
         assert!(matches!(v, DfdlValue::UnsignedByte(1)));

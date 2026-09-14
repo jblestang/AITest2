@@ -1,4 +1,5 @@
 use super::infoset::{compare_infoset, infoset_xml_to_root_value};
+use super::validation::collect_post_decode_validation_errors;
 use super::parser::{
     effective_round_trip, parse_tdml, DocumentKind, ParserTestCase, RoundTrip, TdmlDocument,
     TdmlSuite, UnparserTestCase,
@@ -118,6 +119,7 @@ pub fn run_parser_test_with_options(
     let doc = test.documents.first().unwrap_or(&empty_doc);
     let config = RuntimeConfig {
         strict_eos: true,
+        defer_facet_validation: test.expected_validation_errors.is_some(),
     };
 
     if let Some(load_err) = &doc.load_error {
@@ -187,6 +189,27 @@ pub fn run_parser_test_with_options(
             });
         }
     };
+
+    if let Some(expected_validation) = &test.expected_validation_errors {
+        let collected = collect_post_decode_validation_errors(spec.program(), &decoded);
+        let combined = collected.join("\n");
+        if collected.is_empty() {
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(
+                    "expected post-decode validation errors but none were reported".into(),
+                ),
+            });
+        }
+        if !error_messages_match(expected_validation, &combined) {
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!(
+                    "validation error mismatch: {combined}"
+                )),
+            });
+        }
+    }
 
     match compare_infoset(&decoded, &test.expected_infoset) {
         Ok(()) => {

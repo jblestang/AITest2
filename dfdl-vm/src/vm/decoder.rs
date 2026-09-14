@@ -933,6 +933,7 @@ impl<'a> Decoder<'a> {
                         false,
                         Some(&mut delim_meta),
                         sibling_env.as_ref(),
+                        self.ctx.config.defer_facet_validation,
                     )
                     .map_err(crate::error::Error::from)?;
                     if delim_meta.initiator_alt.is_some() || delim_meta.terminator_alt.is_some() {

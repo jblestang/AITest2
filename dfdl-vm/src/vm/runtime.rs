@@ -37,11 +37,16 @@ use core::iter;
 pub struct RuntimeConfig {
     /// When true, the decoder rejects input with leftover bytes after the root value.
     pub strict_eos: bool,
+    /// When true, XSD facet checks run after parse (TDML `validationErrors` tests).
+    pub defer_facet_validation: bool,
 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
-        Self { strict_eos: true }
+        Self {
+            strict_eos: true,
+            defer_facet_validation: false,
+        }
     }
 }
 
@@ -3616,21 +3621,10 @@ pub(crate) fn finalize_simple_value(
     strings: &StringPool,
     defer_facet_validation: bool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
-    if needs_facet_validation(props) && !defer_facet_validation {
+    if crate::vm::facet_validate::needs_facet_validation(props) && !defer_facet_validation {
         crate::vm::facet_validate::validate_decoded_facets(&value, kind, props, strings)?;
     }
     Ok(value)
-}
-
-fn needs_facet_validation(props: &IrProps) -> bool {
-    if props.facet_check_constraints {
-        return true;
-    }
-    !props.facet_pattern_groups.is_empty()
-        || props.value_min_inclusive.is_some()
-        || props.value_max_inclusive.is_some()
-        || props.value_min_exclusive.is_some()
-        || props.value_max_exclusive.is_some()
 }
 
 fn decode_binary_boolean_sl(
@@ -6508,6 +6502,7 @@ pub(crate) fn read_simple(
     consume_delimited_enclosing: bool,
     mut delim_out: Option<&mut crate::value::FieldDelimiterMeta>,
     sibling_env: Option<&crate::schema::boolean_reps::BooleanSiblingEnv<'_>>,
+    defer_facet_validation: bool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -6622,7 +6617,7 @@ pub(crate) fn read_simple(
         }
     }
     crate::vm::alignment::consume_trailing_skip(cursor, props)?;
-    finalize_simple_value(value, kind, props, strings, false)
+    finalize_simple_value(value, kind, props, strings, defer_facet_validation)
 }
 
 fn encode_binary_payload_bytes(
