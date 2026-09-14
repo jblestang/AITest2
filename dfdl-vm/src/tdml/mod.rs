@@ -7,8 +7,8 @@ mod validation;
 pub use resources::{load_tdml_resource, TdmlResourceContext};
 
 pub use infoset::{
-    compare_infoset, infer_root_element_name, infoset_xml_to_root_value, parse_expected_infoset_with_context,
-    InfosetNode,
+    compare_infoset, compare_infoset_with_context, infer_root_element_name,
+    infoset_xml_to_root_value, parse_expected_infoset_with_context, InfosetNode,
 };
 pub use parser::{
     effective_round_trip, effective_validation, parse_tdml, ParserTestCase, RoundTrip,

@@ -404,14 +404,14 @@ fn daffodil_section05_regression_gate() {
     );
     // Baseline (2026-03): deferred facet validation for `<tdml:errors>`; root-scoped pattern SDEs; decimal digit facets.
     assert!(
-        stats.pass >= 712,
-        "section05: expected at least 712 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 715,
+        "section05: expected at least 715 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 99,
+        stats.fail <= 96,
         "section05 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,

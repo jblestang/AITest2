@@ -399,7 +399,7 @@ impl<'a> Decoder<'a> {
                         stop_sequences,
                     ) {
                         Ok(value) => {
-                            if self.ctx.config.defer_facet_validation {
+                            if self.choice_branch_needs_post_decode_facet_check(branch.node) {
                                 if let Err(e) = self.validate_choice_branch_value(branch.node, &value)
                                 {
                                     branch_errors.push(format_choice_branch_error(
@@ -1468,6 +1468,18 @@ impl<'a> Decoder<'a> {
                 .transpose()?),
             _ => Ok(None),
         }
+    }
+
+    /// Facet checks that guide choice selection (enumeration, checkConstraints discriminators).
+    /// These run even when TDML validation is off; post-decode Xerces validation is separate.
+    fn choice_branch_needs_post_decode_facet_check(&self, branch_node: u32) -> bool {
+        if self.ctx.config.defer_facet_validation {
+            return true;
+        }
+        let Ok(IrNode::Element { props, .. }) = self.ctx.program.node(branch_node) else {
+            return false;
+        };
+        needs_facet_validation(props)
     }
 
     fn validate_choice_branch_value(
