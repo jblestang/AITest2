@@ -6011,7 +6011,11 @@ fn trim_text_value<'a>(
         TextTrimKind::Right => input.trim_end(),
         TextTrimKind::PadChar => {
             let pad = pad_char_for_kind(props, strings, kind);
-            trim_pad_char(input, &pad)
+            if kind == crate::ir::ValueKind::String {
+                trim_pad_char_for_justification(input, &pad, props.text_string_justification)
+            } else {
+                trim_pad_char(input, &pad)
+            }
         }
     }
 }
@@ -6027,16 +6031,35 @@ fn trim_numeric_text<'a>(input: &'a str, kind: TextTrimKind, pad: Option<&str>) 
 }
 
 fn trim_pad_char<'a>(input: &'a str, pad: &str) -> &'a str {
+    trim_pad_char_for_justification(input, pad, TextStringJustification::Center)
+}
+
+fn trim_pad_char_for_justification<'a>(
+    input: &'a str,
+    pad: &str,
+    justification: TextStringJustification,
+) -> &'a str {
+    use crate::schema::TextStringJustification;
     if pad.is_empty() {
         return input;
     }
     let mut start = 0usize;
     let mut end = input.len();
-    while start < end && input[start..].starts_with(pad) {
-        start += pad.len();
+    match justification {
+        TextStringJustification::Left | TextStringJustification::Center => {
+            while end > start && input[..end].ends_with(pad) {
+                end -= pad.len();
+            }
+        }
+        TextStringJustification::Right => {}
     }
-    while end > start && input[..end].ends_with(pad) {
-        end -= pad.len();
+    match justification {
+        TextStringJustification::Right | TextStringJustification::Center => {
+            while start < end && input[start..].starts_with(pad) {
+                start += pad.len();
+            }
+        }
+        TextStringJustification::Left => {}
     }
     &input[start..end]
 }
@@ -6430,6 +6453,10 @@ fn parse_float(s: &str) -> Result<f64, crate::error::VmError> {
             message: alloc::format!("invalid float `{s}`"),
         }),
     }
+}
+
+pub(crate) fn decode_hex_binary(s: &str) -> Result<Vec<u8>, crate::error::VmError> {
+    decode_hex(s)
 }
 
 fn decode_hex(s: &str) -> Result<Vec<u8>, crate::error::VmError> {

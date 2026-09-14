@@ -1492,6 +1492,10 @@ fn eval_input_value_calc(
             message: "missing inputValueCalc string literal".into(),
         })?;
         let text = strings.get(lit_id)?;
+        if kind == ValueKind::HexBinary {
+            let bytes = super::runtime::decode_hex_binary(text)?;
+            return Ok(crate::value::DfdlValue::HexBinary(bytes));
+        }
         let parsed = super::calendar_binary::parse_xs_calendar_lexical(
             kind,
             props.calendar_date_only,

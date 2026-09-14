@@ -38,6 +38,10 @@ pub fn needs_facet_validation(props: &IrProps) -> bool {
         || props.value_max_inclusive.is_some()
         || props.value_min_exclusive.is_some()
         || props.value_max_exclusive.is_some()
+        || props.value_min_inclusive_lexical.is_some()
+        || props.value_max_inclusive_lexical.is_some()
+        || props.value_min_exclusive_lexical.is_some()
+        || props.value_max_exclusive_lexical.is_some()
         || props.total_digits.is_some()
         || props.fraction_digits.is_some()
 }
@@ -59,6 +63,8 @@ pub fn validate_decoded_facets(
         validate_float_facets(value, kind, props, strings)?;
     } else if kind == ValueKind::Decimal {
         validate_decimal_range_facets(value, props, strings)?;
+    } else if kind == ValueKind::DateTime {
+        validate_datetime_range_facets(value, props, strings)?;
     } else if let Some(n) = numeric_value_i64(value) {
         validate_numeric_facets(n, props, strings)?;
         validate_enumeration_numeric(n, props, strings)?;
@@ -66,6 +72,65 @@ pub fn validate_decoded_facets(
     if props.total_digits.is_some() || props.fraction_digits.is_some() {
         if let Some(canon) = decimal_lexical_for_digit_facets(value, kind) {
             validate_digit_facets(&canon, props, strings)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_datetime_range_facets(
+    value: &DfdlValue,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), VmError> {
+    let DfdlValue::DateTime(lex) = value else {
+        return Ok(());
+    };
+    if let Some(id) = props.value_min_inclusive_lexical {
+        let min = strings.get(id)?;
+        if super::calendar_binary::xs_datetime_lexical_cmp(lex, min)
+            == Some(core::cmp::Ordering::Less)
+        {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: minInclusive ({min})"),
+            ));
+        }
+    }
+    if let Some(id) = props.value_max_inclusive_lexical {
+        let max = strings.get(id)?;
+        if super::calendar_binary::xs_datetime_lexical_cmp(lex, max)
+            == Some(core::cmp::Ordering::Greater)
+        {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: maxInclusive ({max})"),
+            ));
+        }
+    }
+    if let Some(id) = props.value_min_exclusive_lexical {
+        let min = strings.get(id)?;
+        if super::calendar_binary::xs_datetime_lexical_cmp(lex, min)
+            != Some(core::cmp::Ordering::Greater)
+        {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: minExclusive ({min})"),
+            ));
+        }
+    }
+    if let Some(id) = props.value_max_exclusive_lexical {
+        let max = strings.get(id)?;
+        if super::calendar_binary::xs_datetime_lexical_cmp(lex, max)
+            != Some(core::cmp::Ordering::Less)
+        {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: maxExclusive ({max})"),
+            ));
         }
     }
     Ok(())

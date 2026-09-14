@@ -44,6 +44,10 @@ struct ParsedRestrictionFacets {
     max_inclusive: Option<i64>,
     min_exclusive: Option<i64>,
     max_exclusive: Option<i64>,
+    min_inclusive_lexical: Option<String>,
+    max_inclusive_lexical: Option<String>,
+    min_exclusive_lexical: Option<String>,
+    max_exclusive_lexical: Option<String>,
     patterns: Vec<String>,
     enumerations: Vec<String>,
     total_digits: Option<u64>,
@@ -769,6 +773,10 @@ impl<'a> XsdParser<'a> {
                             max_inclusive: facets.max_inclusive,
                             min_exclusive: facets.min_exclusive,
                             max_exclusive: facets.max_exclusive,
+                            min_inclusive_lexical: facets.min_inclusive_lexical,
+                            max_inclusive_lexical: facets.max_inclusive_lexical,
+                            min_exclusive_lexical: facets.min_exclusive_lexical,
+                            max_exclusive_lexical: facets.max_exclusive_lexical,
                             patterns: facets.patterns,
                             enumerations: facets.enumerations,
                             total_digits: facets.total_digits,
@@ -913,24 +921,36 @@ impl<'a> XsdParser<'a> {
                         "minInclusive" => {
                             if let Some(v) = child_attrs.get("value") {
                                 out.min_inclusive = parse_numeric_facet_bound(v);
+                                if out.min_inclusive.is_none() {
+                                    out.min_inclusive_lexical = Some(v.clone());
+                                }
                             }
                             self.skip_element_body(&local)?;
                         }
                         "maxInclusive" => {
                             if let Some(v) = child_attrs.get("value") {
                                 out.max_inclusive = parse_numeric_facet_bound(v);
+                                if out.max_inclusive.is_none() {
+                                    out.max_inclusive_lexical = Some(v.clone());
+                                }
                             }
                             self.skip_element_body(&local)?;
                         }
                         "minExclusive" => {
                             if let Some(v) = child_attrs.get("value") {
                                 out.min_exclusive = parse_numeric_facet_bound(v);
+                                if out.min_exclusive.is_none() {
+                                    out.min_exclusive_lexical = Some(v.clone());
+                                }
                             }
                             self.skip_element_body(&local)?;
                         }
                         "maxExclusive" => {
                             if let Some(v) = child_attrs.get("value") {
                                 out.max_exclusive = parse_numeric_facet_bound(v);
+                                if out.max_exclusive.is_none() {
+                                    out.max_exclusive_lexical = Some(v.clone());
+                                }
                             }
                             self.skip_element_body(&local)?;
                         }

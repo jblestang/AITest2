@@ -356,6 +356,12 @@ fn calendar_parse_error(type_name: &str, text: &str) -> VmError {
 }
 
 /// Parse XSD lexical `xs:date` / `xs:dateTime` / `xs:time` (subset used in Section 5).
+pub(crate) fn xs_datetime_lexical_cmp(a: &str, b: &str) -> Option<core::cmp::Ordering> {
+    let na = parse_xs_datetime_lexical(a).ok()?;
+    let nb = parse_xs_datetime_lexical(b).ok()?;
+    Some(na.cmp(&nb))
+}
+
 pub fn parse_xs_calendar_lexical(
     kind: crate::ir::ValueKind,
     date_only: bool,

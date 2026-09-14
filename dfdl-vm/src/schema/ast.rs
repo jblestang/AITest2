@@ -430,6 +430,10 @@ pub enum SimpleBase {
         max_inclusive: Option<i64>,
         min_exclusive: Option<i64>,
         max_exclusive: Option<i64>,
+        min_inclusive_lexical: Option<alloc::string::String>,
+        max_inclusive_lexical: Option<alloc::string::String>,
+        min_exclusive_lexical: Option<alloc::string::String>,
+        max_exclusive_lexical: Option<alloc::string::String>,
         /// OR'd patterns within this restriction level.
         patterns: alloc::vec::Vec<alloc::string::String>,
         enumerations: alloc::vec::Vec<alloc::string::String>,

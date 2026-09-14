@@ -325,6 +325,16 @@ impl<'a> IrBuilder<'a> {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
                             let mut merged_ir = merge_ir_props(&child_props, &overlay);
+                            if element.props.text_string_pad_character.is_none() {
+                                merged_ir.text_string_pad_character =
+                                    child_props.text_string_pad_character;
+                                merged_ir.text_string_pad_character_property_form =
+                                    child_props.text_string_pad_character_property_form;
+                            }
+                            if element.props.text_string_justification.is_none() {
+                                merged_ir.text_string_justification =
+                                    child_props.text_string_justification;
+                            }
                             if element.props.alignment_units.is_none() {
                                 merged_ir.alignment_units = child_props.alignment_units;
                             }
@@ -2964,6 +2974,18 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.value_max_exclusive.is_some() {
         out.value_max_exclusive = overlay.value_max_exclusive;
+    }
+    if overlay.value_min_inclusive_lexical.is_some() {
+        out.value_min_inclusive_lexical = overlay.value_min_inclusive_lexical;
+    }
+    if overlay.value_max_inclusive_lexical.is_some() {
+        out.value_max_inclusive_lexical = overlay.value_max_inclusive_lexical;
+    }
+    if overlay.value_min_exclusive_lexical.is_some() {
+        out.value_min_exclusive_lexical = overlay.value_min_exclusive_lexical;
+    }
+    if overlay.value_max_exclusive_lexical.is_some() {
+        out.value_max_exclusive_lexical = overlay.value_max_exclusive_lexical;
     }
     if overlay.total_digits.is_some() {
         out.total_digits = overlay.total_digits;

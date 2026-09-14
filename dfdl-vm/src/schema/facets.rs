@@ -15,6 +15,10 @@ pub struct EffectiveFacets {
     pub max_inclusive: Option<i64>,
     pub min_exclusive: Option<i64>,
     pub max_exclusive: Option<i64>,
+    pub min_inclusive_lexical: Option<String>,
+    pub max_inclusive_lexical: Option<String>,
+    pub min_exclusive_lexical: Option<String>,
+    pub max_exclusive_lexical: Option<String>,
     pub pattern_levels: Vec<Vec<String>>,
     pub enumeration: Option<Vec<String>>,
     pub total_digits: Option<u64>,
@@ -46,6 +50,10 @@ impl SchemaDocument {
                 max_inclusive,
                 min_exclusive,
                 max_exclusive,
+                min_inclusive_lexical,
+                max_inclusive_lexical,
+                min_exclusive_lexical,
+                max_exclusive_lexical,
                 patterns,
                 enumerations,
                 total_digits,
@@ -86,6 +94,14 @@ impl SchemaDocument {
                 out.max_inclusive = merge_inclusive_min(out.max_inclusive, *max_inclusive);
                 out.min_exclusive = merge_exclusive_max(out.min_exclusive, *min_exclusive);
                 out.max_exclusive = merge_exclusive_min(out.max_exclusive, *max_exclusive);
+                out.min_inclusive_lexical =
+                    merge_lexical_inclusive_max(out.min_inclusive_lexical.clone(), min_inclusive_lexical.clone());
+                out.max_inclusive_lexical =
+                    merge_lexical_inclusive_min(out.max_inclusive_lexical.clone(), max_inclusive_lexical.clone());
+                out.min_exclusive_lexical =
+                    merge_lexical_inclusive_max(out.min_exclusive_lexical.clone(), min_exclusive_lexical.clone());
+                out.max_exclusive_lexical =
+                    merge_lexical_inclusive_min(out.max_exclusive_lexical.clone(), max_exclusive_lexical.clone());
                 out.total_digits = merge_min_u64(out.total_digits, *total_digits);
                 out.fraction_digits = merge_min_u64(out.fraction_digits, *fraction_digits);
                 if !patterns.is_empty() {
@@ -146,6 +162,34 @@ fn merge_exclusive_max(base: Option<i64>, local: Option<i64>) -> Option<i64> {
 
 fn merge_exclusive_min(base: Option<i64>, local: Option<i64>) -> Option<i64> {
     merge_inclusive_min(base, local)
+}
+
+fn merge_lexical_inclusive_max(base: Option<String>, local: Option<String>) -> Option<String> {
+    match (base, local) {
+        (Some(b), Some(l)) => Some(if lexical_datetime_ge(&l, &b) { l } else { b }),
+        (None, l) => l,
+        (Some(b), None) => Some(b),
+    }
+}
+
+fn merge_lexical_inclusive_min(base: Option<String>, local: Option<String>) -> Option<String> {
+    match (base, local) {
+        (Some(b), Some(l)) => Some(if lexical_datetime_le(&l, &b) { l } else { b }),
+        (None, l) => l,
+        (Some(b), None) => Some(b),
+    }
+}
+
+fn lexical_datetime_ge(a: &str, b: &str) -> bool {
+    crate::vm::calendar_binary::xs_datetime_lexical_cmp(a, b)
+        .map(|o| o != core::cmp::Ordering::Less)
+        .unwrap_or(a >= b)
+}
+
+fn lexical_datetime_le(a: &str, b: &str) -> bool {
+    crate::vm::calendar_binary::xs_datetime_lexical_cmp(a, b)
+        .map(|o| o != core::cmp::Ordering::Greater)
+        .unwrap_or(a <= b)
 }
 
 fn merge_min_u64(base: Option<u64>, local: Option<u64>) -> Option<u64> {
@@ -420,6 +464,18 @@ pub fn apply_effective_facets_to_ir(
     props.value_max_inclusive = eff.max_inclusive;
     props.value_min_exclusive = eff.min_exclusive;
     props.value_max_exclusive = eff.max_exclusive;
+    if let Some(v) = &eff.min_inclusive_lexical {
+        props.value_min_inclusive_lexical = Some(strings.intern(v.clone()));
+    }
+    if let Some(v) = &eff.max_inclusive_lexical {
+        props.value_max_inclusive_lexical = Some(strings.intern(v.clone()));
+    }
+    if let Some(v) = &eff.min_exclusive_lexical {
+        props.value_min_exclusive_lexical = Some(strings.intern(v.clone()));
+    }
+    if let Some(v) = &eff.max_exclusive_lexical {
+        props.value_max_exclusive_lexical = Some(strings.intern(v.clone()));
+    }
     props.total_digits = eff.total_digits;
     props.fraction_digits = eff.fraction_digits;
     props.facet_pattern_groups.clear();
