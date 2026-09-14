@@ -235,6 +235,8 @@ pub struct IrProps {
     pub total_digits: Option<u64>,
     pub fraction_digits: Option<u64>,
     pub facet_check_constraints: bool,
+    /// `{ xs:int(.) eq N }` element assert (always evaluated at parse).
+    pub assert_int_eq: Option<i64>,
     pub facet_assert_message: Option<StringId>,
     /// Prepend Daffodil `Assertion failed: ` to custom assert messages (derived simple types).
     pub facet_assert_daffodil_prefix: bool,
@@ -389,6 +391,7 @@ impl Default for IrProps {
             total_digits: None,
             fraction_digits: None,
             facet_check_constraints: false,
+            assert_int_eq: None,
             facet_assert_message: None,
             facet_assert_daffodil_prefix: false,
             prefix_length: None,

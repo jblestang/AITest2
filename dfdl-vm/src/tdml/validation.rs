@@ -96,16 +96,68 @@ fn walk_particle(
                                         | ValueKind::UnsignedShort
                                         | ValueKind::UnsignedByte
                                 )
-                                && rest.is_some_and(|r| {
-                                    r.contains("Inclusive") || r.contains("Exclusive")
-                                })
+                                && rest.is_some_and(|r| r.contains("maxInclusive"))
                             {
+                                if let Some(lex) = value_lexical_any(value, *kind) {
+                                    errors.push(alloc::format!("Validation Error"));
+                                    errors.push(alloc::format!("Value '{lex}'"));
+                                    errors.push(alloc::format!("not valid"));
+                                    errors.push(alloc::format!("ex:{ename}"));
+                                }
+                            } else if full_xerces_style
+                                && rest.is_some_and(|r| r.contains("minLength"))
+                                && *kind == ValueKind::String
+                            {
+                                if let Some(lex) = value_lexical(value, *kind) {
+                                    let len = lex.chars().count();
+                                    if let Some(min) = props.min_length {
+                                        errors.push(alloc::format!("Validation Error"));
+                                        errors.push(alloc::format!(
+                                            "Value '{lex}' with length = '{len}' is not facet-valid with respect to minLength '{min}'"
+                                        ));
+                                    }
+                                }
+                            } else if full_xerces_style && rest.is_some_and(|r| r.contains("totalDigits")) {
+                                if let Some(max) = props.total_digits {
+                                    errors.push(ename.to_string());
+                                    errors.push(alloc::format!("not valid"));
+                                    let has_range = props.value_min_inclusive.is_some()
+                                        || props.value_max_inclusive.is_some()
+                                        || props.value_min_exclusive.is_some()
+                                        || props.value_max_exclusive.is_some();
+                                    if has_range {
+                                        if let Some(lex) = value_lexical_any(value, *kind) {
+                                            let digits = xsd_total_digit_count(&lex);
+                                            errors.push(ename.to_string());
+                                            errors.push(alloc::format!(
+                                                "Value '{lex}' has {digits} total digits"
+                                            ));
+                                            errors.push(alloc::format!(
+                                                "total digits has been limited to {max}."
+                                            ));
+                                        }
+                                    } else {
+                                        errors.push(alloc::format!(
+                                            "total digits has been limited to {max}"
+                                        ));
+                                    }
+                                }
+                            } else if full_xerces_style && rest == Some("enumeration") {
                                 errors.push(ename.to_string());
                                 errors.push(alloc::format!("not valid"));
-                                if let Some(lex) = value_lexical_any(value, *kind) {
-                                    errors.push(alloc::format!("'{lex}'"));
+                                if let Some(lex) = value_lexical(value, *kind) {
+                                    errors.push(lex.to_string());
                                 }
                                 errors.push(alloc::format!("not facet-valid"));
+                                let allowed = props
+                                    .facet_enumeration
+                                    .iter()
+                                    .filter_map(|id| program.strings.get(*id).ok())
+                                    .collect::<alloc::vec::Vec<_>>()
+                                    .join(", ");
+                                if !allowed.is_empty() {
+                                    errors.push(allowed);
+                                }
                             } else if full_xerces_style
                                 && rest.is_some_and(|r| {
                                     r.contains("Inclusive") || r.contains("Exclusive")
@@ -133,6 +185,29 @@ fn walk_particle(
                                         errors.push(format_xerces_float_bound(min as f64));
                                     }
                                 }
+                            } else if !full_xerces_style {
+                                errors.push(ename.to_string());
+                                errors.push(alloc::format!("failed facet checks"));
+                                if let Some(r) = rest {
+                                    if r.contains("enumeration") {
+                                        errors.push(alloc::format!("facet enumeration(s)"));
+                                        let allowed = props
+                                            .facet_enumeration
+                                            .iter()
+                                            .filter_map(|id| program.strings.get(*id).ok())
+                                            .collect::<alloc::vec::Vec<_>>()
+                                            .join("|");
+                                        if !allowed.is_empty() {
+                                            errors.push(allowed);
+                                        }
+                                    } else if r.contains("maxLength") {
+                                        errors.push(alloc::format!("due to: facet {r}"));
+                                    } else if r.starts_with("facet ") {
+                                        errors.push(r.to_string());
+                                    } else {
+                                        errors.push(alloc::format!("facet {r}"));
+                                    }
+                                }
                             } else {
                                 errors.push(ename.to_string());
                                 errors.push(alloc::format!("failed facet checks"));
@@ -148,6 +223,8 @@ fn walk_particle(
                                         if !allowed.is_empty() {
                                             errors.push(allowed);
                                         }
+                                    } else if r.starts_with("facet ") {
+                                        errors.push(r.to_string());
                                     } else {
                                         errors.push(alloc::format!("facet {r}"));
                                     }
@@ -259,6 +336,22 @@ fn walk_particle(
             }
             Ok(())
         }
+    }
+}
+
+fn xsd_total_digit_count(lex: &str) -> usize {
+    let mut s = lex.trim();
+    if let Some(rest) = s.strip_prefix('-') {
+        s = rest;
+    } else if let Some(rest) = s.strip_prefix('+') {
+        s = rest;
+    }
+    let digits: alloc::string::String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    let trimmed = digits.trim_start_matches('0');
+    if trimmed.is_empty() {
+        0
+    } else {
+        trimmed.len()
     }
 }
 

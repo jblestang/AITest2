@@ -1259,9 +1259,7 @@ impl<'a> XsdParser<'a> {
                 props.assert_message = Some(msg.clone());
             }
             if let Some(test) = attrs.get("test") {
-                if test.contains("checkConstraints") {
-                    props.facet_check_constraints = true;
-                }
+                apply_dfdl_assert_test(&mut props, test);
             }
         }
 
@@ -1338,6 +1336,15 @@ impl<'a> XsdParser<'a> {
                         }
                     }
                 }
+            }
+            return Ok(props);
+        }
+        if local == "assert" || local == "discriminator" {
+            if self.reader.peek_is_end(local)? {
+                self.expect_end_local(local)?;
+            } else {
+                let test = self.read_simple_element_text(local)?;
+                apply_dfdl_assert_test(&mut props, test.trim());
             }
             return Ok(props);
         }
@@ -1877,10 +1884,36 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.facet_check_constraints {
         base.facet_check_constraints = true;
     }
+    if overlay.assert_int_eq.is_some() {
+        base.assert_int_eq = overlay.assert_int_eq;
+    }
     if overlay.object_kind.is_some() {
         base.object_kind = overlay.object_kind;
     }
     base
+}
+
+fn apply_dfdl_assert_test(props: &mut DfdlProps, test: &str) {
+    if test.contains("checkConstraints") {
+        props.facet_check_constraints = true;
+    }
+    if let Some(n) = parse_assert_int_eq_test(test) {
+        props.assert_int_eq = Some(n);
+    }
+}
+
+/// `{ xs:int(.) eq N }` on `dfdl:assert/@test` or element body (section 02 assert tests).
+fn parse_assert_int_eq_test(test: &str) -> Option<i64> {
+    let compact: alloc::string::String = test
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let body = compact
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(compact.as_str());
+    let rest = body.strip_prefix("xs:int(.)eq")?;
+    rest.parse::<i64>().ok()
 }
 
 fn parse_xs_string_literal_arg(arg: &str) -> Option<String> {
@@ -3324,6 +3357,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_assert_int_eq_test_from_body() {
+        assert_eq!(
+            parse_assert_int_eq_test("{ xs:int(.) eq 42 }"),
+            Some(42)
+        );
+    }
+
     fn parse_numeric_facet_bound_accepts_decimal_lexical() {
         assert_eq!(parse_numeric_facet_bound("0"), Some(0));
         assert_eq!(parse_numeric_facet_bound("0.0"), Some(0));

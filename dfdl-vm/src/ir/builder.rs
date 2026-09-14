@@ -2251,6 +2251,9 @@ fn apply_restriction_facets(
     if let Some(msg) = &element_props.assert_message {
         props.facet_assert_message = Some(strings.intern(msg.clone()));
     }
+    if let Some(n) = element_props.assert_int_eq {
+        props.assert_int_eq = Some(n);
+    }
     if let SimpleBase::Restriction {
         base,
         enumerations,
@@ -3181,6 +3184,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.facet_check_constraints {
         out.facet_check_constraints = true;
+    }
+    if overlay.assert_int_eq.is_some() {
+        out.assert_int_eq = overlay.assert_int_eq;
     }
     if overlay.facet_assert_message.is_some() {
         out.facet_assert_message = overlay.facet_assert_message;

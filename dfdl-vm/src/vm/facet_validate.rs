@@ -66,6 +66,26 @@ pub fn canonicalize_xs_decimal_lexical(s: &str) -> alloc::string::String {
     }
 }
 
+pub fn validate_assert_int_eq(
+    value: &DfdlValue,
+    props: &IrProps,
+) -> Result<(), VmError> {
+    let Some(expected) = props.assert_int_eq else {
+        return Ok(());
+    };
+    let Some(actual) = numeric_value_i64(value) else {
+        return Err(VmError::InvalidValue {
+            message: "Assertion failed".into(),
+        });
+    };
+    if actual != expected {
+        return Err(VmError::InvalidValue {
+            message: "Assertion failed".into(),
+        });
+    }
+    Ok(())
+}
+
 pub fn validate_decoded_facets(
     value: &DfdlValue,
     kind: ValueKind,
@@ -154,10 +174,11 @@ fn validate_datetime_range_facets(
         if lexical_calendar_cmp(lex, max, date_only, false)
             == Some(core::cmp::Ordering::Greater)
         {
+            let epoch_ms = datetime_facet_bound_epoch_ms(max);
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: maxInclusive ({max})"),
+                alloc::format!("failed facet checks due to: facet maxInclusive ({epoch_ms})"),
             ));
         }
     }
@@ -405,6 +426,12 @@ fn validate_enumeration_numeric(
     ))
 }
 
+fn datetime_facet_bound_epoch_ms(lex: &str) -> i64 {
+    super::calendar_binary::parse_calendar_epoch_unix(lex)
+        .map(|secs| secs.saturating_mul(1000))
+        .unwrap_or(0)
+}
+
 fn validate_facet_length_count(
     count: usize,
     props: &IrProps,
@@ -491,7 +518,7 @@ fn validate_digit_facets(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("number of total digits has been limited to {max}"),
+                alloc::format!("failed facet checks due to: facet totalDigits ({max})"),
             ));
         }
     }
@@ -557,11 +584,11 @@ fn validate_float_facets(
         _ => return Ok(()),
     };
     if f.is_nan() {
-        if props.value_min_inclusive.is_some() {
+        if props.value_max_exclusive.is_some() {
             return Err(facet_validation_error(
                 props,
                 strings,
-                "failed facet checks due to: minInclusive".into(),
+                "failed facet checks due to: maxExclusive".into(),
             ));
         }
         if props.value_max_inclusive.is_some() {
@@ -578,11 +605,11 @@ fn validate_float_facets(
                 "failed facet checks due to: minExclusive".into(),
             ));
         }
-        if props.value_max_exclusive.is_some() {
+        if props.value_min_inclusive.is_some() {
             return Err(facet_validation_error(
                 props,
                 strings,
-                "failed facet checks due to: maxExclusive".into(),
+                "failed facet checks due to: minInclusive".into(),
             ));
         }
         return Ok(());
@@ -592,7 +619,7 @@ fn validate_float_facets(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: minInclusive ({min})"),
+                alloc::format!("failed facet checks due to: facet minInclusive ({min})"),
             ));
         }
     }
@@ -601,7 +628,7 @@ fn validate_float_facets(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: maxInclusive ({max})"),
+                alloc::format!("failed facet checks due to: facet maxInclusive ({max})"),
             ));
         }
     }
@@ -610,7 +637,7 @@ fn validate_float_facets(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: minExclusive ({min})"),
+                alloc::format!("failed facet checks due to: facet minExclusive ({min})"),
             ));
         }
     }
@@ -619,7 +646,7 @@ fn validate_float_facets(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: maxExclusive ({max})"),
+                alloc::format!("failed facet checks due to: facet maxExclusive ({max})"),
             ));
         }
     }
@@ -636,7 +663,7 @@ fn validate_numeric_facets(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: minInclusive ({min})"),
+                alloc::format!("failed facet checks due to: facet minInclusive ({min})"),
             ));
         }
     }
@@ -645,7 +672,7 @@ fn validate_numeric_facets(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: maxInclusive ({max})"),
+                alloc::format!("failed facet checks due to: facet maxInclusive ({max})"),
             ));
         }
     }
@@ -654,7 +681,7 @@ fn validate_numeric_facets(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: minExclusive ({min})"),
+                alloc::format!("failed facet checks due to: facet minExclusive ({min})"),
             ));
         }
     }
@@ -663,7 +690,7 @@ fn validate_numeric_facets(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: maxExclusive ({max})"),
+                alloc::format!("failed facet checks due to: facet maxExclusive ({max})"),
             ));
         }
     }

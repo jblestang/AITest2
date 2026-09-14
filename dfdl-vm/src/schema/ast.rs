@@ -156,6 +156,8 @@ pub struct DfdlProps {
     pub assert_message: Option<alloc::string::String>,
     /// True when `dfdl:assert/@test` references `dfdl:checkConstraints`.
     pub facet_check_constraints: bool,
+    /// `{ xs:int(.) eq N }` on `dfdl:assert` (section 02 assert tests).
+    pub assert_int_eq: Option<i64>,
     /// Daffodil extension `dfdlx:objectKind` (`bytes` / `chars`).
     pub object_kind: Option<ObjectKind>,
     /// `dfdlx:parseUnparsePolicy` (`both` / `parseOnly` / `unparseOnly`).

@@ -4879,6 +4879,7 @@ pub(crate) fn finalize_simple_value(
     tunables: &crate::length_validate::DaffodilTunables,
     defer_facet_validation: bool,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    crate::vm::facet_validate::validate_assert_int_eq(&value, props)?;
     if crate::vm::facet_validate::needs_facet_validation(props) && !defer_facet_validation {
         crate::vm::facet_validate::validate_decoded_facets(
             &value, kind, props, strings, tunables,
