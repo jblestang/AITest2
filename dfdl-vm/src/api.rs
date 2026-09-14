@@ -82,7 +82,7 @@ impl DfdlSpec {
         input: &[u8],
         frame_bits: Option<usize>,
     ) -> Result<DfdlValue> {
-        self.decoder().decode_with_bit_limit(input, frame_bits)
+        self.decoder().decode_with_bit_limit(input, frame_bits, None)
     }
 
     /// Convenience: encode a value using a fresh encoder instance.

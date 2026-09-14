@@ -1,4 +1,5 @@
 use crate::error::{ParseError, Result};
+use crate::schema::BitOrder;
 use crate::length_validate::DaffodilTunables;
 use crate::schema::expand_entities;
 use crate::vm::encoding::encode_document_text;
@@ -67,6 +68,8 @@ pub struct TdmlDocument {
     pub data: Vec<u8>,
     /// Significant bits in the last byte when the document ends mid-byte.
     pub last_byte_bit_count: Option<u8>,
+    /// How bits are packed into `data` for `type="bits"` documents.
+    pub transmission_bit_order: crate::schema::BitOrder,
     /// TDML document assembly error (e.g. illegal bitOrder transition between parts).
     pub load_error: Option<String>,
 }
@@ -323,27 +326,62 @@ fn parse_document_bit_order(value: &str) -> Result<DocumentBitOrder> {
 fn effective_document_bit_order(
     document_default: DocumentBitOrder,
     from_document_attr: bool,
-    parts: &[(DocumentBitOrder, usize)],
+    parts: &[(DocumentBitOrder, usize, bool)],
 ) -> DocumentBitOrder {
     if from_document_attr || parts.is_empty() {
         return document_default;
     }
     let first = parts[0].0;
-    if parts.iter().all(|(order, _)| *order == first) {
+    if parts.iter().all(|(order, _, _)| *order == first) {
         first
     } else {
         document_default
     }
 }
 
+fn document_transmission_bit_order(use_lsb_assembly: bool) -> BitOrder {
+    if use_lsb_assembly {
+        BitOrder::LeastSignificantBitFirst
+    } else {
+        BitOrder::MostSignificantBitFirst
+    }
+}
+
+fn check_explicit_part_bit_order_mixture(
+    from_document_attr: bool,
+    parts: &[(DocumentBitOrder, usize, bool)],
+) -> Result<()> {
+    if from_document_attr {
+        return Ok(());
+    }
+    let mut saw_lsb = false;
+    let mut saw_msb = false;
+    for (order, _, explicit) in parts {
+        if !explicit {
+            continue;
+        }
+        match order {
+            DocumentBitOrder::LsbFirst => saw_lsb = true,
+            DocumentBitOrder::MsbFirst => saw_msb = true,
+        }
+    }
+    if saw_lsb && saw_msb {
+        return Err(ParseError::InvalidXml {
+            message: "Must specify bitOrder on document element when parts have a mixture of bit orders.".into(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 fn check_document_part_bit_order_transitions(
-    parts: &[(DocumentBitOrder, usize)],
+    parts: &[(DocumentBitOrder, usize, bool)],
 ) -> Result<()> {
     if parts.len() <= 1 {
         return Ok(());
     }
     let mut cumulative = 0usize;
-    for (i, (order, len)) in parts.iter().enumerate() {
+    for (i, (order, len, _)) in parts.iter().enumerate() {
         if i > 0 {
             let prior = parts[i - 1].0;
             if prior != *order && cumulative % 8 != 0 {
@@ -376,6 +414,7 @@ fn parse_document(
             kind: DocumentKind::Text,
             data: Vec::new(),
             last_byte_bit_count: None,
+            transmission_bit_order: BitOrder::MostSignificantBitFirst,
             load_error: None,
         });
     }
@@ -387,7 +426,7 @@ fn parse_document(
         let mut pending_bits: Vec<u8> = Vec::new();
         let mut bit_part_chunks: Vec<Vec<String>> = Vec::new();
         let mut saw_bits_part = false;
-        let mut part_transitions: Vec<(DocumentBitOrder, usize)> = Vec::new();
+        let mut part_transitions: Vec<(DocumentBitOrder, usize, bool)> = Vec::new();
         let mut saw_rtl_byte_order = false;
 
         let flush_pending_bits =
@@ -403,7 +442,7 @@ fn parse_document(
 
         while reader.peek_start_local()? == Some("documentPart".to_string()) {
             let part = parse_document_part(reader, default_bit_order)?;
-            part_transitions.push((part.bit_order, part.length_in_bits));
+            part_transitions.push((part.bit_order, part.length_in_bits, part.explicit_bit_order));
             if let Some(chunks) = part.bit_chunks {
                 saw_bits_part = true;
                 kind = DocumentKind::Bits;
@@ -462,11 +501,21 @@ fn parse_document(
                 kind = DocumentKind::Bits;
             }
         }
+        if let Err(e) = check_explicit_part_bit_order_mixture(document_bit_order_from_attr, &part_transitions) {
+            return Ok(TdmlDocument {
+                kind: DocumentKind::Text,
+                data: Vec::new(),
+                last_byte_bit_count: None,
+                transmission_bit_order: BitOrder::MostSignificantBitFirst,
+                load_error: Some(e.to_string()),
+            });
+        }
         if let Err(e) = check_document_part_bit_order_transitions(&part_transitions) {
             return Ok(TdmlDocument {
                 kind: DocumentKind::Text,
                 data: Vec::new(),
                 last_byte_bit_count: None,
+                transmission_bit_order: BitOrder::MostSignificantBitFirst,
                 load_error: Some(e.to_string()),
             });
         }
@@ -474,6 +523,7 @@ fn parse_document(
             kind,
             data,
             last_byte_bit_count,
+            transmission_bit_order: document_transmission_bit_order(use_lsb_assembly),
             load_error: None,
         });
     }
@@ -483,6 +533,7 @@ fn parse_document(
         kind: DocumentKind::Text,
         data: text.into_bytes(),
         last_byte_bit_count: None,
+        transmission_bit_order: BitOrder::MostSignificantBitFirst,
         load_error: None,
     })
 }
@@ -494,6 +545,7 @@ struct ParsedDocumentPart {
     /// Bit chunks (up to 8 digits each) when `kind == Bits`.
     bit_chunks: Option<Vec<String>>,
     bit_order: DocumentBitOrder,
+    explicit_bit_order: bool,
     byte_order: DocumentByteOrder,
     length_in_bits: usize,
 }
@@ -519,6 +571,7 @@ fn parse_document_part(
         .map(|v| v == "true")
         .unwrap_or(false);
     let encoding = attrs.get("encoding").map(String::as_str);
+    let explicit_bit_order = attrs.contains_key("bitOrder");
     let bit_order = attrs
         .get("bitOrder")
         .map(|s| parse_document_bit_order(s))
@@ -574,6 +627,7 @@ fn parse_document_part(
         last_byte_bit_count,
         bit_chunks,
         bit_order,
+        explicit_bit_order,
         byte_order,
         length_in_bits,
     })

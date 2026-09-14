@@ -177,13 +177,15 @@ impl<'a> IrBuilder<'a> {
                 })
             }
         };
-        Ok(IrProgram {
+        let program = IrProgram {
             root_element: root_name.to_string(),
             root,
             nodes: self.nodes,
             strings: self.strings,
             tunables: self.tunables,
-        })
+        };
+        validate_program_sequence_bit_orders(&program)?;
+        Ok(program)
     }
 
     fn compile_type(&mut self, type_name: &TypeName, element_props: &DfdlProps) -> Result<u32> {
@@ -1356,7 +1358,63 @@ fn finalize_element_props(
         })?;
     }
     validate_binary_calendar_compile(kind, &ir, strings)?;
+    validate_bit_order_byte_order(&ir)?;
     Ok(ir)
+}
+
+fn validate_bit_order_byte_order(props: &IrProps) -> Result<()> {
+    use crate::schema::{BitOrder, ByteOrder, Representation};
+    if props.representation == Representation::Binary
+        && props.byte_order == ByteOrder::BigEndian
+        && props.bit_order == BitOrder::LeastSignificantBitFirst
+    {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: bitOrder 'leastSignificantBitFirst' cannot be used with byteOrder 'bigEndian'.".into(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_program_sequence_bit_orders(program: &IrProgram) -> Result<()> {
+    use crate::ir::{IrNode, ValueKind};
+    use crate::schema::{BitOrder, LengthKind, LengthUnits, Representation};
+    for node in &program.nodes {
+        let IrNode::Sequence { children, .. } = node else {
+            continue;
+        };
+        let mut cumulative = 0usize;
+        let mut prev: Option<BitOrder> = None;
+        for &child_id in children {
+            let Ok(IrNode::Element { props, kind, .. }) = program.node(child_id) else {
+                continue;
+            };
+            if *kind == ValueKind::Complex
+                || props.representation != Representation::Binary
+                || props.length_units != LengthUnits::Bits
+            {
+                continue;
+            }
+            if !matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
+                continue;
+            }
+            let Some(len) = props.length else {
+                continue;
+            };
+            let order = props.bit_order;
+            if let Some(p) = prev {
+                if p != order && cumulative % 8 != 0 {
+                    return Err(SchemaError::InvalidProperty {
+                        message: "Schema Definition Error: Changing bitOrder requires a byte boundary.".into(),
+                    }
+                    .into());
+                }
+            }
+            cumulative = cumulative.saturating_add(len as usize);
+            prev = Some(order);
+        }
+    }
+    Ok(())
 }
 
 fn validate_binary_calendar_compile(

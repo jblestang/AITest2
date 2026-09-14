@@ -54,6 +54,8 @@ pub struct Cursor<'a> {
     pub bit_count: u8,
     /// When set, absolute bit index (from start of `data`) that must not be read past.
     pub frame_bit_limit: Option<usize>,
+    /// How transmission bits are packed into bytes (TDML document assembly).
+    pub transmission_bit_order: BitOrder,
 }
 
 impl<'a> Cursor<'a> {
@@ -64,6 +66,7 @@ impl<'a> Cursor<'a> {
             bit_buffer: 0,
             bit_count: 0,
             frame_bit_limit: None,
+            transmission_bit_order: BitOrder::MostSignificantBitFirst,
         }
     }
 
@@ -74,6 +77,22 @@ impl<'a> Cursor<'a> {
             bit_buffer: 0,
             bit_count: 0,
             frame_bit_limit: Some(frame_bits),
+            transmission_bit_order: BitOrder::MostSignificantBitFirst,
+        }
+    }
+
+    pub fn with_frame_bits_and_transmission(
+        data: &'a [u8],
+        frame_bits: usize,
+        transmission_bit_order: BitOrder,
+    ) -> Self {
+        Self {
+            data,
+            pos: 0,
+            bit_buffer: 0,
+            bit_count: 0,
+            frame_bit_limit: Some(frame_bits),
+            transmission_bit_order,
         }
     }
 
@@ -221,25 +240,30 @@ impl<'a> Cursor<'a> {
         Ok(out)
     }
 
-    fn read_stream_bit(&mut self, bit_order: BitOrder) -> Result<u64, crate::error::VmError> {
+    fn read_stream_bit(&mut self, _field_bit_order: BitOrder) -> Result<u64, crate::error::VmError> {
         use crate::error::VmError;
+        let idx = self.absolute_bit_index();
         if let Some(limit) = self.frame_bit_limit {
-            if self.absolute_bit_index() >= limit {
+            if idx >= limit {
                 return Err(VmError::UnexpectedEof);
             }
         }
-        if self.pos >= self.data.len() {
+        let byte_idx = idx / 8;
+        if byte_idx >= self.data.len() {
             return Err(VmError::UnexpectedEof);
         }
-        let byte = self.data[self.pos];
-        let bit = match bit_order {
-            BitOrder::MostSignificantBitFirst => (byte >> (7 - self.bit_count)) & 1,
-            BitOrder::LeastSignificantBitFirst => (byte >> self.bit_count) & 1,
+        let byte = self.data[byte_idx];
+        let bit_in_byte = match self.transmission_bit_order {
+            BitOrder::MostSignificantBitFirst => 7 - (idx % 8),
+            BitOrder::LeastSignificantBitFirst => idx % 8,
         };
+        let bit = (byte >> bit_in_byte) & 1;
         self.bit_count += 1;
         if self.bit_count == 8 {
             self.bit_count = 0;
-            self.pos += 1;
+            self.pos = byte_idx + 1;
+        } else {
+            self.pos = byte_idx;
         }
         Ok(bit as u64)
     }

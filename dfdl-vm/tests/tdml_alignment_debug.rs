@@ -59,7 +59,7 @@ fn tdml_hb_decode_via_spec() {
     let doc = &test.documents[0];
     let frame = doc.significant_bit_length();
     let value = spec
-        .decode_with_bit_limit(&doc.data, frame)
+        .decode_with_bit_limit(&doc.data, frame, Some(doc.transmission_bit_order))
         .expect("decode");
     let dfdl_vm::value::DfdlValue::Sequence(fields) = value else {
         panic!("expected root wrap");

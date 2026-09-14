@@ -89,7 +89,7 @@ impl<'a> Decoder<'a> {
 
     /// Decode one logical value from `input`.
     pub fn decode(&self, input: &[u8]) -> Result<DfdlValue> {
-        self.decode_with_bit_limit(input, None)
+        self.decode_with_bit_limit(input, None, None)
     }
 
     /// Decode with an optional significant bit length (TDML `type="bits"` documents).
@@ -97,10 +97,17 @@ impl<'a> Decoder<'a> {
         &self,
         input: &[u8],
         frame_bits: Option<usize>,
+        transmission_bit_order: Option<crate::schema::BitOrder>,
     ) -> Result<DfdlValue> {
+        use crate::schema::BitOrder;
+        let transmission = transmission_bit_order.unwrap_or(BitOrder::MostSignificantBitFirst);
         let mut cursor = match frame_bits {
-            Some(bits) => Cursor::with_frame_bits(input, bits),
-            None => Cursor::new(input),
+            Some(bits) => Cursor::with_frame_bits_and_transmission(input, bits, transmission),
+            None => {
+                let mut c = Cursor::new(input);
+                c.transmission_bit_order = transmission;
+                c
+            }
         };
         let value = self.decode_node(
             self.ctx.program.root,
