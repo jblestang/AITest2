@@ -1061,6 +1061,21 @@ fn finalize_element_props(
     validate_alignment_units_schema(&ir)?;
     validate_prefixed_character_encoding(kind, &ir, strings)?;
     validate_end_of_parent(kind, &ir)?;
+    if let Some(id) = ir.text_string_pad_character {
+        let raw = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
+            message: e.to_string(),
+        })?;
+        if let Err(msg) = crate::schema::validate_text_string_pad_character_merged(
+            raw,
+            ir.length_units == LengthUnits::Bytes,
+            ir.text_string_pad_character_property_form,
+        ) {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {msg}"),
+            }
+            .into());
+        }
+    }
     if kind == ValueKind::Boolean {
         if let Some(id) = ir.default_value {
             let raw = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
@@ -1087,8 +1102,8 @@ fn finalize_element_props(
     }
     if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
         if let Some(len) = ir.length {
-            validate_float_double_bit_length(kind, len, ir.length_units)?;
             if ir.representation == Representation::Binary {
+                validate_float_double_bit_length(kind, len, ir.length_units)?;
                 if binary_length_validation_applies(kind, ir.binary_number_rep) {
                     validate_data_length_schema(kind, len, ir.length_units, ir.binary_number_rep)?;
                     validate_signed_one_bit_length_schema(kind, len, ir.length_units, &tunables)?;
@@ -1500,7 +1515,7 @@ fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
             return Ok(());
         }
         return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error. lengthKind='delimited' only supported for packed binary formats.".into(),
+            message: "Schema Definition Error: lengthKind='delimited' only supported for packed binary formats.".into(),
         }
         .into());
     }
@@ -1887,14 +1902,6 @@ fn overlay_dfdl_to_ir(
     props: &DfdlProps,
     strings: &mut StringPool,
 ) -> Result<IrProps> {
-    if let Some(v) = props.binary_decimal_virtual_point_sde {
-        return Err(SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error: Property binaryDecimalVirtualPoint has value {v}, which is not valid."
-            ),
-        }
-        .into());
-    }
     if let Some(v) = props.representation {
         base.representation = v;
     }
@@ -1975,6 +1982,8 @@ fn overlay_dfdl_to_ir(
             .text_string_pad_character
             .as_ref()
             .map(|s| strings.intern(s.clone()));
+        base.text_string_pad_character_property_form =
+            props.text_string_pad_character_property_form;
     }
     if let Some(v) = props.binary_number_rep {
         base.binary_number_rep = v;
@@ -2000,6 +2009,9 @@ fn overlay_dfdl_to_ir(
     }
     if props.binary_decimal_virtual_point.is_some() {
         base.binary_decimal_virtual_point = props.binary_decimal_virtual_point.unwrap_or(0);
+    }
+    if props.binary_decimal_virtual_point_sde.is_some() {
+        base.binary_decimal_virtual_point_signed = props.binary_decimal_virtual_point_sde;
     }
     if let Some(signed) = props.decimal_signed {
         base.decimal_signed = signed;
@@ -2336,6 +2348,8 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.text_pad_kind = overlay.text_pad_kind;
     out.text_number_pad_character = overlay.text_number_pad_character;
     out.text_string_pad_character = overlay.text_string_pad_character;
+    out.text_string_pad_character_property_form =
+        overlay.text_string_pad_character_property_form;
     out.binary_number_rep = overlay.binary_number_rep;
     out.binary_packed_sign_codes = overlay.binary_packed_sign_codes;
     out.binary_number_check_policy = overlay.binary_number_check_policy;
@@ -2345,6 +2359,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     out.binary_float_rep = overlay.binary_float_rep;
     out.binary_decimal_virtual_point = overlay.binary_decimal_virtual_point;
+    if overlay.binary_decimal_virtual_point_signed.is_some() {
+        out.binary_decimal_virtual_point_signed = overlay.binary_decimal_virtual_point_signed;
+    }
     out.decimal_signed = overlay.decimal_signed;
     out.calendar_pattern = overlay.calendar_pattern;
     if overlay.text_number_pattern.is_some() {

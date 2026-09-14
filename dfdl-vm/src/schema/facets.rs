@@ -195,7 +195,11 @@ pub fn validate_facet_literals(eff: &EffectiveFacets) -> Result<(), SchemaError>
             return Ok(());
         }
         if is_valid_integer_literal(v) && !is_valid_positive_integer_literal(v) {
-            return Err(facet_err_positive_integer(v));
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: Value '{v}' is not facet-valid with respect to minInclusive '0' for type 'positiveInteger' (totalDigits)"
+                ),
+            });
         }
         return Err(facet_err_not_integer(v));
     }

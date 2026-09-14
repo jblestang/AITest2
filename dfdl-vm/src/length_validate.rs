@@ -342,15 +342,28 @@ pub fn validate_float_double_bit_length_schema(
     length: u64,
     units: LengthUnits,
 ) -> Result<(), SchemaError> {
-    if !matches!(kind, ValueKind::Float | ValueKind::Double) || units != LengthUnits::Bits {
+    if !matches!(kind, ValueKind::Float | ValueKind::Double) {
         return Ok(());
     }
-    if let Some(required) = required_bit_width(kind) {
-        if length != required {
-            return Err(SchemaError::InvalidProperty {
-                message: alloc::format!("Schema Definition Error. must be {required} bits"),
-            });
-        }
+    let Some(required_bits) = required_bit_width(kind) else {
+        return Ok(());
+    };
+    let bit_length = match units {
+        LengthUnits::Bits => length,
+        LengthUnits::Bytes => length.saturating_mul(8),
+        LengthUnits::Characters => return Ok(()),
+    };
+    if bit_length != required_bits {
+        let xsd = if kind == ValueKind::Float {
+            "xs:float"
+        } else {
+            "xs:double"
+        };
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: binary {xsd} must be {required_bits} bits. Length in bits was {bit_length}"
+            ),
+        });
     }
     Ok(())
 }

@@ -1081,20 +1081,12 @@ impl<'a> XsdParser<'a> {
                                     }
                                 })?;
                                 let value = self.read_simple_element_text("property")?;
-                                let prop_local = local_tag(&prop_name);
-                                if prop_local == "textStringPadCharacter"
-                                    && value.chars().any(|c| c.is_whitespace())
-                                {
-                                    return Err(ParseError::InvalidXml {
-                                        message: alloc::format!(
-                                            "Schema Definition Error: property textStringPadCharacter contains whitespace"
-                                        ),
-                                    }
-                                    .into());
-                                }
                                 let mut map = BTreeMap::new();
-                                map.insert(prop_name, value);
+                                map.insert(prop_name.clone(), value);
                                 props = merge_props(props, props_from_attrs(&map)?);
+                                if local_tag(&prop_name) == "textStringPadCharacter" {
+                                    props.text_string_pad_character_property_form = true;
+                                }
                             } else {
                                 self.skip_element_body(&child_local)?;
                             }
@@ -1453,6 +1445,8 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     }
     if overlay.text_string_pad_character.is_some() {
         base.text_string_pad_character = overlay.text_string_pad_character;
+        base.text_string_pad_character_property_form =
+            overlay.text_string_pad_character_property_form;
     }
     if overlay.prefix_length_type.is_some() {
         base.prefix_length_type = overlay.prefix_length_type;
@@ -2618,7 +2612,8 @@ mod tests {
     </xs:annotation>
   </xs:element>
 </xs:schema>"#;
-        let err = parse_schema(xsd).unwrap_err();
+        let doc = parse_schema(xsd).expect("property-form pad parses");
+        let err = crate::ir::compile_named(&doc, Some("propertyForm")).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("Schema Definition Error"), "{msg}");
         assert!(msg.contains("whitespace"), "{msg}");

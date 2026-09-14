@@ -42,6 +42,8 @@ pub struct DfdlProps {
     pub text_number_pad_character: Option<String>,
     /// Expanded pad character for string text (`dfdl:textStringPadCharacter`).
     pub text_string_pad_character: Option<String>,
+    /// Set when pad character came from `dfdl:property` (not an XSD attribute).
+    pub text_string_pad_character_property_form: bool,
     pub binary_number_rep: Option<BinaryNumberRep>,
     pub binary_packed_sign_codes: Option<String>,
     pub binary_number_check_policy: Option<BinaryNumberCheckPolicy>,

@@ -251,6 +251,34 @@ pub fn validate_text_string_pad_character(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Compile-time length/entity checks after properties are merged (incl. `lengthUnits`).
+pub fn validate_text_string_pad_character_merged(
+    raw: &str,
+    length_units_bytes: bool,
+    property_form: bool,
+) -> Result<(), String> {
+    validate_text_string_pad_character_compile(raw)?;
+    validate_dfdl_entities_in_property(raw)?;
+    if raw.chars().any(|c| c.is_whitespace()) {
+        if property_form {
+            return Err("property textStringPadCharacter contains whitespace".into());
+        }
+        return Err(
+            "facet-valid NonEmptyStringLiteral property textStringPadCharacter".into(),
+        );
+    }
+    let expanded = expand_entities_str(raw);
+    let one_unit = if length_units_bytes {
+        expanded.as_bytes().len() == 1
+    } else {
+        expanded.chars().count() == 1
+    };
+    if !one_unit {
+        return Err("Length of string must be exactly 1 character".into());
+    }
+    Ok(())
+}
+
 /// Compile-time checks for `textStringPadCharacter` (character classes, etc.).
 pub fn validate_text_string_pad_character_compile(raw: &str) -> Result<(), String> {
     validate_disallowed_char_class_tokens("textStringPadCharacter", raw, &[])?;

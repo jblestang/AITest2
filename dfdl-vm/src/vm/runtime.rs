@@ -446,6 +446,32 @@ pub(crate) fn validate_explicit_decimal_before_encode(
     Ok(())
 }
 
+fn validate_binary_decimal_virtual_point_runtime(
+    props: &IrProps,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    let Some(vp) = props.binary_decimal_virtual_point_signed else {
+        return Ok(());
+    };
+    const MIN: i32 = -200;
+    const MAX: i32 = 200;
+    if vp < MIN {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Tunable Limit Exceeded Error: Property binaryDecimalVirtualPoint {vp} is less than limit {MIN}"
+            ),
+        });
+    }
+    if vp > MAX {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Tunable Limit Exceeded Error: Property binaryDecimalVirtualPoint {vp} is greater than limit {MAX}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_explicit_decimal_before_decode(
     kind: ValueKind,
     props: &IrProps,
@@ -453,6 +479,7 @@ pub(crate) fn validate_explicit_decimal_before_decode(
     strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
     if kind == ValueKind::Decimal {
+        validate_binary_decimal_virtual_point_runtime(props)?;
         validate_explicit_decimal_vm(props, VmDecimalPhase::Parse, tunables, None, strings)?;
     }
     Ok(())
