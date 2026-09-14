@@ -283,14 +283,14 @@ fn daffodil_section05_regression_gate() {
     );
     // Baseline (2026-03): facets/simple-types need type resolution and expected-error matching for 100%.
     assert!(
-        stats.pass >= 316,
-        "section05: expected at least 316 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 362,
+        "section05: expected at least 362 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 495,
+        stats.fail <= 449,
         "section05 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,

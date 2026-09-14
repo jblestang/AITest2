@@ -46,6 +46,7 @@ pub struct DfdlProps {
     pub binary_packed_sign_codes: Option<String>,
     pub binary_number_check_policy: Option<BinaryNumberCheckPolicy>,
     pub binary_calendar_rep: Option<BinaryNumberRep>,
+    pub binary_calendar_epoch: Option<String>,
     pub binary_float_rep: Option<BinaryFloatRep>,
     pub binary_decimal_virtual_point: Option<u32>,
     /// Negative or invalid `binaryDecimalVirtualPoint` for compile-time SDE.
@@ -262,6 +263,8 @@ pub enum BinaryNumberRep {
     Bcd,
     PackedBcd,
     Ibm4690Packed,
+    BinarySeconds,
+    BinaryMilliseconds,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

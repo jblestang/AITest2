@@ -1294,6 +1294,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.binary_calendar_rep.is_some() {
         base.binary_calendar_rep = overlay.binary_calendar_rep;
     }
+    if overlay.binary_calendar_epoch.is_some() {
+        base.binary_calendar_epoch = overlay.binary_calendar_epoch;
+    }
     if overlay.binary_float_rep.is_some() {
         base.binary_float_rep = overlay.binary_float_rep;
     }
@@ -1686,6 +1689,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "binaryPackedSignCodes"
             | "binaryNumberCheckPolicy"
             | "binaryCalendarRep"
+            | "binaryCalendarEpoch"
             | "binaryFloatRep"
             | "binaryDecimalVirtualPoint"
             | "decimalSigned"
@@ -1988,12 +1992,17 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     }
                 });
             }
+            "binaryCalendarEpoch" => {
+                props.binary_calendar_epoch = Some(value.clone());
+            }
             "binaryNumberRep" | "binaryCalendarRep" => {
                 let rep = match value.as_str() {
                     "binary" => BinaryNumberRep::Binary,
                     "bcd" => BinaryNumberRep::Bcd,
                     "packed" | "packedBCD" => BinaryNumberRep::PackedBcd,
                     "ibm4690Packed" | "ibm4690" => BinaryNumberRep::Ibm4690Packed,
+                    "binarySeconds" => BinaryNumberRep::BinarySeconds,
+                    "binaryMilliseconds" => BinaryNumberRep::BinaryMilliseconds,
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!("unknown binary number/calendar rep `{other}`"),
@@ -2003,8 +2012,15 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 };
                 if key == "binaryCalendarRep" {
                     props.binary_calendar_rep = Some(rep);
-                } else {
+                } else if !matches!(rep, BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds) {
                     props.binary_number_rep = Some(rep);
+                } else {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "unknown binary number/calendar rep `{value}`"
+                        ),
+                    }
+                    .into());
                 }
             }
             "binaryFloatRep" => {

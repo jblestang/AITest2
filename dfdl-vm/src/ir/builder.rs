@@ -51,6 +51,7 @@ impl<'a> IrBuilder<'a> {
                 .is_some_and(|s| s.is_empty())
         {
             defaults.text_standard_exponent_rep = strings.intern("E");
+            defaults.text_standard_exponent_rep_defined = true;
         }
         if schema
             .format_defaults
@@ -1265,7 +1266,39 @@ fn finalize_element_props(
             }
         })?;
     }
+    validate_binary_calendar_compile(kind, &ir)?;
     Ok(ir)
+}
+
+fn validate_binary_calendar_compile(kind: ValueKind, props: &IrProps) -> Result<()> {
+    if props.representation != Representation::Binary {
+        return Ok(());
+    }
+    if kind != ValueKind::DateTime {
+        return Ok(());
+    }
+    if props.binary_calendar_rep != crate::schema::BinaryNumberRep::BinarySeconds {
+        return Ok(());
+    }
+    if !matches!(
+        props.length_kind,
+        LengthKind::Explicit | LengthKind::Fixed
+    ) {
+        return Ok(());
+    }
+    let len = props.length.unwrap_or(0);
+    let bits = if props.length_units == LengthUnits::Bits {
+        len
+    } else {
+        len.saturating_mul(8)
+    };
+    if bits != 32 {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: binary xs:dateTime must be 32 bits when binaryCalendarRep='binarySeconds'".into(),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 fn apply_unsigned_long_flag(type_name: &TypeName, props: &mut IrProps) {
@@ -1442,6 +1475,9 @@ fn validate_implicit_text_length(kind: ValueKind, props: &IrProps) -> Result<()>
         return Ok(());
     }
     if props.representation != Representation::Text {
+        return Ok(());
+    }
+    if props.input_value_calc.is_some() || props.input_value_calc_sibling.is_some() {
         return Ok(());
     }
     if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {
@@ -1916,6 +1952,12 @@ fn overlay_dfdl_to_ir(
     if let Some(v) = props.binary_calendar_rep {
         base.binary_calendar_rep = v;
     }
+    if props.binary_calendar_epoch.is_some() {
+        base.binary_calendar_epoch = props
+            .binary_calendar_epoch
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
     if let Some(v) = props.binary_float_rep {
         base.binary_float_rep = v;
     }
@@ -2255,6 +2297,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.binary_packed_sign_codes = overlay.binary_packed_sign_codes;
     out.binary_number_check_policy = overlay.binary_number_check_policy;
     out.binary_calendar_rep = overlay.binary_calendar_rep;
+    if overlay.binary_calendar_epoch.is_some() {
+        out.binary_calendar_epoch = overlay.binary_calendar_epoch;
+    }
     out.binary_float_rep = overlay.binary_float_rep;
     out.binary_decimal_virtual_point = overlay.binary_decimal_virtual_point;
     out.decimal_signed = overlay.decimal_signed;

@@ -1,4 +1,5 @@
 pub(crate) mod alignment;
+pub(crate) mod calendar_binary;
 mod decoder;
 pub(crate) mod encoding;
 mod encoder;

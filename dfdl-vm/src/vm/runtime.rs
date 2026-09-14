@@ -663,6 +663,11 @@ fn decode_binary_scalar(
         BinaryNumberRep::Bcd => decode_bcd_number(kind, bytes, props),
         BinaryNumberRep::Ibm4690Packed => decode_ibm4690_number(kind, bytes, props),
         BinaryNumberRep::PackedBcd => decode_packed_bcd_number(kind, bytes, props, strings),
+        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => {
+            Err(crate::error::VmError::InvalidValue {
+                message: "binarySeconds/binaryMilliseconds require dateTime type".into(),
+            })
+        }
     }
 }
 
@@ -686,6 +691,11 @@ fn binary_payload_to_u64(
         BinaryNumberRep::PackedBcd => Err(crate::error::VmError::InvalidValue {
             message: "packed decimal requires sign codes".into(),
         }),
+        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => {
+            Err(crate::error::VmError::InvalidValue {
+                message: "binarySeconds/binaryMilliseconds are calendar encodings".into(),
+            })
+        }
     }
 }
 
@@ -797,6 +807,11 @@ fn decode_decimal_binary(
             validate_decimal_parse_sign(negative, props)?;
             signed_magnitude_to_dfdl(negative, &digits, crate::ir::ValueKind::Decimal, vp)
         }
+        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => {
+            Err(crate::error::VmError::InvalidValue {
+                message: "binarySeconds/binaryMilliseconds are calendar encodings".into(),
+            })
+        }
     }
 }
 
@@ -804,7 +819,9 @@ fn format_virtual_decimal(value: u64, virtual_point: u32) -> alloc::string::Stri
     if virtual_point == 0 {
         return value.to_string();
     }
-    let scale = 10u64.pow(virtual_point);
+    let Some(scale) = 10u64.checked_pow(virtual_point) else {
+        return value.to_string();
+    };
     let whole = value / scale;
     let frac = value % scale;
     alloc::format!("{whole}.{frac:0width$}", width = virtual_point as usize)
@@ -823,6 +840,7 @@ fn validate_decimal_parse_sign(
             BinaryNumberRep::Binary => "Binary",
             BinaryNumberRep::PackedBcd | BinaryNumberRep::Ibm4690Packed => "Packed binary",
             BinaryNumberRep::Bcd => "BCD",
+            BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => "Binary",
         };
         return Err(VmError::InvalidValue {
             message: alloc::format!(
@@ -848,6 +866,7 @@ fn validate_decimal_unparse_sign(
             BinaryNumberRep::Binary => "Binary",
             BinaryNumberRep::PackedBcd | BinaryNumberRep::Ibm4690Packed => "Packed binary",
             BinaryNumberRep::Bcd => "BCD",
+            BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => "Binary",
         };
         return Err(VmError::InvalidValue {
             message: alloc::format!(
@@ -936,6 +955,29 @@ fn decode_binary_datetime(
 
     let le = props.byte_order == ByteOrder::LittleEndian;
     let rep = props.binary_calendar_rep;
+    if matches!(
+        rep,
+        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds
+    ) {
+        let delta = match rep {
+            BinaryNumberRep::BinarySeconds => {
+                crate::vm::calendar_binary::decode_binary_seconds_value(bytes, le)?
+            }
+            BinaryNumberRep::BinaryMilliseconds => {
+                crate::vm::calendar_binary::decode_binary_milliseconds_value(bytes, le)?
+            }
+            _ => unreachable!(),
+        };
+        let epoch_raw = props
+            .binary_calendar_epoch
+            .and_then(|id| strings.get(id).ok())
+            .unwrap_or("1970-01-01T00:00:00");
+        let base =
+            crate::vm::calendar_binary::parse_calendar_epoch_unix(epoch_raw)?;
+        return Ok(DfdlValue::DateTime(
+            crate::vm::calendar_binary::format_unix_datetime_utc(base + delta),
+        ));
+    }
     let digits = match rep {
         BinaryNumberRep::Bcd => bcd_digit_string(bytes, le),
         BinaryNumberRep::Ibm4690Packed => ibm4690_to_digit_string(bytes, le)
@@ -951,6 +993,7 @@ fn decode_binary_datetime(
                 message: "binary dateTime requires BCD representation".into(),
             });
         }
+        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => unreachable!(),
     };
     let pat_id = props.calendar_pattern.ok_or(VmError::InvalidValue {
         message: "dateTime missing calendarPattern".into(),
@@ -1949,6 +1992,11 @@ fn encode_binary_datetime(
         BinaryNumberRep::Binary => Err(VmError::InvalidValue {
             message: "binary dateTime requires BCD representation".into(),
         }),
+        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => {
+            Err(VmError::InvalidValue {
+                message: "use decode path for binarySeconds/binaryMilliseconds".into(),
+            })
+        }
     }
 }
 
@@ -5840,6 +5888,11 @@ fn encode_signed_magnitude_binary(
         BinaryNumberRep::Ibm4690Packed => {
             encode_ibm4690_magnitude(magnitude, negative, width, le)
         }
+        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => {
+            Err(crate::error::VmError::InvalidValue {
+                message: "binarySeconds/binaryMilliseconds are calendar encodings".into(),
+            })
+        }
     }
 }
 
@@ -5870,6 +5923,7 @@ fn auto_width_for_rep(value: u64, rep: BinaryNumberRep) -> usize {
             }
             count.div_ceil(2)
         }
+        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => 4,
     }
 }
 
@@ -5887,6 +5941,11 @@ fn encode_binary_number_u64(
         BinaryNumberRep::PackedBcd => {
             let codes = PackedSignCodes::parse("C D F C", BinaryNumberCheckPolicy::Lax)?;
             encode_packed_bcd_magnitude(value, false, width, le, &codes)
+        }
+        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => {
+            Err(crate::error::VmError::InvalidValue {
+                message: "binarySeconds/binaryMilliseconds are calendar encodings".into(),
+            })
         }
     }
 }
