@@ -1248,14 +1248,35 @@ fn decode_binary_calendar(
                 bcd_to_digit_string(bytes, le)?
             }
         }
-        BinaryNumberRep::Ibm4690Packed => ibm4690_to_digit_string(bytes, le)
-            .map(|(_n, d)| d)
-            .unwrap_or_default(),
+        BinaryNumberRep::Ibm4690Packed => {
+            let (negative, d) = ibm4690_to_digit_string(bytes, le)?;
+            if negative {
+                return Err(crate::vm::calendar_binary::strict_calendar_lexical_error_from_negative_magnitude(
+                    kind,
+                    props.calendar_date_only,
+                    &d,
+                ));
+            }
+            d
+        }
         BinaryNumberRep::PackedBcd => {
             let codes = packed_sign_codes(props, strings).unwrap_or_else(|_| {
                 PackedSignCodes::parse("C D F C", BinaryNumberCheckPolicy::Lax).unwrap()
             });
-            packed_calendar_magnitude_string(bytes, le, &codes)?
+            let (negative, digits) = packed_to_digit_string(bytes, le, &codes)?;
+            if negative {
+                return Err(crate::vm::calendar_binary::strict_calendar_lexical_error_from_negative_magnitude(
+                    kind,
+                    props.calendar_date_only,
+                    &digits,
+                ));
+            }
+            let trimmed = digits.trim_start_matches('0');
+            if trimmed.is_empty() {
+                "0".into()
+            } else {
+                trimmed.into()
+            }
         }
         BinaryNumberRep::Binary => {
             return Err(VmError::InvalidValue {
@@ -1288,6 +1309,15 @@ fn decode_binary_calendar(
         default_utc,
         false,
     )?;
+    if props.binary_number_check_policy == BinaryNumberCheckPolicy::Strict
+        && !props.calendar_check_policy_lax
+    {
+        crate::vm::calendar_binary::strict_binary_calendar_component_ranges(
+            kind,
+            props.calendar_date_only,
+            &text,
+        )?;
+    }
     calendar_value_from_text(kind, text)
 }
 
@@ -1473,7 +1503,20 @@ fn format_calendar_pattern(
         }
         return Ok(alloc::format!("{year_s}-{month_n:02}-{day_n:02}"));
     }
-    if let (Some(hour), Some(minute), Some(second)) = (hour, minute, second) {
+    if crate::vm::calendar_binary::calendar_pattern_time_only(pattern) {
+        let hour_s = hour
+            .as_deref()
+            .unwrap_or("00")
+            .to_string();
+        let minute_s = minute.as_deref().unwrap_or("00").to_string();
+        let second_s = second.as_deref().unwrap_or("00").to_string();
+        let mut out = alloc::format!("{hour_s}:{minute_s}:{second_s}");
+        if let Some(f) = frac {
+            out.push_str(&f);
+        }
+        return Ok(out);
+    }
+    if let (Some(hour), Some(minute), Some(second)) = (&hour, &minute, &second) {
         let mut out = alloc::format!("{hour}:{minute}:{second}");
         if let Some(f) = frac {
             out.push_str(&f);
@@ -2290,12 +2333,8 @@ fn format_calendar_text(
     let has_time = fields.hour.is_some() || fields.minute.is_some() || fields.second.is_some();
     finalize_calendar_hour_fields(&mut fields, pattern)?;
     if has_time && !has_date {
-        let hour = fields.hour.ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("calendar `{pattern}` missing hour"),
-        })?;
-        let minute = fields.minute.ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("calendar `{pattern}` missing minute"),
-        })?;
+        let hour = fields.hour.unwrap_or(0);
+        let minute = fields.minute.unwrap_or(0);
         let second = fields.second.unwrap_or(0);
         let (hour, minute, second) = if lax {
             crate::vm::calendar_binary::normalize_lenient_hms(hour, minute, second)

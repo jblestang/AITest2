@@ -941,6 +941,84 @@ fn validate_strict_hms(h: u32, m: u32, s: u32, text: &str) -> Result<(), VmError
     Ok(())
 }
 
+fn strict_datetime_parse_error(text: &str) -> VmError {
+    VmError::InvalidValue {
+        message: alloc::format!("Parse Error: Unable to parse xs:dateTime from text: {text}"),
+    }
+}
+
+fn strict_date_parse_error(text: &str) -> VmError {
+    VmError::InvalidValue {
+        message: alloc::format!("Parse Error: Unable to parse xs:date from text: {text}"),
+    }
+}
+
+/// Daffodil formats negative packed magnitudes as `BigInteger.toString()` before calendar parse.
+pub fn strict_calendar_lexical_error_from_negative_magnitude(
+    kind: crate::ir::ValueKind,
+    date_only: bool,
+    digits: &str,
+) -> VmError {
+    use crate::ir::ValueKind;
+    let trimmed = digits.trim_start_matches('0');
+    let trimmed = if trimmed.is_empty() { "0" } else { trimmed };
+    let text = alloc::format!("-{trimmed}");
+    if date_only {
+        strict_date_parse_error(&text)
+    } else if kind == ValueKind::Time {
+        VmError::InvalidValue {
+            message: alloc::format!("Parse Error: Unable to parse xs:time from text: {text}"),
+        }
+    } else {
+        strict_datetime_parse_error(&text)
+    }
+}
+
+/// True when `calendarPattern` has time field letters and no date field letters.
+pub fn calendar_pattern_time_only(pattern: &str) -> bool {
+    let letters = calendar_pattern_letters_only(pattern);
+    let has_date = letters.chars().any(|c| {
+        matches!(c, 'y' | 'Y' | 'M' | 'd' | 'D' | 'E' | 'e' | 'F' | 'w' | 'W' | 'G')
+    });
+    let has_time = letters.chars().any(|c| {
+        matches!(c, 'H' | 'h' | 'k' | 'K' | 'm' | 's' | 'S')
+    });
+    !has_date && has_time
+}
+
+/// Reject obviously invalid calendar components under strict binary check (without full lexical parse).
+pub fn strict_binary_calendar_component_ranges(
+    kind: crate::ir::ValueKind,
+    date_only: bool,
+    text: &str,
+) -> Result<(), VmError> {
+    use crate::ir::ValueKind;
+    let text = text.trim();
+    if date_only {
+        let (core, _) = split_date_timezone(text);
+        let (y, m, d) = parse_ymd_core(core).map_err(|_| strict_date_parse_error(text))?;
+        validate_strict_ymd(y, m, d, text)?;
+        return Ok(());
+    }
+    if kind == ValueKind::Time {
+        let (core, _) = split_implicit_time_core_tz(text)?;
+        let (h, m, s) = parse_hms_core(&core).map_err(|_| strict_time_range_error("HOUR_OF_DAY", 0, 0, 23, text))?;
+        if h > 23 || m > 59 || s > 59 {
+            return Err(strict_time_range_error("HOUR_OF_DAY", h, 0, 23, text));
+        }
+        return Ok(());
+    }
+    let Some((date, rest)) = text.split_once('T') else {
+        return Err(strict_datetime_parse_error(text));
+    };
+    let (y, m, d) = parse_ymd_core(date).map_err(|_| strict_datetime_parse_error(text))?;
+    validate_strict_ymd(y, m, d, text)?;
+    let (core, _) = split_implicit_time_core_tz(rest)?;
+    let (h, mi, s) = parse_hms_core(&core).map_err(|_| strict_datetime_parse_error(text))?;
+    validate_strict_hms(h, mi, s, text)?;
+    Ok(())
+}
+
 /// Normalize or validate implicit-pattern calendar text (`calendarPatternKind=implicit`).
 pub fn process_implicit_calendar_text(
     kind: crate::ir::ValueKind,
