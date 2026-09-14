@@ -120,9 +120,11 @@ impl<'a> IrBuilder<'a> {
             if let TypeDef::Simple { base, props, .. } = type_def {
                 let defaults = self.defaults.clone();
                 let kind = value_kind_from_simple(&self.schema, base);
+                let merged = self.merge_props_full(&defaults, props, &root_element.props)?;
+                validate_length_facets_for_type(&self.schema, base, kind, &merged)?;
                 let mut ir_props = finalize_element_props(
                     kind,
-                    self.merge_props_full(&defaults, props, &root_element.props)?,
+                    merged,
                     &mut self.strings,
                     self.tunables,
                 )?;
@@ -136,7 +138,6 @@ impl<'a> IrBuilder<'a> {
                     &mut self.strings,
                     &root_element.props,
                 );
-                validate_length_facets_for_type(&self.schema, base, kind, &ir_props)?;
                 validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern(root_name);
                 self.push(IrNode::Element {
@@ -345,6 +346,16 @@ impl<'a> IrBuilder<'a> {
                                     }
                                 }
                             }
+                            if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
+                                if let TypeDef::Simple { base, .. } = type_def {
+                                    validate_length_facets_for_type(
+                                        &self.schema,
+                                        base,
+                                        kind,
+                                        &merged_ir,
+                                    )?;
+                                }
+                            }
                             let mut merged = finalize_element_props(
                                 kind,
                                 merged_ir,
@@ -360,12 +371,6 @@ impl<'a> IrBuilder<'a> {
                                         &mut self.strings,
                                         &element.props,
                                     );
-                                    validate_length_facets_for_type(
-                                        &self.schema,
-                                        base,
-                                        kind,
-                                        &merged,
-                                    )?;
                                     if let Some(signed) = type_props.decimal_signed {
                                         merged.decimal_signed = signed;
                                     }
