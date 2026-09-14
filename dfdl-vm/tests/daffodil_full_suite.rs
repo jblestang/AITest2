@@ -284,7 +284,7 @@ fn daffodil_section05_regression_gate() {
     // Baseline (2026-03): Encodings.tdml bits charsets + TDML LSBFirst document assembly + inputValueCalc concat.
     assert!(
         stats.pass >= 456,
-        "section05: expected at least 458 passing cases, got pass={} fail={} skip={}",
+        "section05: expected at least 460 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip

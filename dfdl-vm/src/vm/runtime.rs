@@ -612,7 +612,7 @@ pub(crate) fn read_binary_scalar(
             return decode_binary_scalar(kind, &bytes, props, strings, None);
         }
         let raw = cursor.read_stream_bits(len, props.bit_order)?;
-        let raw = normalize_bit_field_raw(raw, len, props.byte_order);
+        let raw = normalize_bit_field_raw(raw, len, props.byte_order, props.bit_order);
         return decode_binary_from_raw_bits(kind, raw, len, props, strings);
     }
 
@@ -673,7 +673,7 @@ pub(crate) fn read_binary_scalar(
                 return decode_binary_scalar(kind, &bytes, props, strings, None);
             }
             let raw = cursor.read_stream_bits(bit_len, props.bit_order)?;
-            let raw = normalize_bit_field_raw(raw, bit_len, props.byte_order);
+            let raw = normalize_bit_field_raw(raw, bit_len, props.byte_order, props.bit_order);
             return decode_binary_from_raw_bits(kind, raw, bit_len, props, strings);
         }
     }
@@ -2687,12 +2687,23 @@ fn bit_mask(width: usize) -> u64 {
     }
 }
 
-fn normalize_bit_field_raw(raw: u64, bit_width: usize, byte_order: ByteOrder) -> u64 {
+fn normalize_bit_field_raw(
+    raw: u64,
+    bit_width: usize,
+    byte_order: ByteOrder,
+    bit_order: BitOrder,
+) -> u64 {
     if bit_width == 0 {
         return 0;
     }
     // Sub-byte bit fields are already in stream bit order; byteOrder applies to multi-byte values.
     if bit_width < 8 {
+        return raw & bit_mask(bit_width);
+    }
+    // `read_stream_bits` with LSBF already places stream bit i at u64 bit i (LE numeric layout).
+    if byte_order == ByteOrder::LittleEndian
+        && bit_order == BitOrder::LeastSignificantBitFirst
+    {
         return raw & bit_mask(bit_width);
     }
     if byte_order == ByteOrder::LittleEndian {
@@ -4713,6 +4724,105 @@ pub(crate) fn would_read_empty_delimited_field(
     Ok(false)
 }
 
+fn delimiter_pat_as_text(pat: &str) -> alloc::string::String {
+    crate::schema::encode_delimiter(pat)
+        .into_iter()
+        .map(|b| b as char)
+        .collect()
+}
+
+fn read_bits_charset_code_unit(
+    cursor: &mut Cursor<'_>,
+    spec: crate::vm::encoding::BitsCharsetSpec,
+) -> Result<char, crate::error::VmError> {
+    use crate::error::VmError;
+    let mut idx = 0u8;
+    for i in 0..spec.width {
+        let bit = cursor.read_stream_bit(spec.bit_order)? as u8;
+        match spec.bit_order {
+            BitOrder::MostSignificantBitFirst => idx = (idx << 1) | bit,
+            BitOrder::LeastSignificantBitFirst => idx |= bit << i,
+        }
+    }
+    spec.alphabet
+        .chars()
+        .nth(idx as usize)
+        .ok_or_else(|| VmError::InvalidValue {
+            message: "invalid bits charset code unit".into(),
+        })
+}
+
+fn terminator_suffix_matches(decoded: &str, term: &str, ignore_case: bool) -> bool {
+    if ignore_case {
+        decoded
+            .to_ascii_lowercase()
+            .ends_with(&term.to_ascii_lowercase())
+    } else {
+        decoded.ends_with(term)
+    }
+}
+
+fn read_until_delimiters_bits_charset(
+    cursor: &mut Cursor<'_>,
+    patterns: &[DelimScanPattern],
+    require_delimiter: bool,
+    spec: crate::vm::encoding::BitsCharsetSpec,
+) -> Result<Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
+    let terms: alloc::vec::Vec<(alloc::string::String, bool)> = patterns
+        .iter()
+        .map(|p| (delimiter_pat_as_text(&p.pat), p.ignore_case))
+        .filter(|(t, _)| !t.is_empty())
+        .collect();
+    if require_delimiter && terms.is_empty() {
+        return Err(VmError::InvalidValue {
+            message: "delimited field missing enclosing delimiter".into(),
+        });
+    }
+
+    let start_pos = cursor.pos;
+    let start_bit_count = cursor.bit_count;
+    let mut decoded = alloc::string::String::new();
+    let mut matched_term_chars = 0usize;
+
+    loop {
+        if cursor.is_frame_consumed() {
+            break;
+        }
+        let unit = read_bits_charset_code_unit(cursor, spec)?;
+        decoded.push(unit);
+        for (term, ignore_case) in &terms {
+            if terminator_suffix_matches(&decoded, term, *ignore_case) {
+                matched_term_chars = term.chars().count();
+                break;
+            }
+        }
+        if matched_term_chars > 0 {
+            break;
+        }
+    }
+
+    if matched_term_chars == 0 {
+        if require_delimiter {
+            let labels = patterns
+                .iter()
+                .map(|p| alloc::format!("`{}`", format_delimiter_for_error(&p.pat)))
+                .collect::<alloc::vec::Vec<_>>()
+                .join(", ");
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("terminator {labels} not found"),
+            });
+        }
+    }
+
+    let payload_chars = decoded.chars().count().saturating_sub(matched_term_chars);
+    let payload_bits = payload_chars * spec.width as usize;
+
+    cursor.pos = start_pos;
+    cursor.bit_count = start_bit_count;
+    cursor.read_stream_bits_as_bytes(payload_bits, spec.bit_order)
+}
+
 fn read_until_delimiters(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
@@ -4723,6 +4833,18 @@ fn read_until_delimiters(
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences)?;
+    if let Some(enc) = encoding {
+        if let Some(spec) = bits_charset_spec(enc) {
+            if !patterns.is_empty() {
+                return read_until_delimiters_bits_charset(
+                    cursor,
+                    &patterns,
+                    require_delimiter,
+                    spec,
+                );
+            }
+        }
+    }
     if patterns.is_empty() {
         if require_delimiter {
             return Err(VmError::InvalidValue {
@@ -4938,6 +5060,41 @@ fn read_until_any_delimiter(
     Ok(cursor.data[start..].to_vec())
 }
 
+fn consume_bits_charset_delimiter(
+    cursor: &mut Cursor<'_>,
+    patterns: &[DelimScanPattern],
+    spec: crate::vm::encoding::BitsCharsetSpec,
+) -> Result<bool, crate::error::VmError> {
+    for entry in patterns {
+        let term = delimiter_pat_as_text(&entry.pat);
+        if term.is_empty() {
+            continue;
+        }
+        let save_pos = cursor.pos;
+        let save_bit = cursor.bit_count;
+        let mut decoded = alloc::string::String::new();
+        for _ in 0..term.chars().count() {
+            if cursor.is_frame_consumed() {
+                cursor.pos = save_pos;
+                cursor.bit_count = save_bit;
+                break;
+            }
+            decoded.push(read_bits_charset_code_unit(cursor, spec)?);
+        }
+        let ok = if entry.ignore_case {
+            decoded.to_ascii_lowercase() == term.to_ascii_lowercase()
+        } else {
+            decoded == term
+        };
+        if ok {
+            return Ok(true);
+        }
+        cursor.pos = save_pos;
+        cursor.bit_count = save_bit;
+    }
+    Ok(false)
+}
+
 pub(crate) fn consume_enclosing_delimiter(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
@@ -4949,6 +5106,32 @@ pub(crate) fn consume_enclosing_delimiter(
         return Ok(());
     }
     let field_patterns = non_empty_delimiter_scan_patterns(props, strings)?;
+    if let Ok(enc) = encoding_name(props, strings) {
+        if let Some(spec) = bits_charset_spec(&enc) {
+            if consume_bits_charset_delimiter(cursor, &field_patterns, spec)? {
+                return Ok(());
+            }
+            if !should_defer_parent_stop_delimiter(props) {
+                for seq in stop_sequences {
+                    let mut parent_patterns = alloc::vec::Vec::new();
+                    for id in delimiter_pattern_ids(seq) {
+                        let pat = strings.get(id)?;
+                        push_delimiter_scan_patterns(&mut parent_patterns, pat, seq.ignore_case);
+                    }
+                    if consume_bits_charset_delimiter(cursor, &parent_patterns, spec)? {
+                        return Ok(());
+                    }
+                }
+                if field_patterns.is_empty() && stop_sequences.is_empty() {
+                    return Ok(());
+                }
+                return Err(VmError::InvalidValue {
+                    message: "delimiter mismatch".into(),
+                });
+            }
+            return Ok(());
+        }
+    }
     for entry in &field_patterns {
         if let Some(n) = crate::schema::match_delimiter_opts(
             &cursor.data[cursor.pos..],
