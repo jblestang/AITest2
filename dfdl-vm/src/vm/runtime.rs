@@ -645,7 +645,13 @@ fn decode_binary_scalar(
 
     match props.binary_number_rep {
         BinaryNumberRep::Binary => {
-            decode_binary_bytes(kind, bytes, props.byte_order == ByteOrder::LittleEndian, bit_width)
+            decode_binary_bytes(
+                kind,
+                bytes,
+                props,
+                props.byte_order == ByteOrder::LittleEndian,
+                bit_width,
+            )
         }
         BinaryNumberRep::Bcd => decode_bcd_number(kind, bytes, props),
         BinaryNumberRep::Ibm4690Packed => decode_ibm4690_number(kind, bytes, props),
@@ -2004,7 +2010,16 @@ fn decode_binary_from_raw_bits(
             Ok(DfdlValue::Int(v))
         }
         UnsignedInt => Ok(DfdlValue::UnsignedInt((raw & bit_mask(bit_width)) as u32)),
-        Integer => Ok(DfdlValue::Integer(raw.to_string())),
+        Integer => {
+            let v: i64 = if props.non_negative_integer {
+                (raw & bit_mask(bit_width)) as i64
+            } else if bit_width == 1 {
+                raw as i64
+            } else {
+                sign_extend_u64(raw, bit_width)
+            };
+            Ok(DfdlValue::Integer(v.to_string()))
+        }
         Long => {
             let v = if props.unsigned_integer {
                 raw & bit_mask(bit_width)
@@ -2087,6 +2102,7 @@ fn normalize_bit_field_raw(raw: u64, bit_width: usize, byte_order: ByteOrder) ->
 fn decode_binary_bytes(
     kind: crate::ir::ValueKind,
     bytes: &[u8],
+    props: &IrProps,
     le: bool,
     bit_width: Option<usize>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
@@ -2151,9 +2167,22 @@ fn decode_binary_bytes(
                     (decode_unsigned_binary_bytes(bytes, le) as i64).to_string(),
                 ))
             } else if let Some(bits) = bit_width {
-                Ok(DfdlValue::Integer(
-                    sign_extend_u64(decode_unsigned_binary_bytes(bytes, le), bits).to_string(),
-                ))
+                let raw = decode_unsigned_binary_bytes(bytes, le);
+                let v: i64 = if props.non_negative_integer {
+                    (raw & bit_mask(bits)) as i64
+                } else {
+                    sign_extend_u64(raw, bits)
+                };
+                Ok(DfdlValue::Integer(v.to_string()))
+            } else if bytes.len() < core::mem::size_of::<i64>() {
+                let bits = bytes.len().saturating_mul(8);
+                let raw = decode_unsigned_binary_bytes(bytes, le);
+                let v: i64 = if props.non_negative_integer {
+                    (raw & bit_mask(bits)) as i64
+                } else {
+                    sign_extend_u64(raw, bits)
+                };
+                Ok(DfdlValue::Integer(v.to_string()))
             } else {
                 Ok(DfdlValue::Integer(int!(i64).to_string()))
             }

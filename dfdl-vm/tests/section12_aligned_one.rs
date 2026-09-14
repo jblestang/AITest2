@@ -49,3 +49,13 @@ fn explicit_alignment_no_skips01() {
 fn imp_alignment_hex_binary() {
     run("impAlignmentHexBinary");
 }
+
+#[test]
+fn imp_alignment_integer3() {
+    run("impAlignmentInteger3");
+}
+
+#[test]
+fn imp_alignment_integer2() {
+    run("impAlignmentInteger2");
+}
