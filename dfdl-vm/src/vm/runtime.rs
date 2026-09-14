@@ -1359,7 +1359,7 @@ fn format_calendar_pattern(
     let letters = crate::vm::calendar_binary::calendar_pattern_letters_only(pattern);
     let has_y = letters.contains('y') || letters.contains('Y');
     let has_m = letters.contains('M');
-    let has_d = letters.contains('d');
+    let has_d = letters.contains('d') || letters.contains('e');
     let has_doy = letters.contains('D');
     let year = fields
         .get(&'y')
@@ -1367,7 +1367,10 @@ fn format_calendar_pattern(
         .map(|y| expand_calendar_year(y, century_start))
         .transpose()?;
     let month = fields.get(&'M').cloned();
-    let day = fields.get(&'d').cloned();
+    let day = fields
+        .get(&'d')
+        .or_else(|| fields.get(&'e'))
+        .cloned();
     let day_of_year = fields.get(&'D').cloned();
     let hour = field_chars(&fields, &['H', 'h', 'k', 'K']);
     let minute = fields.get(&'m').cloned();
@@ -1412,14 +1415,21 @@ fn format_calendar_pattern(
             };
             (month_s, day_s)
         };
+        let month_n: u32 = month_s.parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` invalid month `{month_s}`"),
+        })?;
+        let day_n: u32 = day_s.parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` invalid day `{day_s}`"),
+        })?;
         if let (Some(hour), Some(minute), Some(second)) = (&hour, &minute, &second) {
-            let mut out = alloc::format!("{year_s}-{month_s}-{day_s}T{hour}:{minute}:{second}");
+            let mut out =
+                alloc::format!("{year_s}-{month_n:02}-{day_n:02}T{hour}:{minute}:{second}");
             if let Some(f) = frac {
                 out.push_str(&f);
             }
             return Ok(out);
         }
-        return Ok(alloc::format!("{year_s}-{month_s}-{day_s}"));
+        return Ok(alloc::format!("{year_s}-{month_n:02}-{day_n:02}"));
     }
     if let (Some(hour), Some(minute), Some(second)) = (hour, minute, second) {
         let mut out = alloc::format!("{hour}:{minute}:{second}");
@@ -3997,12 +4007,14 @@ pub(crate) fn read_text_scalar(
             if props.calendar_pattern.is_none()
                 && props.calendar_pattern_kind == crate::schema::CalendarPatternKind::Implicit
             {
-                validate_implicit_calendar_lexical(
+                let processed = crate::vm::calendar_binary::process_implicit_calendar_text(
                     kind,
                     props.calendar_date_only,
+                    props.calendar_check_policy_lax,
                     trimmed,
                     tunables,
                 )?;
+                return Ok(DfdlValue::DateTime(processed));
             }
             if let Some(pat_id) = props.calendar_pattern {
                 let pattern = strings.get(pat_id)?;

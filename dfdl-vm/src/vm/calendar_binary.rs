@@ -526,15 +526,251 @@ pub(crate) fn normalize_lenient_ymd(y: i32, m: u32, d: u32) -> (i32, u32, u32) {
 }
 
 pub(crate) fn normalize_lenient_hms(h: u32, m: u32, s: u32) -> (u32, u32, u32) {
-    let mut secs = h as i64 * 3600 + i64::from(m) * 60 + i64::from(s);
-    if secs < 0 {
-        secs = 0;
-    }
-    let h = (secs / 3600) as u32;
-    let rem = secs % 3600;
-    let m = (rem / 60) as u32;
-    let s = (rem % 60) as u32;
+    let (h, m, s, _) = normalize_lenient_hms_with_day_carry(h, m, s, true);
     (h, m, s)
+}
+
+/// Lenient HMS with field carry. When `wrap_hours_mod_24`, excess hours wrap (xs:time).
+/// Otherwise hour overflow is returned as `day_carry` (xs:dateTime).
+pub(crate) fn normalize_lenient_hms_with_day_carry(
+    h: u32,
+    m: u32,
+    s: u32,
+    wrap_hours_mod_24: bool,
+) -> (u32, u32, u32, i32) {
+    let mut hh = i64::from(h);
+    let mut mm = i64::from(m);
+    let mut ss = i64::from(s);
+    mm += ss / 60;
+    ss %= 60;
+    if ss < 0 {
+        ss += 60;
+        mm -= 1;
+    }
+    hh += mm / 60;
+    mm %= 60;
+    if mm < 0 {
+        mm += 60;
+        hh -= 1;
+    }
+    let day_carry = if wrap_hours_mod_24 {
+        hh = hh.rem_euclid(24);
+        0
+    } else {
+        let carry = (hh / 24) as i32;
+        hh %= 24;
+        if hh < 0 {
+            hh += 24;
+        }
+        carry
+    };
+    (hh as u32, mm as u32, ss as u32, day_carry)
+}
+
+fn normalize_implicit_tz_suffix(raw: &str) -> alloc::string::String {
+    let raw = raw.trim();
+    if raw.eq_ignore_ascii_case("Z") {
+        return "Z".into();
+    }
+    if raw.eq_ignore_ascii_case("GMT") {
+        return "+00:00".into();
+    }
+    if raw.starts_with("GMT") {
+        let tail = raw[3..].trim();
+        if tail.is_empty() {
+            return "+00:00".into();
+        }
+        if let Some(s) = calendar_timezone_xsd_suffix(tail) {
+            return s;
+        }
+    }
+    if (raw.starts_with('+') || raw.starts_with('-'))
+        && raw.len() == 5
+        && raw[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        return alloc::format!("{}:{}", &raw[..3], &raw[3..5]);
+    }
+    if raw == "-00:00" {
+        return "+00:00".into();
+    }
+    raw.into()
+}
+
+fn split_implicit_time_core_tz(text: &str) -> Result<(alloc::string::String, Option<alloc::string::String>), VmError> {
+    if text.len() < 8
+        || text.as_bytes().get(2) != Some(&b':')
+        || text.as_bytes().get(5) != Some(&b':')
+    {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("Parse Error: Unable to parse xs:time from text: {text}"),
+        });
+    }
+    let core = &text[..8];
+    if !core.chars().all(|c| c.is_ascii_digit() || c == ':') {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("Parse Error: Unable to parse xs:time from text: {text}"),
+        });
+    }
+    let rest = text[8..].trim();
+    if rest.is_empty() {
+        return Ok((core.into(), None));
+    }
+    Ok((core.into(), Some(normalize_implicit_tz_suffix(rest))))
+}
+
+fn parse_hms_core(core: &str) -> Result<(u32, u32, u32), VmError> {
+    let mut parts = core.split(':');
+    let h: u32 = parts
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("Parse Error: Unable to parse time from text: {core}"),
+        })?;
+    let m: u32 = parts
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("Parse Error: Unable to parse time from text: {core}"),
+        })?;
+    let s: u32 = parts
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    Ok((h, m, s))
+}
+
+fn parse_ymd_core(text: &str) -> Result<(i32, u32, u32), VmError> {
+    let mut parts = text.split('-');
+    let y: i32 = parts
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("Parse Error: Unable to parse xs:date from text: {text}"),
+        })?;
+    let m: u32 = parts
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("Parse Error: Unable to parse xs:date from text: {text}"),
+        })?;
+    let d: u32 = parts
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("Parse Error: Unable to parse xs:date from text: {text}"),
+        })?;
+    if parts.next().is_some() {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("Parse Error: Unable to parse xs:date from text: {text}"),
+        });
+    }
+    Ok((y, m, d))
+}
+
+fn strict_date_range_error(field: &str, value: u32, lo: u32, hi: u32, text: &str) -> VmError {
+    VmError::InvalidValue {
+        message: alloc::format!(
+            "Parse Error: Unable to parse xs:date from text: {text} ({field}={value}, valid range={lo}..{hi})"
+        ),
+    }
+}
+
+fn strict_time_range_error(field: &str, value: u32, lo: u32, hi: u32, text: &str) -> VmError {
+    VmError::InvalidValue {
+        message: alloc::format!(
+            "Parse Error: Unable to parse xs:time from text: {text} ({field}={value}, valid range={lo}..{hi})"
+        ),
+    }
+}
+
+fn validate_strict_ymd(y: i32, m: u32, d: u32, text: &str) -> Result<(), VmError> {
+    if !(1..=12).contains(&m) {
+        return Err(strict_date_range_error("MONTH", m, 1, 12, text));
+    }
+    let dim = days_in_month(y, m);
+    if d == 0 || d > dim {
+        return Err(strict_date_range_error("DAY_OF_MONTH", d, 1, dim, text));
+    }
+    Ok(())
+}
+
+fn validate_strict_hms(h: u32, m: u32, s: u32, text: &str) -> Result<(), VmError> {
+    if h > 23 {
+        return Err(strict_time_range_error("HOUR_OF_DAY", h, 0, 23, text));
+    }
+    if m > 59 {
+        return Err(strict_time_range_error("MINUTE", m, 0, 59, text));
+    }
+    if s > 59 {
+        return Err(strict_time_range_error("SECOND", s, 0, 59, text));
+    }
+    Ok(())
+}
+
+/// Normalize or validate implicit-pattern calendar text (`calendarPatternKind=implicit`).
+pub fn process_implicit_calendar_text(
+    kind: crate::ir::ValueKind,
+    date_only: bool,
+    lax: bool,
+    text: &str,
+    tunables: &DaffodilTunables,
+) -> Result<alloc::string::String, VmError> {
+    use crate::ir::ValueKind;
+    let text = text.trim();
+    if date_only {
+        let (y, m, d) = parse_ymd_core(text)?;
+        validate_calendar_year_tunables(&alloc::format!("{y:04}"), tunables)?;
+        if lax {
+            let (y, m, d) = normalize_lenient_ymd(y, m, d);
+            return Ok(alloc::format!("{y:04}-{m:02}-{d:02}"));
+        }
+        validate_strict_ymd(y, m, d, text)?;
+        return Ok(alloc::format!("{y:04}-{m:02}-{d:02}"));
+    }
+    if kind == ValueKind::Time {
+        let (core, tz) = split_implicit_time_core_tz(text)?;
+        let (h, m, s) = parse_hms_core(&core)?;
+        if lax {
+            let (h, m, s, _) = normalize_lenient_hms_with_day_carry(h, m, s, true);
+            let mut out = alloc::format!("{h:02}:{m:02}:{s:02}");
+            if let Some(tz) = tz {
+                out.push_str(&tz);
+            }
+            return Ok(out);
+        }
+        validate_strict_hms(h, m, s, text)?;
+        let mut out = alloc::format!("{h:02}:{m:02}:{s:02}");
+        if let Some(tz) = tz {
+            out.push_str(&tz);
+        }
+        return Ok(out);
+    }
+    let Some(sep) = text.find('T').or_else(|| text.find(' ')) else {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("Parse Error: Unable to parse xs:dateTime from text: {text}"),
+        });
+    };
+    let (y, mo, d) = parse_ymd_core(&text[..sep])?;
+    validate_calendar_year_tunables(&alloc::format!("{y:04}"), tunables)?;
+    let time_part = &text[sep + 1..];
+    let (core, tz) = split_implicit_time_core_tz(time_part)?;
+    let (h, m, s) = parse_hms_core(&core)?;
+    if lax {
+        let (h, m, s, day_carry) = normalize_lenient_hms_with_day_carry(h, m, s, false);
+        let (y, mo, d) = normalize_lenient_ymd(y, mo, d.saturating_add(day_carry as u32));
+        let mut out = alloc::format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}");
+        if let Some(tz) = tz {
+            out.push_str(&tz);
+        }
+        return Ok(out);
+    }
+    validate_strict_ymd(y, mo, d, text)?;
+    validate_strict_hms(h, m, s, text)?;
+    let mut out = alloc::format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}");
+    if let Some(tz) = tz {
+        out.push_str(&tz);
+    }
+    Ok(out)
 }
 
 fn validate_ymd(y: i32, m: u32, d: u32) -> Result<(), VmError> {
