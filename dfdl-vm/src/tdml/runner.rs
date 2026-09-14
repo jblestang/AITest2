@@ -1,6 +1,6 @@
 use super::infoset::{compare_infoset_with_context, infoset_xml_to_root_value, resolve_expected_infoset_xml};
 use super::resources::load_tdml_resource;
-use super::validation::collect_post_decode_validation_errors;
+use super::validation::collect_post_decode_validation_errors_with_document;
 use super::parser::{
     effective_round_trip, effective_validation, parse_tdml, DocumentKind, ParserTestCase,
     RoundTrip, TdmlDocument, TdmlSuite, TdmlValidationMode, UnparserTestCase,
@@ -277,13 +277,18 @@ pub fn run_parser_test_with_options(
         }
     };
 
+    let validation_document_text = core::str::from_utf8(&document_data)
+        .ok()
+        .map(str::to_string);
+
     if let Some(expected_validation) = &test.expected_validation_errors {
         let full_xerces = validation_mode == TdmlValidationMode::On;
-        let collected = collect_post_decode_validation_errors(
+        let collected = collect_post_decode_validation_errors_with_document(
             spec.schema(),
             spec.program(),
             &decoded,
             full_xerces,
+            validation_document_text.as_deref(),
         );
         let combined = collected.join("\n");
         if collected.is_empty() {
@@ -306,11 +311,12 @@ pub fn run_parser_test_with_options(
         validation_mode,
         TdmlValidationMode::Limited | TdmlValidationMode::On
     ) {
-        let collected = collect_post_decode_validation_errors(
+        let collected = collect_post_decode_validation_errors_with_document(
             spec.schema(),
             spec.program(),
             &decoded,
             validation_mode == TdmlValidationMode::On,
+            validation_document_text.as_deref(),
         );
         if !collected.is_empty() {
             return Ok(TestResult {

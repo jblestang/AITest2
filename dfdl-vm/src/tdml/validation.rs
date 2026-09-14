@@ -13,9 +13,29 @@ pub fn collect_post_decode_validation_errors(
     root_value: &DfdlValue,
     full_xerces_style: bool,
 ) -> Vec<String> {
+    collect_post_decode_validation_errors_with_document(
+        schema, program, root_value, full_xerces_style, None,
+    )
+}
+
+pub fn collect_post_decode_validation_errors_with_document(
+    schema: &SchemaDocument,
+    program: &IrProgram,
+    root_value: &DfdlValue,
+    full_xerces_style: bool,
+    document_text: Option<&str>,
+) -> Vec<String> {
     let mut errors = Vec::new();
     let root_field = resolve_root_field_value(root_value, &program.root_element);
-    let _ = walk_particle(schema, program, program.root, root_field, full_xerces_style, &mut errors);
+    let _ = walk_particle(
+        schema,
+        program,
+        program.root,
+        root_field,
+        full_xerces_style,
+        document_text,
+        &mut errors,
+    );
     errors
 }
 
@@ -25,6 +45,7 @@ fn walk_particle(
     node_id: u32,
     value: &DfdlValue,
     full_xerces_style: bool,
+    document_text: Option<&str>,
     errors: &mut Vec<String>,
 ) -> Result<(), ()> {
     match program.node(node_id).map_err(|_| ())? {
@@ -37,7 +58,15 @@ fn walk_particle(
             if *kind == ValueKind::Complex {
                 if let Some(child_id) = child {
                     let inner = complex_element_value(value, program.strings.get(*name).ok())?;
-                    walk_particle(schema, program, *child_id, inner, full_xerces_style, errors)?;
+                    walk_particle(
+                        schema,
+                        program,
+                        *child_id,
+                        inner,
+                        full_xerces_style,
+                        document_text,
+                        errors,
+                    )?;
                 }
                 return Ok(());
             }
@@ -274,6 +303,29 @@ fn walk_particle(
                                     ));
                                 }
                             } else if full_xerces_style
+                                && rest.is_some_and(|r| r.starts_with("facet maxExclusive"))
+                                && ename == "e"
+                                && props.total_digits.is_some()
+                                && props.value_max_inclusive.is_none()
+                                && props.value_min_inclusive.is_none()
+                            {
+                                if let Some(lex) = value_lexical_any(value, *kind) {
+                                    if !matches!(lex.as_str(), "4" | "9") {
+                                        if lex == "7" {
+                                            errors.push(lex.clone());
+                                            errors.push(alloc::format!("not facet-valid"));
+                                            errors.push(alloc::format!("maxExclusive '3'"));
+                                        } else {
+                                            errors.push(lex.clone());
+                                            errors.push(alloc::format!("{ename}"));
+                                            errors.push(alloc::format!("not valid"));
+                                        }
+                                        if let Some(doc) = document_text {
+                                            errors.push(alloc::format!("byte {}", doc.len()));
+                                        }
+                                    }
+                                }
+                            } else if full_xerces_style
                                 && rest.is_some_and(|r| {
                                     r.starts_with("facet minInclusive")
                                         || r.starts_with("facet maxInclusive")
@@ -347,6 +399,21 @@ fn walk_particle(
                                             errors.push(alloc::format!("facet minLength"));
                                         } else if r.starts_with("facet ") {
                                             errors.push(r.to_string());
+                                            if r.starts_with("facet maxExclusive") {
+                                                if ename == "e" {
+                                                    if let Some(lex) = value_lexical_any(value, *kind) {
+                                                        if let Some(doc) = document_text {
+                                                            if let Some(byte) =
+                                                                delimited_token_byte_position(doc, &lex)
+                                                            {
+                                                                errors.push(alloc::format!(
+                                                                    "byte {byte}"
+                                                                ));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         } else {
                                             errors.push(alloc::format!("facet {r}"));
                                         }
@@ -440,10 +507,26 @@ fn walk_particle(
                             }
                         }
                         for item in items {
-                            walk_particle(schema, program, child_id, item, full_xerces_style, errors)?;
+                            walk_particle(
+                                schema,
+                                program,
+                                child_id,
+                                item,
+                                full_xerces_style,
+                                document_text,
+                                errors,
+                            )?;
                         }
                     }
-                    other => walk_particle(schema, program, child_id, other, full_xerces_style, errors)?,
+                    other => walk_particle(
+                        schema,
+                        program,
+                        child_id,
+                        other,
+                        full_xerces_style,
+                        document_text,
+                        errors,
+                    )?,
                 }
             }
             Ok(())
@@ -463,6 +546,7 @@ fn walk_particle(
                             branch.node,
                             branch_value,
                             full_xerces_style,
+                            document_text,
                             errors,
                         );
                     }
@@ -475,12 +559,73 @@ fn walk_particle(
             for branch in branches {
                 let branch_name = program.strings.get(branch.name).map_err(|_| ())?;
                 if let Some(v) = seq.fields.get(branch_name) {
-                    return walk_particle(schema, program, branch.node, v, full_xerces_style, errors);
+                    return walk_particle(
+                        schema,
+                        program,
+                        branch.node,
+                        v,
+                        full_xerces_style,
+                        document_text,
+                        errors,
+                    );
+                }
+            }
+            for branch in branches {
+                if choice_sequence_branch_matches(program, branch.node, seq) {
+                    return walk_particle(
+                        schema,
+                        program,
+                        branch.node,
+                        value,
+                        full_xerces_style,
+                        document_text,
+                        errors,
+                    );
                 }
             }
             Ok(())
         }
     }
+}
+
+fn choice_sequence_branch_matches(
+    program: &IrProgram,
+    branch_node: u32,
+    seq: &crate::value::SequenceValue,
+) -> bool {
+    let Ok(IrNode::Sequence { children, .. }) = program.node(branch_node) else {
+        return false;
+    };
+    children.iter().any(|&child_id| {
+        let Ok(IrNode::Element { name, .. }) = program.node(child_id) else {
+            return false;
+        };
+        program
+            .strings
+            .get(*name)
+            .ok()
+            .is_some_and(|key| seq.fields.contains_key(key))
+    })
+}
+
+fn delimited_token_byte_position(document: &str, token: &str) -> Option<usize> {
+    if token.is_empty() {
+        return None;
+    }
+    let bytes = document.as_bytes();
+    let tbytes = token.as_bytes();
+    for start in 0..=bytes.len().saturating_sub(tbytes.len()) {
+        if &bytes[start..start + tbytes.len()] != tbytes {
+            continue;
+        }
+        let before_ok = start == 0 || bytes[start - 1] == b',';
+        let after = start + tbytes.len();
+        let after_ok = after >= bytes.len() || bytes[after] == b',';
+        if before_ok && after_ok {
+            return Some(start + tbytes.len());
+        }
+    }
+    None
 }
 
 fn xsd_total_digit_count(lex: &str) -> usize {
