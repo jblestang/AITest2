@@ -1358,14 +1358,45 @@ fn finalize_element_props(
         })?;
     }
     validate_binary_calendar_compile(kind, &ir, strings)?;
-    validate_bit_order_byte_order(&ir)?;
+    validate_bit_order_byte_order(kind, &ir)?;
     Ok(ir)
 }
 
-fn validate_bit_order_byte_order(props: &IrProps) -> Result<()> {
+fn binary_value_kind_requires_byte_order(kind: ValueKind) -> bool {
+    matches!(
+        kind,
+        ValueKind::Boolean
+            | ValueKind::Byte
+            | ValueKind::Short
+            | ValueKind::Int
+            | ValueKind::Long
+            | ValueKind::Integer
+            | ValueKind::UnsignedInt
+            | ValueKind::UnsignedShort
+            | ValueKind::UnsignedByte
+            | ValueKind::Float
+            | ValueKind::Double
+            | ValueKind::Decimal
+            | ValueKind::DateTime
+            | ValueKind::Time
+    )
+}
+
+fn validate_bit_order_byte_order(kind: ValueKind, props: &IrProps) -> Result<()> {
     use crate::schema::{BitOrder, ByteOrder, Representation};
-    if props.representation == Representation::Binary
-        && props.byte_order == ByteOrder::BigEndian
+    if props.representation != Representation::Binary {
+        return Ok(());
+    }
+    if !binary_value_kind_requires_byte_order(kind) {
+        return Ok(());
+    }
+    if !props.byte_order_defined {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Property byteOrder is not defined.".into(),
+        }
+        .into());
+    }
+    if props.byte_order == ByteOrder::BigEndian
         && props.bit_order == BitOrder::LeastSignificantBitFirst
     {
         return Err(SchemaError::InvalidProperty {
@@ -2162,9 +2193,11 @@ fn overlay_dfdl_to_ir(
     }
     if let Some(v) = props.byte_order {
         base.byte_order = v;
+        base.byte_order_defined = true;
     }
     if let Some(v) = props.bit_order {
         base.bit_order = v;
+        base.bit_order_defined = true;
     }
     if let Some(v) = props.length_kind {
         base.length_kind = v;
@@ -2587,7 +2620,13 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     let mut out = base.clone();
     out.representation = overlay.representation;
     out.byte_order = overlay.byte_order;
+    if overlay.byte_order_defined {
+        out.byte_order_defined = true;
+    }
     out.bit_order = overlay.bit_order;
+    if overlay.bit_order_defined {
+        out.bit_order_defined = true;
+    }
     if matches!(
         base.length_kind,
         LengthKind::Explicit

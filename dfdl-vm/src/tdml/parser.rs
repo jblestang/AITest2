@@ -499,6 +499,18 @@ fn parse_document(
             flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
             if saw_bits_part {
                 kind = DocumentKind::Bits;
+            } else if kind == DocumentKind::Hex
+                && assembly_order == DocumentBitOrder::LsbFirst
+                && !data.is_empty()
+            {
+                let chunks: Vec<String> = data
+                    .iter()
+                    .map(|b| alloc::format!("{:08b}", b))
+                    .collect();
+                let (packed, trailing) =
+                    assemble_tdml_document_bytes(&[chunks], DocumentBitOrder::LsbFirst);
+                data = packed;
+                last_byte_bit_count = Some(trailing);
             }
         }
         if let Err(e) = check_explicit_part_bit_order_mixture(document_bit_order_from_attr, &part_transitions) {

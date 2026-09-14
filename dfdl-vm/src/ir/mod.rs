@@ -91,7 +91,11 @@ pub enum IrInputValueCalcSegment {
 pub struct IrProps {
     pub representation: Representation,
     pub byte_order: ByteOrder,
+    /// True when `dfdl:byteOrder` was present on merged DFDL props (not schema default only).
+    pub byte_order_defined: bool,
     pub bit_order: BitOrder,
+    /// True when `dfdl:bitOrder` was present on merged DFDL props.
+    pub bit_order_defined: bool,
     pub length_kind: LengthKind,
     pub length: Option<u64>,
     pub length_sibling: Option<StringId>,
@@ -225,7 +229,9 @@ impl Default for IrProps {
         Self {
             representation: Representation::Binary,
             byte_order: ByteOrder::BigEndian,
+            byte_order_defined: false,
             bit_order: BitOrder::MostSignificantBitFirst,
+            bit_order_defined: false,
             length_kind: LengthKind::Implicit,
             length: None,
             length_sibling: None,
@@ -390,5 +396,16 @@ impl IrProgram {
         self.nodes.get(id as usize).ok_or_else(|| VmError::InvalidValue {
             message: alloc::format!("invalid IR node id {id}"),
         })
+    }
+
+    /// Merged format `bitOrder` on the root particle (stream bit extraction within bytes).
+    pub fn format_transmission_bit_order(&self) -> BitOrder {
+        match self.node(self.root) {
+            Ok(IrNode::Element { props, .. }) | Ok(IrNode::Sequence { props, .. }) => {
+                props.bit_order
+            }
+            Ok(IrNode::Choice { props, .. }) => props.bit_order,
+            Err(_) => BitOrder::MostSignificantBitFirst,
+        }
     }
 }

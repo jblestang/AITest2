@@ -137,7 +137,7 @@ pub fn run_parser_test_with_options(
     }
 
     let frame_bits = doc.significant_bit_length();
-    let transmission = Some(doc.transmission_bit_order);
+    let transmission = Some(spec.program().format_transmission_bit_order());
     if let Some(expected_errors) = &test.expected_errors {
         return match spec
             .decoder_with_config(config)
