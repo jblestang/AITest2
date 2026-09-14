@@ -925,10 +925,19 @@ fn decode_decimal_binary(
     let le = props.byte_order == ByteOrder::LittleEndian;
     let vp = effective_binary_decimal_vp(props);
     match props.binary_number_rep {
-        BinaryNumberRep::Binary => Ok(DfdlValue::Decimal(format_binary_decimal_magnitude(
-            decode_unsigned_binary_bytes(bytes, le),
-            vp,
-        ))),
+        BinaryNumberRep::Binary => {
+            let text = if bytes.len() <= 8 {
+                format_binary_decimal_magnitude(decode_unsigned_binary_bytes(bytes, le), vp)
+            } else {
+                let mut mag = bytes.to_vec();
+                if le {
+                    mag.reverse();
+                }
+                let dec = magnitude_bytes_be_to_decimal(&mag);
+                apply_virtual_point_to_decimal_magnitude(&dec, vp)
+            };
+            Ok(DfdlValue::Decimal(text))
+        }
         BinaryNumberRep::Bcd => {
             let digits = bcd_to_digit_string(bytes, le)?;
             signed_magnitude_to_dfdl(false, &digits, crate::ir::ValueKind::Decimal, vp)
@@ -960,6 +969,33 @@ fn effective_binary_decimal_vp(props: &IrProps) -> i32 {
 
 fn format_virtual_decimal(value: u64, virtual_point: u32) -> alloc::string::String {
     format_binary_decimal_magnitude(value, virtual_point as i32)
+}
+
+fn apply_virtual_point_to_decimal_magnitude(mag: &str, vp: i32) -> alloc::string::String {
+    if vp == 0 {
+        return mag.into();
+    }
+    if vp < 0 {
+        let exp = vp.unsigned_abs() as usize;
+        return alloc::format!("{mag}{}", "0".repeat(exp));
+    }
+    format_binary_decimal_magnitude_from_digits(mag, vp as usize)
+}
+
+fn format_binary_decimal_magnitude_from_digits(mag: &str, vp: usize) -> alloc::string::String {
+    let mag = mag.trim_start_matches('0');
+    let mag = if mag.is_empty() { "0" } else { mag };
+    if vp == 0 {
+        return mag.into();
+    }
+    if mag == "0" {
+        return alloc::format!("0.{:0width$}", 0, width = vp);
+    }
+    if mag.len() <= vp {
+        return alloc::format!("0.{mag:0>width$}", width = vp);
+    }
+    let split = mag.len() - vp;
+    alloc::format!("{}.{:0width$}", &mag[..split], &mag[split..], width = vp)
 }
 
 fn format_binary_decimal_magnitude(mag: u64, vp: i32) -> alloc::string::String {
@@ -3814,10 +3850,16 @@ pub(crate) fn read_text_scalar(
                 let parsed = if trimmed.chars().all(|c| c.is_ascii_digit()) {
                     format_calendar_pattern(trimmed, pattern)?
                 } else {
-                    let lexical = format_calendar_text(trimmed, pattern)?;
-                    append_default_utc_offset(kind, props.calendar_date_only, &lexical)
+                    format_calendar_text(trimmed, pattern)?
                 };
-                Ok(DfdlValue::DateTime(parsed))
+                let with_tz = append_packed_calendar_timezone(
+                    props,
+                    strings,
+                    kind,
+                    props.calendar_date_only,
+                    &parsed,
+                )?;
+                Ok(DfdlValue::DateTime(with_tz))
             } else {
                 Ok(DfdlValue::DateTime(trimmed.into()))
             }

@@ -2159,7 +2159,15 @@ fn apply_restriction_facets(
     if let Some(msg) = &element_props.assert_message {
         props.facet_assert_message = Some(strings.intern(msg.clone()));
     }
-    if let SimpleBase::Restriction { base, .. } = base {
+    if let SimpleBase::Restriction {
+        base,
+        enumerations,
+        ..
+    } = base
+    {
+        if !enumerations.is_empty() {
+            props.facet_assert_daffodil_prefix = true;
+        }
         match base {
             crate::schema::RestrictionBase::Named(_) => {
                 props.facet_assert_daffodil_prefix = true;

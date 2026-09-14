@@ -1500,6 +1500,14 @@ fn eval_input_value_calc(
         return Ok(crate::value::DfdlValue::DateTime(parsed));
     }
     if let InputValueCalc::Constant(v) = calc {
+        if kind == ValueKind::Integer && props.non_negative_integer && v < 0 {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Error Cannot convert {v} to NonNegativeInteger"
+                ),
+            }
+            .into());
+        }
         return constant_input_value(kind, v);
     }
     if calc == InputValueCalc::BooleanFromSibling {
@@ -1582,6 +1590,7 @@ fn constant_input_value(kind: ValueKind, value: i64) -> Result<DfdlValue> {
                 ),
             }),
         Long => Ok(DfdlValue::Long(value)),
+        Integer => Ok(DfdlValue::Integer(value.to_string())),
         other => Err(VmError::InvalidValue {
             message: alloc::format!("inputValueCalc constant unsupported for `{other:?}`"),
         }),

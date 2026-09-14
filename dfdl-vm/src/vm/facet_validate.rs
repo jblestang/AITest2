@@ -57,6 +57,8 @@ pub fn validate_decoded_facets(
         validate_string_facets(text, props, strings)?;
     } else if matches!(kind, ValueKind::Float | ValueKind::Double) {
         validate_float_facets(value, kind, props, strings)?;
+    } else if kind == ValueKind::Decimal {
+        validate_decimal_range_facets(value, props, strings)?;
     } else if let Some(n) = numeric_value_i64(value) {
         validate_numeric_facets(n, props, strings)?;
         validate_enumeration_numeric(n, props, strings)?;
@@ -67,6 +69,107 @@ pub fn validate_decoded_facets(
         }
     }
     Ok(())
+}
+
+fn validate_decimal_range_facets(
+    value: &DfdlValue,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), VmError> {
+    let DfdlValue::Decimal(lex) = value else {
+        return Ok(());
+    };
+    if let Some(min) = props.value_min_inclusive {
+        if decimal_lexical_cmp(lex, &min.to_string()) == core::cmp::Ordering::Less {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: minInclusive ({min})"),
+            ));
+        }
+    }
+    if let Some(max) = props.value_max_inclusive {
+        if decimal_lexical_cmp(lex, &max.to_string()) == core::cmp::Ordering::Greater {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: maxInclusive ({max})"),
+            ));
+        }
+    }
+    if let Some(min) = props.value_min_exclusive {
+        if decimal_lexical_cmp(lex, &min.to_string()) != core::cmp::Ordering::Greater {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: minExclusive ({min})"),
+            ));
+        }
+    }
+    if let Some(max) = props.value_max_exclusive {
+        if decimal_lexical_cmp(lex, &max.to_string()) != core::cmp::Ordering::Less {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: maxExclusive ({max})"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn decimal_lexical_cmp(a: &str, b: &str) -> core::cmp::Ordering {
+    let (asign, adigits) = decimal_lexical_parts(a);
+    let (bsign, bdigits) = decimal_lexical_parts(b);
+    match (asign, bsign) {
+        (false, true) => core::cmp::Ordering::Greater,
+        (true, false) => core::cmp::Ordering::Less,
+        (true, true) => decimal_magnitude_cmp(&adigits, &bdigits).reverse(),
+        (false, false) => decimal_magnitude_cmp(&adigits, &bdigits),
+    }
+}
+
+fn decimal_lexical_parts(s: &str) -> (bool, alloc::string::String) {
+    let s = s.trim();
+    let (neg, rest) = if let Some(r) = s.strip_prefix('-') {
+        (true, r)
+    } else if let Some(r) = s.strip_prefix('+') {
+        (false, r)
+    } else {
+        (false, s)
+    };
+    (neg, normalize_decimal_digits(rest))
+}
+
+fn normalize_decimal_digits(s: &str) -> alloc::string::String {
+    let (int, frac) = s.split_once('.').unwrap_or((s, ""));
+    let int = int.trim_start_matches('0');
+    let int = if int.is_empty() { "0" } else { int };
+    let frac = frac.trim_end_matches('0');
+    if frac.is_empty() {
+        int.into()
+    } else {
+        alloc::format!("{int}.{frac}")
+    }
+}
+
+fn decimal_magnitude_cmp(a: &str, b: &str) -> core::cmp::Ordering {
+    let (ai, af) = a.split_once('.').unwrap_or((a, ""));
+    let (bi, bf) = b.split_once('.').unwrap_or((b, ""));
+    match ai.len().cmp(&bi.len()) {
+        core::cmp::Ordering::Equal => {}
+        other => return other,
+    }
+    match ai.cmp(bi) {
+        core::cmp::Ordering::Equal => {}
+        other => return other,
+    }
+    let af = af.trim_end_matches('0');
+    let bf = bf.trim_end_matches('0');
+    let max = af.len().max(bf.len());
+    let af = format!("{af:0<width$}", width = max);
+    let bf = format!("{bf:0<width$}", width = max);
+    af.cmp(&bf)
 }
 
 fn validate_enumeration_numeric(
