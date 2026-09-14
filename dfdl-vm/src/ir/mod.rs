@@ -5,10 +5,9 @@ use crate::error::VmError;
 use crate::schema::{
     BinaryFloatRep, BinaryNumberCheckPolicy, BinaryNumberRep, BitOrder, ByteOrder,
     EncodingErrorPolicy, InputValueCalc, InputValueCalcSegment,
-    LengthKind, LengthUnits, NilKind, OccursCountKind, OutputValueCalc, Representation,
-    SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind, TextNumberJustification,
-    TextPadKind,
-    TextStringJustification, TextTrimKind,
+    LengthKind, LengthUnits, NilKind, ObjectKind, OccursCountKind, OutputValueCalc,
+    Representation, SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind,
+    TextNumberJustification, TextPadKind, TextStringJustification, TextTrimKind,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -222,6 +221,7 @@ pub struct IrProps {
     pub unsigned_integer: bool,
     /// xs:nonNegativeInteger (unbounded, non-negative).
     pub non_negative_integer: bool,
+    pub object_kind: ObjectKind,
 }
 
 impl Default for IrProps {
@@ -345,6 +345,7 @@ impl Default for IrProps {
             initiated_content: false,
             unsigned_integer: false,
             non_negative_integer: false,
+            object_kind: ObjectKind::Normal,
         }
     }
 }

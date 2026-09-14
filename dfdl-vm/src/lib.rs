@@ -18,7 +18,7 @@
 //! let encoded = spec.encode(&DfdlValue::Sequence(fields))?;
 //! ```
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(
     not(test),
     deny(
@@ -30,6 +30,9 @@
 )]
 
 extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std;
 
 pub mod api;
 pub mod error;

@@ -730,6 +730,7 @@ fn wrap_schema(inner: &str) -> String {
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
            xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
+           xmlns:dfdlx="http://www.ogf.org/dfdl/dfdl-1.0/extensions"
            xmlns:ex="http://example.com">
 {inner}
 </xs:schema>"#

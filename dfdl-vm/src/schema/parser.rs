@@ -1544,6 +1544,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.facet_check_constraints {
         base.facet_check_constraints = true;
     }
+    if overlay.object_kind.is_some() {
+        base.object_kind = overlay.object_kind;
+    }
     base
 }
 
@@ -1782,6 +1785,8 @@ fn split_dfdl_attrs(
     for (k, v) in attrs {
         let local = local_tag(k);
         if k.starts_with("dfdl:")
+            || k.starts_with("dfdlx:")
+            || k.contains("dfdl-1.0/extensions}")
             || (is_dfdl_property(local) && !is_xsd_local_attr(element_local, local))
         {
             dfdl_map.insert(local.to_string(), v.clone());
@@ -1869,6 +1874,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "format"
             | "prefixLengthType"
             | "prefixIncludesPrefixLength"
+            | "objectKind"
     )
 }
 
@@ -2452,6 +2458,18 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 });
             }
             "format" => {}
+            "objectKind" => {
+                props.object_kind = Some(match value.as_str() {
+                    "bytes" => crate::schema::ObjectKind::Bytes,
+                    "chars" => crate::schema::ObjectKind::Chars,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown objectKind `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
             "choiceDispatchKey" => props.choice_dispatch_key = Some(value.clone()),
             _ => {}
         }
@@ -2471,6 +2489,9 @@ fn is_dfdl_local(tag: &str) -> bool {
 }
 
 fn local_tag(tag: &str) -> &str {
+    if let Some(idx) = tag.rfind('}') {
+        return &tag[idx + 1..];
+    }
     strip_prefix(tag)
 }
 

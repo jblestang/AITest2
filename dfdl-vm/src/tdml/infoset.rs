@@ -14,6 +14,8 @@ pub struct InfosetNode {
     pub text: Option<String>,
     pub nil: bool,
     pub children: BTreeMap<String, Vec<InfosetNode>>,
+    /// Raw blob bytes when `dfdlx:objectKind="bytes"`.
+    pub blob_bytes: Option<Vec<u8>>,
 }
 
 /// Compare decoded value against expected TDML infoset XML (best-effort).
@@ -300,6 +302,7 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
             text: None,
             nil: is_nil,
             children: BTreeMap::new(),
+            blob_bytes: None,
         });
     }
 
@@ -311,6 +314,7 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
             text: None,
             nil: is_nil,
             children: BTreeMap::new(),
+            blob_bytes: None,
         });
     }
 
@@ -326,6 +330,7 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
                 text: None,
                 nil: is_nil,
                 children: map,
+                blob_bytes: None,
             })
         }
         None => {
@@ -335,6 +340,7 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
                 text: Some(text.trim().to_string()),
                 nil: is_nil,
                 children: BTreeMap::new(),
+                blob_bytes: None,
             })
         }
     }
@@ -362,12 +368,14 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
                 .iter()
                 .map(|(k, v)| (k.clone(), field_values_to_infoset_nodes(k, v)))
                 .collect(),
+            blob_bytes: None,
         },
         DfdlValue::Array(items) => InfosetNode {
             name: name.to_string(),
             text: None,
             nil: false,
             children: BTreeMap::from([(name.to_string(), items.iter().map(|v| value_to_node(name, v)).collect())]),
+            blob_bytes: None,
         },
         DfdlValue::Choice { discriminator, value } => value_to_node(discriminator, value),
         DfdlValue::Null => InfosetNode {
@@ -375,12 +383,21 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
             text: None,
             nil: true,
             children: BTreeMap::new(),
+            blob_bytes: None,
+        },
+        DfdlValue::Blob(bytes) => InfosetNode {
+            name: name.to_string(),
+            text: None,
+            nil: false,
+            children: BTreeMap::new(),
+            blob_bytes: Some(bytes.clone()),
         },
         scalar => InfosetNode {
             name: name.to_string(),
             text: Some(scalar_to_string(scalar)),
             nil: false,
             children: BTreeMap::new(),
+            blob_bytes: None,
         },
     }
 }
@@ -455,8 +472,40 @@ fn scalar_to_string(value: &DfdlValue) -> String {
         DfdlValue::DateTime(v) => v.clone(),
         DfdlValue::String(v) => v.text.clone(),
         DfdlValue::HexBinary(v) => hex_encode(v),
+        DfdlValue::Blob(_) => String::new(),
         DfdlValue::Null => String::new(),
         DfdlValue::Array(_) | DfdlValue::Sequence(_) | DfdlValue::Choice { .. } => String::new(),
+    }
+}
+
+fn tdml_blob_reference_path(uri: &str) -> alloc::string::String {
+    alloc::format!(
+        "{}/../third_party/daffodil/daffodil-test/src/test/resources/{}",
+        env!("CARGO_MANIFEST_DIR"),
+        uri.trim_start_matches('/')
+    )
+}
+
+fn compare_blob_reference(expected_uri: &str, actual: &[u8]) -> Result<(), String> {
+    #[cfg(feature = "std")]
+    {
+        let path = tdml_blob_reference_path(expected_uri);
+        let reference = std::fs::read(&path).map_err(|e| {
+            alloc::format!("blob reference read `{path}`: {e}")
+        })?;
+        if reference != actual {
+            return Err(alloc::format!(
+                "blob bytes mismatch for `{expected_uri}`: expected {} byte(s), got {} byte(s)",
+                reference.len(),
+                actual.len()
+            ));
+        }
+        return Ok(());
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = (expected_uri, actual);
+        Err("blob infoset compare requires the `std` feature".into())
     }
 }
 
@@ -492,14 +541,25 @@ fn compare_node(expected: &InfosetNode, actual: &InfosetNode) -> Result<(), Stri
         ));
     }
     if let Some(exp_text) = &expected.text {
-        let act_text = actual.text.as_deref().unwrap_or("");
-        if exp_text.trim() != act_text.trim()
-            && !float_infoset_texts_equal(exp_text, act_text)
-        {
-            return Err(alloc::format!(
-                "text mismatch for `{}`: expected `{exp_text}`, got `{act_text}`",
-                expected.name
-            ));
+        if exp_text.contains("/blobs/") && exp_text.ends_with(".bin") {
+            let blob = actual.blob_bytes.as_deref().ok_or_else(|| {
+                alloc::format!(
+                    "expected blob data for `{}`, got text `{:?}`",
+                    expected.name,
+                    actual.text
+                )
+            })?;
+            compare_blob_reference(exp_text, blob)?;
+        } else {
+            let act_text = actual.text.as_deref().unwrap_or("");
+            if exp_text.trim() != act_text.trim()
+                && !float_infoset_texts_equal(exp_text, act_text)
+            {
+                return Err(alloc::format!(
+                    "text mismatch for `{}`: expected `{exp_text}`, got `{act_text}`",
+                    expected.name
+                ));
+            }
         }
     }
     for (name, exp_children) in &expected.children {

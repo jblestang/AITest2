@@ -95,6 +95,8 @@ pub enum DfdlValue {
     DateTime(String),
     String(StringValue),
     HexBinary(Vec<u8>),
+    /// TDML `dfdlx:objectKind="bytes"` payload (compared to reference `.bin` files).
+    Blob(Vec<u8>),
     /// Repeated occurrences of an element or group.
     Array(Vec<DfdlValue>),
     Sequence(SequenceValue),

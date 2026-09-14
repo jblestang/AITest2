@@ -137,6 +137,8 @@ pub struct DfdlProps {
     pub assert_message: Option<alloc::string::String>,
     /// True when `dfdl:assert/@test` references `dfdl:checkConstraints`.
     pub facet_check_constraints: bool,
+    /// Daffodil extension `dfdlx:objectKind` (`bytes` / `chars`).
+    pub object_kind: Option<ObjectKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +157,14 @@ pub enum ByteOrder {
 pub enum BitOrder {
     MostSignificantBitFirst,
     LeastSignificantBitFirst,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObjectKind {
+    #[default]
+    Normal,
+    Bytes,
+    Chars,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

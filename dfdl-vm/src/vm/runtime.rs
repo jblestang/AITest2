@@ -602,6 +602,11 @@ pub(crate) fn read_binary_scalar(
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind;
+    use crate::schema::ObjectKind;
+
+    if props.object_kind == ObjectKind::Bytes {
+        return read_binary_blob(cursor, props);
+    }
 
     if props.length_kind == LengthKind::Delimited {
         let bytes = read_until_delimiters(
@@ -2813,6 +2818,10 @@ fn decode_binary_bytes(
                 Ok(DfdlValue::Int(decode_unsigned_binary_bytes(bytes, le) as i32))
             } else if let Some(bits) = bit_width {
                 Ok(DfdlValue::Int(sign_extend_u64(decode_unsigned_binary_bytes(bytes, le), bits) as i32))
+            } else if bytes.len() < core::mem::size_of::<i32>() {
+                let bits = bytes.len().saturating_mul(8);
+                let raw = decode_unsigned_binary_bytes(bytes, le);
+                Ok(DfdlValue::Int(sign_extend_u64(raw, bits) as i32))
             } else {
                 Ok(DfdlValue::Int(int!(i32)))
             }
@@ -4927,6 +4936,45 @@ pub(crate) fn read_until_separator(
     read_until_any_delimiter(cursor, &patterns, require_delimiter)
 }
 
+pub(crate) fn bits_available_in_cursor(cursor: &Cursor<'_>) -> usize {
+    let total_bits = cursor.data.len().saturating_mul(8);
+    let pos = cursor.absolute_bit_index();
+    let limit = cursor.frame_bit_limit.unwrap_or(total_bits);
+    limit.saturating_sub(pos).min(total_bits.saturating_sub(pos))
+}
+
+pub(crate) fn read_binary_blob(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+) -> Result<crate::value::DfdlValue, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::schema::{LengthKind, LengthUnits};
+
+    if props.length_kind != LengthKind::Explicit {
+        return Err(VmError::InvalidValue {
+            message: "objectKind='bytes' must have dfdl:lengthKind='explicit'".into(),
+        });
+    }
+    let len = props.length.ok_or(VmError::InvalidValue {
+        message: "explicit blob missing length".into(),
+    })? as usize;
+    let len_bits = match props.length_units {
+        LengthUnits::Bytes => len.saturating_mul(8),
+        LengthUnits::Bits => len,
+        LengthUnits::Characters => {
+            return Err(VmError::InvalidValue {
+                message: "lengthUnits='characters' is not valid for blob data.".into(),
+            })
+        }
+    };
+    let available = bits_available_in_cursor(cursor);
+    if available < len_bits {
+        return Err(insufficient_data_bits_error(len_bits, available));
+    }
+    let bytes = cursor.read_stream_bits_as_bytes(len_bits, props.bit_order)?;
+    Ok(crate::value::DfdlValue::Blob(bytes))
+}
+
 pub(crate) fn insufficient_data_bits_error(needed_bits: usize, found_bits: usize) -> crate::error::VmError {
     use crate::error::VmError;
     VmError::InvalidValue {
@@ -6402,7 +6450,7 @@ pub(crate) fn read_simple(
     let require_enclosing =
         require_delimiter || has_non_empty_terminator(props, strings)?;
     let use_text = match kind {
-        ValueKind::String => true,
+        ValueKind::String => props.object_kind != crate::schema::ObjectKind::Bytes,
         ValueKind::HexBinary => false,
         _ => props.representation == Representation::Text,
     };

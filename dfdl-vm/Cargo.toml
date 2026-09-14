@@ -7,7 +7,7 @@ description = "no_std DFDL virtual machine: XSD → in-memory IR → encode/deco
 readme = "README.md"
 
 [features]
-default = []
+default = ["std"]
 std = []
 
 [dependencies]

@@ -1065,7 +1065,30 @@ fn finalize_element_props(
     strings: &mut StringPool,
     tunables: DaffodilTunables,
 ) -> Result<IrProps> {
-    use crate::schema::{NilKind, TextPadKind, TextTrimKind};
+    use crate::schema::{NilKind, ObjectKind, TextPadKind, TextTrimKind};
+    if ir.object_kind == ObjectKind::Chars {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Property value objectKind='chars' is not supported."
+                .into(),
+        }
+        .into());
+    }
+    if ir.object_kind == ObjectKind::Bytes && ir.length_kind != LengthKind::Explicit {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: objectKind='bytes' must have dfdl:lengthKind='explicit'"
+                .into(),
+        }
+        .into());
+    }
+    if ir.object_kind == ObjectKind::Bytes
+        && ir.length_units == crate::schema::LengthUnits::Characters
+    {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: lengthUnits 'characters' is not valid for blob data with lengthKind 'explicit'."
+                .into(),
+        }
+        .into());
+    }
     if ir.nillable && ir.nil_value.is_some() && ir.nil_kind.is_none() {
         ir.nil_kind = Some(NilKind::LiteralValue);
     }
@@ -2505,6 +2528,9 @@ fn overlay_dfdl_to_ir(
     }
     if let Some(v) = props.sequence_kind {
         base.sequence_kind = v;
+    }
+    if let Some(v) = props.object_kind {
+        base.object_kind = v;
     }
     if let Some(v) = props.input_value_calc {
         base.input_value_calc = Some(v);

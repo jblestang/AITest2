@@ -821,7 +821,9 @@ fn value_byte_length(value: &DfdlValue) -> Result<usize> {
 
 fn negative_runtime_length_error(value: i64) -> VmError {
     VmError::InvalidValue {
-        message: alloc::format!("Runtime Schema Definition Error. dfdl:length {value}"),
+        message: alloc::format!(
+            "Runtime Schema Definition Error. dfdl:length expression result must be non-negative, but was: {value}"
+        ),
     }
 }
 

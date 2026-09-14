@@ -659,6 +659,13 @@ impl<'a> Decoder<'a> {
                             LengthUnits::Bytes => len.saturating_mul(8),
                             LengthUnits::Characters => unreachable!("handled above"),
                         };
+                        let available = crate::vm::runtime::bits_available_in_cursor(cursor);
+                        if available < bit_len {
+                            return Err(crate::vm::runtime::insufficient_data_bits_error(
+                                bit_len, available,
+                            )
+                            .into());
+                        }
                         let frame_start = cursor.absolute_bit_index();
                         let prev_limit = cursor
                             .frame_bit_limit
@@ -1331,7 +1338,16 @@ fn insert_child(
         }
         IrNode::Choice { .. } => {
             if let DfdlValue::Choice { discriminator, value } = value {
-                map.insert(discriminator, *value);
+                match *value {
+                    DfdlValue::Sequence(seq) => {
+                        for (k, v) in seq.fields {
+                            insert_field(map, k, v);
+                        }
+                    }
+                    other => {
+                        map.insert(discriminator, other);
+                    }
+                }
                 Ok(())
             } else {
                 Err(VmError::TypeMismatch {
@@ -1809,7 +1825,9 @@ fn resolve_length_props(
 fn negative_runtime_length_error(value: i64) -> crate::error::VmError {
     use crate::error::VmError;
     VmError::InvalidValue {
-        message: alloc::format!("Runtime Schema Definition Error. dfdl:length {value}"),
+        message: alloc::format!(
+            "Runtime Schema Definition Error. dfdl:length expression result must be non-negative, but was: {value}"
+        ),
     }
 }
 
