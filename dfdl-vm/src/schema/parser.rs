@@ -86,7 +86,6 @@ struct ParsedRestrictionFacets {
 
 struct XsdParser<'a> {
     reader: XmlReader<'a>,
-    inline_counter: usize,
     doc: SchemaDocument,
     pending_props: DfdlProps,
     resolver: SchemaResolver,
@@ -102,7 +101,6 @@ impl<'a> XsdParser<'a> {
     fn new(input: &'a str, resolver: SchemaResolver) -> Self {
         Self {
             reader: XmlReader::new(input),
-            inline_counter: 0,
             doc: SchemaDocument::default(),
             pending_props: DfdlProps::default(),
             resolver,
@@ -368,6 +366,9 @@ impl<'a> XsdParser<'a> {
             self.expect_end_local(local)?;
         } else {
             self.reader.skip_current_subtree()?;
+        }
+        if !self.resolver.register_include(location) {
+            return Ok(());
         }
         let content = self.resolver.resolve(location)?;
         let included = parse_schema_with_resolver(&content, self.resolver.clone())?;
@@ -929,14 +930,12 @@ impl<'a> XsdParser<'a> {
         let (local, _, attrs) = self.consume_start()?;
         match local.as_str() {
             "complexType" => {
-                let name = alloc::format!("__inline_complex_{}", self.inline_counter);
-                self.inline_counter += 1;
+                let name = self.resolver.next_inline_type_name("complex");
                 self.parse_complex_type(Some(name.clone()), attrs)?;
                 Ok((TypeName::new(name), DfdlProps::default()))
             }
             "simpleType" => {
-                let name = alloc::format!("__inline_simple_{}", self.inline_counter);
-                self.inline_counter += 1;
+                let name = self.resolver.next_inline_type_name("simple");
                 self.parse_simple_type(Some(name.clone()), attrs)?;
                 Ok((TypeName::new(name), DfdlProps::default()))
             }
@@ -946,8 +945,7 @@ impl<'a> XsdParser<'a> {
                     .push(format!("Schema Definition Error: unrecognized element `{other}`"));
                 self.doc.schema_diagnostics.push(local.clone());
                 self.skip_element_body(&local)?;
-                let name = alloc::format!("__inline_unknown_{}", self.inline_counter);
-                self.inline_counter += 1;
+                let name = self.resolver.next_inline_type_name("unknown");
                 Ok((TypeName::new(name), DfdlProps::default()))
             }
         }

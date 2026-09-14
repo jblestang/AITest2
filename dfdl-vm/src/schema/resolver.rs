@@ -1,13 +1,19 @@
 use crate::error::{ParseError, Result};
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::cell::Cell;
 
 /// Resolve XSD `schemaLocation` paths against bundled resources and external bases.
 #[derive(Debug, Clone)]
 pub struct SchemaResolver {
     bundled: BTreeMap<String, &'static str>,
     base_dirs: Vec<String>,
+    /// Canonical include keys already merged (prevents infinite `xs:include` recursion).
+    included: BTreeSet<String>,
+    /// Shared across cloned resolvers so nested includes do not reuse `__inline_*` type names.
+    inline_type_counter: Rc<Cell<usize>>,
 }
 
 impl SchemaResolver {
@@ -64,7 +70,62 @@ impl SchemaResolver {
         Self {
             bundled,
             base_dirs: Vec::new(),
+            included: BTreeSet::new(),
+            inline_type_counter: Rc::new(Cell::new(0)),
         }
+    }
+
+    pub fn next_inline_type_name(&self, kind: &str) -> String {
+        let n = self.inline_type_counter.get();
+        self.inline_type_counter.set(n + 1);
+        alloc::format!("__inline_{kind}_{n}")
+    }
+
+    /// Stable key for an include location (matches [`Self::resolve`] lookup order).
+    pub fn include_dedup_key(&self, location: &str) -> String {
+        let loc = location.trim();
+        if self.bundled.contains_key(loc) {
+            return loc.to_string();
+        }
+        let normalized = loc.trim_start_matches('/');
+        if self.bundled.contains_key(normalized) {
+            return normalized.to_string();
+        }
+        let file_name = loc.rsplit('/').next().unwrap_or(loc);
+        if self.bundled.contains_key(file_name) {
+            return file_name.to_string();
+        }
+        for base in &self.base_dirs {
+            let candidate = alloc::format!("{base}/{loc}");
+            if self.bundled.contains_key(&candidate) {
+                return candidate;
+            }
+        }
+        #[cfg(feature = "std")]
+        {
+            use std::path::Path;
+            for base in &self.base_dirs {
+                let candidates = [Path::new(base).join(loc), Path::new(base).join(file_name)];
+                for path in &candidates {
+                    if path.is_file() {
+                        if let Ok(canon) = path.canonicalize() {
+                            return canon.to_string_lossy().into_owned();
+                        }
+                        return path.to_string_lossy().into_owned();
+                    }
+                }
+            }
+        }
+        if let Some(base) = self.base_dirs.first() {
+            return alloc::format!("{base}/{loc}");
+        }
+        loc.to_string()
+    }
+
+    /// Register an include; returns `false` if this location was already included.
+    pub fn register_include(&mut self, location: &str) -> bool {
+        let key = self.include_dedup_key(location);
+        self.included.insert(key)
     }
 
     pub fn with_base_dir(mut self, dir: impl Into<String>) -> Self {
