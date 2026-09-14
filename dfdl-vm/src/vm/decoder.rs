@@ -11,7 +11,10 @@ use crate::schema::boolean_reps::BooleanSiblingEnv;
 use crate::length_validate::{binary_length_validation_applies, validate_data_length_vm};
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, StringId, ValueKind};
-use crate::schema::{match_length_pattern, InputValueCalc, LengthKind, LengthUnits, Representation, SeparatorPosition};
+use crate::schema::{
+    match_length_pattern, InputValueCalc, LengthKind, LengthUnits, OccursCountKind,
+    Representation, SeparatorPosition,
+};
 use crate::value::{DfdlValue, StringValue};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -410,16 +413,20 @@ impl<'a> Decoder<'a> {
 
         let min = props.occurs_min;
         let mut max = props.occurs_max.unwrap_or(u64::MAX);
-        if props.occurs_count_kind == crate::schema::OccursCountKind::Parsed
-            && max != u64::MAX
-            && min == max
-        {
-            match self.framing_extra_occurrence(node_id, props, parent_sequence) {
-                FramingExtraOccurrences::One => max = max.saturating_add(1),
-                FramingExtraOccurrences::Double => max = max.saturating_mul(2),
-                FramingExtraOccurrences::None => {}
+        if props.occurs_count_kind == OccursCountKind::Parsed {
+            if max != u64::MAX && min == max {
+                match self.framing_extra_occurrence(node_id, props, parent_sequence) {
+                    FramingExtraOccurrences::One => max = max.saturating_add(1),
+                    FramingExtraOccurrences::Double => max = max.saturating_mul(2),
+                    FramingExtraOccurrences::None => {}
+                }
+            } else if max != u64::MAX {
+                // DFDL-5-062R: parsed count kind ignores maxOccurs during parse (post-decode validation only).
+                max = u64::MAX;
             }
         }
+        let populate_path = element_prefixed_name(self.ctx.program, node_id).ok();
+        let populate_errors = should_populate_array_errors(props);
         let mut items = Vec::new();
 
         while (items.len() as u64) < max {
@@ -488,12 +495,34 @@ impl<'a> Decoder<'a> {
                         items.push(default);
                         break;
                     }
+                    if populate_errors {
+                        if let Some(path) = populate_path.as_deref() {
+                            let index = items.len() as u64 + 1;
+                            return Err(populate_failed_error(path, index, &e.to_string()).into());
+                        }
+                    }
                     return Err(e);
                 }
             }
         }
 
         if (items.len() as u64) < min {
+            if populate_errors {
+                if let Some(path) = populate_path.as_deref() {
+                    let index = items.len() as u64 + 1;
+                    return Err(
+                        populate_failed_error(
+                            path,
+                            index,
+                            &alloc::format!(
+                                "expected at least {min} occurrences, got {}",
+                                items.len()
+                            ),
+                        )
+                        .into(),
+                    );
+                }
+            }
             return Err(VmError::InvalidValue {
                 message: alloc::format!("expected at least {min} occurrences, got {}", items.len()),
             }
@@ -1306,6 +1335,33 @@ impl<'a> Decoder<'a> {
 
 fn is_element_absent(err: &Error) -> bool {
     matches!(err, Error::Vm(VmError::ElementAbsent))
+}
+
+fn should_populate_array_errors(props: &IrProps) -> bool {
+    matches!(
+        props.occurs_count_kind,
+        OccursCountKind::Implicit | OccursCountKind::Fixed
+    ) && (props.occurs_min != 1 || props.occurs_max != Some(1))
+}
+
+fn element_prefixed_name(program: &IrProgram, node_id: u32) -> Result<String> {
+    match program.node(node_id)? {
+        IrNode::Element { name, .. } => {
+            let local = program.strings.get(*name)?;
+            Ok(alloc::format!("ex:{local}"))
+        }
+        _ => Ok(alloc::string::String::from("ex:unknown")),
+    }
+}
+
+fn populate_failed_error(qname: &str, index: u64, cause: &str) -> VmError {
+    VmError::InvalidValue {
+        message: if cause.is_empty() {
+            alloc::format!("Parse Error: Failed to populate {qname}[{index}].")
+        } else {
+            alloc::format!("Parse Error: Failed to populate {qname}[{index}]. Cause: {cause}")
+        },
+    }
 }
 
 fn element_kind(program: &IrProgram, node_id: u32) -> core::result::Result<ValueKind, VmError> {
