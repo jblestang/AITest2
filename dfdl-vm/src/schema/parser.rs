@@ -50,6 +50,8 @@ struct ParsedRestrictionFacets {
     invalid_min_length: Option<String>,
     invalid_max_length: Option<String>,
     invalid_length: Option<String>,
+    invalid_total_digits: Option<String>,
+    invalid_fraction_digits: Option<String>,
 }
 
 struct XsdParser<'a> {
@@ -701,17 +703,15 @@ impl<'a> XsdParser<'a> {
                     let local = name.local_name.clone();
                     let child_attrs = self.reader.take_start_attributes()?;
                     if local == "restriction" {
-                        let base_name = child_attrs.get("base").cloned().ok_or_else(|| {
-                            ParseError::MissingAttribute {
-                                element: "restriction".into(),
-                                attribute: "base".into(),
+                        let base = if let Some(base_name) = child_attrs.get("base") {
+                            let normalized = normalize_qname(base_name);
+                            if let Some(b) = BuiltinType::from_xsd(&normalized) {
+                                RestrictionBase::Builtin(b)
+                            } else {
+                                RestrictionBase::Named(TypeName::new(normalized))
                             }
-                        })?;
-                        let normalized = normalize_qname(&base_name);
-                        let base = if let Some(b) = BuiltinType::from_xsd(&normalized) {
-                            RestrictionBase::Builtin(b)
                         } else {
-                            RestrictionBase::Named(TypeName::new(normalized))
+                            RestrictionBase::Builtin(BuiltinType::String)
                         };
                         let facets = self.parse_restriction_body()?;
                         return Ok(SimpleBase::Restriction {
@@ -729,6 +729,8 @@ impl<'a> XsdParser<'a> {
                             invalid_min_length: facets.invalid_min_length,
                             invalid_max_length: facets.invalid_max_length,
                             invalid_length: facets.invalid_length,
+                            invalid_total_digits: facets.invalid_total_digits,
+                            invalid_fraction_digits: facets.invalid_fraction_digits,
                         });
                     }
                     self.skip_element_body(&local)?;
@@ -825,13 +827,21 @@ impl<'a> XsdParser<'a> {
                         }
                         "totalDigits" => {
                             if let Some(v) = child_attrs.get("value") {
-                                out.total_digits = v.parse().ok();
+                                if let Ok(n) = v.parse::<u64>() {
+                                    out.total_digits = Some(n);
+                                } else {
+                                    out.invalid_total_digits = Some(v.clone());
+                                }
                             }
                             self.skip_element_body(&local)?;
                         }
                         "fractionDigits" => {
                             if let Some(v) = child_attrs.get("value") {
-                                out.fraction_digits = v.parse().ok();
+                                if let Ok(n) = v.parse::<u64>() {
+                                    out.fraction_digits = Some(n);
+                                } else {
+                                    out.invalid_fraction_digits = Some(v.clone());
+                                }
                             }
                             self.skip_element_body(&local)?;
                         }

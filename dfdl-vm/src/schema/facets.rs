@@ -21,6 +21,8 @@ pub struct EffectiveFacets {
     pub invalid_min_length: Option<String>,
     pub invalid_max_length: Option<String>,
     pub invalid_length: Option<String>,
+    pub invalid_total_digits: Option<String>,
+    pub invalid_fraction_digits: Option<String>,
 }
 
 impl SchemaDocument {
@@ -49,6 +51,8 @@ impl SchemaDocument {
                 invalid_min_length,
                 invalid_max_length,
                 invalid_length,
+                invalid_total_digits,
+                invalid_fraction_digits,
             } => {
                 match parent {
                     RestrictionBase::Named(name) => {
@@ -66,6 +70,12 @@ impl SchemaDocument {
                 }
                 if invalid_max_length.is_some() {
                     out.invalid_max_length = invalid_max_length.clone();
+                }
+                if invalid_total_digits.is_some() {
+                    out.invalid_total_digits = invalid_total_digits.clone();
+                }
+                if invalid_fraction_digits.is_some() {
+                    out.invalid_fraction_digits = invalid_fraction_digits.clone();
                 }
                 out.length = merge_length_facet(out.length, *length);
                 out.min_length = merge_min_length(out.min_length, *min_length);
@@ -139,29 +149,95 @@ fn merge_min_u64(base: Option<u64>, local: Option<u64>) -> Option<u64> {
 
 use super::ast::RestrictionBase;
 
+fn facet_err_non_negative_integer(raw: &str) -> SchemaError {
+    SchemaError::InvalidProperty {
+        message: alloc::format!(
+            "Schema Definition Error: Value '{raw}' is not facet-valid with respect to minInclusive '0' for type 'nonNegativeInteger'"
+        ),
+    }
+}
+
+fn facet_err_positive_integer(raw: &str) -> SchemaError {
+    SchemaError::InvalidProperty {
+        message: alloc::format!(
+            "Schema Definition Error: Value '{raw}' is not facet-valid with respect to minInclusive '0' for type 'positiveInteger'"
+        ),
+    }
+}
+
+fn facet_err_not_integer(raw: &str) -> SchemaError {
+    SchemaError::InvalidProperty {
+        message: alloc::format!(
+            "Schema Definition Error: '{raw}' is not a valid value for 'integer'"
+        ),
+    }
+}
+
 pub fn validate_facet_literals(eff: &EffectiveFacets) -> Result<(), SchemaError> {
-    if let Some(v) = &eff.invalid_length {
-        return Err(SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error: minLength/maxLength facet value `{v}` is not a valid non-negative integer."
-            ),
-        });
+    for v in [
+        eff.invalid_length.as_deref(),
+        eff.invalid_min_length.as_deref(),
+        eff.invalid_max_length.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if is_valid_non_negative_integer_literal(v) {
+            continue;
+        }
+        if is_valid_integer_literal(v) && !is_valid_non_negative_integer_literal(v) {
+            return Err(facet_err_non_negative_integer(v));
+        }
+        return Err(facet_err_not_integer(v));
     }
-    if let Some(v) = &eff.invalid_min_length {
-        return Err(SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error: minLength facet value `{v}` is not a valid non-negative integer."
-            ),
-        });
+    if let Some(v) = &eff.invalid_total_digits {
+        if is_valid_positive_integer_literal(v) {
+            return Ok(());
+        }
+        if is_valid_integer_literal(v) && !is_valid_positive_integer_literal(v) {
+            return Err(facet_err_positive_integer(v));
+        }
+        return Err(facet_err_not_integer(v));
     }
-    if let Some(v) = &eff.invalid_max_length {
-        return Err(SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error: maxLength facet value `{v}` is not a valid non-negative integer."
-            ),
-        });
+    if let Some(v) = &eff.invalid_fraction_digits {
+        if is_valid_non_negative_integer_literal(v) {
+            return Ok(());
+        }
+        if is_valid_integer_literal(v) && !is_valid_non_negative_integer_literal(v) {
+            return Err(facet_err_non_negative_integer(v));
+        }
+        return Err(facet_err_not_integer(v));
     }
     Ok(())
+}
+
+fn is_valid_integer_literal(raw: &str) -> bool {
+    let t = raw.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let (sign, rest) = match t.strip_prefix('-') {
+        Some(r) => (-1i64, r),
+        None => (1, t.strip_prefix('+').unwrap_or(t)),
+    };
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let _ = sign;
+    true
+}
+
+fn is_valid_non_negative_integer_literal(raw: &str) -> bool {
+    let t = raw.trim();
+    if t.starts_with('-') {
+        return false;
+    }
+    let rest = t.strip_prefix('+').unwrap_or(t);
+    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+}
+
+fn is_valid_positive_integer_literal(raw: &str) -> bool {
+    is_valid_non_negative_integer_literal(raw) && raw.trim().trim_start_matches('+') != "0"
 }
 
 pub fn validate_length_facets_for_type(
@@ -211,7 +287,7 @@ pub fn validate_length_facets_for_type(
                 if min != max {
                     return Err(SchemaError::InvalidProperty {
                         message: alloc::format!(
-                            "The minLength and maxLength must be equal for type {prim_name} with lengthKind='implicit'. Values were minLength of {min}, maxLength of {max}."
+                            "Schema Definition Error: The minLength and maxLength must be equal for type {prim_name} with lengthKind='implicit'. Values were minLength of {min}, maxLength of {max}."
                         ),
                     });
                 }

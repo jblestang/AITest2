@@ -1456,7 +1456,11 @@ fn validate_implicit_text_length(kind: ValueKind, props: &IrProps) -> Result<()>
         }
         .into());
     }
-    let type_label = implicit_text_length_type_label(kind);
+    let type_label = if kind == ValueKind::Integer && props.non_negative_integer {
+        "nonNegativeInteger"
+    } else {
+        implicit_text_length_type_label(kind)
+    };
     Err(SchemaError::InvalidProperty {
         message: alloc::format!(
             "Schema Definition Error. type {type_label} lengthKind='implicit' representation='text' is not allowed"

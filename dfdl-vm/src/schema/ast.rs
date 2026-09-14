@@ -372,6 +372,8 @@ pub enum SimpleBase {
         invalid_min_length: Option<alloc::string::String>,
         invalid_max_length: Option<alloc::string::String>,
         invalid_length: Option<alloc::string::String>,
+        invalid_total_digits: Option<alloc::string::String>,
+        invalid_fraction_digits: Option<alloc::string::String>,
     },
 }
 
@@ -440,6 +442,7 @@ impl BuiltinType {
             "xs:time" | "time" => Some(BuiltinType::Time),
             "xs:boolean" | "boolean" => Some(BuiltinType::Boolean),
             "xs:hexBinary" | "hexBinary" => Some(BuiltinType::HexBinary),
+            "xs:anyURI" | "anyURI" => Some(BuiltinType::String),
             _ => None,
         }
     }
