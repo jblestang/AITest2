@@ -1546,7 +1546,7 @@ fn validate_binary_calendar_compile(
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<()> {
-    crate::vm::calendar_binary::validate_binary_calendar_schema(kind, props, strings).map_err(Into::into)
+    crate::vm::calendar_binary::validate_calendar_schema(kind, props, strings).map_err(Into::into)
 }
 
 fn apply_unsigned_long_flag(type_name: &TypeName, props: &mut IrProps) {

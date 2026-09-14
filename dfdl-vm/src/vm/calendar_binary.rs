@@ -632,6 +632,169 @@ fn valid_binary_pattern_chars(kind: ValueKind, date_only: bool) -> &'static str 
     }
 }
 
+fn valid_text_pattern_chars(kind: ValueKind, date_only: bool) -> &'static str {
+    match kind {
+        ValueKind::Time => "ahHkKmsSvVzXxZ",
+        ValueKind::DateTime if date_only => "dDeEFGMuwWyXxYzZ",
+        ValueKind::DateTime => "adDeEFGhHkKmMsSuwWvVyXxYzZ",
+        _ => "",
+    }
+}
+
+/// Strip quoted literals and non-letters (Daffodil `ConvertTextCalendarPrimBase.pattern`).
+pub fn calendar_pattern_letters_only(pattern: &str) -> alloc::string::String {
+    let mut out = alloc::string::String::new();
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if chars[i].is_ascii_alphabetic() {
+            out.push(chars[i]);
+        }
+        i += 1;
+    }
+    out
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+pub fn month_day_from_ordinal(year: i32, ordinal: u32) -> Result<(u32, u32), VmError> {
+    let max = if is_leap_year(year) { 366 } else { 365 };
+    if ordinal == 0 || ordinal > max {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("invalid day-of-year `{ordinal}` for year `{year}`"),
+        });
+    }
+    let mut remaining = ordinal;
+    for month in 1..=12 {
+        let dim = days_in_month(year, month);
+        if remaining <= dim {
+            return Ok((month, remaining));
+        }
+        remaining -= dim;
+    }
+    Err(VmError::InvalidValue {
+        message: alloc::format!("invalid day-of-year `{ordinal}` for year `{year}`"),
+    })
+}
+
+fn weekday_of_ymd_iso(year: i32, month: u32, day: u32) -> Option<u32> {
+    if !(1..=12).contains(&month) || day == 0 {
+        return None;
+    }
+    let q = day as i32;
+    let m = month as i32;
+    let y = year;
+    let (y, m) = if m <= 2 { (y - 1, m + 12) } else { (y, m) };
+    let k = y % 100;
+    let j = y / 100;
+    let h = (q + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j).rem_euclid(7);
+    Some(((h + 5) % 7 + 1) as u32)
+}
+
+/// Nth occurrence of `first_weekday_iso` (ISO Mon=1 … Sun=7) within a month.
+pub fn nth_weekday_in_month(
+    year: i32,
+    month: u32,
+    n: u32,
+    first_weekday_iso: u32,
+) -> Result<u32, VmError> {
+    if n == 0 {
+        return Err(VmError::InvalidValue {
+            message: "invalid week-in-month index 0".into(),
+        });
+    }
+    let dim = days_in_month(year, month);
+    let mut count = 0u32;
+    for day in 1..=dim {
+        if weekday_of_ymd_iso(year, month, day) == Some(first_weekday_iso) {
+            count += 1;
+            if count == n {
+                return Ok(day);
+            }
+        }
+    }
+    Err(VmError::InvalidValue {
+        message: alloc::format!(
+            "week-in-month `{n}` not found for {year}-{month:02} weekday `{first_weekday_iso}`"
+        ),
+    })
+}
+
+/// Compile-time checks for text calendar `dfdl:calendarPattern`.
+pub fn validate_text_calendar_schema(
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), SchemaError> {
+    if props.representation != Representation::Text {
+        return Ok(());
+    }
+    if !matches!(kind, ValueKind::DateTime | ValueKind::Time) {
+        return Ok(());
+    }
+    if props.calendar_pattern_kind != CalendarPatternKind::Explicit {
+        return Ok(());
+    }
+    let pattern = props
+        .calendar_pattern
+        .and_then(|id| strings.get(id).ok())
+        .unwrap_or("");
+    let letters = calendar_pattern_letters_only(pattern);
+    if letters.is_empty() {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: dfdl:calendarPatttern contains no pattern letters".into(),
+        });
+    }
+    let xsd = calendar_xsd_type_label(kind, props.calendar_date_only);
+    let allowed = valid_text_pattern_chars(kind, props.calendar_date_only);
+    for ch in letters.chars() {
+        if !allowed.contains(ch) {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: Character '{ch}' not allowed in dfdl:calendarPattern for xs:{xsd}"
+                ),
+            });
+        }
+    }
+    const MAX_FRAC: usize = 6;
+    if letters.contains(&alloc::string::String::from("S").repeat(MAX_FRAC + 1)) {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: More than {MAX_FRAC} fractional seconds unsupported in dfdl:calendarPattern for xs:{xsd}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Text + binary calendar compile checks.
+pub fn validate_calendar_schema(
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), SchemaError> {
+    validate_text_calendar_schema(kind, props, strings)?;
+    validate_binary_calendar_schema(kind, props, strings)
+}
+
 fn known_binary_length_in_bits(props: &IrProps) -> Option<u64> {
     match props.length_kind {
         LengthKind::Implicit => implicit_binary_calendar_length_bits(props),
