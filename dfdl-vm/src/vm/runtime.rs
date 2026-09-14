@@ -2492,7 +2492,14 @@ fn binary_byte_length(
                 .length
                 .unwrap_or(implicit_binary_scalar_byte_length(kind, props) as u64) as usize,
         ),
-        LengthKind::Implicit => Ok(implicit_binary_scalar_byte_length(kind, props)),
+        LengthKind::Implicit => {
+            if matches!(kind, crate::ir::ValueKind::String | crate::ir::ValueKind::HexBinary) {
+                if let Some(len) = crate::vm::facet_validate::implicit_facet_byte_length(props) {
+                    return Ok(len);
+                }
+            }
+            Ok(implicit_binary_scalar_byte_length(kind, props))
+        }
         LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
