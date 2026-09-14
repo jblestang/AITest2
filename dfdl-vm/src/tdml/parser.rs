@@ -331,6 +331,16 @@ fn parse_document(reader: &mut XmlReader<'_>) -> Result<TdmlDocument> {
                 saw_bits_part = true;
                 kind = DocumentKind::Bits;
                 pending_bits.extend(bits);
+            } else if saw_bits_part && part.kind == DocumentKind::Text {
+                // When the bit stream ends mid-byte, following text continues in the same stream;
+                // otherwise text starts on the next byte boundary (TDML multi-part documents).
+                if pending_bits.len() % 8 != 0 {
+                    append_bytes_as_msb_bits(&mut pending_bits, &part.data);
+                } else {
+                    flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
+                    data.extend(part.data);
+                    last_byte_bit_count = part.last_byte_bit_count;
+                }
             } else {
                 flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
                 if data.is_empty() && !saw_bits_part {
@@ -461,6 +471,15 @@ fn parse_hex_document(text: &str) -> Result<Vec<u8>> {
         out.push((hi << 4 | lo) as u8);
     }
     Ok(out)
+}
+
+/// Append raw document bytes to a TDML bit stream (MSB-first within each byte).
+fn append_bytes_as_msb_bits(bits: &mut Vec<u8>, bytes: &[u8]) {
+    for &byte in bytes {
+        for i in 0..8 {
+            bits.push((byte >> (7 - i)) & 1);
+        }
+    }
 }
 
 fn collect_bits_from_text(text: &str) -> Vec<u8> {

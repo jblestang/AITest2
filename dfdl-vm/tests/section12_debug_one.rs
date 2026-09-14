@@ -16,6 +16,7 @@ fn check(name: &str) {
 fn debug_section12_failures() {
     for name in [
         "implicitAlignmentUnsignedIntT2",
+        "implicitAlignmentUnsignedIntT2b",
         "implicitAlignmentByteT2",
         "leftAndRightFramingNested01",
         "alignmentStringErr",

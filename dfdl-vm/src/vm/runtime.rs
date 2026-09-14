@@ -3848,7 +3848,10 @@ fn read_until_delimiters(
             return Ok(Vec::new());
         }
         if cursor.bit_count == 0 && remaining_bits % 8 == 0 {
-            let byte_len = trim_byte_len_to_encoding(remaining_bits / 8, encoding);
+            let available = remaining_bits / 8;
+            let byte_len = encoding
+                .map(|enc| crate::vm::encoding::delimited_payload_byte_length(available, enc))
+                .unwrap_or(available);
             let end = cursor.pos.saturating_add(byte_len);
             if end <= cursor.data.len() {
                 let out = cursor.data[cursor.pos..end].to_vec();
@@ -4006,16 +4009,6 @@ pub(crate) fn read_delimited_bytes(
     )
 }
 
-fn trim_byte_len_to_encoding(byte_len: usize, encoding: Option<&str>) -> usize {
-    let Some(enc) = encoding.and_then(crate::vm::encoding::normalize_encoding_name) else {
-        return byte_len;
-    };
-    match enc {
-        "utf-16be" | "utf-16le" => byte_len - (byte_len % 2),
-        _ => byte_len,
-    }
-}
-
 fn read_until_any_delimiter(
     cursor: &mut Cursor<'_>,
     delimiters: &[DelimScanPattern],
@@ -4065,7 +4058,8 @@ pub(crate) fn consume_enclosing_delimiter(
     if cursor.is_empty() {
         return Ok(());
     }
-    for entry in non_empty_delimiter_scan_patterns(props, strings)? {
+    let field_patterns = non_empty_delimiter_scan_patterns(props, strings)?;
+    for entry in &field_patterns {
         if let Some(n) = crate::schema::match_delimiter_opts(
             &cursor.data[cursor.pos..],
             &entry.pat,
@@ -4098,6 +4092,9 @@ pub(crate) fn consume_enclosing_delimiter(
                     }
                 }
             }
+        }
+        if field_patterns.is_empty() && stop_sequences.is_empty() {
+            return Ok(());
         }
         Err(VmError::InvalidValue {
             message: "delimiter mismatch".into(),
@@ -5086,8 +5083,6 @@ pub(crate) fn read_simple(
     }
     let _ = field_name;
     let require_enclosing = require_delimiter || props.terminator.is_some();
-    use crate::ir::ValueKind;
-    use crate::schema::Representation;
     let use_text = match kind {
         ValueKind::String => true,
         ValueKind::HexBinary => false,

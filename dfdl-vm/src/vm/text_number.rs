@@ -1322,6 +1322,11 @@ fn match_subpattern(
             pos += consumed;
         }
     }
+    if !saw_digit && !bytes.is_empty() {
+        return Err(VmError::InvalidValue {
+            message: "textNumberPattern mismatch".into(),
+        });
+    }
     if pos != bytes.len() {
         if lax {
             // allow trailing junk only if all digits consumed — strict about leftover

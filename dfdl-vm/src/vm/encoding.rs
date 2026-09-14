@@ -195,6 +195,17 @@ pub(crate) fn decode_text_bytes(
     }
 }
 
+/// Bytes that belong to a delimited text field when reading to end-of-scope.
+///
+/// Variable-width encodings only consume whole characters; any trailing partial code unit
+/// (e.g. one byte of UTF-16) remains on the cursor for parent framing or strict EOS.
+pub(crate) fn delimited_payload_byte_length(available_bytes: usize, encoding: &str) -> usize {
+    match normalize_encoding_name(encoding) {
+        Some("utf-16be") | Some("utf-16le") => available_bytes - (available_bytes % 2),
+        _ => available_bytes,
+    }
+}
+
 pub(crate) fn character_span_byte_length(
     char_count: usize,
     encoding: &str,
@@ -458,6 +469,17 @@ fn encode_utf16le(text: &str) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::schema::EncodingErrorPolicy;
+
+    #[test]
+    fn delimited_payload_byte_length_utf16_excludes_orphan_byte() {
+        assert_eq!(
+            delimited_payload_byte_length(3, "utf-16be"),
+            2,
+            "field value is one code unit; orphan stays on stream"
+        );
+        assert_eq!(delimited_payload_byte_length(4, "utf-16be"), 4);
+        assert_eq!(delimited_payload_byte_length(5, "utf-8"), 5);
+    }
 
     #[test]
     fn replace_policy_decodes_malformed_utf8_to_replacement_char() {
