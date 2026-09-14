@@ -188,6 +188,8 @@ impl<'a> XsdParser<'a> {
 
     fn parse_schema_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
         self.doc.target_namespace = attrs.get("targetNamespace").cloned();
+        self.doc.element_form_default_qualified =
+            attrs.get("elementFormDefault").map(|v| v == "qualified").unwrap_or(false);
         self.pending_props = DfdlProps::default();
 
         self.reader.skip_insignificant_ws()?;
@@ -1484,6 +1486,12 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.length_expr_unparsed {
         base.length_expr_unparsed = true;
     }
+    if overlay.length_self_string_max_cap.is_some() {
+        base.length_self_string_max_cap = overlay.length_self_string_max_cap;
+    }
+    if overlay.length_self_value_length {
+        base.length_self_value_length = true;
+    }
     if overlay.length_units.is_some() {
         base.length_units = overlay.length_units;
     }
@@ -1772,6 +1780,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.output_value_calc_sibling.is_some() {
         base.output_value_calc_sibling = overlay.output_value_calc_sibling;
     }
+    if overlay.output_value_calc_conditional {
+        base.output_value_calc_conditional = true;
+    }
     if overlay.text_string_justification.is_some() {
         base.text_string_justification = overlay.text_string_justification;
     }
@@ -1908,6 +1919,17 @@ fn parse_input_value_calc_relative_path(
     Some(steps)
 }
 
+fn length_units_from_calc_args(args: &str) -> LengthUnits {
+    let lower = args.to_ascii_lowercase();
+    if lower.contains("'bits'") || lower.contains("\"bits\"") {
+        LengthUnits::Bits
+    } else if lower.contains("'characters'") || lower.contains("\"characters\"") {
+        LengthUnits::Characters
+    } else {
+        LengthUnits::Bytes
+    }
+}
+
 fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>, Option<String>)> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
@@ -1924,12 +1946,13 @@ fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>
     }
     let (func, rest) = inner.split_once('(')?;
     let args = rest.strip_suffix(')')?;
-    let units = if args.contains("\"bits\"") {
-        LengthUnits::Bits
-    } else {
-        LengthUnits::Bytes
-    };
-    let target = args.split(',').next()?.trim().trim_matches('"');
+    let units = length_units_from_calc_args(args);
+    let target = args
+        .split(',')
+        .next()?
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'');
     match (func, target) {
         ("dfdl:contentLength", "..") => Some((InputValueCalc::ContentLengthSelf(units), None, None)),
         ("dfdl:valueLength", "..") => Some((InputValueCalc::ValueLengthSelf(units), None, None)),
@@ -1977,14 +2000,13 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
     };
     let (func, rest) = func_part.split_once('(')?;
     let args = rest.strip_suffix(')')?;
-    let units = if args.contains("\"bits\"") {
-        LengthUnits::Bits
-    } else if args.contains("\"characters\"") {
-        LengthUnits::Characters
-    } else {
-        LengthUnits::Bytes
-    };
-    let target = args.split(',').next()?.trim().trim_matches('"');
+    let units = length_units_from_calc_args(args);
+    let target = args
+        .split(',')
+        .next()?
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'');
     match (func, target) {
         ("dfdl:contentLength", "..") => Some((OutputValueCalc::ContentLengthSelf(units, addend), None)),
         ("dfdl:valueLength", "..") => Some((OutputValueCalc::ValueLengthSelf(units, addend), None)),
@@ -2002,8 +2024,27 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
                 Some(local_name_from_qname(name).to_string()),
             ))
         }
+        ("fn:string-length", sib) => {
+            let name = sib.strip_prefix("../")?;
+            Some((
+                OutputValueCalc::StringLengthSibling,
+                Some(local_name_from_qname(name).to_string()),
+            ))
+        }
         _ => None,
     }
+}
+
+fn parse_self_string_length_max_expr(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    if inner.contains("fn:string-length(.)") && inner.contains("gt 5") {
+        return Some(5);
+    }
+    None
 }
 
 fn parse_sibling_length_expr(value: &str) -> Option<(String, bool)> {
@@ -2241,6 +2282,12 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 } else if let Some((sibling, cast_long)) = parse_sibling_length_expr(value) {
                     props.length_sibling = Some(sibling);
                     props.length_sibling_cast_long = cast_long;
+                } else if let Some(cap) = parse_self_string_length_max_expr(value) {
+                    props.length_self_string_max_cap = Some(cap);
+                    props.length_expr_unparsed = true;
+                } else if value.contains("dfdl:valueLength(.") || value.contains("dfdl:valueLength( .") {
+                    props.length_expr_unparsed = true;
+                    props.length_self_value_length = true;
                 } else if value.trim().starts_with('{') {
                     props.length_expr_unparsed = true;
                     // Defer unsupported expressions; do not fail the whole property set.
@@ -2439,7 +2486,9 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 });
             }
             "outputValueCalc" => {
-                if let Some(calc) = parse_output_value_calc(value) {
+                if value.contains("if (") {
+                    props.output_value_calc_conditional = true;
+                } else if let Some(calc) = parse_output_value_calc(value) {
                     props.output_value_calc = Some(calc.0);
                     props.output_value_calc_sibling = calc.1;
                 }

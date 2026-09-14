@@ -431,7 +431,8 @@ pub(crate) fn encode_document_text(text: &str, encoding: &str) -> Result<Vec<u8>
         return encode_bits_charset_text(text, spec);
     }
     match normalize_encoding_name(encoding) {
-        Some("utf-8") | Some("ascii") => Ok(text.as_bytes().to_vec()),
+        Some("utf-8") => Ok(text.as_bytes().to_vec()),
+        Some("ascii") => Ok(text.as_bytes().to_vec()),
         Some("iso-8859-1") => encode_latin1(text),
         Some("ebcdic-cp-us") => encode_ebcdic_cp_us(text),
         Some("utf-16be") => Ok(encode_utf16be(text)),
@@ -455,6 +456,9 @@ pub(crate) fn decode_text_bytes(
         Some("utf-8") => decode_utf8_text(bytes, policy),
         Some("ascii") => {
             if bytes.iter().any(|b| *b > 0x7f) {
+                if let Ok(text) = decode_utf8_text(bytes, policy) {
+                    return Ok(text);
+                }
                 return Err(VmError::InvalidValue {
                     message: "invalid ASCII".into(),
                 });

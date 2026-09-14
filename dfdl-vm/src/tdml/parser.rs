@@ -183,9 +183,10 @@ fn parse_define_schema(attrs: BTreeMap<String, String>, reader: &mut XmlReader<'
         attribute: "name".into(),
     })?;
     let inner = reader.read_inner_xml()?;
+    let element_form_default = attrs.get("elementFormDefault").map(String::as_str);
     Ok(TdmlSchema {
         name,
-        xsd: wrap_schema(&inner),
+        xsd: wrap_schema(&inner, element_form_default),
         compile_base_dir: None,
     })
 }
@@ -815,13 +816,17 @@ fn parse_error_messages(reader: &mut XmlReader<'_>, container: &str) -> Result<V
     Ok(messages)
 }
 
-fn wrap_schema(inner: &str) -> String {
+fn wrap_schema(inner: &str, element_form_default: Option<&str>) -> String {
+    let efd = element_form_default
+        .map(|v| alloc::format!(r#" elementFormDefault="{v}""#))
+        .unwrap_or_default();
     alloc::format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
            xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
            xmlns:dfdlx="http://www.ogf.org/dfdl/dfdl-1.0/extensions"
-           xmlns:ex="http://example.com">
+           xmlns:ex="http://example.com"
+           targetNamespace="http://example.com"{efd}>
 {inner}
 </xs:schema>"#
     )

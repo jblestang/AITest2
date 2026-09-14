@@ -72,7 +72,7 @@ impl<'a> Encoder<'a> {
                     .sequence_value()
                     .ok_or_else(|| VmError::TypeMismatch { expected: "sequence".into() })?;
                 let map = &seq.fields;
-                let effective = precompute_output_values(self, children, map, node_id)?;
+                let effective = precompute_output_values(self, children, map, props)?;
                 self.write_initiator(props, out, bit_count, seq.meta.initiator_alt)?;
                 for (idx, &child) in children.iter().enumerate() {
                     if child_skips_encode(self, child)? {
@@ -486,7 +486,7 @@ impl<'a> Encoder<'a> {
             return Ok(v.clone());
         }
         if props.output_value_calc.is_some() {
-            eval_output_value_calc(self, props, map, &[])
+            eval_output_value_calc(self, props, map, &[], props)
         } else {
             Err(VmError::MissingField { name: key.into() }.into())
         }
@@ -660,29 +660,109 @@ fn sequence_separator_deferred_to_child_occurrences(
         || props.occurs_min > 1)
 }
 
+fn ovc_length_cycle_error(
+    enc: &Encoder<'_>,
+    children: &[u32],
+) -> Result<()> {
+    let strings = enc.ctx.strings();
+    for &a in children {
+        let IrNode::Element {
+            name: name_a,
+            props: props_a,
+            ..
+        } = enc.ctx.program.node(a)?
+        else {
+            continue;
+        };
+        let Some(ovc_sib) = props_a.output_value_calc_sibling else {
+            continue;
+        };
+        let ovc_sib_name = strings.get(ovc_sib)?;
+        for &b in children {
+            if a == b {
+                continue;
+            }
+            let IrNode::Element {
+                name: name_b,
+                props: props_b,
+                ..
+            } = enc.ctx.program.node(b)?
+            else {
+                continue;
+            };
+            let elem_b = strings.get(*name_b)?;
+            if elem_b != ovc_sib_name {
+                continue;
+            }
+            if let Some(len_sib) = props_b.length_sibling {
+                let len_sib_name = strings.get(len_sib)?;
+                let elem_a = strings.get(*name_a)?;
+                if len_sib_name == elem_a {
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!(
+                            "Unparse Error: Element `{elem_a}` does not have a value, due to a circular dependency between `{elem_a}` and `{elem_b}`"
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn precompute_output_values<'a>(
     enc: &Encoder<'a>,
     children: &[u32],
     map: &BTreeMap<String, DfdlValue>,
-    _sequence_id: u32,
+    parent_props: &IrProps,
 ) -> Result<BTreeMap<String, DfdlValue>> {
-    let mut effective = map.clone();
+    ovc_length_cycle_error(enc, children)?;
     for &child in children {
         let IrNode::Element { name, props, .. } = enc.ctx.program.node(child)? else {
             continue;
         };
-        if props.output_value_calc.is_none() {
-            continue;
+        if props.output_value_calc_conditional {
+            let elem = enc.ctx.strings().get(*name)?;
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Unparse Error: Element `{elem}` does not have a value, due to a circular dependency"
+                ),
+            }
+            .into());
         }
-        let key = enc.ctx.strings().get(*name)?.to_string();
-        let computed = eval_output_value_calc(enc, props, &effective, children)?;
-        effective.insert(key, computed);
+    }
+    let mut effective = map.clone();
+    for _pass in 0..3 {
+        for &child in children {
+            let IrNode::Element { name, props, .. } = enc.ctx.program.node(child)? else {
+                continue;
+            };
+            if props.output_value_calc.is_none() {
+                continue;
+            }
+            let key = enc.ctx.strings().get(*name)?.to_string();
+            let computed =
+                eval_output_value_calc(enc, props, &effective, children, parent_props)?;
+            effective.insert(key, computed);
+        }
     }
     Ok(effective)
 }
 
 fn encoded_bit_length(byte_len: usize, bit_count: u8) -> usize {
     byte_len.saturating_mul(8) + bit_count as usize
+}
+
+/// Bit length of a value for `dfdl:valueLength(..., 'bits')` (excludes unused high bits in the last byte).
+fn encoded_value_length_bits(byte_len: usize, bit_count: u8) -> usize {
+    if bit_count == 0 {
+        byte_len.saturating_mul(8)
+    } else if byte_len == 0 {
+        bit_count as usize
+    } else {
+        byte_len.saturating_sub(1).saturating_mul(8) + bit_count as usize
+    }
 }
 
 fn find_child_element_by_name(
@@ -702,19 +782,70 @@ fn find_child_element_by_name(
     Ok(None)
 }
 
+fn value_length_encode_target(enc: &Encoder<'_>, node_id: u32) -> Result<u32> {
+    let mut current = node_id;
+    for _ in 0..4 {
+        match enc.ctx.program.node(current)? {
+            IrNode::Element {
+                kind: crate::ir::ValueKind::Complex,
+                child: Some(child_id),
+                ..
+            } => {
+                current = *child_id;
+            }
+            IrNode::Sequence { .. } => return Ok(current),
+            _ => return Ok(current),
+        }
+    }
+    Ok(current)
+}
+
 fn measure_value_length(
     enc: &Encoder<'_>,
     node_id: u32,
     value: &DfdlValue,
     units: LengthUnits,
 ) -> Result<usize> {
+    if let Ok(IrNode::Element {
+        kind,
+        child,
+        props,
+        ..
+    }) = enc.ctx.program.node(node_id)
+    {
+        if child.is_none()
+            && props.length_kind == LengthKind::Delimited
+            && matches!(
+                kind,
+                crate::ir::ValueKind::String
+                    | crate::ir::ValueKind::Decimal
+                    | crate::ir::ValueKind::Integer
+            )
+        {
+            let bytes = value_byte_length(value)?;
+            return match units {
+                LengthUnits::Bits => Ok(bytes.saturating_mul(8)),
+                LengthUnits::Bytes => Ok(bytes),
+                LengthUnits::Characters => Err(VmError::UnsupportedOperation {
+                    op: "outputValueCalc character units".into(),
+                }
+                .into()),
+            };
+        }
+    }
     let mut buf = Vec::new();
     let mut bit_count = 0u8;
-    enc.encode_node(node_id, value, &mut buf, &mut bit_count)?;
-    let total_bits = encoded_bit_length(buf.len(), bit_count);
+    let encode_id = if value.sequence_fields().is_some() {
+        value_length_encode_target(enc, node_id)?
+    } else {
+        node_id
+    };
+    enc.encode_node(encode_id, value, &mut buf, &mut bit_count)?;
     match units {
-        LengthUnits::Bits => Ok(total_bits),
-        LengthUnits::Bytes => Ok((total_bits + 7) / 8),
+        LengthUnits::Bits => Ok(encoded_value_length_bits(buf.len(), bit_count)),
+        LengthUnits::Bytes => {
+            Ok((encoded_value_length_bits(buf.len(), bit_count) + 7) / 8)
+        }
         LengthUnits::Characters => Err(VmError::UnsupportedOperation {
             op: "outputValueCalc character units".into(),
         }
@@ -727,6 +858,7 @@ fn eval_output_value_calc(
     props: &IrProps,
     map: &BTreeMap<String, DfdlValue>,
     children: &[u32],
+    parent_props: &IrProps,
 ) -> Result<DfdlValue> {
     let strings = enc.ctx.strings();
     let calc = props.output_value_calc.ok_or_else(|| VmError::InvalidValue {
@@ -743,6 +875,20 @@ fn eval_output_value_calc(
         OutputValueCalc::ContentLengthSibling(_units, addend) => {
             let sib = sibling_from_map(props.output_value_calc_sibling, map, strings)?;
             value_byte_length(sib)? as i64 + addend
+        }
+        OutputValueCalc::StringLengthSibling => {
+            let sib = sibling_from_map(props.output_value_calc_sibling, map, strings)?;
+            let len = match sib {
+                DfdlValue::String(s) => s.text.chars().count(),
+                DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => s.chars().count(),
+                other => {
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!("string-length on unsupported value `{other:?}`"),
+                    }
+                    .into());
+                }
+            } as i64;
+            len
         }
         OutputValueCalc::ValueLengthSibling(units, addend) => {
             let sib_name = strings.get(
@@ -835,6 +981,18 @@ fn resolve_length_props_encode(
     map: &BTreeMap<String, DfdlValue>,
     strings: &crate::ir::StringPool,
 ) -> Result<IrProps> {
+    if let Some(cap) = props.length_self_string_max_cap {
+        let len = map
+            .values()
+            .find_map(|v| match v {
+                DfdlValue::String(s) => Some(s.text.chars().count() as u64),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let mut resolved = props.clone();
+        resolved.length = Some(len.min(cap));
+        return Ok(resolved);
+    }
     if props.length_kind != LengthKind::Explicit || props.length.is_some() {
         return Ok(props.clone());
     }

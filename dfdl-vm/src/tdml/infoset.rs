@@ -12,6 +12,7 @@ use xml_no_std::reader::XmlEvent;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InfosetNode {
     pub name: String,
+    pub namespace: Option<String>,
     pub text: Option<String>,
     pub nil: bool,
     pub children: BTreeMap<String, Vec<InfosetNode>>,
@@ -280,7 +281,7 @@ fn parse_expected_infoset(xml: &str) -> Result<Vec<InfosetNode>, String> {
     parse_expected_infoset_with_context(xml, &TdmlResourceContext::default())
 }
 
-fn parse_expected_infoset_with_context(
+pub fn parse_expected_infoset_with_context(
     xml: &str,
     ctx: &TdmlResourceContext,
 ) -> Result<Vec<InfosetNode>, String> {
@@ -365,6 +366,13 @@ fn extract_dfdl_infoset_xml(xml: &str) -> String {
 }
 
 fn parse_infoset_elements(xml: &str) -> Result<Vec<InfosetNode>, String> {
+    parse_infoset_elements_with_default_ns(xml, None)
+}
+
+fn parse_infoset_elements_with_default_ns(
+    xml: &str,
+    default_ns: Option<String>,
+) -> Result<Vec<InfosetNode>, String> {
     let wrapped = alloc::format!("<infosetRoot>{xml}</infosetRoot>");
     let mut reader = XmlReader::new(&wrapped);
     reader.expect_start("infosetRoot").map_err(|e| e.to_string())?;
@@ -377,20 +385,32 @@ fn parse_infoset_elements(xml: &str) -> Result<Vec<InfosetNode>, String> {
             break;
         }
         match reader.peek_start_local().map_err(|e| e.to_string())? {
-            Some(_) => nodes.push(parse_infoset_element(&mut reader)?),
+            Some(_) => nodes.push(parse_infoset_element(&mut reader, default_ns.clone())?),
             None => break,
         }
     }
     Ok(nodes)
 }
 
-fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, String> {
+fn parse_infoset_element(
+    reader: &mut XmlReader<'_>,
+    inherited_default_ns: Option<String>,
+) -> Result<InfosetNode, String> {
     let XmlEvent::StartElement { name, attributes, .. } = reader.next_event().map_err(|e| e.to_string())?
     else {
         return Err("expected infoset element".into());
     };
     let element_name = owned_local_name(&name).to_string();
     let attrs = attrs_to_map(&attributes);
+    let mut default_ns = inherited_default_ns;
+    if let Some(xmlns) = attrs.get("xmlns") {
+        default_ns = Some(xmlns.clone());
+    }
+    let namespace = name
+        .namespace
+        .clone()
+        .filter(|ns| !ns.is_empty())
+        .or_else(|| default_ns.clone());
     let is_nil = attrs
         .get("xsi:nil")
         .or_else(|| attrs.get("{http://www.w3.org/2001/XMLSchema-instance}nil"))
@@ -400,6 +420,7 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
         reader.expect_end(&element_name).map_err(|e| e.to_string())?;
         return Ok(InfosetNode {
             name: element_name,
+            namespace,
             text: None,
             nil: is_nil,
             children: BTreeMap::new(),
@@ -412,6 +433,7 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
         reader.expect_end(&element_name).map_err(|e| e.to_string())?;
         return Ok(InfosetNode {
             name: element_name,
+            namespace,
             text: None,
             nil: is_nil,
             children: BTreeMap::new(),
@@ -421,13 +443,15 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
 
     match reader.peek_start_local().map_err(|e| e.to_string())? {
         Some(_) => {
-            let children = parse_infoset_elements(&reader.read_inner_xml().map_err(|e| e.to_string())?)?;
+            let inner = reader.read_inner_xml().map_err(|e| e.to_string())?;
+            let children = parse_infoset_elements_with_default_ns(&inner, default_ns.clone())?;
             let mut map: BTreeMap<String, Vec<InfosetNode>> = BTreeMap::new();
             for child in children {
                 map.entry(child.name.clone()).or_default().push(child);
             }
             Ok(InfosetNode {
                 name: element_name,
+                namespace,
                 text: None,
                 nil: is_nil,
                 children: map,
@@ -438,6 +462,7 @@ fn parse_infoset_element(reader: &mut XmlReader<'_>) -> Result<InfosetNode, Stri
             let text = reader.read_text_until_end(&element_name).map_err(|e| e.to_string())?;
             Ok(InfosetNode {
                 name: element_name,
+                namespace,
                 text: Some(text.trim().to_string()),
                 nil: is_nil,
                 children: BTreeMap::new(),
@@ -462,6 +487,7 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
     match value {
         DfdlValue::Sequence(seq) => InfosetNode {
             name: name.to_string(),
+            namespace: None,
             text: None,
             nil: false,
             children: seq
@@ -473,6 +499,7 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
         },
         DfdlValue::Array(items) => InfosetNode {
             name: name.to_string(),
+            namespace: None,
             text: None,
             nil: false,
             children: BTreeMap::from([(name.to_string(), items.iter().map(|v| value_to_node(name, v)).collect())]),
@@ -481,6 +508,7 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
         DfdlValue::Choice { discriminator, value } => value_to_node(discriminator, value),
         DfdlValue::Null => InfosetNode {
             name: name.to_string(),
+            namespace: None,
             text: None,
             nil: true,
             children: BTreeMap::new(),
@@ -488,6 +516,7 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
         },
         DfdlValue::Blob(bytes) => InfosetNode {
             name: name.to_string(),
+            namespace: None,
             text: None,
             nil: false,
             children: BTreeMap::new(),
@@ -495,6 +524,7 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
         },
         scalar => InfosetNode {
             name: name.to_string(),
+            namespace: None,
             text: Some(scalar_to_string(scalar)),
             nil: false,
             children: BTreeMap::new(),

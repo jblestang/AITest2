@@ -5280,6 +5280,7 @@ fn truncate_string_for_explicit_length(
     units: LengthUnits,
     encoding: &str,
     props: &IrProps,
+    kind: crate::ir::ValueKind,
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
     use crate::vm::encoding::count_characters;
@@ -5296,10 +5297,10 @@ fn truncate_string_for_explicit_length(
     }
     if !props.truncate_specified_length_string {
         return Err(VmError::InvalidValue {
-            message: "text value too long for explicit length".into(),
+            message: "Unparse Error: data too long for explicit length and unable to truncate".into(),
         });
     }
-    match props.text_string_justification {
+    match text_justification_for_kind(props, kind) {
         TextStringJustification::Center => Err(VmError::InvalidValue {
             message: alloc::format!(
                 "Unparse Error: dfdl:textStringJustification=\"center\" cannot be used with dfdl:truncateSpecifiedLengthString=\"yes\" when truncation is required"
@@ -5573,6 +5574,7 @@ pub(crate) fn write_text_scalar(
                 props.length_units,
                 encoding,
                 props,
+                kind,
             )?;
             pad_text_field(&text, len, props.length_units, props, strings, kind, encoding)?
         }
@@ -5626,7 +5628,7 @@ fn apply_min_length_pad(
     let pad_char = pad_char_for_kind(props, strings, kind);
     let pad_ch = pad_char.chars().next().unwrap_or(' ');
     let pad_count = min_len - current;
-    match props.text_string_justification {
+    match text_justification_for_kind(props, kind) {
         TextStringJustification::Right => {
             let mut out = alloc::string::String::new();
             for _ in 0..pad_count {
@@ -5672,13 +5674,14 @@ fn pad_text_field(
 
     let pad_char = pad_char_for_kind(props, strings, kind);
     let pad_byte = pad_char.chars().next().unwrap_or(b' ' as char) as u8;
+    let justification = text_justification_for_kind(props, kind);
 
     match units {
         LengthUnits::Bytes => {
             let mut bytes = text.as_bytes().to_vec();
             if bytes.len() > len {
                 if props.truncate_specified_length_string {
-                    bytes = match props.text_string_justification {
+                    bytes = match justification {
                         TextStringJustification::Center => {
                             return Err(VmError::InvalidValue {
                                 message: alloc::format!(
@@ -5696,7 +5699,7 @@ fn pad_text_field(
                 }
             }
             let pad_count = len - bytes.len();
-            match props.text_string_justification {
+            match justification {
                 TextStringJustification::Right => {
                     bytes.splice(0..0, iter::repeat(pad_byte).take(pad_count));
                 }
@@ -5722,7 +5725,7 @@ fn pad_text_field(
             let mut padded = text.to_string();
             let pad_count = len - current;
             let pad_str: alloc::string::String = pad_char.chars().take(1).collect();
-            match props.text_string_justification {
+            match justification {
                 TextStringJustification::Right => {
                     for _ in 0..pad_count {
                         padded.insert_str(0, &pad_str);
@@ -5767,6 +5770,7 @@ fn pad_raw_text_field(
 
     let pad_char = pad_char_for_kind(props, strings, kind);
     let pad_byte = pad_char.chars().next().unwrap_or(b' ' as char) as u8;
+    let justification = text_justification_for_kind(props, kind);
 
     match units {
         LengthUnits::Bytes => {
@@ -5776,7 +5780,7 @@ fn pad_raw_text_field(
                 return Ok(bytes);
             }
             let pad_count = len - bytes.len();
-            match props.text_string_justification {
+            match justification {
                 TextStringJustification::Right => {
                     bytes.splice(0..0, iter::repeat(pad_byte).take(pad_count));
                 }
@@ -5806,7 +5810,7 @@ fn pad_raw_text_field(
             let pad_count = len - current;
             let pad_bytes = encode_document_text(&pad_char, encoding)?;
             let mut out = alloc::vec::Vec::new();
-            match props.text_string_justification {
+            match justification {
                 TextStringJustification::Right => {
                     for _ in 0..pad_count {
                         out.extend_from_slice(&pad_bytes);
@@ -6888,6 +6892,24 @@ fn pad_char_from_props<'a>(props: &IrProps, strings: &'a StringPool) -> Option<&
     props
         .text_number_pad_character
         .and_then(|id| strings.get(id).ok())
+}
+
+fn text_justification_for_kind(props: &IrProps, kind: crate::ir::ValueKind) -> TextStringJustification {
+    use crate::ir::ValueKind::*;
+    let numeric = matches!(
+        kind,
+        Int | Integer | Long | Short | Byte | UnsignedInt | UnsignedShort | UnsignedByte | Float
+            | Double | Decimal
+    );
+    if numeric {
+        match props.text_number_justification {
+            TextNumberJustification::Left => TextStringJustification::Left,
+            TextNumberJustification::Right => TextStringJustification::Right,
+            TextNumberJustification::Center => TextStringJustification::Center,
+        }
+    } else {
+        props.text_string_justification
+    }
 }
 
 fn pad_char_for_kind(

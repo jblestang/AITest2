@@ -440,6 +440,42 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         }
     };
 
+    let infoset_nodes = match super::parse_expected_infoset_with_context(
+        &test.infoset,
+        &suite.resource_context,
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!("infoset parse error: {e}")),
+            });
+        }
+    };
+    if let Err(msg) = crate::unparse_validate::validate_unparse_infoset_nodes(
+        spec.schema(),
+        spec.program(),
+        &test.root,
+        &infoset_nodes,
+    ) {
+        if let Some(expected_errors) = &test.expected_errors {
+            if error_messages_match(expected_errors, &msg) {
+                return Ok(TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Pass,
+                });
+            }
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!("encode error mismatch: {msg}")),
+            });
+        }
+        return Ok(TestResult {
+            name: test.name.clone(),
+            outcome: TestOutcome::Fail(alloc::format!("encode error: {msg}")),
+        });
+    }
+
     let value = match super::infoset::infoset_xml_to_root_value_with_context(
         &test.infoset,
         &test.root,

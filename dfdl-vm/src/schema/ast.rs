@@ -31,6 +31,10 @@ pub struct DfdlProps {
     pub length_sibling_cast_long: bool,
     /// True when a `{ ... }` length expression was present but not fully compiled.
     pub length_expr_unparsed: bool,
+    /// `{ if (fn:string-length(.) gt N) then N else fn:string-length(.) }` style cap.
+    pub length_self_string_max_cap: Option<u64>,
+    /// `dfdl:valueLength(., 'bytes')` self-referential length (compile-time error).
+    pub length_self_value_length: bool,
     pub length_units: Option<LengthUnits>,
     pub encoding: Option<String>,
     pub encoding_error_policy: Option<EncodingErrorPolicy>,
@@ -128,6 +132,8 @@ pub struct DfdlProps {
     pub output_value_calc: Option<OutputValueCalc>,
     /// Local name of sibling referenced by `../name` in outputValueCalc.
     pub output_value_calc_sibling: Option<String>,
+    /// XPath `if`/fn: expression on outputValueCalc (cycle detection for TDML negative tests).
+    pub output_value_calc_conditional: bool,
     pub text_string_justification: Option<TextStringJustification>,
     pub text_number_justification: Option<TextNumberJustification>,
     pub text_standard_base: Option<u32>,
@@ -326,6 +332,7 @@ pub enum OutputValueCalc {
     ValueLengthSelf(LengthUnits, i64),
     ContentLengthSibling(LengthUnits, i64),
     ValueLengthSibling(LengthUnits, i64),
+    StringLengthSibling,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -620,6 +627,8 @@ pub struct FormatDefaults {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SchemaDocument {
     pub target_namespace: Option<String>,
+    /// `xs:schema/@elementFormDefault` (default unqualified).
+    pub element_form_default_qualified: bool,
     pub format_defaults: FormatDefaults,
     /// Named DFDL formats from `dfdl:defineFormat`.
     pub named_formats: BTreeMap<String, DfdlProps>,

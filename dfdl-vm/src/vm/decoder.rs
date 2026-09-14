@@ -248,6 +248,11 @@ impl<'a> Decoder<'a> {
                         Ok(child_value) => {
                             prev_absent_or_empty = child_element_props
                                 .map(|cp| {
+                                    if cp.length_kind == LengthKind::Explicit
+                                        && cp.length == Some(0)
+                                    {
+                                        return Ok(false);
+                                    }
                                     is_suppressible_empty_representation(
                                         &child_value,
                                         cp,
@@ -285,13 +290,25 @@ impl<'a> Decoder<'a> {
                             }
                         }
                         Err(e) if is_element_absent(&e) => {
-                            if let Ok(IrNode::Element { props, .. }) =
+                            if let Ok(IrNode::Element { name, props, .. }) =
                                 self.ctx.program.node(child)
                             {
                                 let zero_len = props.length_kind == LengthKind::Explicit
                                     && props.length == Some(0);
                                 if props.occurs_min > 0 && !zero_len {
                                     return Err(e);
+                                }
+                                if zero_len {
+                                    let key = self.ctx.strings().get(*name)?.to_string();
+                                    insert_child(
+                                        &mut map,
+                                        child,
+                                        DfdlValue::string(""),
+                                        self.ctx.program,
+                                    )?;
+                                    let _ = key;
+                                    prev_absent_or_empty = true;
+                                    continue;
                                 }
                             }
                             prev_absent_or_empty = true;
@@ -441,6 +458,9 @@ impl<'a> Decoder<'a> {
 
         while (items.len() as u64) < max {
             if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
+                if items.is_empty() {
+                    items.push(DfdlValue::string(""));
+                }
                 break;
             }
             if items.len() as u64 >= min && cursor.is_empty() {
@@ -498,16 +518,15 @@ impl<'a> Decoder<'a> {
                         .into());
                     }
                     items.push(v);
+                    if parent_sequence.is_some_and(|p| {
+                        p.separator_position == SeparatorPosition::Postfix
+                    }) {
+                        self.consume_occurrence_separator(parent_sequence, cursor)?;
+                    }
                 }
                 Err(e) => {
                     if (items.len() as u64) >= min {
-                        *cursor = if cursor.pos != before_occurrence_sep.pos {
-                            saved
-                        } else if items.is_empty() {
-                            saved
-                        } else {
-                            before_occurrence_sep
-                        };
+                        *cursor = saved;
                         break;
                     }
                     if min == 0 && items.is_empty() {

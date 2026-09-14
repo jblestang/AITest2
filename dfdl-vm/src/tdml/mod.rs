@@ -6,7 +6,10 @@ mod validation;
 
 pub use resources::{load_tdml_resource, TdmlResourceContext};
 
-pub use infoset::{compare_infoset, infer_root_element_name, infoset_xml_to_root_value, InfosetNode};
+pub use infoset::{
+    compare_infoset, infer_root_element_name, infoset_xml_to_root_value, parse_expected_infoset_with_context,
+    InfosetNode,
+};
 pub use parser::{effective_round_trip, parse_tdml, ParserTestCase, RoundTrip, TdmlDocument, TdmlSchema, TdmlSuite, UnparserTestCase};
 pub use validation::collect_post_decode_validation_errors;
 pub use runner::{

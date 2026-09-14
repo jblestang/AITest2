@@ -93,8 +93,8 @@ const SECTION00_GATE_SKIP_FILES: &[&str] = &[
 ];
 
 /// Baseline for all `section00/general/*.tdml` (~98 pass / ~52 fail, ~65% today).
-const SECTION00_BASELINE_PASS_MIN: usize = 95;
-const SECTION00_BASELINE_FAIL_MAX: usize = 55;
+const SECTION00_BASELINE_PASS_MIN: usize = 113;
+const SECTION00_BASELINE_FAIL_MAX: usize = 22;
 
 fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
     let Ok(tdml) = fs::read_to_string(path) else {

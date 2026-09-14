@@ -1254,6 +1254,12 @@ fn finalize_element_props(
             }
         }
     }
+    if ir.length_self_value_length {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Value length unknown".into(),
+        }
+        .into());
+    }
     if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed)
         && ir.length.is_none()
         && ir.length_sibling.is_none()
@@ -2376,6 +2382,12 @@ fn overlay_dfdl_to_ir(
     if props.length_expr_unparsed {
         base.length_expr_unparsed = true;
     }
+    if props.length_self_string_max_cap.is_some() {
+        base.length_self_string_max_cap = props.length_self_string_max_cap;
+    }
+    if props.length_self_value_length {
+        base.length_self_value_length = true;
+    }
     if let Some(v) = props.length_units {
         base.length_units = v;
     }
@@ -2760,6 +2772,9 @@ fn overlay_dfdl_to_ir(
     if let Some(v) = props.output_value_calc {
         base.output_value_calc = Some(v);
     }
+    if props.output_value_calc_conditional {
+        base.output_value_calc_conditional = true;
+    }
     if props.output_value_calc_sibling.is_some() {
         base.output_value_calc_sibling = props
             .output_value_calc_sibling
@@ -2843,6 +2858,8 @@ fn element_props_for_simple_type_compile(element: &DfdlProps) -> DfdlProps {
         length_sibling: element.length_sibling.clone(),
         length_sibling_cast_long: element.length_sibling_cast_long,
         length_expr_unparsed: element.length_expr_unparsed,
+        length_self_string_max_cap: element.length_self_string_max_cap,
+        length_self_value_length: element.length_self_value_length,
         length_pattern: element.length_pattern.clone(),
         prefix_length_type: element.prefix_length_type.clone(),
         prefix_includes_prefix_length: element.prefix_includes_prefix_length,
@@ -2888,6 +2905,12 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.length_expr_unparsed {
         out.length_expr_unparsed = true;
+    }
+    if overlay.length_self_string_max_cap.is_some() {
+        out.length_self_string_max_cap = overlay.length_self_string_max_cap;
+    }
+    if overlay.length_self_value_length {
+        out.length_self_value_length = true;
     }
     if matches!(
         base.length_kind,
@@ -3097,6 +3120,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     out.output_value_calc = overlay.output_value_calc;
     out.output_value_calc_sibling = overlay.output_value_calc_sibling;
+    if overlay.output_value_calc_conditional {
+        out.output_value_calc_conditional = true;
+    }
     out.text_string_justification = overlay.text_string_justification;
     out.text_number_justification = overlay.text_number_justification;
     out.text_standard_base = overlay.text_standard_base;
