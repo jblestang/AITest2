@@ -290,7 +290,7 @@ fn daffodil_section05_regression_gate() {
         stats.skip
     );
     assert!(
-        stats.fail <= 511,
+        stats.fail <= 506,
         "section05 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,

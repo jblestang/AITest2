@@ -3003,7 +3003,7 @@ pub(crate) fn read_text_scalar(
             parse_int_typed_with_base(&num, "xs:byte", base).map(DfdlValue::Byte)
         }
         UnsignedByte => {
-            let num = if base == 10 {
+            let num = if base == 10 && props.custom_text_number_pattern {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
                 trimmed.to_string()
@@ -3019,7 +3019,7 @@ pub(crate) fn read_text_scalar(
             parse_int_typed_with_base(&num, "xs:short", base).map(DfdlValue::Short)
         }
         UnsignedShort => {
-            let num = if base == 10 {
+            let num = if base == 10 && props.custom_text_number_pattern {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
                 trimmed.to_string()
@@ -3036,7 +3036,7 @@ pub(crate) fn read_text_scalar(
             parse_int_typed_with_base(&num, "xs:int", base).map(DfdlValue::Int)
         }
         Integer => {
-            let num = if base == 10 {
+            let num = if base == 10 && props.custom_text_number_pattern {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
                 trimmed.to_string()
@@ -3045,7 +3045,7 @@ pub(crate) fn read_text_scalar(
                 .map(DfdlValue::Integer)
         }
         UnsignedInt => {
-            let num = if base == 10 {
+            let num = if base == 10 && props.custom_text_number_pattern {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
                 trimmed.to_string()
