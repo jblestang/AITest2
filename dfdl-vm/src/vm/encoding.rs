@@ -63,10 +63,35 @@ pub(crate) fn bits_charset_spec(name: &str) -> Option<BitsCharsetSpec> {
             alphabet: "0123",
             bit_order: BitOrder::LeastSignificantBitFirst,
         })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-US-ASCII-7-BIT-PACKED")
+        || eq_ascii_ignore_case(name, "us-ascii-7-bit-packed")
+    {
+        Some(BitsCharsetSpec {
+            width: 7,
+            alphabet: USASCII7_BIT_PACKED_ALPHABET,
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
     } else {
         None
     }
 }
+
+/// Code units 0..=127 for `X-DFDL-US-ASCII-7-BIT-PACKED`.
+const USASCII7_BIT_PACKED_ALPHABET: &str = {
+    const BYTES: [u8; 128] = {
+        let mut out = [0u8; 128];
+        let mut i = 0usize;
+        while i < 128 {
+            out[i] = i as u8;
+            i += 1;
+        }
+        out
+    };
+    match core::str::from_utf8(&BYTES) {
+        Ok(s) => s,
+        Err(_) => "",
+    }
+};
 
 pub(crate) fn bits_charset_code_unit_width(name: &str) -> Option<u64> {
     bits_charset_spec(name).map(|s| s.width as u64)

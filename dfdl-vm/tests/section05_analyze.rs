@@ -139,6 +139,17 @@ fn section05_failure_buckets() {
     eprintln!("\nTOTAL pass={tp} fail={tf}");
 }
 
+#[test]
+#[ignore]
+fn debug_bitorder_tdml_parse() {
+    let p = Path::new(TDML_ROOT).join("simple_types/BitOrder.tdml");
+    let tdml = fs::read_to_string(p).unwrap();
+    match parse_tdml(&tdml) {
+        Ok(s) => eprintln!("BitOrder parse ok: {} tests", s.tests.len()),
+        Err(e) => eprintln!("BitOrder parse error: {e:?}"),
+    }
+}
+
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     for e in entries.flatten() {

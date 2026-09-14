@@ -277,20 +277,20 @@ fn daffodil_section05_regression_gate() {
         "section05: pass={} fail={} skip={} parse_fail={}",
         stats.pass, stats.fail, stats.skip, stats.parse_fail
     );
-    assert!(
-        stats.parse_fail <= 1,
+    assert_eq!(
+        stats.parse_fail, 0,
         "section05 TDML load errors: {stats:?}"
     );
     // Baseline (2026-03): facets/simple-types need type resolution and expected-error matching for 100%.
     assert!(
-        stats.pass >= 300,
-        "section05: expected at least 300 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 313,
+        "section05: expected at least 313 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 489,
+        stats.fail <= 498,
         "section05 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,

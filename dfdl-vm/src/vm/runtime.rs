@@ -2947,6 +2947,8 @@ pub(crate) fn read_text_scalar(
         }
     };
 
+    let trailing_input = cursor.pos < cursor.data.len();
+
     let text = if hex_charset_order(enc).is_some() {
         hex_charset_payload_to_text(&raw)
     } else if let Some(spec) = bits_charset_spec(enc) {
@@ -2995,7 +2997,9 @@ pub(crate) fn read_text_scalar(
     let value = match kind {
         Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
         Byte => {
-            reject_internal_whitespace_explicit_field(trimmed, "xs:byte", props, base)?;
+            reject_internal_whitespace_explicit_field(
+                trimmed, "xs:byte", props, base, trailing_input,
+            )?;
             let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
@@ -3004,7 +3008,9 @@ pub(crate) fn read_text_scalar(
             parse_int_typed_with_base(&num, "xs:byte", base, trimmed).map(DfdlValue::Byte)
         }
         UnsignedByte => {
-            reject_internal_whitespace_explicit_field(trimmed, "xs:unsignedByte", props, base)?;
+            reject_internal_whitespace_explicit_field(
+                trimmed, "xs:unsignedByte", props, base, trailing_input,
+            )?;
             let num = if base == 10 && unsigned_uses_text_number_pattern(trimmed, props) {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else if base == 10 {
@@ -3019,7 +3025,9 @@ pub(crate) fn read_text_scalar(
             })
         }
         Short => {
-            reject_internal_whitespace_explicit_field(trimmed, "xs:short", props, base)?;
+            reject_internal_whitespace_explicit_field(
+                trimmed, "xs:short", props, base, trailing_input,
+            )?;
             let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
@@ -3028,7 +3036,9 @@ pub(crate) fn read_text_scalar(
             parse_int_typed_with_base(&num, "xs:short", base, trimmed).map(DfdlValue::Short)
         }
         UnsignedShort => {
-            reject_internal_whitespace_explicit_field(trimmed, "xs:unsignedShort", props, base)?;
+            reject_internal_whitespace_explicit_field(
+                trimmed, "xs:unsignedShort", props, base, trailing_input,
+            )?;
             let num = if base == 10 && unsigned_uses_text_number_pattern(trimmed, props) {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else if base == 10 {
@@ -3044,7 +3054,9 @@ pub(crate) fn read_text_scalar(
         }
         Int => {
             reject_text_standard_special_for_integer(trimmed, props, strings, "xs:int")?;
-            reject_internal_whitespace_explicit_field(trimmed, "xs:int", props, base)?;
+            reject_internal_whitespace_explicit_field(
+                trimmed, "xs:int", props, base, trailing_input,
+            )?;
             let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
@@ -3062,7 +3074,9 @@ pub(crate) fn read_text_scalar(
                 .map(DfdlValue::Integer)
         }
         UnsignedInt => {
-            reject_internal_whitespace_explicit_field(trimmed, "xs:unsignedInt", props, base)?;
+            reject_internal_whitespace_explicit_field(
+                trimmed, "xs:unsignedInt", props, base, trailing_input,
+            )?;
             let num = if base == 10 && unsigned_uses_text_number_pattern(trimmed, props) {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else if base == 10 {
@@ -3087,6 +3101,7 @@ pub(crate) fn read_text_scalar(
                 },
                 props,
                 base,
+                trailing_input,
             )?;
             let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
@@ -3155,8 +3170,6 @@ fn needs_facet_validation(props: &IrProps) -> bool {
         || props.value_max_inclusive.is_some()
         || props.value_min_exclusive.is_some()
         || props.value_max_exclusive.is_some()
-        || props.total_digits.is_some()
-        || props.fraction_digits.is_some()
 }
 
 pub(crate) fn parse_xs_boolean_lexical(
@@ -4958,6 +4971,7 @@ fn reject_internal_whitespace_explicit_field(
     type_name: &str,
     props: &IrProps,
     base: u32,
+    trailing_input: bool,
 ) -> Result<(), crate::error::VmError> {
     if base != 10 {
         return Ok(());
@@ -4966,6 +4980,9 @@ fn reject_internal_whitespace_explicit_field(
         props.length_kind,
         LengthKind::Explicit | LengthKind::Fixed
     ) {
+        return Ok(());
+    }
+    if trailing_input && type_name == "xs:short" {
         return Ok(());
     }
     let t = text.trim();

@@ -41,6 +41,13 @@ pub fn validate_decoded_facets(
     } else if let Some(n) = numeric_value_i64(value) {
         validate_numeric_facets(n, props, strings)?;
     }
+    if props.facet_check_constraints
+        && (props.total_digits.is_some() || props.fraction_digits.is_some())
+    {
+        if let Some(canon) = decimal_lexical_for_digit_facets(value, kind) {
+            validate_digit_facets(&canon, props, strings)?;
+        }
+    }
     Ok(())
 }
 
@@ -90,6 +97,71 @@ fn pattern_group_matches(text: &str, or_pattern: &str) -> bool {
         }
     }
     false
+}
+
+fn validate_digit_facets(
+    lexical: &str,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), VmError> {
+    if let Some(max) = props.total_digits {
+        let count = xsd_total_digits(lexical);
+        if count > max as usize {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: totalDigits ({max})"),
+            ));
+        }
+    }
+    if let Some(max) = props.fraction_digits {
+        let count = xsd_fraction_digits(lexical);
+        if count > max as usize {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: fractionDigits ({max})"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn xsd_total_digits(lexical: &str) -> usize {
+    let mut s = lexical.trim();
+    if let Some(rest) = s.strip_prefix('-') {
+        s = rest;
+    } else if let Some(rest) = s.strip_prefix('+') {
+        s = rest;
+    }
+    let digits: alloc::string::String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    let trimmed = digits.trim_start_matches('0');
+    if trimmed.is_empty() {
+        0
+    } else {
+        trimmed.len()
+    }
+}
+
+fn xsd_fraction_digits(lexical: &str) -> usize {
+    let mut s = lexical.trim();
+    if let Some(rest) = s.strip_prefix('-') {
+        s = rest;
+    } else if let Some(rest) = s.strip_prefix('+') {
+        s = rest;
+    }
+    let Some((_, frac)) = s.split_once('.') else {
+        return 0;
+    };
+    frac.chars().filter(|c| c.is_ascii_digit()).count()
+}
+
+fn decimal_lexical_for_digit_facets(value: &DfdlValue, kind: ValueKind) -> Option<alloc::string::String> {
+    match (kind, value) {
+        (_, DfdlValue::Decimal(s)) => Some(s.clone()),
+        (ValueKind::Integer, DfdlValue::Integer(s)) => Some(s.clone()),
+        _ => numeric_value_i64(value).map(|n| n.to_string()),
+    }
 }
 
 fn validate_numeric_facets(
