@@ -1424,6 +1424,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.calendar_pattern.is_some() {
         base.calendar_pattern = overlay.calendar_pattern;
     }
+    if overlay.calendar_pattern_kind.is_some() {
+        base.calendar_pattern_kind = overlay.calendar_pattern_kind;
+    }
     if overlay.text_number_pattern.is_some() {
         base.text_number_pattern = overlay.text_number_pattern;
     }
@@ -2278,7 +2281,18 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 props.decimal_signed = Some(matches!(value.as_str(), "yes" | "true" | "1"));
             }
             "calendarPattern" => props.calendar_pattern = Some(value.clone()),
-            "calendarPatternKind" => {}
+            "calendarPatternKind" => {
+                props.calendar_pattern_kind = Some(match value.as_str() {
+                    "explicit" => crate::schema::CalendarPatternKind::Explicit,
+                    "implicit" => crate::schema::CalendarPatternKind::Implicit,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown calendarPatternKind `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
             "textNumberPattern" => props.text_number_pattern = Some(value.clone()),
             "textNumberCheckPolicy" => {
                 props.text_number_check_policy = Some(match value.as_str() {

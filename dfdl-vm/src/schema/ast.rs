@@ -55,6 +55,7 @@ pub struct DfdlProps {
     pub binary_decimal_virtual_point_sde: Option<i32>,
     pub decimal_signed: Option<bool>,
     pub calendar_pattern: Option<String>,
+    pub calendar_pattern_kind: Option<CalendarPatternKind>,
     pub text_number_pattern: Option<String>,
     pub text_number_check_policy: Option<BinaryNumberCheckPolicy>,
     pub text_number_rep: Option<TextNumberRep>,
@@ -165,6 +166,13 @@ pub enum ObjectKind {
     Normal,
     Bytes,
     Chars,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CalendarPatternKind {
+    #[default]
+    Implicit,
+    Explicit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -242,9 +242,7 @@ impl<'a> Cursor<'a> {
             use crate::error::VmError;
             if e == VmError::UnexpectedEof {
                 let found = self.absolute_bit_index().saturating_sub(start);
-                VmError::InvalidValue {
-                    message: alloc::format!("{requested} bit(s) but found only {found}"),
-                }
+                insufficient_data_bits_error(requested, found)
             } else {
                 e
             }
@@ -1112,7 +1110,7 @@ fn decode_binary_calendar(
         };
     }
     let digits = match rep {
-        BinaryNumberRep::Bcd => bcd_digit_string(bytes, le),
+        BinaryNumberRep::Bcd => bcd_to_digit_string(bytes, le)?,
         BinaryNumberRep::Ibm4690Packed => ibm4690_to_digit_string(bytes, le)
             .map(|(_n, d)| d)
             .unwrap_or_default(),
@@ -1151,6 +1149,18 @@ fn calendar_value_from_text(
     }
 }
 
+fn field_chars(
+    fields: &alloc::collections::BTreeMap<char, alloc::string::String>,
+    keys: &[char],
+) -> Option<alloc::string::String> {
+    for k in keys {
+        if let Some(v) = fields.get(k) {
+            return Some(v.clone());
+        }
+    }
+    None
+}
+
 fn format_calendar_pattern(
     digits: &str,
     pattern: &str,
@@ -1185,7 +1195,7 @@ fn format_calendar_pattern(
         .transpose()?;
     let month = fields.get(&'M').cloned();
     let day = fields.get(&'d').cloned();
-    let hour = fields.get(&'H').cloned();
+    let hour = field_chars(&fields, &['H', 'h', 'k', 'K']);
     let minute = fields.get(&'m').cloned();
     let second = fields.get(&'s').cloned();
     let frac = fields.get(&'S').map(|s| format_calendar_s_fraction(s));
@@ -5103,7 +5113,7 @@ pub(crate) fn insufficient_data_bits_error(needed_bits: usize, found_bits: usize
     use crate::error::VmError;
     VmError::InvalidValue {
         message: alloc::format!(
-            "Parse Error. Needed {needed_bits} bit(s) to parse but found only {found_bits}. insufficient bits in data"
+            "Parse Error. Insufficient bits. Needed {needed_bits} but {found_bits} available"
         ),
     }
 }
@@ -5904,7 +5914,7 @@ fn reject_internal_whitespace_explicit_field(
 
 fn parse_out_of_range(type_name: &str, decimal_value: &str) -> crate::error::VmError {
     crate::error::VmError::InvalidValue {
-        message: alloc::format!("Parse Error. out of range. {type_name} {decimal_value}"),
+        message: alloc::format!("Parse Error. Out of Range. {type_name} {decimal_value}"),
     }
 }
 
@@ -6047,7 +6057,7 @@ fn parse_unbounded_integer_decimal(s: &str, base: u32, non_negative: bool) -> Re
     let (sign, digits) = split_sign_digits(s)
         .map_err(|_| unable_parse_from_text(type_name, s))?;
     if non_negative && sign < 0 {
-        return Err(unable_parse_from_text(type_name, s));
+        return Err(parse_out_of_range(type_name, s.trim()));
     }
     let abs = parse_unbounded_abs_decimal(digits, base, type_name, s)?;
     Ok(decimal_from_sign_magnitude_str(sign, &abs))

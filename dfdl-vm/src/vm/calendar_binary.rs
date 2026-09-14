@@ -447,6 +447,259 @@ pub fn decode_binary_milliseconds_value(bytes: &[u8], le: bool) -> Result<(i64, 
     Ok((secs, millis * 1000))
 }
 
+use crate::error::SchemaError;
+use crate::ir::{IrProps, StringPool, ValueKind};
+use crate::schema::{
+    BinaryNumberRep, CalendarPatternKind, LengthKind, LengthUnits, Representation,
+};
+
+fn binary_calendar_rep_name(rep: BinaryNumberRep) -> &'static str {
+    match rep {
+        BinaryNumberRep::Bcd => "bcd",
+        BinaryNumberRep::Ibm4690Packed => "ibm4690Packed",
+        BinaryNumberRep::PackedBcd => "packed",
+        BinaryNumberRep::BinarySeconds => "binarySeconds",
+        BinaryNumberRep::BinaryMilliseconds => "binaryMilliseconds",
+        BinaryNumberRep::Binary => "binary",
+    }
+}
+
+fn calendar_xsd_type_label(kind: ValueKind, date_only: bool) -> &'static str {
+    match kind {
+        ValueKind::Time => "time",
+        ValueKind::DateTime if date_only => "date",
+        ValueKind::DateTime => "dateTime",
+        _ => "dateTime",
+    }
+}
+
+fn valid_binary_pattern_chars(kind: ValueKind, date_only: bool) -> &'static str {
+    match kind {
+        ValueKind::Time => "hHkKmsS",
+        ValueKind::DateTime if date_only => "dDeFMuwWyY",
+        ValueKind::DateTime => "dDeFhHkKmMsSuwWyY",
+        _ => "",
+    }
+}
+
+fn known_binary_length_in_bits(props: &IrProps) -> Option<u64> {
+    match props.length_kind {
+        LengthKind::Implicit => implicit_binary_calendar_length_bits(props),
+        LengthKind::Explicit | LengthKind::Fixed => {
+            if props.length_expr_unparsed || props.length_sibling.is_some() {
+                return None;
+            }
+            let len = props.length?;
+            Some(match props.length_units {
+                LengthUnits::Bits => len,
+                LengthUnits::Bytes => len.saturating_mul(8),
+                LengthUnits::Characters => return None,
+            })
+        }
+        LengthKind::Delimited | LengthKind::Prefixed => None,
+        LengthKind::Pattern | LengthKind::EndOfParent => None,
+    }
+}
+
+fn implicit_binary_calendar_length_bits(props: &IrProps) -> Option<u64> {
+    match props.binary_calendar_rep {
+        BinaryNumberRep::BinarySeconds => Some(32),
+        BinaryNumberRep::BinaryMilliseconds => Some(64),
+        _ => None,
+    }
+}
+
+fn binary_prim_type_label(kind: ValueKind, props: &IrProps) -> &'static str {
+    match kind {
+        ValueKind::Byte => "Byte",
+        ValueKind::UnsignedByte => "unsignedByte",
+        ValueKind::Short => "short",
+        ValueKind::UnsignedShort => "unsignedShort",
+        ValueKind::Int => "int",
+        ValueKind::UnsignedInt => "unsignedInt",
+        ValueKind::Long => "long",
+        ValueKind::Float => "float",
+        ValueKind::Double => "double",
+        ValueKind::Boolean => "boolean",
+        ValueKind::Integer if props.non_negative_integer => "nonNegativeInteger",
+        ValueKind::Integer => "integer",
+        ValueKind::Time => "Time",
+        ValueKind::DateTime if props.calendar_date_only => "Date",
+        ValueKind::DateTime => "DateTime",
+        ValueKind::Decimal => "decimal",
+        _ => "value",
+    }
+}
+
+/// Compile-time checks for binary calendar fields (BCD / IBM4690 / packed).
+pub fn validate_binary_calendar_schema(
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), SchemaError> {
+    if props.representation != Representation::Binary {
+        return Ok(());
+    }
+    if !matches!(kind, ValueKind::DateTime | ValueKind::Time) {
+        return Ok(());
+    }
+
+    let rep = props.binary_calendar_rep;
+    if matches!(rep, BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds) {
+        if let Some(id) = props.binary_calendar_epoch {
+            let raw = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
+                message: e.to_string(),
+            })?;
+            validate_binary_calendar_epoch(raw).map_err(|e| SchemaError::InvalidProperty {
+                message: match e {
+                    VmError::InvalidValue { message } => message,
+                    other => other.to_string(),
+                },
+            })?;
+        }
+        if kind == ValueKind::DateTime
+            && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
+        {
+            let Some(bits) = known_binary_length_in_bits(props) else {
+                return Ok(());
+            };
+            let expected = if rep == BinaryNumberRep::BinarySeconds {
+                32
+            } else {
+                64
+            };
+            if bits != expected {
+                let msg = if rep == BinaryNumberRep::BinarySeconds {
+                    "Schema Definition Error: binary xs:dateTime must be 32 bits when binaryCalendarRep='binarySeconds'"
+                } else {
+                    "Schema Definition Error: binary xs:dateTime must be 64 bits when binaryCalendarRep='binaryMilliseconds'"
+                };
+                return Err(SchemaError::InvalidProperty {
+                    message: msg.into(),
+                });
+            }
+        }
+        return Ok(());
+    }
+
+    if !matches!(
+        rep,
+        BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed | BinaryNumberRep::PackedBcd
+    ) {
+        return Ok(());
+    }
+
+    if props.length_kind == LengthKind::Implicit {
+        let type_name = binary_prim_type_label(kind, props);
+        let msg = if matches!(kind, ValueKind::DateTime | ValueKind::Time) {
+            alloc::format!(
+                "Schema Definition Error: Length of binary data '{type_name}' with binaryCalendarRep='{}' cannot be determined implicitly",
+                binary_calendar_rep_name(rep)
+            )
+        } else {
+            alloc::format!(
+                "Schema Definition Error: Length of binary data '{type_name}' cannot be determined implicitly"
+            )
+        };
+        return Err(SchemaError::InvalidProperty { message: msg });
+    }
+
+    if props.calendar_pattern_kind != CalendarPatternKind::Explicit {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: calendarPatternKind must be 'explicit' when binaryCalendarRep='{}'",
+                binary_calendar_rep_name(rep)
+            ),
+        });
+    }
+
+    if let Some(bits) = known_binary_length_in_bits(props) {
+        if bits % 4 != 0 {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: The given length ({bits} bits) must be a multiple of 4 when using binaryCalendarRep='{}'",
+                    binary_calendar_rep_name(rep)
+                ),
+            });
+        }
+    }
+
+    let pattern = props
+        .calendar_pattern
+        .and_then(|id| strings.get(id).ok())
+        .unwrap_or("");
+    if pattern.is_empty() {
+        return Ok(());
+    }
+
+    let xsd = calendar_xsd_type_label(kind, props.calendar_date_only);
+    let allowed = valid_binary_pattern_chars(kind, props.calendar_date_only);
+    for ch in pattern.chars() {
+        if !allowed.contains(ch) {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: Character '{ch}' not allowed in dfdl:calendarPattern for xs:{xsd} with a binaryCalendarRep of '{}'",
+                    binary_calendar_rep_name(rep)
+                ),
+            });
+        }
+    }
+    if pattern.contains("eee") || pattern.contains("MMM") {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: dfdl:calendarPattern must only contain characters that result in the presentation of digits for xs:{xsd} with a binaryCalendarRep of '{}'",
+                binary_calendar_rep_name(rep)
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Implicit binary length for non-calendar numerics (DFDL 12.3.3).
+pub fn validate_implicit_binary_length_schema(
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), SchemaError> {
+    if props.representation != Representation::Binary || props.length_kind != LengthKind::Implicit {
+        return Ok(());
+    }
+    if props.input_value_calc.is_some()
+        || props.input_value_calc_sibling.is_some()
+        || props.input_value_calc_segments.is_some()
+    {
+        return Ok(());
+    }
+    if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {
+        return Ok(());
+    }
+    if matches!(kind, ValueKind::DateTime | ValueKind::Time) {
+        return validate_binary_calendar_schema(kind, props, strings);
+    }
+    let implicit_ok = matches!(
+        kind,
+        ValueKind::Byte
+            | ValueKind::UnsignedByte
+            | ValueKind::Short
+            | ValueKind::UnsignedShort
+            | ValueKind::Int
+            | ValueKind::UnsignedInt
+            | ValueKind::Float
+            | ValueKind::Boolean
+            | ValueKind::Long
+            | ValueKind::Double
+    );
+    if implicit_ok {
+        return Ok(());
+    }
+    let type_name = binary_prim_type_label(kind, props);
+    Err(SchemaError::InvalidProperty {
+        message: alloc::format!(
+            "Schema Definition Error: Length of binary data '{type_name}' cannot be determined implicitly"
+        ),
+    })
+}
+
 #[cfg(test)]
 mod calendar_tests {
     use super::*;

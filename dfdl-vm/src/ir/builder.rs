@@ -1146,6 +1146,7 @@ fn finalize_element_props(
         ir.nil_kind = Some(NilKind::LiteralValue);
     }
     validate_binary_delimited(kind, &ir)?;
+    crate::vm::calendar_binary::validate_implicit_binary_length_schema(kind, &ir, strings)?;
     validate_trailing_skip_delimited(&ir)?;
     validate_bcd_signed_integer_type(kind, &ir)?;
     validate_packed_binary_properties_schema(kind, &ir, strings)?;
@@ -1529,53 +1530,7 @@ fn validate_binary_calendar_compile(
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<()> {
-    if props.representation != Representation::Binary {
-        return Ok(());
-    }
-    if kind != ValueKind::DateTime {
-        return Ok(());
-    }
-    if matches!(
-        props.binary_calendar_rep,
-        crate::schema::BinaryNumberRep::BinarySeconds
-            | crate::schema::BinaryNumberRep::BinaryMilliseconds
-    ) {
-        if let Some(id) = props.binary_calendar_epoch {
-            let raw = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
-                message: e.to_string(),
-            })?;
-            crate::vm::calendar_binary::validate_binary_calendar_epoch(raw).map_err(|e| {
-                SchemaError::InvalidProperty {
-                    message: match e {
-                        crate::error::VmError::InvalidValue { message } => message,
-                        other => other.to_string(),
-                    },
-                }
-            })?;
-        }
-    }
-    if props.binary_calendar_rep != crate::schema::BinaryNumberRep::BinarySeconds {
-        return Ok(());
-    }
-    if !matches!(
-        props.length_kind,
-        LengthKind::Explicit | LengthKind::Fixed
-    ) {
-        return Ok(());
-    }
-    let len = props.length.unwrap_or(0);
-    let bits = if props.length_units == LengthUnits::Bits {
-        len
-    } else {
-        len.saturating_mul(8)
-    };
-    if bits != 32 {
-        return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error: binary xs:dateTime must be 32 bits when binaryCalendarRep='binarySeconds'".into(),
-        }
-        .into());
-    }
-    Ok(())
+    crate::vm::calendar_binary::validate_binary_calendar_schema(kind, props, strings).map_err(Into::into)
 }
 
 fn apply_unsigned_long_flag(type_name: &TypeName, props: &mut IrProps) {
@@ -1786,6 +1741,26 @@ fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
     {
         if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {
             return Ok(());
+        }
+        if matches!(kind, ValueKind::DateTime | ValueKind::Time) {
+            if matches!(
+                props.binary_calendar_rep,
+                crate::schema::BinaryNumberRep::BinarySeconds
+                    | crate::schema::BinaryNumberRep::BinaryMilliseconds
+            ) {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: lengthKind='delimited' only supported for packed binary formats.".into(),
+                }
+                .into());
+            }
+            if matches!(
+                props.binary_calendar_rep,
+                crate::schema::BinaryNumberRep::PackedBcd
+                    | crate::schema::BinaryNumberRep::Bcd
+                    | crate::schema::BinaryNumberRep::Ibm4690Packed
+            ) {
+                return Ok(());
+            }
         }
         if matches!(
             props.binary_number_rep,
@@ -2386,6 +2361,9 @@ fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if let Some(v) = props.calendar_pattern_kind {
+        base.calendar_pattern_kind = v;
+    }
     if props.text_number_pattern.is_some() {
         base.text_number_pattern = props
             .text_number_pattern
@@ -2778,6 +2756,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     out.decimal_signed = overlay.decimal_signed;
     out.calendar_pattern = overlay.calendar_pattern;
+    out.calendar_pattern_kind = overlay.calendar_pattern_kind;
     if overlay.text_number_pattern.is_some() {
         out.text_number_pattern = overlay.text_number_pattern;
     }
