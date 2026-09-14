@@ -84,7 +84,10 @@ pub fn pre_element_alignment_applies(
         return true;
     }
     let implicit_bits = implicit_alignment_in_bits(kind, props, encoding);
-    (len as usize) >= implicit_bits
+    if (len as usize) < implicit_bits && implicit_bits <= 8 {
+        return false;
+    }
+    true
 }
 
 /// Resolved `(alignment, alignment_units)` for consume/write alignment helpers.

@@ -88,6 +88,8 @@ pub struct DfdlProps {
     pub trailing_skip: Option<u64>,
     pub sequence_kind: Option<SequenceKind>,
     pub fill_byte: Option<Vec<u8>>,
+    /// Raw `dfdl:fillByte` attribute before entity expansion (compile-time checks).
+    pub fill_byte_raw: Option<String>,
     /// Named format reference from `dfdl:ref` (resolved during parse).
     pub format_ref: Option<String>,
     /// Type name for prefixed length fields (`dfdl:prefixLengthType`).

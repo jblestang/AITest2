@@ -45,6 +45,10 @@ impl SchemaResolver {
             "/org/apache/daffodil/section12/lengthKind/AB.dfdl.xsd".into(),
             include_str!("../../resources/dfdl/AB.dfdl.xsd"),
         );
+        bundled.insert(
+            "InvalidAlignSchema.dfdl.xsd".into(),
+            include_str!("../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/InvalidAlignSchema.dfdl.xsd"),
+        );
         Self {
             bundled,
             base_dirs: Vec::new(),

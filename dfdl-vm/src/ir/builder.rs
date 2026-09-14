@@ -2,6 +2,7 @@ use super::{ChoiceBranch, IrNode, IrProgram, IrPrefixLength, IrProps, StringId, 
 use crate::error::{Result, SchemaError};
 use crate::length_validate::{
     binary_length_validation_applies, validate_data_length_schema,
+    validate_alignment_units_schema, validate_fill_byte_schema,
     validate_float_double_bit_length_schema, validate_packed_binary_properties_schema,
     validate_signed_one_bit_length_schema, validate_text_alignment_schema, DaffodilTunables,
 };
@@ -985,6 +986,7 @@ fn finalize_element_props(
     validate_bcd_signed_integer_type(kind, &ir)?;
     validate_packed_binary_properties_schema(kind, &ir, strings)?;
     validate_text_alignment_schema(kind, &ir, strings)?;
+    validate_alignment_units_schema(&ir)?;
     validate_prefixed_character_encoding(kind, &ir, strings)?;
     validate_end_of_parent(kind, &ir)?;
     if kind == ValueKind::Boolean {
@@ -2014,8 +2016,20 @@ fn overlay_dfdl_to_ir(
     if props.trailing_skip.is_some() {
         base.trailing_skip = props.trailing_skip.unwrap_or(0);
     }
-    if let Some(ref bytes) = props.fill_byte {
+    if let Some(ref raw) = props.fill_byte_raw {
+        if raw.trim() == "%NUL;" {
+            // `%NUL;` leaves inherited fillByte unchanged (DAFFODIL-2377).
+        } else if let Some(ref bytes) = props.fill_byte {
+            let encoding = strings
+                .get(base.encoding)
+                .unwrap_or("ISO-8859-1");
+            validate_fill_byte_schema(raw, bytes, encoding)?;
+            base.fill_byte = bytes.first().copied().unwrap_or(0);
+            base.fill_byte_defined = true;
+        }
+    } else if let Some(ref bytes) = props.fill_byte {
         base.fill_byte = bytes.first().copied().unwrap_or(0);
+        base.fill_byte_defined = true;
     }
     if let Some(v) = props.prefix_includes_prefix_length {
         base.prefix_includes_prefix_length = v;
@@ -2207,7 +2221,10 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.trailing_skip != 0 {
         out.trailing_skip = overlay.trailing_skip;
     }
-    if overlay.fill_byte != 0 {
+    if overlay.fill_byte_defined {
+        out.fill_byte = overlay.fill_byte;
+        out.fill_byte_defined = true;
+    } else if overlay.fill_byte != 0 && !out.fill_byte_defined {
         out.fill_byte = overlay.fill_byte;
     }
     out.input_value_calc = overlay.input_value_calc;

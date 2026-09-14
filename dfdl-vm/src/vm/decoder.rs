@@ -251,6 +251,7 @@ impl<'a> Decoder<'a> {
                         }
                     }
                 }
+                consume_element_trailing_framing(cursor, props)?;
                 Ok(DfdlValue::Sequence(crate::value::SequenceValue {
                     fields: map,
                     meta: crate::value::SequenceMeta {
@@ -374,7 +375,7 @@ impl<'a> Decoder<'a> {
             ) {
                 Ok(v) => {
                     if max == u64::MAX
-                        && cursor.pos == saved.pos
+                        && cursor.absolute_bit_index() == saved.absolute_bit_index()
                         && !cursor.is_frame_consumed()
                     {
                         if matches!(v, DfdlValue::Null) {

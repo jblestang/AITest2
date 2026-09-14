@@ -34,3 +34,18 @@ fn left_and_right_framing01() {
 fn alignment_string_bit_skip() {
     assert_passes("alignmentStringBitSkip");
 }
+
+#[test]
+fn implicit_alignment_time_t() {
+    assert_passes("implicitAlignmentTimeT");
+}
+
+#[test]
+fn implicit_alignment_date_t2() {
+    assert_passes("implicitAlignmentDateT2");
+}
+
+#[test]
+fn implicit_alignment_date_time_t() {
+    assert_passes("implicitAlignmentDateTimeT");
+}

@@ -639,6 +639,65 @@ pub fn validate_signed_one_bit_length_vm(
     })
 }
 
+/// Reject invalid `dfdl:alignmentUnits="characters"` (XSD facet).
+pub fn validate_alignment_units_schema(props: &crate::ir::IrProps) -> Result<(), SchemaError> {
+    use crate::schema::LengthUnits;
+    if props.alignment_units == LengthUnits::Characters {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Value 'characters' is not facet-valid with respect to enumeration '[bits, bytes]'. It must be a value from the enumeration."
+                .into(),
+        });
+    }
+    Ok(())
+}
+
+/// Compile-time `dfdl:fillByte` checks (length, entities, encoding).
+pub fn validate_fill_byte_schema(
+    raw: &str,
+    bytes: &[u8],
+    encoding: &str,
+) -> Result<(), SchemaError> {
+    let enc = encoding.to_ascii_uppercase();
+    let trimmed = raw.trim();
+    let hex_entity = trimmed.starts_with("%#r")
+        && trimmed.ends_with(';')
+        && trimmed.len() >= 6;
+    if trimmed.contains('%') && !hex_entity {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!("Schema Definition Error: fillByte {raw}"),
+        });
+    }
+    if enc.contains("X-DFDL-US-ASCII-7-BIT-PACKED") {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: fillByte encoding {encoding}"
+            ),
+        });
+    }
+    let char_count = if bytes.iter().all(|b| b.is_ascii()) {
+        bytes.len()
+    } else {
+        core::str::from_utf8(bytes).map(|s| s.chars().count()).unwrap_or(bytes.len())
+    };
+    if char_count != 1 {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: fillByte 1 character"
+            ),
+        });
+    }
+    if enc.contains("UTF-8") && bytes.len() > 1 {
+        let ch = core::str::from_utf8(bytes).unwrap_or("");
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: fillByte single-byte character encoding UTF-8 {ch} {} bytes",
+                bytes.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

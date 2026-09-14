@@ -152,6 +152,8 @@ pub struct IrProps {
     pub leading_skip: u64,
     pub trailing_skip: u64,
     pub fill_byte: u8,
+    /// True when `dfdl:fillByte` was explicitly set (not cleared with `%NUL;`).
+    pub fill_byte_defined: bool,
     pub input_value_calc: Option<InputValueCalc>,
     pub input_value_calc_sibling: Option<StringId>,
     pub output_value_calc: Option<OutputValueCalc>,
@@ -249,6 +251,7 @@ impl Default for IrProps {
             leading_skip: 0,
             trailing_skip: 0,
             fill_byte: 0,
+            fill_byte_defined: false,
             input_value_calc: None,
             input_value_calc_sibling: None,
             output_value_calc: None,

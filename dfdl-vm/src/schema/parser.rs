@@ -1309,6 +1309,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.fill_byte.is_some() {
         base.fill_byte = overlay.fill_byte;
     }
+    if overlay.fill_byte_raw.is_some() {
+        base.fill_byte_raw = overlay.fill_byte_raw;
+    }
     if overlay.format_ref.is_some() {
         base.format_ref = overlay.format_ref;
     }
@@ -2087,7 +2090,10 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                     }
                 });
             }
-            "fillByte" => props.fill_byte = Some(crate::schema::expand_entities(value)),
+            "fillByte" => {
+                props.fill_byte_raw = Some(value.to_string());
+                props.fill_byte = Some(crate::schema::expand_entities(value));
+            }
             "ref" => props.format_ref = Some(format_ref_key(value)),
             "prefixLengthType" => {
                 props.prefix_length_type = Some(TypeName::new(normalize_qname(value)));

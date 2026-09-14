@@ -1010,6 +1010,277 @@ fn format_calendar_pattern(
     Ok(alloc::format!("{year}-{month}-{day}"))
 }
 
+struct CalendarTextFields {
+    weekday: Option<alloc::string::String>,
+    month: Option<u32>,
+    day: Option<u32>,
+    year: Option<i32>,
+    hour: Option<u32>,
+    minute: Option<u32>,
+    second: Option<u32>,
+}
+
+fn month_from_name(name: &str) -> Option<u32> {
+    let n = name.to_ascii_lowercase();
+    match n.as_str() {
+        "january" | "jan" => Some(1),
+        "february" | "feb" => Some(2),
+        "march" | "mar" => Some(3),
+        "april" | "apr" => Some(4),
+        "may" => Some(5),
+        "june" | "jun" => Some(6),
+        "july" | "jul" => Some(7),
+        "august" | "aug" => Some(8),
+        "september" | "sep" | "sept" => Some(9),
+        "october" | "oct" => Some(10),
+        "november" | "nov" => Some(11),
+        "december" | "dec" => Some(12),
+        _ => None,
+    }
+}
+
+fn weekday_from_name(name: &str) -> Option<u32> {
+    let n = name.to_ascii_lowercase();
+    match n.as_str() {
+        "monday" | "mon" => Some(1),
+        "tuesday" | "tue" | "tues" => Some(2),
+        "wednesday" | "wed" => Some(3),
+        "thursday" | "thu" | "thur" | "thurs" => Some(4),
+        "friday" | "fri" => Some(5),
+        "saturday" | "sat" => Some(6),
+        "sunday" | "sun" => Some(7),
+        _ => None,
+    }
+}
+
+fn weekday_of_ymd(year: i32, month: u32, day: u32) -> Option<u32> {
+    if !(1..=12).contains(&month) || day == 0 {
+        return None;
+    }
+    let q = day as i32;
+    let m = month as i32;
+    let y = year;
+    let (y, m) = if m <= 2 { (y - 1, m + 12) } else { (y, m) };
+    let k = y % 100;
+    let j = y / 100;
+    let h = (q + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j).rem_euclid(7);
+    // Zeller: 0=Saturday … convert to ISO Monday=1 … Sunday=7
+    Some(((h + 5) % 7 + 1) as u32)
+}
+
+fn infer_day_from_weekday(year: i32, month: u32, weekday: u32) -> Option<u32> {
+    for day in 1..=31 {
+        if weekday_of_ymd(year, month, day) == Some(weekday) {
+            return Some(day);
+        }
+    }
+    None
+}
+
+fn read_calendar_field(
+    text: &str,
+    ti: &mut usize,
+    width: usize,
+    letters: char,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+    if letters == 'E' || letters == 'M' && width >= 3 {
+        let rest = text[*ti..].trim_start();
+        let word_end = rest
+            .find(|c: char| c.is_whitespace() || c == '-' || c == ':')
+            .unwrap_or(rest.len());
+        let word = &rest[..word_end];
+        if word.is_empty() {
+            return Err(VmError::InvalidValue {
+                message: "calendar text mismatch".into(),
+            });
+        }
+        *ti += text[*ti..].len() - rest.len() + word.len();
+        return Ok(word.to_string());
+    }
+    let slice = text.get(*ti..).ok_or(VmError::InvalidValue {
+        message: "calendar text mismatch".into(),
+    })?;
+    let mut out = alloc::string::String::new();
+    for ch in slice.chars().take(width) {
+        if !ch.is_ascii_digit() {
+            return Err(VmError::InvalidValue {
+                message: "calendar text mismatch".into(),
+            });
+        }
+        out.push(ch);
+        *ti += ch.len_utf8();
+    }
+    if out.len() != width {
+        return Err(VmError::InvalidValue {
+            message: "calendar text mismatch".into(),
+        });
+    }
+    Ok(out)
+}
+
+fn format_calendar_text(
+    text: &str,
+    pattern: &str,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+
+    let text = text.trim();
+    let mut ti = 0usize;
+    let mut fields = CalendarTextFields {
+        weekday: None,
+        month: None,
+        day: None,
+        year: None,
+        hour: None,
+        minute: None,
+        second: None,
+    };
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            i += 1;
+            let start = i;
+            while i < chars.len() && chars[i] != '\'' {
+                i += 1;
+            }
+            if i >= chars.len() {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("invalid calendarPattern `{pattern}`"),
+                });
+            }
+            let lit: alloc::string::String = chars[start..i].iter().collect();
+            i += 1;
+            if !text[ti..].starts_with(&lit) {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("calendar `{pattern}` mismatch"),
+                });
+            }
+            ti += lit.len();
+            continue;
+        }
+        let c = chars[i];
+        if c.is_whitespace() {
+            while ti < text.len() && text.as_bytes()[ti].is_ascii_whitespace() {
+                ti += 1;
+            }
+            i += 1;
+            continue;
+        }
+        const FIELD: &str = "EMdmyHhs";
+        if !FIELD.contains(c) {
+            let Some(ch) = text[ti..].chars().next() else {
+                return Err(VmError::InvalidValue {
+                    message: "calendar text mismatch".into(),
+                });
+            };
+            if ch != c {
+                return Err(VmError::InvalidValue {
+                    message: "calendar text mismatch".into(),
+                });
+            }
+            ti += ch.len_utf8();
+            i += 1;
+            continue;
+        }
+        let mut width = 1usize;
+        while i + width < chars.len() && chars[i + width] == c {
+            width += 1;
+        }
+        let raw = read_calendar_field(text, &mut ti, width, c)?;
+        match c {
+            'E' => fields.weekday = Some(raw),
+            'M' if width >= 3 => {
+                fields.month = Some(month_from_name(&raw).ok_or_else(|| VmError::InvalidValue {
+                    message: alloc::format!("calendar `{pattern}` invalid month `{raw}`"),
+                })?);
+            }
+            'M' => {
+                fields.month = raw.parse().ok();
+            }
+            'd' => {
+                fields.day = raw.parse().ok();
+            }
+            'y' => {
+                let ys = expand_calendar_year(&raw)?;
+                fields.year = ys.parse().ok();
+            }
+            'H' | 'h' => {
+                fields.hour = raw.parse().ok();
+            }
+            'm' => {
+                fields.minute = raw.parse().ok();
+            }
+            's' => {
+                fields.second = raw.parse().ok();
+            }
+            _ => {}
+        }
+        i += width;
+    }
+    while ti < text.len() && text.as_bytes()[ti].is_ascii_whitespace() {
+        ti += 1;
+    }
+    if ti != text.len() {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "calendar text mismatch at {ti}/{} for `{pattern}` in `{text}`",
+                text.len()
+            ),
+        });
+    }
+    let has_date = fields.year.is_some() || fields.month.is_some() || fields.day.is_some();
+    let has_time = fields.hour.is_some() || fields.minute.is_some() || fields.second.is_some();
+    if has_time && !has_date {
+        let hour = fields.hour.ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing hour"),
+        })?;
+        let minute = fields.minute.ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing minute"),
+        })?;
+        let second = fields.second.ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing second"),
+        })?;
+        return Ok(alloc::format!("{hour:02}:{minute:02}:{second:02}"));
+    }
+    let year = fields.year.ok_or_else(|| VmError::InvalidValue {
+        message: alloc::format!("calendar `{pattern}` missing year"),
+    })?;
+    let month = fields.month.ok_or_else(|| VmError::InvalidValue {
+        message: alloc::format!("calendar `{pattern}` missing month"),
+    })?;
+    let day = if let Some(d) = fields.day {
+        d
+    } else if let Some(ref wd) = fields.weekday {
+        let w = weekday_from_name(wd).ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` invalid weekday"),
+        })?;
+        infer_day_from_weekday(year, month, w).ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing day"),
+        })?
+    } else {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing day"),
+        });
+    };
+    if has_time {
+        let hour = fields.hour.ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing hour"),
+        })?;
+        let minute = fields.minute.ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing minute"),
+        })?;
+        let second = fields.second.ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("calendar `{pattern}` missing second"),
+        })?;
+        return Ok(alloc::format!(
+            "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}"
+        ));
+    }
+    Ok(alloc::format!("{year:04}-{month:02}-{day:02}"))
+}
+
 fn match_text_number_subpattern(text: &str, pattern: &str) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
     let mut ti = 0usize;
@@ -2761,7 +3032,12 @@ pub(crate) fn read_text_scalar(
         DateTime | Time => {
             if let Some(pat_id) = props.calendar_pattern {
                 let pattern = strings.get(pat_id)?;
-                return Ok(DfdlValue::DateTime(format_calendar_pattern(trimmed, pattern)?));
+                let parsed = if trimmed.chars().all(|c| c.is_ascii_digit()) {
+                    format_calendar_pattern(trimmed, pattern)?
+                } else {
+                    format_calendar_text(trimmed, pattern)?
+                };
+                return Ok(DfdlValue::DateTime(parsed));
             }
             Ok(DfdlValue::DateTime(trimmed.into()))
         }
@@ -4876,6 +5152,22 @@ fn write_alignment_values(
         }
         let pos = encode_absolute_bit_index(out, *bit_count);
         let skip = (align - (pos % align)) % align;
+        if skip > 0 && !props.fill_byte_defined {
+            return Err(VmError::InvalidValue {
+                message: "Schema Definition Error: Property fillByte is not defined".into(),
+            });
+        }
+        if props.representation == Representation::Text && skip >= 8 {
+            let whole_bytes = skip / 8;
+            let rem_bits = skip % 8;
+            for _ in 0..whole_bytes {
+                write_byte_aligned(out, bit_count, &[props.fill_byte])?;
+            }
+            for _ in 0..rem_bits {
+                write_stream_bit(out, bit_count, (props.fill_byte >> 7) & 1, props.bit_order);
+            }
+            return Ok(());
+        }
         for _ in 0..skip {
             write_stream_bit(out, bit_count, props.fill_byte & 1, props.bit_order);
         }
@@ -4893,6 +5185,11 @@ fn write_alignment_values(
     }
     let skip = (align - (out.len() % align)) % align;
     if skip > 0 {
+        if !props.fill_byte_defined {
+            return Err(VmError::InvalidValue {
+                message: "Schema Definition Error: Property fillByte is not defined".into(),
+            });
+        }
         out.extend(iter::repeat(props.fill_byte).take(skip));
     }
     Ok(())
@@ -6178,5 +6475,19 @@ mod delimited_stop_tests {
             &sep, &item, &items, 2, true, &strings
         )
         .unwrap());
+    }
+
+    #[test]
+    fn format_calendar_text_time_and_datetime() {
+        assert_eq!(
+            format_calendar_text("04:09:23", "hh:mm:ss")
+                .map_err(|e| e.to_string())
+                .unwrap(),
+            "04:09:23"
+        );
+        assert_eq!(
+            format_calendar_text("Friday 05 2013 - 03:30:30", "EEEE MM yyyy - hh:mm:ss").unwrap(),
+            "2013-05-03T03:30:30"
+        );
     }
 }
