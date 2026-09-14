@@ -1932,11 +1932,21 @@ fn overlay_dfdl_to_ir(
     if let Some(v) = props.text_standard_base {
         base.text_standard_base = v;
     }
-    if props.alignment.is_some() {
+    if props.alignment_implicit == Some(true) {
+        base.alignment_implicit = true;
+        base.alignment = 0;
+    } else if props.alignment.is_some() {
         base.alignment = props.alignment.unwrap_or(0);
+        base.alignment_implicit = false;
     }
     if let Some(v) = props.alignment_units {
         base.alignment_units = v;
+    }
+    if props.leading_skip.is_some() {
+        base.leading_skip = props.leading_skip.unwrap_or(0);
+    }
+    if props.trailing_skip.is_some() {
+        base.trailing_skip = props.trailing_skip.unwrap_or(0);
     }
     if let Some(ref bytes) = props.fill_byte {
         base.fill_byte = bytes.first().copied().unwrap_or(0);
@@ -2077,10 +2087,20 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.sequence_kind = overlay.sequence_kind;
     out.occurs_min = overlay.occurs_min;
     out.occurs_max = overlay.occurs_max;
-    if overlay.alignment != 0 {
+    if overlay.alignment_implicit {
+        out.alignment_implicit = true;
+        out.alignment = 0;
+    } else if overlay.alignment != 0 {
         out.alignment = overlay.alignment;
+        out.alignment_implicit = false;
     }
     out.alignment_units = overlay.alignment_units;
+    if overlay.leading_skip != 0 {
+        out.leading_skip = overlay.leading_skip;
+    }
+    if overlay.trailing_skip != 0 {
+        out.trailing_skip = overlay.trailing_skip;
+    }
     if overlay.fill_byte != 0 {
         out.fill_byte = overlay.fill_byte;
     }

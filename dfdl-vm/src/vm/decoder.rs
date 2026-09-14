@@ -1,5 +1,6 @@
 use super::runtime::{
-    consume_alignment, consume_enclosing_delimiter, default_value_for, encoding_name,
+    consume_element_framing, consume_element_trailing_framing, consume_enclosing_delimiter,
+    default_value_for, encoding_name,
     is_suppressible_empty_representation, prefixed_payload_byte_length, read_delimited_bytes,
     read_length_span, read_prefixed_payload, read_simple, read_until_separator,
     should_suppress_decode_infix_separator, validate_explicit_decimal_before_decode,
@@ -470,7 +471,12 @@ impl<'a> Decoder<'a> {
                     }
                     .into());
                 }
-                consume_alignment(cursor, &props)?;
+                consume_element_framing(
+                    cursor,
+                    &props,
+                    *kind,
+                    encoding_name(&props, self.ctx.strings())?,
+                )?;
                 if let Some(child_id) = child {
                     crate::vm::runtime::validate_nil_value_runtime(&props, self.ctx.strings())?;
                     self.consume_initiator(&props, cursor)?;

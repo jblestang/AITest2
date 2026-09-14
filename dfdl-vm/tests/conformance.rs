@@ -30,6 +30,15 @@ macro_rules! daffodil_length_properties_tdml {
     };
 }
 
+macro_rules! daffodil_aligned_data_tdml {
+    ($file:literal) => {
+        include_str!(concat!(
+            "../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/",
+            $file
+        ))
+    };
+}
+
 fn assert_named_unparser_test_passes(tdml: &str, test_name: &str) {
     let suite = parse_tdml(tdml).expect("parse tdml");
     let test = suite
@@ -1032,6 +1041,23 @@ fn daffodil_section12_length_kind_full_regression_suite() {
                 }
             }
         }
+    }
+}
+
+/// Section 12 aligned_data regression subset (parser cases that pass today).
+#[test]
+fn daffodil_section12_aligned_data_suite() {
+    let tdml = daffodil_aligned_data_tdml!("Aligned_Data.tdml");
+    for name in [
+        "implicitAlignmentUnsignedInt",
+        "implicitAlignmentUnsignedShort",
+        "implicitAlignmentInt",
+        "alignmentOptionalElem",
+        "alignmentStringBitSkip",
+        "leadingSkip1",
+        "leftFraming01",
+    ] {
+        assert_named_test_passes(tdml, name);
     }
 }
 

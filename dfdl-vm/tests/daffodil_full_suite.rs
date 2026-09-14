@@ -149,6 +149,29 @@ fn daffodil_section12_length_kind_regression_gate() {
     assert!(stats.pass >= 300, "expected ~305 passing cases, got {}", stats.pass);
 }
 
+/// CI gate: Section 12 aligned_data (progress baseline; full suite not yet 0 fail).
+#[test]
+fn daffodil_section12_aligned_data_regression_gate() {
+    let root = assert_tdml_root().join("section12/aligned_data");
+    let mut files = Vec::new();
+    collect_tdml_files(&root, &mut files);
+    let mut stats = SectionStats::default();
+    for path in files {
+        run_tdml_file(&path, &mut stats);
+    }
+    eprintln!(
+        "aligned_data: pass={} fail={} skip={} parse_fail={}",
+        stats.pass, stats.fail, stats.skip, stats.parse_fail
+    );
+    assert_eq!(stats.parse_fail, 0);
+    assert!(
+        stats.pass >= 36,
+        "expected at least 36 passing aligned_data cases, got pass={} fail={}",
+        stats.pass,
+        stats.fail
+    );
+}
+
 /// CI gate: Section 12 delimiter_properties (full TDML directory).
 #[test]
 fn daffodil_section12_delimiter_properties_regression_gate() {

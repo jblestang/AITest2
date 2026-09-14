@@ -1282,6 +1282,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.default_value.is_some() {
         base.default_value = overlay.default_value;
     }
+    if overlay.alignment_implicit.is_some() {
+        base.alignment_implicit = overlay.alignment_implicit;
+    }
     if overlay.alignment.is_some() {
         base.alignment = overlay.alignment;
     }
@@ -2034,9 +2037,14 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             "textBooleanTrueRep" => props.text_boolean_true_rep = Some(value.clone()),
             "textBooleanFalseRep" => props.text_boolean_false_rep = Some(value.clone()),
             "alignment" => {
-                props.alignment = Some(value.parse().map_err(|_| ParseError::InvalidXml {
-                    message: alloc::format!("invalid alignment `{value}`"),
-                })?);
+                if value == "implicit" {
+                    props.alignment_implicit = Some(true);
+                } else {
+                    props.alignment = Some(value.parse().map_err(|_| ParseError::InvalidXml {
+                        message: alloc::format!("invalid alignment `{value}`"),
+                    })?);
+                    props.alignment_implicit = Some(false);
+                }
             }
             "alignmentUnits" => {
                 props.alignment_units = Some(match value.as_str() {

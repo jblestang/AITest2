@@ -4697,14 +4697,35 @@ pub(crate) fn write_alignment(
     bit_count: &mut u8,
     props: &IrProps,
 ) -> Result<(), crate::error::VmError> {
+    write_alignment_values(out, bit_count, props, props.alignment, props.alignment_units)
+}
+
+pub(crate) fn write_alignment_for_kind(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    props: &IrProps,
+    kind: crate::ir::ValueKind,
+    encoding: &str,
+) -> Result<(), crate::error::VmError> {
+    let (align, units) = crate::vm::alignment::resolved_alignment(kind, props, encoding);
+    write_alignment_values(out, bit_count, props, align, units)
+}
+
+fn write_alignment_values(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    props: &IrProps,
+    alignment: u64,
+    alignment_units: crate::schema::LengthUnits,
+) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::schema::LengthUnits;
 
-    if props.alignment == 0 {
+    if alignment == 0 {
         return Ok(());
     }
-    if props.alignment_units == LengthUnits::Bits {
-        let align = props.alignment as usize;
+    if alignment_units == LengthUnits::Bits {
+        let align = alignment as usize;
         if align <= 1 {
             return Ok(());
         }
@@ -4715,13 +4736,13 @@ pub(crate) fn write_alignment(
         }
         return Ok(());
     }
-    if props.alignment_units != LengthUnits::Bytes {
+    if alignment_units != LengthUnits::Bytes {
         return Err(VmError::UnsupportedOperation {
             op: "non-byte alignment encode".into(),
         });
     }
     write_byte_aligned(out, bit_count, &[])?;
-    let align = props.alignment as usize;
+    let align = alignment as usize;
     if align <= 1 {
         return Ok(());
     }
@@ -4736,14 +4757,23 @@ pub(crate) fn consume_alignment(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
 ) -> Result<(), crate::error::VmError> {
+    consume_alignment_values(cursor, props, props.alignment, props.alignment_units)
+}
+
+pub(crate) fn consume_alignment_values(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+    alignment: u64,
+    alignment_units: crate::schema::LengthUnits,
+) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::schema::LengthUnits;
 
-    if props.alignment == 0 {
+    if alignment == 0 {
         return Ok(());
     }
-    if props.alignment_units == LengthUnits::Bits {
-        let align = props.alignment as usize;
+    if alignment_units == LengthUnits::Bits {
+        let align = alignment as usize;
         if align <= 1 {
             return Ok(());
         }
@@ -4754,12 +4784,12 @@ pub(crate) fn consume_alignment(
         }
         return Ok(());
     }
-    if props.alignment_units != LengthUnits::Bytes {
+    if alignment_units != LengthUnits::Bytes {
         return Err(VmError::UnsupportedOperation {
             op: "non-byte alignment".into(),
         });
     }
-    let align = props.alignment as usize;
+    let align = alignment as usize;
     if align <= 1 {
         return Ok(());
     }
@@ -4785,6 +4815,24 @@ pub(crate) fn consume_alignment(
     }
     cursor.advance(skip);
     Ok(())
+}
+
+pub(crate) fn consume_element_framing(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+    kind: crate::ir::ValueKind,
+    encoding: &str,
+) -> Result<(), crate::error::VmError> {
+    crate::vm::alignment::consume_leading_skip(cursor, props)?;
+    let (align, units) = crate::vm::alignment::resolved_alignment(kind, props, encoding);
+    consume_alignment_values(cursor, props, align, units)
+}
+
+pub(crate) fn consume_element_trailing_framing(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+) -> Result<(), crate::error::VmError> {
+    crate::vm::alignment::consume_trailing_skip(cursor, props)
 }
 
 fn ambiguous_delimiter_prefix_at_cursor(

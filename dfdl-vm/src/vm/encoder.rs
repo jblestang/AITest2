@@ -1,8 +1,9 @@
 use super::runtime::{
-    nil_unparse_bytes_for_encode, write_alignment, write_byte_aligned, write_framed_payload,
-    write_simple, validate_explicit_decimal_before_encode, trailing_suppressed_count,
-    should_suppress_occurrence_separator, RuntimeConfig, VmContext,
+    encoding_name, nil_unparse_bytes_for_encode, write_alignment, write_alignment_for_kind,
+    write_byte_aligned, write_framed_payload, write_simple, validate_explicit_decimal_before_encode,
+    trailing_suppressed_count, should_suppress_occurrence_separator, RuntimeConfig, VmContext,
 };
+use super::alignment::write_leading_skip;
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
@@ -141,7 +142,15 @@ impl<'a> Encoder<'a> {
                         self.encode_element_occurrences(*child_id, props, field, out, bit_count, props)
                     }
                 } else {
-                    write_alignment(out, bit_count, props)?;
+                    write_leading_skip(out, bit_count, props).map_err(Error::from)?;
+                    write_alignment_for_kind(
+                        out,
+                        bit_count,
+                        props,
+                        *kind,
+                        encoding_name(props, self.ctx.strings())?,
+                    )
+                    .map_err(Error::from)?;
                     write_simple(
                         out,
                         bit_count,

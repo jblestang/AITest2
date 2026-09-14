@@ -1,3 +1,4 @@
+mod alignment;
 mod decoder;
 pub(crate) mod encoding;
 mod encoder;
