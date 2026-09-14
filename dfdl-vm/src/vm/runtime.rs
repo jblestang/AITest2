@@ -1275,15 +1275,14 @@ fn decode_binary_calendar(
         props.calendar_century_start,
         props.calendar_first_day_of_week,
     )?;
-    let text = if rep == BinaryNumberRep::PackedBcd
-        && (props.calendar_date_only
-            || kind == crate::ir::ValueKind::Time
-            || text.contains('T'))
-    {
-        append_packed_calendar_timezone(props, strings, kind, props.calendar_date_only, &text)?
-    } else {
-        text
-    };
+    let text = append_packed_calendar_timezone(
+        props,
+        strings,
+        kind,
+        props.calendar_date_only,
+        &text,
+        true,
+    )?;
     calendar_value_from_text(kind, text)
 }
 
@@ -1506,6 +1505,7 @@ struct CalendarTextFields {
     hour: Option<u32>,
     minute: Option<u32>,
     second: Option<u32>,
+    fraction_digits: Option<alloc::string::String>,
     hour12: bool,
     am_pm: Option<bool>,
     timezone: Option<alloc::string::String>,
@@ -1547,12 +1547,17 @@ fn append_default_utc_offset(kind: crate::ir::ValueKind, date_only: bool, parsed
 }
 
 fn lexical_has_xsd_timezone(parsed: &str) -> bool {
-    if parsed.contains('+') {
-        return true;
+    let check = |s: &str| {
+        if s.contains('+') {
+            return true;
+        }
+        s.rfind('-')
+            .is_some_and(|i| i > 0 && s[i + 1..].contains(':'))
+    };
+    if let Some(idx) = parsed.find('T') {
+        return check(&parsed[idx + 1..]);
     }
-    parsed
-        .rfind('-')
-        .is_some_and(|i| i > 2 && parsed[i + 1..].contains(':'))
+    check(parsed)
 }
 
 fn append_packed_calendar_timezone(
@@ -1561,14 +1566,12 @@ fn append_packed_calendar_timezone(
     kind: crate::ir::ValueKind,
     date_only: bool,
     parsed: &str,
+    default_utc_when_missing: bool,
 ) -> Result<alloc::string::String, crate::error::VmError> {
     if lexical_has_xsd_timezone(parsed) {
         return Ok(parsed.into());
     }
-    if parsed.contains('T') {
-        return Ok(parsed.into());
-    }
-    if !(kind == crate::ir::ValueKind::Time || date_only) {
+    if !(kind == crate::ir::ValueKind::Time || date_only || parsed.contains('T')) {
         return Ok(parsed.into());
     }
     if let Some(id) = props.calendar_time_zone {
@@ -1579,7 +1582,11 @@ fn append_packed_calendar_timezone(
             return Ok(parsed.into());
         }
     }
-    Ok(alloc::format!("{parsed}+00:00"))
+    if default_utc_when_missing {
+        Ok(alloc::format!("{parsed}+00:00"))
+    } else {
+        Ok(parsed.into())
+    }
 }
 
 fn read_calendar_timezone(text: &str, ti: &mut usize, z_width: usize) -> Result<alloc::string::String, crate::error::VmError> {
@@ -1991,7 +1998,12 @@ fn read_calendar_field(
             break;
         }
     }
-    if out.is_empty() || (width > 1 && out.len() != width) {
+    if out.is_empty() {
+        return Err(VmError::InvalidValue {
+            message: "calendar text mismatch".into(),
+        });
+    }
+    if width > 1 && out.len() != width && !matches!(letters, 'H' | 'h' | 'k' | 'K' | 'm' | 's' | 'S') {
         return Err(VmError::InvalidValue {
             message: "calendar text mismatch".into(),
         });
@@ -2041,6 +2053,7 @@ fn format_calendar_text(
         hour: None,
         minute: None,
         second: None,
+        fraction_digits: None,
         hour12: false,
         am_pm: None,
         timezone: None,
@@ -2127,7 +2140,7 @@ fn format_calendar_text(
             i += a_width;
             continue;
         }
-        const FIELD: &str = "EMdDFwWmyYHhsekK";
+        const FIELD: &str = "EMdDFwWmyYHhsekKS";
         if !FIELD.contains(c) {
             let Some(ch) = text[ti..].chars().next() else {
                 return Err(VmError::InvalidValue {
@@ -2211,6 +2224,9 @@ fn format_calendar_text(
             's' => {
                 fields.second = raw.parse().ok();
             }
+            'S' => {
+                fields.fraction_digits = Some(raw);
+            }
             _ => {}
         }
         i += width;
@@ -2255,6 +2271,9 @@ fn format_calendar_text(
             (hour, minute, second)
         };
         let mut out = alloc::format!("{hour:02}:{minute:02}:{second:02}");
+        if let Some(ref frac) = fields.fraction_digits {
+            out.push_str(&format_calendar_s_fraction(frac));
+        }
         if let Some(tz) = fields.timezone {
             out.push_str(&tz);
         }
@@ -4415,6 +4434,7 @@ pub(crate) fn read_text_scalar(
                     kind,
                     props.calendar_date_only,
                     &parsed,
+                    false,
                 )?;
                 Ok(DfdlValue::DateTime(with_tz))
             } else {

@@ -2887,7 +2887,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
         out.binary_decimal_virtual_point_signed = overlay.binary_decimal_virtual_point_signed;
     }
     out.decimal_signed = overlay.decimal_signed;
-    out.calendar_pattern = overlay.calendar_pattern;
+    if overlay.calendar_pattern.is_some() {
+        out.calendar_pattern = overlay.calendar_pattern;
+    }
     out.calendar_pattern_kind = overlay.calendar_pattern_kind;
     if overlay.calendar_time_zone.is_some() {
         out.calendar_time_zone = overlay.calendar_time_zone;

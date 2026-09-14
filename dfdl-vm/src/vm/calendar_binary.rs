@@ -986,10 +986,8 @@ pub fn process_implicit_calendar_text(
         return Err(implicit_datetime_error());
     };
     let date_part = &text[..sep];
-    if date_part.len() != 10
-        || date_part.as_bytes().get(4) != Some(&b'-')
-        || date_part.as_bytes().get(7) != Some(&b'-')
-        || !date_part.chars().all(|c| c.is_ascii_digit() || c == '-')
+    if !date_part.contains('-')
+        || date_part.chars().any(|c| !(c.is_ascii_digit() || c == '-'))
     {
         return Err(implicit_datetime_error());
     }
@@ -1005,7 +1003,7 @@ pub fn process_implicit_calendar_text(
         return Err(implicit_datetime_error());
     }
     let (y, mo, d) = parse_ymd_core(date_part).map_err(|_| implicit_datetime_error())?;
-    validate_calendar_year_tunables(&alloc::format!("{y:04}"), tunables)?;
+    validate_calendar_year_tunables(&alloc::format!("{y:04}-{mo:02}-{d:02}"), tunables)?;
     let (core, tz) = split_implicit_time_core_tz(time_part).map_err(|_| implicit_datetime_error())?;
     let (h, m, s) = parse_hms_core(&core)?;
     if lax {
@@ -1242,6 +1240,10 @@ pub fn validate_text_calendar_schema(
     if props.calendar_pattern_kind != CalendarPatternKind::Explicit {
         return Ok(());
     }
+    if props.calendar_pattern.is_none() {
+        // Pattern may live on the element (e.g. ex:explicDate + dfdl:calendarPattern on xs:element).
+        return Ok(());
+    }
     let pattern = props
         .calendar_pattern
         .and_then(|id| strings.get(id).ok())
@@ -1263,7 +1265,7 @@ pub fn validate_text_calendar_schema(
             });
         }
     }
-    const MAX_FRAC: usize = 6;
+    const MAX_FRAC: usize = 9;
     if letters.contains(&alloc::string::String::from("S").repeat(MAX_FRAC + 1)) {
         return Err(SchemaError::InvalidProperty {
             message: alloc::format!(
