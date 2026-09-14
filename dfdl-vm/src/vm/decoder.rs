@@ -12,7 +12,7 @@ use crate::length_validate::{binary_length_validation_applies, validate_data_len
 use crate::error::{Error, Result, VmError};
 use crate::ir::{IrNode, IrProgram, IrProps, StringId, ValueKind};
 use crate::schema::{
-    match_length_pattern, InputValueCalc, LengthKind, LengthUnits, OccursCountKind,
+    match_length_pattern, BitOrder, InputValueCalc, LengthKind, LengthUnits, OccursCountKind,
     Representation, SeparatorPosition,
 };
 use crate::value::{DfdlValue, StringValue};
@@ -74,6 +74,8 @@ pub struct Decoder<'a> {
     enclosing_names: RefCell<Vec<String>>,
     /// Per-field delimiter alternative indices captured during the current sequence child.
     field_delimiters: RefCell<BTreeMap<String, FieldDelimiterMeta>>,
+    /// Previous sibling `dfdl:bitOrder` within the innermost open sequence (runtime SDE).
+    seq_bit_order: RefCell<Option<BitOrder>>,
 }
 
 impl<'a> Decoder<'a> {
@@ -87,6 +89,35 @@ impl<'a> Decoder<'a> {
             enclosing: RefCell::new(Vec::new()),
             enclosing_names: RefCell::new(Vec::new()),
             field_delimiters: RefCell::new(BTreeMap::new()),
+            seq_bit_order: RefCell::new(None),
+        }
+    }
+
+    fn runtime_check_bit_order_change(
+        &self,
+        props: &IrProps,
+        cursor: &Cursor,
+    ) -> Result<()> {
+        if !props.bit_order_defined {
+            return Ok(());
+        }
+        let order = props.bit_order;
+        if let Some(prev) = *self.seq_bit_order.borrow() {
+            if prev != order && cursor.absolute_bit_index() % 8 != 0 {
+                return Err(VmError::InvalidValue {
+                    message:
+                        "Runtime Schema Definition Error. dfdl:bitOrder change requires byte boundary"
+                            .into(),
+                }
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    fn note_sequence_field_bit_order(&self, props: &IrProps) {
+        if props.bit_order_defined {
+            *self.seq_bit_order.borrow_mut() = Some(props.bit_order);
         }
     }
 
@@ -174,6 +205,7 @@ impl<'a> Decoder<'a> {
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
+                *self.seq_bit_order.borrow_mut() = None;
                 let mut initiator_alt = None;
                 if let Some(id) = props.initiator {
                     let pat = self.ctx.strings().get(id)?;
@@ -959,26 +991,27 @@ impl<'a> Decoder<'a> {
                         ValueKind::Complex,
                     ))
                 } else if props.input_value_calc_path.is_some() {
-                    eval_input_value_calc_path(
+                    let value = eval_input_value_calc_path(
                         &props,
                         siblings,
                         self.ctx.strings(),
                         &self.ctx.program.tunables,
-                    )
-                    .map_err(Into::into)
+                    )?;
+                    self.finalize_ivc_value(value, *kind, &props)
                 } else if props.input_value_calc_segments.is_some() {
-                    eval_input_value_calc_concat(&props, siblings, self.ctx.strings())
-                        .map_err(Into::into)
+                    let value =
+                        eval_input_value_calc_concat(&props, siblings, self.ctx.strings())?;
+                    self.finalize_ivc_value(value, *kind, &props)
                 } else if props.input_value_calc.is_some() {
-                    eval_input_value_calc(
+                    let value = eval_input_value_calc(
                         &props,
                         *kind,
                         cursor,
                         siblings,
                         self.ctx.strings(),
                         content_scope_bytes,
-                    )
-                    .map_err(Into::into)
+                    )?;
+                    self.finalize_ivc_value(value, *kind, &props)
                 } else {
                     if props.nillable
                         && crate::vm::runtime::try_consume_nillable_element_nil(
@@ -1003,6 +1036,7 @@ impl<'a> Decoder<'a> {
                         &sibling_text_map,
                         &sibling_bytes_map,
                     );
+                    self.runtime_check_bit_order_change(&props, cursor)?;
                     let value = read_simple(
                         cursor,
                         *kind,
@@ -1018,6 +1052,7 @@ impl<'a> Decoder<'a> {
                         self.ctx.config.defer_facet_validation,
                     )
                     .map_err(crate::error::Error::from)?;
+                    self.note_sequence_field_bit_order(&props);
                     if delim_meta.initiator_alt.is_some() || delim_meta.terminator_alt.is_some() {
                         self.field_delimiters
                             .borrow_mut()
@@ -1028,6 +1063,23 @@ impl<'a> Decoder<'a> {
             }
             _ => self.decode_node(node_id, cursor, false, None, None, content_scope_bytes, pattern_text_frame, stop_sequences),
         }
+    }
+
+    fn finalize_ivc_value(
+        &self,
+        value: DfdlValue,
+        kind: ValueKind,
+        props: &IrProps,
+    ) -> Result<DfdlValue> {
+        super::runtime::finalize_simple_value(
+            value,
+            kind,
+            props,
+            self.ctx.strings(),
+            &self.ctx.program.tunables,
+            self.ctx.config.defer_facet_validation,
+        )
+        .map_err(Into::into)
     }
 
     /// Section 9 framing TDML: minOccurs=maxOccurs with extra physical occurrences.
@@ -1622,12 +1674,30 @@ fn eval_input_value_calc(
             let bytes = super::runtime::decode_hex_binary(text)?;
             return Ok(crate::value::DfdlValue::HexBinary(bytes));
         }
-        let parsed = super::calendar_binary::parse_xs_calendar_lexical(
+        if kind == ValueKind::String {
+            return Ok(DfdlValue::String(StringValue::new(text)));
+        }
+        if matches!(kind, ValueKind::DateTime | ValueKind::Time) {
+            let parsed = super::calendar_binary::parse_xs_calendar_lexical(
+                kind,
+                props.calendar_date_only,
+                text,
+            )?;
+            return Ok(DfdlValue::DateTime(parsed));
+        }
+        let mut sub = Cursor::new(text.as_bytes());
+        return super::runtime::read_text_scalar(
+            &mut sub,
             kind,
-            props.calendar_date_only,
-            text,
-        )?;
-        return Ok(crate::value::DfdlValue::DateTime(parsed));
+            props,
+            strings,
+            false,
+            &[],
+            None,
+            None,
+            &crate::length_validate::DaffodilTunables::default(),
+        )
+        .map_err(Into::into);
     }
     if let InputValueCalc::Constant(v) = calc {
         if kind == ValueKind::Integer && props.non_negative_integer && v < 0 {

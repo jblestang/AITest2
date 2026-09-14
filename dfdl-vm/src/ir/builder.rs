@@ -101,7 +101,15 @@ impl<'a> IrBuilder<'a> {
                 &mut self.strings,
                 self.tunables,
             )?;
+            apply_restriction_facets(
+                &self.schema,
+                &mut props,
+                &SimpleBase::Builtin(builtin),
+                &mut self.strings,
+                &root_element.props,
+            );
             validate_implicit_text_length(kind, &props)?;
+            props.xsd_type = Some(self.strings.intern(root_element.type_name.as_str()));
             let name = self.strings.intern(root_name);
             self.push(IrNode::Element {
                 name,
@@ -275,7 +283,7 @@ impl<'a> IrBuilder<'a> {
         match particle {
             Particle::Element(element) => {
                 let merged =
-                    self.merge_props_full(inherited, &element.props, &DfdlProps::default())?;
+                    self.merge_props_full(inherited, &DfdlProps::default(), &element.props)?;
                 validate_text_standard_sibling_order(&merged, prior_element_names, &self.strings)?;
                 let name = self.strings.intern(&element.name);
                 if let Some(builtin) = BuiltinType::from_xsd(element.type_name.as_str()) {
@@ -288,6 +296,13 @@ impl<'a> IrBuilder<'a> {
                         &mut self.strings,
                         self.tunables,
                     )?;
+                    apply_restriction_facets(
+                        &self.schema,
+                        &mut ir_props,
+                        &SimpleBase::Builtin(builtin),
+                        &mut self.strings,
+                        &element.props,
+                    );
                     validate_fixed_occurs_count(&ir_props)?;
                     ir_props.hidden = hidden;
                     validate_implicit_text_length(kind, &ir_props)?;

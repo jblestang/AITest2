@@ -2050,6 +2050,12 @@ fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>
         let lit = parse_xs_string_literal_arg(arg)?;
         return Some((InputValueCalc::StringLiteral, None, Some(lit)));
     }
+    if let Some(lit) = parse_xs_string_literal_arg(inner) {
+        return Some((InputValueCalc::StringLiteral, None, Some(lit)));
+    }
+    if let Some(v) = parse_constant_length_expr(trimmed) {
+        return Some((InputValueCalc::Constant(v as i64), None, None));
+    }
     if let Ok(v) = inner.parse::<i64>() {
         return Some((InputValueCalc::Constant(v), None, None));
     }
