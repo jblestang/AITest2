@@ -53,6 +53,7 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
             "SP" => vec![b' '],
             "HT" => vec![b'\t'],
             "DEL" => vec![0x7f],
+            "NAK" => vec![0x15],
             "WSP" | "WS" => match quantifier {
                 Some('*') | Some('?') => vec![],
                 _ => vec![b' '],

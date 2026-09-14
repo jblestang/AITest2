@@ -362,6 +362,18 @@ pub(crate) fn xs_datetime_lexical_cmp(a: &str, b: &str) -> Option<core::cmp::Ord
     Some(na.cmp(&nb))
 }
 
+pub(crate) fn xs_date_lexical_cmp(a: &str, b: &str) -> Option<core::cmp::Ordering> {
+    let na = parse_xs_date_lexical(a).ok()?;
+    let nb = parse_xs_date_lexical(b).ok()?;
+    Some(na.cmp(&nb))
+}
+
+pub(crate) fn xs_time_lexical_cmp(a: &str, b: &str) -> Option<core::cmp::Ordering> {
+    let na = parse_xs_time_lexical(a).ok()?;
+    let nb = parse_xs_time_lexical(b).ok()?;
+    Some(na.cmp(&nb))
+}
+
 pub fn parse_xs_calendar_lexical(
     kind: crate::ir::ValueKind,
     date_only: bool,

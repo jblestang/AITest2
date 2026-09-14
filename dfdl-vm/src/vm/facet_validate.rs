@@ -65,6 +65,8 @@ pub fn validate_decoded_facets(
         validate_decimal_range_facets(value, props, strings)?;
     } else if kind == ValueKind::DateTime {
         validate_datetime_range_facets(value, props, strings)?;
+    } else if kind == ValueKind::Time {
+        validate_time_range_facets(value, props, strings)?;
     } else if let Some(n) = numeric_value_i64(value) {
         validate_numeric_facets(n, props, strings)?;
         validate_enumeration_numeric(n, props, strings)?;
@@ -77,6 +79,21 @@ pub fn validate_decoded_facets(
     Ok(())
 }
 
+fn lexical_calendar_cmp(
+    lex: &str,
+    bound: &str,
+    date_only: bool,
+    time: bool,
+) -> Option<core::cmp::Ordering> {
+    if time {
+        super::calendar_binary::xs_time_lexical_cmp(lex, bound)
+    } else if date_only {
+        super::calendar_binary::xs_date_lexical_cmp(lex, bound)
+    } else {
+        super::calendar_binary::xs_datetime_lexical_cmp(lex, bound)
+    }
+}
+
 fn validate_datetime_range_facets(
     value: &DfdlValue,
     props: &IrProps,
@@ -85,9 +102,10 @@ fn validate_datetime_range_facets(
     let DfdlValue::DateTime(lex) = value else {
         return Ok(());
     };
+    let date_only = props.calendar_date_only || !lex.contains('T');
     if let Some(id) = props.value_min_inclusive_lexical {
         let min = strings.get(id)?;
-        if super::calendar_binary::xs_datetime_lexical_cmp(lex, min)
+        if lexical_calendar_cmp(lex, min, date_only, false)
             == Some(core::cmp::Ordering::Less)
         {
             return Err(facet_validation_error(
@@ -99,7 +117,7 @@ fn validate_datetime_range_facets(
     }
     if let Some(id) = props.value_max_inclusive_lexical {
         let max = strings.get(id)?;
-        if super::calendar_binary::xs_datetime_lexical_cmp(lex, max)
+        if lexical_calendar_cmp(lex, max, date_only, false)
             == Some(core::cmp::Ordering::Greater)
         {
             return Err(facet_validation_error(
@@ -111,7 +129,7 @@ fn validate_datetime_range_facets(
     }
     if let Some(id) = props.value_min_exclusive_lexical {
         let min = strings.get(id)?;
-        if super::calendar_binary::xs_datetime_lexical_cmp(lex, min)
+        if lexical_calendar_cmp(lex, min, date_only, false)
             != Some(core::cmp::Ordering::Greater)
         {
             return Err(facet_validation_error(
@@ -123,9 +141,60 @@ fn validate_datetime_range_facets(
     }
     if let Some(id) = props.value_max_exclusive_lexical {
         let max = strings.get(id)?;
-        if super::calendar_binary::xs_datetime_lexical_cmp(lex, max)
+        if lexical_calendar_cmp(lex, max, date_only, false)
             != Some(core::cmp::Ordering::Less)
         {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: maxExclusive ({max})"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_time_range_facets(
+    value: &DfdlValue,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), VmError> {
+    let DfdlValue::DateTime(lex) = value else {
+        return Ok(());
+    };
+    if let Some(id) = props.value_min_inclusive_lexical {
+        let min = strings.get(id)?;
+        if lexical_calendar_cmp(lex, min, false, true) == Some(core::cmp::Ordering::Less) {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: minInclusive ({min})"),
+            ));
+        }
+    }
+    if let Some(id) = props.value_max_inclusive_lexical {
+        let max = strings.get(id)?;
+        if lexical_calendar_cmp(lex, max, false, true) == Some(core::cmp::Ordering::Greater) {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: maxInclusive ({max})"),
+            ));
+        }
+    }
+    if let Some(id) = props.value_min_exclusive_lexical {
+        let min = strings.get(id)?;
+        if lexical_calendar_cmp(lex, min, false, true) != Some(core::cmp::Ordering::Greater) {
+            return Err(facet_validation_error(
+                props,
+                strings,
+                alloc::format!("failed facet checks due to: minExclusive ({min})"),
+            ));
+        }
+    }
+    if let Some(id) = props.value_max_exclusive_lexical {
+        let max = strings.get(id)?;
+        if lexical_calendar_cmp(lex, max, false, true) != Some(core::cmp::Ordering::Less) {
             return Err(facet_validation_error(
                 props,
                 strings,

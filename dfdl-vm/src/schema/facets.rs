@@ -1,5 +1,5 @@
 use super::ast::{
-    BuiltinType, LengthKind, Representation, SchemaDocument, SimpleBase, TypeDef,
+    BuiltinType, LengthKind, Representation, RestrictionBase, SchemaDocument, SimpleBase, TypeDef,
 };
 use crate::error::SchemaError;
 use crate::ir::{IrProps, ValueKind};
@@ -196,8 +196,6 @@ fn merge_min_u64(base: Option<u64>, local: Option<u64>) -> Option<u64> {
     merge_max_length(base, local)
 }
 
-use super::ast::RestrictionBase;
-
 fn facet_err_non_negative_integer(raw: &str) -> SchemaError {
     SchemaError::InvalidProperty {
         message: alloc::format!(
@@ -304,28 +302,167 @@ fn validate_int_range_facet(name: &str, value: i64) -> Result<(), SchemaError> {
     Ok(())
 }
 
+fn validate_short_range_facet(name: &str, value: i64) -> Result<(), SchemaError> {
+    if value < i16::MIN as i64 || value > i16::MAX as i64 {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "{name} facet value ({value}) was found to be outside of Short range."
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_facet_range_order(eff: &EffectiveFacets) -> Result<(), SchemaError> {
+    if let (Some(min), Some(max)) = (eff.min_exclusive, eff.max_inclusive) {
+        if min > max {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "MinExclusive({min}) must be less than or equal to MaxInclusive({max})"
+                ),
+            });
+        }
+    }
+    if let (Some(min), Some(max)) = (eff.min_inclusive, eff.max_inclusive) {
+        if min > max {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "MinInclusive({min}) must be less than or equal to MaxInclusive({max})"
+                ),
+            });
+        }
+    }
+    if let (Some(min), Some(max)) = (eff.min_exclusive, eff.max_exclusive) {
+        if min >= max {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "MinExclusive({min}) must be less than or equal to MaxExclusive({max})"
+                ),
+            });
+        }
+    }
+    if let (Some(min), Some(max)) = (eff.min_inclusive, eff.max_exclusive) {
+        if min >= max {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "MinInclusive({min}) must be less than or equal to MaxExclusive({max})"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_fraction_total_digits(eff: &EffectiveFacets) -> Result<(), SchemaError> {
+    if let (Some(frac), Some(total)) = (eff.fraction_digits, eff.total_digits) {
+        if frac > total {
+            return Err(SchemaError::InvalidProperty {
+                message: "FractionDigits facet must not exceed TotalDigits".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn parent_restriction_enumerations(
+    schema: &SchemaDocument,
+    parent: &RestrictionBase,
+) -> Option<Vec<String>> {
+    match parent {
+        RestrictionBase::Builtin(_) => None,
+        RestrictionBase::Named(name) => {
+            let type_def = schema.types.get(name)?;
+            let TypeDef::Simple { base, .. } = type_def else {
+                return None;
+            };
+            match base {
+                SimpleBase::Restriction {
+                    enumerations,
+                    base: inner,
+                    ..
+                } => {
+                    if !enumerations.is_empty() {
+                        Some(enumerations.clone())
+                    } else {
+                        parent_restriction_enumerations(schema, inner)
+                    }
+                }
+                _ => None,
+            }
+        }
+    }
+}
+
+fn validate_enumeration_subset(
+    schema: &SchemaDocument,
+    base: &SimpleBase,
+) -> Result<(), SchemaError> {
+    let SimpleBase::Restriction {
+        base: parent,
+        enumerations,
+        ..
+    } = base
+    else {
+        return Ok(());
+    };
+    if enumerations.is_empty() {
+        return Ok(());
+    }
+    let Some(parent_enums) = parent_restriction_enumerations(schema, parent) else {
+        return Ok(());
+    };
+    for value in enumerations {
+        if !parent_enums.iter().any(|p| p == value) {
+            return Err(SchemaError::InvalidProperty {
+                message: "Local enumerations must be a subset of base enumerations".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_value_space_facets(
     schema: &SchemaDocument,
     base: &SimpleBase,
 ) -> Result<(), SchemaError> {
+    let eff = schema.effective_facets(base);
+    validate_facet_range_order(&eff)?;
+    validate_fraction_total_digits(&eff)?;
+    validate_enumeration_subset(schema, base)?;
+
     let Some(builtin) = schema.builtin_for_simple_base(base) else {
         return Ok(());
     };
-    if builtin != BuiltinType::Int {
-        return Ok(());
-    }
-    let eff = schema.effective_facets(base);
-    if let Some(v) = eff.min_inclusive {
-        validate_int_range_facet("minInclusive", v)?;
-    }
-    if let Some(v) = eff.max_inclusive {
-        validate_int_range_facet("maxInclusive", v)?;
-    }
-    if let Some(v) = eff.min_exclusive {
-        validate_int_range_facet("minExclusive", v)?;
-    }
-    if let Some(v) = eff.max_exclusive {
-        validate_int_range_facet("maxExclusive", v)?;
+    match builtin {
+        BuiltinType::Int => {
+            if let Some(v) = eff.min_inclusive {
+                validate_int_range_facet("minInclusive", v)?;
+            }
+            if let Some(v) = eff.max_inclusive {
+                validate_int_range_facet("maxInclusive", v)?;
+            }
+            if let Some(v) = eff.min_exclusive {
+                validate_int_range_facet("minExclusive", v)?;
+            }
+            if let Some(v) = eff.max_exclusive {
+                validate_int_range_facet("maxExclusive", v)?;
+            }
+        }
+        BuiltinType::Short => {
+            if let Some(v) = eff.min_inclusive {
+                validate_short_range_facet("minInclusive", v)?;
+            }
+            if let Some(v) = eff.max_inclusive {
+                validate_short_range_facet("maxInclusive", v)?;
+            }
+            if let Some(v) = eff.min_exclusive {
+                validate_short_range_facet("minExclusive", v)?;
+            }
+            if let Some(v) = eff.max_exclusive {
+                validate_short_range_facet("maxExclusive", v)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
