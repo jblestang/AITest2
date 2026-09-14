@@ -68,6 +68,27 @@ pub fn resolved_alignment(kind: ValueKind, props: &IrProps, encoding: &str) -> (
     }
 }
 
+/// Align the bit stream to the encoding boundary before reading text delimiters or text data.
+pub fn align_cursor_to_text_encoding(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+    encoding: &str,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    let enc_bits = text_encoding_alignment_bits(encoding);
+    if enc_bits <= 1 {
+        return Ok(());
+    }
+    let pos = cursor.absolute_bit_index();
+    let skip = (enc_bits - (pos % enc_bits)) % enc_bits;
+    if skip > 0 {
+        cursor
+            .skip_stream_bits(skip, props.bit_order)
+            .map_err(|_| VmError::UnexpectedEof)?;
+    }
+    Ok(())
+}
+
 pub fn consume_leading_skip(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
@@ -90,7 +111,7 @@ pub fn write_leading_skip(
     bit_count: &mut u8,
     props: &IrProps,
 ) -> Result<(), crate::error::VmError> {
-    use crate::vm::runtime::{write_byte_aligned, write_stream_bit};
+    use crate::vm::runtime::write_stream_bit;
     if props.leading_skip == 0 {
         return Ok(());
     }

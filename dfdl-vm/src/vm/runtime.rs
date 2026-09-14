@@ -4789,6 +4789,10 @@ pub(crate) fn consume_alignment_values(
             op: "non-byte alignment".into(),
         });
     }
+    if cursor.bit_count != 0 {
+        let pad = 8 - cursor.bit_count as usize;
+        cursor.skip_stream_bits(pad, props.bit_order)?;
+    }
     let align = alignment as usize;
     if align <= 1 {
         return Ok(());
@@ -4919,9 +4923,11 @@ pub(crate) fn read_simple(
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
+    let encoding = encoding_name(props, strings)?;
     if let Some(id) = props.initiator {
         let pat = strings.get(id)?;
         if !pat.is_empty() {
+            crate::vm::alignment::align_cursor_to_text_encoding(cursor, props, encoding)?;
             let Some((_n, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) else {
                 return Err(VmError::InvalidValue {
                     message: "initiator mismatch".into(),
@@ -4972,6 +4978,7 @@ pub(crate) fn read_simple(
     } else if let Some(id) = props.terminator {
         let pat = strings.get(id)?;
         if !pat.is_empty() {
+            crate::vm::alignment::align_cursor_to_text_encoding(cursor, props, encoding)?;
             if let Some((n, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) {
                 if n == 0 && !cursor.is_empty() {
                     return Err(VmError::InvalidValue {
@@ -4998,6 +5005,7 @@ pub(crate) fn read_simple(
             }
         }
     }
+    crate::vm::alignment::consume_trailing_skip(cursor, props)?;
     Ok(value)
 }
 

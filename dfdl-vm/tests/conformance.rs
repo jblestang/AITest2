@@ -1056,6 +1056,9 @@ fn daffodil_section12_aligned_data_suite() {
         "alignmentStringBitSkip",
         "leadingSkip1",
         "leftFraming01",
+        "rightFraming01",
+        "alignmentTerminatorBitSkip",
+        "leftAndRightFraming01",
     ] {
         assert_named_test_passes(tdml, name);
     }
