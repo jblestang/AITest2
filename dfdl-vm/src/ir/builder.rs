@@ -421,11 +421,12 @@ impl<'a> IrBuilder<'a> {
                     .ok_or_else(|| SchemaError::InvalidProperty {
                         message: alloc::format!("unknown group `{qname}`"),
                     })?;
-                let ir_props = inherited.clone();
-                let child_inherited =
-                    particle_inherited_for_children(inherited, group.props(), &self.defaults);
                 match group {
                     GroupDecl::Sequence(seq) => {
+                        let ir_props =
+                            self.merge_props_full(inherited, &seq.props, &DfdlProps::default())?;
+                        let child_inherited =
+                            particle_inherited_for_children(inherited, &seq.props, &self.defaults);
                         let mut children = Vec::new();
                         let mut prior_element_names: Vec<String> = Vec::new();
                         for particle in &seq.particles {
@@ -445,6 +446,10 @@ impl<'a> IrBuilder<'a> {
                         }))
                     }
                     GroupDecl::Choice(ch) => {
+                        let ir_props =
+                            self.merge_props_full(inherited, &ch.props, &DfdlProps::default())?;
+                        let child_inherited =
+                            particle_inherited_for_children(inherited, &ch.props, &self.defaults);
                         let mut branches = Vec::new();
                         for branch in &ch.branches {
                             let node = self.compile_particle_inner(

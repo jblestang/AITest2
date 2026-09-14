@@ -2724,6 +2724,64 @@ fn bit_mask(width: usize) -> u64 {
     }
 }
 
+fn twos_complement_negate_be(bytes: &mut [u8]) {
+    let mut carry = 1u16;
+    for b in bytes.iter_mut().rev() {
+        let v = (!(*b as u16)).wrapping_add(carry);
+        *b = v as u8;
+        carry = (v >> 8) as u16;
+    }
+}
+
+fn magnitude_bytes_be_to_decimal(bytes: &[u8]) -> alloc::string::String {
+    let start = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
+    if start >= bytes.len() {
+        return "0".into();
+    }
+    let mut digits = alloc::vec![0u8];
+    for &byte in &bytes[start..] {
+        let mut carry = u32::from(byte);
+        for d in digits.iter_mut() {
+            let v = u32::from(*d) * 256 + carry;
+            *d = (v % 10) as u8;
+            carry = v / 10;
+        }
+        while carry > 0 {
+            digits.push((carry % 10) as u8);
+            carry /= 10;
+        }
+    }
+    while digits.len() > 1 && digits.last() == Some(&0) {
+        digits.pop();
+    }
+    digits
+        .iter()
+        .rev()
+        .map(|d| char::from(b'0' + *d))
+        .collect()
+}
+
+fn decode_binary_integer_decimal(
+    bytes: &[u8],
+    le: bool,
+    non_negative: bool,
+) -> alloc::string::String {
+    let mut mag = bytes.to_vec();
+    if le {
+        mag.reverse();
+    }
+    let negative = !non_negative && !mag.is_empty() && (mag[0] & 0x80) != 0;
+    if negative {
+        twos_complement_negate_be(&mut mag);
+    }
+    let dec = magnitude_bytes_be_to_decimal(&mag);
+    if negative {
+        alloc::format!("-{dec}")
+    } else {
+        dec
+    }
+}
+
 fn normalize_bit_field_raw(
     raw: u64,
     bit_width: usize,
@@ -2849,6 +2907,12 @@ fn decode_binary_bytes(
                     sign_extend_u64(raw, bits)
                 };
                 Ok(DfdlValue::Integer(v.to_string()))
+            } else if bytes.len() > core::mem::size_of::<i64>() {
+                Ok(DfdlValue::Integer(decode_binary_integer_decimal(
+                    bytes,
+                    le,
+                    props.non_negative_integer,
+                )))
             } else {
                 Ok(DfdlValue::Integer(int!(i64).to_string()))
             }
@@ -5800,7 +5864,13 @@ fn value_kind_type_name(kind: crate::ir::ValueKind, props: Option<&IrProps>) -> 
         ValueKind::Byte => "xs:byte",
         ValueKind::Short => "xs:short",
         ValueKind::Int => "xs:int",
-        ValueKind::Long => "xs:long",
+        ValueKind::Long => {
+            if props.is_some_and(|p| p.unsigned_integer) {
+                "xs:unsignedLong"
+            } else {
+                "xs:long"
+            }
+        }
         ValueKind::UnsignedByte => "xs:unsignedByte",
         ValueKind::UnsignedShort => "xs:unsignedShort",
         ValueKind::UnsignedInt => "xs:unsignedInt",
