@@ -1275,13 +1275,17 @@ fn decode_binary_calendar(
         props.calendar_century_start,
         props.calendar_first_day_of_week,
     )?;
+    let default_utc = rep == BinaryNumberRep::PackedBcd
+        && kind == crate::ir::ValueKind::DateTime
+        && !props.calendar_date_only
+        && text.contains('T');
     let text = append_packed_calendar_timezone(
         props,
         strings,
         kind,
         props.calendar_date_only,
         &text,
-        true,
+        default_utc,
     )?;
     calendar_value_from_text(kind, text)
 }
@@ -1571,18 +1575,16 @@ fn append_packed_calendar_timezone(
     if lexical_has_xsd_timezone(parsed) {
         return Ok(parsed.into());
     }
-    if !(kind == crate::ir::ValueKind::Time || date_only || parsed.contains('T')) {
-        return Ok(parsed.into());
-    }
-    if let Some(id) = props.calendar_time_zone {
-        if let Ok(raw) = strings.get(id) {
-            if let Some(suffix) = crate::vm::calendar_binary::calendar_timezone_xsd_suffix(raw) {
-                return Ok(alloc::format!("{parsed}{suffix}"));
+    if props.calendar_time_zone_defined {
+        if let Some(id) = props.calendar_time_zone {
+            if let Ok(raw) = strings.get(id) {
+                if let Some(suffix) = crate::vm::calendar_binary::calendar_timezone_xsd_suffix(raw) {
+                    return Ok(alloc::format!("{parsed}{suffix}"));
+                }
             }
-            return Ok(parsed.into());
         }
     }
-    if default_utc_when_missing {
+    if default_utc_when_missing && parsed.contains('T') && !date_only {
         Ok(alloc::format!("{parsed}+00:00"))
     } else {
         Ok(parsed.into())
@@ -1658,6 +1660,20 @@ fn read_calendar_timezone_name(
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
     let rest = text[*ti..].trim_start();
+    let base = *ti + text[*ti..].len().saturating_sub(rest.len());
+    if rest.len() >= 3 && rest[..3].eq_ignore_ascii_case("GMT") {
+        let after_gmt = &rest[3..];
+        let tail = after_gmt.trim_start();
+        let tail_start = base + 3 + after_gmt.len().saturating_sub(tail.len());
+        if tail.is_empty() {
+            *ti = tail_start;
+            return Ok("+00:00".into());
+        }
+        if let Some((tz, consumed)) = parse_calendar_tz_offset(tail) {
+            *ti = tail_start + consumed;
+            return Ok(tz);
+        }
+    }
     if (kind == 'z' || kind == 'v') && width >= 4 {
         for (name, off) in timezone_long_names() {
             if rest.starts_with(name) {
@@ -1721,7 +1737,7 @@ fn read_calendar_timezone_name(
     Ok((*off).into())
 }
 
-fn parse_calendar_tz_offset(raw: &str) -> Option<(alloc::string::String, usize)> {
+pub(crate) fn parse_calendar_tz_offset(raw: &str) -> Option<(alloc::string::String, usize)> {
     let mut i = 0usize;
     while i < raw.len() && raw.as_bytes()[i].is_ascii_whitespace() {
         i += 1;
@@ -1732,9 +1748,10 @@ fn parse_calendar_tz_offset(raw: &str) -> Option<(alloc::string::String, usize)>
         return None;
     }
     i += 1;
-    if raw.get(i..i + 2)?.bytes().all(|b| b.is_ascii_digit())
-        && raw.as_bytes().get(i + 2) == Some(&b':')
-        && raw.get(i + 3..i + 5)?.bytes().all(|b| b.is_ascii_digit())
+    if i + 5 <= raw.len()
+        && raw[i..i + 2].bytes().all(|b| b.is_ascii_digit())
+        && raw.as_bytes()[i + 2] == b':'
+        && raw[i + 3..i + 5].bytes().all(|b| b.is_ascii_digit())
     {
         let hh = &raw[i..i + 2];
         let mm = &raw[i + 3..i + 5];
@@ -1746,14 +1763,7 @@ fn parse_calendar_tz_offset(raw: &str) -> Option<(alloc::string::String, usize)>
             start + 1 + 2 + 1 + 2,
         ));
     }
-    if raw.get(i..i + 1)?.bytes().all(|b| b.is_ascii_digit()) {
-        let h1 = raw[i..i + 1].parse::<u8>().ok()?;
-        if h1 <= 9 {
-            let sign = sign as char;
-            return Some((alloc::format!("{sign}{h1:02}:00"), start + 1 + 1));
-        }
-    }
-    if raw.get(i..i + 4)?.bytes().all(|b| b.is_ascii_digit()) {
+    if i + 4 <= raw.len() && raw[i..i + 4].bytes().all(|b| b.is_ascii_digit()) {
         let hh = &raw[i..i + 2];
         let mm = &raw[i + 2..i + 4];
         hh.parse::<u8>().ok()?;
@@ -1763,6 +1773,19 @@ fn parse_calendar_tz_offset(raw: &str) -> Option<(alloc::string::String, usize)>
             alloc::format!("{sign}{hh}:{mm}"),
             start + 1 + 4,
         ));
+    }
+    if i + 2 <= raw.len() && raw[i..i + 2].bytes().all(|b| b.is_ascii_digit()) {
+        let hh = &raw[i..i + 2];
+        hh.parse::<u8>().ok()?;
+        let sign = sign as char;
+        return Some((alloc::format!("{sign}{hh}:00"), start + 1 + 2));
+    }
+    if i + 1 <= raw.len() && raw[i..i + 1].bytes().all(|b| b.is_ascii_digit()) {
+        let h1 = raw[i..i + 1].parse::<u8>().ok()?;
+        if h1 <= 9 {
+            let sign = sign as char;
+            return Some((alloc::format!("{sign}{h1:02}:00"), start + 1 + 1));
+        }
     }
     None
 }
@@ -6562,6 +6585,13 @@ fn pad_char_for_kind(
             }
         }
     }
+    if matches!(kind, crate::ir::ValueKind::DateTime | crate::ir::ValueKind::Time) {
+        if let Some(id) = props.text_calendar_pad_character {
+            if let Ok(raw) = strings.get(id) {
+                return expand_entities_str(raw);
+            }
+        }
+    }
     if matches!(kind, Boolean) {
         if let Some(id) = props.text_boolean_pad_character {
             if let Ok(raw) = strings.get(id) {
@@ -6694,6 +6724,11 @@ fn trim_text_value<'a>(
             let pad = pad_char_for_kind(props, strings, kind);
             if kind == crate::ir::ValueKind::String {
                 trim_pad_char_for_justification(input, &pad, props.text_string_justification)
+            } else if matches!(kind, crate::ir::ValueKind::DateTime | crate::ir::ValueKind::Time) {
+                let just = props
+                    .text_calendar_justification
+                    .unwrap_or(props.text_string_justification);
+                trim_pad_char_for_justification(input, &pad, just)
             } else {
                 trim_pad_char(input, &pad)
             }
@@ -8645,5 +8680,21 @@ mod delimited_stop_tests {
         )
         .unwrap_or_else(|e| panic!("dateTimeText: {e}"));
         assert_eq!(dt, "1996-07-10T15:08:56-05:00");
+    }
+
+    #[test]
+    fn format_time_gmt8_and_rfc822_tz() {
+        assert_eq!(
+            super::parse_calendar_tz_offset("-8").unwrap().0,
+            "-08:00"
+        );
+        assert_eq!(
+            format_calendar_text("08:43.GMT-8", "hh:mm.v", false, 53, default_cal_cfg()).unwrap(),
+            "08:43:00-08:00"
+        );
+        assert_eq!(
+            format_calendar_text("08:43.-0800", "hh:mm.Z", false, 53, default_cal_cfg()).unwrap(),
+            "08:43:00-08:00"
+        );
     }
 }

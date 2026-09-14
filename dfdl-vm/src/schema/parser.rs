@@ -1695,6 +1695,12 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
         base.text_string_pad_character_property_form =
             overlay.text_string_pad_character_property_form;
     }
+    if overlay.text_calendar_pad_character.is_some() {
+        base.text_calendar_pad_character = overlay.text_calendar_pad_character;
+    }
+    if overlay.text_calendar_justification.is_some() {
+        base.text_calendar_justification = overlay.text_calendar_justification;
+    }
     if overlay.prefix_length_type.is_some() {
         base.prefix_length_type = overlay.prefix_length_type;
     }
@@ -2023,6 +2029,8 @@ fn is_dfdl_property(name: &str) -> bool {
             | "truncateSpecifiedLengthString"
             | "textNumberPadCharacter"
             | "textStringPadCharacter"
+            | "textCalendarPadCharacter"
+            | "textCalendarJustification"
             | "textPadKind"
             | "textStringJustification"
             | "textNumberJustification"
@@ -2287,6 +2295,22 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             "textStringPadCharacter" => {
                 props.text_string_pad_character = Some(value.clone());
             }
+            "textCalendarPadCharacter" => {
+                props.text_calendar_pad_character = Some(value.clone());
+            }
+            "textCalendarJustification" => {
+                props.text_calendar_justification = Some(match value.as_str() {
+                    "left" => TextStringJustification::Left,
+                    "right" => TextStringJustification::Right,
+                    "center" => TextStringJustification::Center,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown textCalendarJustification `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
             "textPadKind" => {
                 props.text_pad_kind = Some(match value.as_str() {
                     "none" => crate::schema::TextPadKind::None,
@@ -2427,7 +2451,10 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             "calendarCheckPolicy" => {
                 props.calendar_check_policy_lax = Some(matches!(value.as_str(), "lax"));
             }
-            "calendarTimeZone" => props.calendar_time_zone = Some(value.clone()),
+            "calendarTimeZone" => {
+                props.calendar_time_zone = Some(value.clone());
+                props.calendar_time_zone_defined = true;
+            }
             "calendarCenturyStart" => {
                 let parsed: u32 = value.parse().map_err(|_| ParseError::InvalidXml {
                     message: alloc::format!("invalid calendarCenturyStart `{value}`"),

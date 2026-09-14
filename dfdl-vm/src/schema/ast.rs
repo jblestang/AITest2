@@ -44,6 +44,8 @@ pub struct DfdlProps {
     pub text_string_pad_character: Option<String>,
     /// Set when pad character came from `dfdl:property` (not an XSD attribute).
     pub text_string_pad_character_property_form: bool,
+    pub text_calendar_pad_character: Option<String>,
+    pub text_calendar_justification: Option<TextStringJustification>,
     pub binary_number_rep: Option<BinaryNumberRep>,
     pub binary_packed_sign_codes: Option<String>,
     pub binary_packed_sign_codes_defined: bool,
@@ -63,6 +65,7 @@ pub struct DfdlProps {
     pub calendar_days_in_first_week: Option<u32>,
     pub calendar_first_day_of_week: Option<String>,
     pub calendar_time_zone: Option<String>,
+    pub calendar_time_zone_defined: bool,
     pub text_number_pattern: Option<String>,
     pub text_number_check_policy: Option<BinaryNumberCheckPolicy>,
     pub text_number_rep: Option<TextNumberRep>,

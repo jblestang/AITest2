@@ -2425,6 +2425,15 @@ fn overlay_dfdl_to_ir(
         base.text_string_pad_character_property_form =
             props.text_string_pad_character_property_form;
     }
+    if props.text_calendar_pad_character.is_some() {
+        base.text_calendar_pad_character = props
+            .text_calendar_pad_character
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
+    if let Some(v) = props.text_calendar_justification {
+        base.text_calendar_justification = Some(v);
+    }
     if let Some(v) = props.binary_number_rep {
         base.binary_number_rep = v;
     }
@@ -2473,6 +2482,9 @@ fn overlay_dfdl_to_ir(
             .calendar_time_zone
             .as_ref()
             .map(|s| strings.intern(s.clone()));
+    }
+    if props.calendar_time_zone_defined {
+        base.calendar_time_zone_defined = true;
     }
     if let Some(start) = props.calendar_century_start {
         base.calendar_century_start = start;
@@ -2871,6 +2883,12 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.text_string_pad_character = overlay.text_string_pad_character;
     out.text_string_pad_character_property_form =
         overlay.text_string_pad_character_property_form;
+    if overlay.text_calendar_pad_character.is_some() {
+        out.text_calendar_pad_character = overlay.text_calendar_pad_character;
+    }
+    if overlay.text_calendar_justification.is_some() {
+        out.text_calendar_justification = overlay.text_calendar_justification;
+    }
     out.binary_number_rep = overlay.binary_number_rep;
     out.binary_packed_sign_codes = overlay.binary_packed_sign_codes;
     if overlay.binary_packed_sign_codes_defined {
