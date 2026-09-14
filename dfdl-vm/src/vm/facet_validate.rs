@@ -97,7 +97,6 @@ pub fn validate_decoded_facets(
         match value {
             DfdlValue::String(s) => {
                 validate_string_facets(s.text.as_str(), props, strings)?;
-                validate_facet_length_count(s.text.chars().count(), props, strings)?;
             }
             DfdlValue::HexBinary(bytes) => {
                 validate_facet_length_count(bytes.len(), props, strings)?;
@@ -114,6 +113,16 @@ pub fn validate_decoded_facets(
     } else if kind == ValueKind::Time {
         validate_time_range_facets(value, props, strings)?;
         validate_calendar_enumeration(value, props, strings)?;
+    } else if kind == ValueKind::Integer {
+        if let DfdlValue::Integer(lex) = value {
+            if let Ok(n) = lex.parse::<i64>() {
+                validate_numeric_facets(n, props, strings)?;
+                validate_enumeration_numeric(n, props, strings)?;
+            }
+            if props.total_digits.is_some() || props.fraction_digits.is_some() {
+                validate_digit_facets(lex, props, strings)?;
+            }
+        }
     } else if let Some(n) = numeric_value_i64(value) {
         validate_numeric_facets(n, props, strings)?;
         validate_enumeration_numeric(n, props, strings)?;
@@ -442,7 +451,7 @@ fn validate_facet_length_count(
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: length ({exact})"),
+                alloc::format!("failed facet checks due to: facet length ({exact})"),
             ));
         }
     }
@@ -451,12 +460,15 @@ fn validate_facet_length_count(
 
 fn validate_string_facets(text: &str, props: &IrProps, strings: &StringPool) -> Result<(), VmError> {
     let char_count = text.chars().count();
+    if props.facet_length.is_some() {
+        return validate_facet_length_count(char_count, props, strings);
+    }
     if let Some(min) = props.min_length {
         if char_count < min as usize {
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: minLength ({min})"),
+                alloc::format!("failed facet checks due to: facet minLength ({min})"),
             ));
         }
     }
@@ -465,7 +477,7 @@ fn validate_string_facets(text: &str, props: &IrProps, strings: &StringPool) -> 
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: maxLength ({max})"),
+                alloc::format!("failed facet checks due to: facet maxLength ({max})"),
             ));
         }
     }

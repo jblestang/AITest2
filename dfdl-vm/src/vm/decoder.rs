@@ -1314,8 +1314,20 @@ impl<'a> Decoder<'a> {
             if let Some((_, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) {
                 return Ok(Some(alt));
             }
+            let found = cursor
+                .data
+                .get(cursor.pos)
+                .map(|b| *b as char)
+                .unwrap_or('\0');
+            let found_display = if found.is_ascii() && !found.is_control() {
+                alloc::format!("{found}")
+            } else {
+                alloc::format!("\\x{b:02x}", b = cursor.data.get(cursor.pos).copied().unwrap_or(0))
+            };
             return Err(VmError::InvalidValue {
-                message: "separator mismatch".into(),
+                message: alloc::format!(
+                    "Parse Error. Delimiter not found!  Was looking for ({pat}) but found \"{found_display}\" instead"
+                ),
             }
             .into());
         }

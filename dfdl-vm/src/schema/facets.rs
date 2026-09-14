@@ -572,6 +572,29 @@ pub fn validate_length_facets_for_type(
     kind: ValueKind,
     props: &IrProps,
 ) -> Result<(), SchemaError> {
+    if let SimpleBase::Restriction {
+        base: crate::schema::RestrictionBase::Named(base_name),
+        length: Some(local_len),
+        ..
+    } = base
+    {
+        if let Some(type_def) = schema.resolve_type(base_name) {
+            if let crate::schema::TypeDef::Simple { base: parent_base, .. } = type_def {
+                let parent_eff = schema.effective_facets(parent_base);
+                if let Some(base_len) = parent_eff.length {
+                    if base_len != *local_len {
+                        return Err(SchemaError::InvalidProperty {
+                            message: alloc::format!(
+                                "Schema Definition Error length-valid-restriction: \
+                                 value of length must be = the value of that of the base type"
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     let eff = schema.effective_facets(base);
     validate_facet_literals(&eff)?;
     validate_value_space_facets(schema, base)?;
@@ -587,7 +610,12 @@ pub fn validate_length_facets_for_type(
 
     if has_length && (has_min || has_max) {
         return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error: Facet length cannot be defined with minLength and maxLength facets".into(),
+            message: alloc::format!(
+                "Schema Definition Error due to length-minLength-maxLength: \
+                 It is an error for both length and minLength to be members of facets. \
+                 It is not valid to not have a minLength facet if the current restriction has the minLength facet \
+                 and the current restriction or base has the length facet"
+            ),
         });
     }
 

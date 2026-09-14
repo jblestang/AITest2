@@ -20,7 +20,48 @@ pub fn validate_compiled_schema(
     validate_escape_separator_distinct(schema)?;
     validate_invalid_restrictions(schema, tunables)?;
     validate_max_hex_binary_length(schema, root, tunables)?;
+    validate_unique_particle_attribution(schema)?;
     let _ = root;
+    Ok(())
+}
+
+fn validate_unique_particle_attribution(schema: &SchemaDocument) -> Result<(), SchemaError> {
+    for particles in all_particle_lists(schema) {
+        validate_particle_list_upa(particles)?;
+    }
+    Ok(())
+}
+
+fn element_upa_fingerprint(el: &ElementDecl) -> alloc::string::String {
+    alloc::format!(
+        "{}|len={:?}|{}",
+        el.type_name.as_str(),
+        el.props.length_kind,
+        el.props.length.unwrap_or(0)
+    )
+}
+
+fn validate_particle_list_upa(particles: &[Particle]) -> Result<(), SchemaError> {
+    use alloc::collections::BTreeMap;
+    let mut seen: BTreeMap<&str, alloc::string::String> = BTreeMap::new();
+    for p in particles {
+        let Particle::Element(el) = p else {
+            continue;
+        };
+        let fp = element_upa_fingerprint(el);
+        if let Some(prev) = seen.get(el.name.as_str()) {
+            if prev != &fp {
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!(
+                        "Schema Definition Error: Multiple elements with name '{}', with different types, appear in the model group",
+                        el.name
+                    ),
+                });
+            }
+        } else {
+            seen.insert(el.name.as_str(), fp);
+        }
+    }
     Ok(())
 }
 
