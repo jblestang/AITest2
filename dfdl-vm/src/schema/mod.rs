@@ -1,9 +1,14 @@
 pub mod ast;
 mod entities;
+mod facets;
 mod parser;
 mod resolver;
 
 pub use ast::*;
+pub use facets::{
+    apply_effective_facets_to_ir, validate_facet_literals, validate_length_facets_for_type,
+    EffectiveFacets,
+};
 pub use entities::{
     encode_delimiter, encode_delimiter_by_alt, encode_nl_comma_space_separator,
     encode_property_delimiter, encode_sequence_separator, expand_entities, match_delimiter_with_alt,

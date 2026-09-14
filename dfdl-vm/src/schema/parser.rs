@@ -35,6 +35,23 @@ pub fn parse_schema_with_resolver(input: &str, resolver: SchemaResolver) -> Resu
     parser.parse_document()
 }
 
+#[derive(Debug, Default)]
+struct ParsedRestrictionFacets {
+    length: Option<u64>,
+    min_length: Option<u64>,
+    max_length: Option<u64>,
+    min_inclusive: Option<i64>,
+    max_inclusive: Option<i64>,
+    min_exclusive: Option<i64>,
+    max_exclusive: Option<i64>,
+    patterns: Vec<String>,
+    total_digits: Option<u64>,
+    fraction_digits: Option<u64>,
+    invalid_min_length: Option<String>,
+    invalid_max_length: Option<String>,
+    invalid_length: Option<String>,
+}
+
 struct XsdParser<'a> {
     reader: XmlReader<'a>,
     inline_counter: usize,
@@ -66,6 +83,9 @@ impl<'a> XsdParser<'a> {
         }
         for (k, v) in other.named_formats {
             self.doc.named_formats.insert(k, v);
+        }
+        for (k, v) in other.groups {
+            self.doc.groups.insert(k, v);
         }
         self.doc.format_defaults.props =
             merge_props(self.doc.format_defaults.props.clone(), other.format_defaults.props);
@@ -365,6 +385,20 @@ impl<'a> XsdParser<'a> {
                         "choice" => {
                             return Ok(ComplexContent::Choice(self.parse_choice(child_attrs)?))
                         }
+                        "group" => {
+                            let (xsd, _) = split_dfdl_attrs("group", &child_attrs)?;
+                            let ref_name = xsd.get("ref").cloned().ok_or_else(|| {
+                                ParseError::MissingAttribute {
+                                    element: "group".into(),
+                                    attribute: "ref".into(),
+                                }
+                            })?;
+                            self.skip_element_body("group")?;
+                            return Ok(ComplexContent::Sequence(SequenceDecl {
+                                props: DfdlProps::default(),
+                                particles: alloc::vec![Particle::GroupRef(normalize_qname(&ref_name))],
+                            }));
+                        }
                         "annotation" => self.skip_element_body("annotation")?,
                         _ => self.skip_element_body(&local)?,
                     }
@@ -404,7 +438,14 @@ impl<'a> XsdParser<'a> {
                 let child_attrs = self.reader.take_start_attributes()?;
                 let seq = self.parse_sequence(child_attrs)?;
                 self.expect_end_local("group")?;
-                self.doc.groups.insert(group_name, seq);
+                self.doc.groups.insert(group_name, GroupDecl::Sequence(seq));
+                Ok(())
+            }
+            XmlEvent::StartElement { name, .. } if name.local_name == "choice" => {
+                let child_attrs = self.reader.take_start_attributes()?;
+                let ch = self.parse_choice(child_attrs)?;
+                self.expect_end_local("group")?;
+                self.doc.groups.insert(group_name, GroupDecl::Choice(ch));
                 Ok(())
             }
             _ => Err(ParseError::InvalidXml {
@@ -666,19 +707,28 @@ impl<'a> XsdParser<'a> {
                                 attribute: "base".into(),
                             }
                         })?;
-                        let base = BuiltinType::from_xsd(&normalize_qname(&base_name)).ok_or_else(|| {
-                            ParseError::UnknownType {
-                                name: base_name.clone(),
-                            }
-                        })?;
-                        let (min_length, max_length, min_inclusive, max_inclusive) =
-                            self.parse_restriction_body()?;
+                        let normalized = normalize_qname(&base_name);
+                        let base = if let Some(b) = BuiltinType::from_xsd(&normalized) {
+                            RestrictionBase::Builtin(b)
+                        } else {
+                            RestrictionBase::Named(TypeName::new(normalized))
+                        };
+                        let facets = self.parse_restriction_body()?;
                         return Ok(SimpleBase::Restriction {
                             base,
-                            min_length,
-                            max_length,
-                            min_inclusive,
-                            max_inclusive,
+                            length: facets.length,
+                            min_length: facets.min_length,
+                            max_length: facets.max_length,
+                            min_inclusive: facets.min_inclusive,
+                            max_inclusive: facets.max_inclusive,
+                            min_exclusive: facets.min_exclusive,
+                            max_exclusive: facets.max_exclusive,
+                            patterns: facets.patterns,
+                            total_digits: facets.total_digits,
+                            fraction_digits: facets.fraction_digits,
+                            invalid_min_length: facets.invalid_min_length,
+                            invalid_max_length: facets.invalid_max_length,
+                            invalid_length: facets.invalid_length,
                         });
                     }
                     self.skip_element_body(&local)?;
@@ -699,11 +749,8 @@ impl<'a> XsdParser<'a> {
         }
     }
 
-    fn parse_restriction_body(&mut self) -> Result<(Option<u64>, Option<u64>, Option<i64>, Option<i64>)> {
-        let mut min_length = None;
-        let mut max_length = None;
-        let mut min_inclusive = None;
-        let mut max_inclusive = None;
+    fn parse_restriction_body(&mut self) -> Result<ParsedRestrictionFacets> {
+        let mut out = ParsedRestrictionFacets::default();
         loop {
             self.reader.skip_insignificant_ws()?;
             match self.reader.peek()? {
@@ -716,27 +763,75 @@ impl<'a> XsdParser<'a> {
                     let local = name.local_name.clone();
                     let child_attrs = self.reader.take_start_attributes()?;
                     match local.as_str() {
+                        "length" => {
+                            if let Some(v) = child_attrs.get("value") {
+                                if let Ok(n) = v.parse::<u64>() {
+                                    out.length = Some(n);
+                                } else {
+                                    out.invalid_length = Some(v.clone());
+                                }
+                            }
+                            self.skip_element_body(&local)?;
+                        }
                         "minLength" => {
                             if let Some(v) = child_attrs.get("value") {
-                                min_length = v.parse().ok();
+                                if let Ok(n) = v.parse::<u64>() {
+                                    out.min_length = Some(n);
+                                } else {
+                                    out.invalid_min_length = Some(v.clone());
+                                }
                             }
                             self.skip_element_body(&local)?;
                         }
                         "maxLength" => {
                             if let Some(v) = child_attrs.get("value") {
-                                max_length = v.parse().ok();
+                                if let Ok(n) = v.parse::<u64>() {
+                                    out.max_length = Some(n);
+                                } else {
+                                    out.invalid_max_length = Some(v.clone());
+                                }
+                            }
+                            self.skip_element_body(&local)?;
+                        }
+                        "pattern" => {
+                            if let Some(v) = child_attrs.get("value") {
+                                out.patterns.push(v.clone());
                             }
                             self.skip_element_body(&local)?;
                         }
                         "minInclusive" => {
                             if let Some(v) = child_attrs.get("value") {
-                                min_inclusive = v.parse().ok();
+                                out.min_inclusive = v.parse().ok();
                             }
                             self.skip_element_body(&local)?;
                         }
                         "maxInclusive" => {
                             if let Some(v) = child_attrs.get("value") {
-                                max_inclusive = v.parse().ok();
+                                out.max_inclusive = v.parse().ok();
+                            }
+                            self.skip_element_body(&local)?;
+                        }
+                        "minExclusive" => {
+                            if let Some(v) = child_attrs.get("value") {
+                                out.min_exclusive = v.parse().ok();
+                            }
+                            self.skip_element_body(&local)?;
+                        }
+                        "maxExclusive" => {
+                            if let Some(v) = child_attrs.get("value") {
+                                out.max_exclusive = v.parse().ok();
+                            }
+                            self.skip_element_body(&local)?;
+                        }
+                        "totalDigits" => {
+                            if let Some(v) = child_attrs.get("value") {
+                                out.total_digits = v.parse().ok();
+                            }
+                            self.skip_element_body(&local)?;
+                        }
+                        "fractionDigits" => {
+                            if let Some(v) = child_attrs.get("value") {
+                                out.fraction_digits = v.parse().ok();
                             }
                             self.skip_element_body(&local)?;
                         }
@@ -757,7 +852,7 @@ impl<'a> XsdParser<'a> {
                 }
             }
         }
-        Ok((min_length, max_length, min_inclusive, max_inclusive))
+        Ok(out)
     }
 
     fn parse_inline_content(&mut self, mut props: DfdlProps, allowed: &[&str]) -> Result<DfdlProps> {
@@ -913,6 +1008,14 @@ impl<'a> XsdParser<'a> {
         let mut props = props_from_attrs(&attrs)?;
         if local == "assert" {
             props.has_statement_annotation = true;
+            if let Some(msg) = attrs.get("message") {
+                props.assert_message = Some(msg.clone());
+            }
+            if let Some(test) = attrs.get("test") {
+                if test.contains("checkConstraints") {
+                    props.facet_check_constraints = true;
+                }
+            }
         }
 
         if local == "format" {
@@ -1187,6 +1290,9 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.binary_decimal_virtual_point.is_some() {
         base.binary_decimal_virtual_point = overlay.binary_decimal_virtual_point;
     }
+    if overlay.binary_decimal_virtual_point_sde.is_some() {
+        base.binary_decimal_virtual_point_sde = overlay.binary_decimal_virtual_point_sde;
+    }
     if overlay.decimal_signed.is_some() {
         base.decimal_signed = overlay.decimal_signed;
     }
@@ -1350,6 +1456,12 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     }
     if overlay.has_statement_annotation {
         base.has_statement_annotation = true;
+    }
+    if overlay.assert_message.is_some() {
+        base.assert_message = overlay.assert_message.clone();
+    }
+    if overlay.facet_check_constraints {
+        base.facet_check_constraints = true;
     }
     base
 }
@@ -1897,11 +2009,14 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 });
             }
             "binaryDecimalVirtualPoint" => {
-                props.binary_decimal_virtual_point = Some(value.parse().map_err(|_| {
-                    ParseError::InvalidXml {
-                        message: alloc::format!("invalid binaryDecimalVirtualPoint `{value}`"),
-                    }
-                })?);
+                let parsed: i32 = value.parse().map_err(|_| ParseError::InvalidXml {
+                    message: alloc::format!("invalid binaryDecimalVirtualPoint `{value}`"),
+                })?;
+                if parsed < 0 {
+                    props.binary_decimal_virtual_point_sde = Some(parsed);
+                } else {
+                    props.binary_decimal_virtual_point = Some(parsed as u32);
+                }
             }
             "decimalSigned" => {
                 props.decimal_signed = Some(matches!(value.as_str(), "yes" | "true" | "1"));

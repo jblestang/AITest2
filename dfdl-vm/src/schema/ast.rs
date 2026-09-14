@@ -48,6 +48,8 @@ pub struct DfdlProps {
     pub binary_calendar_rep: Option<BinaryNumberRep>,
     pub binary_float_rep: Option<BinaryFloatRep>,
     pub binary_decimal_virtual_point: Option<u32>,
+    /// Negative or invalid `binaryDecimalVirtualPoint` for compile-time SDE.
+    pub binary_decimal_virtual_point_sde: Option<i32>,
     pub decimal_signed: Option<bool>,
     pub calendar_pattern: Option<String>,
     pub text_number_pattern: Option<String>,
@@ -117,6 +119,10 @@ pub struct DfdlProps {
     pub initiated_content: Option<bool>,
     /// True when a DFDL statement annotation (e.g. `dfdl:assert`) appears on this construct.
     pub has_statement_annotation: bool,
+    /// `dfdl:assert/@message` when present (facet tests use checkConstraints).
+    pub assert_message: Option<alloc::string::String>,
+    /// True when `dfdl:assert/@test` references `dfdl:checkConstraints`.
+    pub facet_check_constraints: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,15 +347,54 @@ pub enum ComplexContent {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum RestrictionBase {
+    Builtin(BuiltinType),
+    Named(TypeName),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum SimpleBase {
     Builtin(BuiltinType),
     Restriction {
-        base: BuiltinType,
+        base: RestrictionBase,
+        length: Option<u64>,
         min_length: Option<u64>,
         max_length: Option<u64>,
         min_inclusive: Option<i64>,
         max_inclusive: Option<i64>,
+        min_exclusive: Option<i64>,
+        max_exclusive: Option<i64>,
+        /// OR'd patterns within this restriction level.
+        patterns: alloc::vec::Vec<alloc::string::String>,
+        total_digits: Option<u64>,
+        fraction_digits: Option<u64>,
+        /// Raw facet value when not a valid non-negative integer (compile SDE).
+        invalid_min_length: Option<alloc::string::String>,
+        invalid_max_length: Option<alloc::string::String>,
+        invalid_length: Option<alloc::string::String>,
     },
+}
+
+impl SchemaDocument {
+    /// Resolve a simple type base to its builtin XSD type (follows `restriction base="ex:…"` chains).
+    pub fn builtin_for_simple_base(&self, base: &SimpleBase) -> Option<BuiltinType> {
+        match base {
+            SimpleBase::Builtin(b) => Some(*b),
+            SimpleBase::Restriction { base, .. } => match base {
+                RestrictionBase::Builtin(b) => Some(*b),
+                RestrictionBase::Named(name) => self
+                    .types
+                    .get(name)
+                    .and_then(|def| {
+                        if let TypeDef::Simple { base: inner, .. } = def {
+                            self.builtin_for_simple_base(inner)
+                        } else {
+                            None
+                        }
+                    }),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -457,8 +502,23 @@ pub struct SchemaDocument {
     pub named_formats: BTreeMap<String, DfdlProps>,
     pub types: BTreeMap<TypeName, TypeDef>,
     pub global_elements: BTreeMap<String, GlobalElement>,
-    /// Named `xs:group` model groups (local name → content sequence).
-    pub groups: BTreeMap<String, SequenceDecl>,
+    /// Named `xs:group` model groups (local name → sequence or choice).
+    pub groups: BTreeMap<String, GroupDecl>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GroupDecl {
+    Sequence(SequenceDecl),
+    Choice(ChoiceDecl),
+}
+
+impl GroupDecl {
+    pub fn props(&self) -> &DfdlProps {
+        match self {
+            GroupDecl::Sequence(s) => &s.props,
+            GroupDecl::Choice(c) => &c.props,
+        }
+    }
 }
 
 impl SchemaDocument {

@@ -2921,6 +2921,20 @@ pub(crate) fn read_text_scalar(
         LengthKind::Implicit => {
             if is_numeric_text_kind(kind) {
                 read_implicit_numeric_text(cursor, props, strings)
+            } else if matches!(kind, String | HexBinary) {
+                if let Some(len) = crate::vm::facet_validate::implicit_facet_byte_length(props) {
+                    read_length_span(
+                        cursor,
+                        len,
+                        props.length_units,
+                        enc,
+                        props.bit_order,
+                        props.encoding_error_policy,
+                        false,
+                    )?
+                } else {
+                    read_until_delimiters(cursor, props, strings, false, stop_sequences, Some(enc))?
+                }
             } else {
                 read_until_delimiters(cursor, props, strings, false, stop_sequences, Some(enc))?
             }
@@ -2978,20 +2992,34 @@ pub(crate) fn read_text_scalar(
     }
 
     let base = props.text_standard_base;
-    match kind {
+    let value = match kind {
         Boolean => parse_text_boolean(trimmed, props, strings).map(DfdlValue::Boolean),
-        Byte => parse_int_typed_with_base(trimmed, "xs:byte", base).map(DfdlValue::Byte),
+        Byte => {
+            let num = if base == 10 {
+                parse_field_text_number(trimmed, kind, props, strings)?
+            } else {
+                trimmed.to_string()
+            };
+            parse_int_typed_with_base(&num, "xs:byte", base).map(DfdlValue::Byte)
+        }
         UnsignedByte => {
-            let num = if base == 10 && props.custom_text_number_pattern {
+            let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
                 trimmed.to_string()
             };
             parse_unsigned_radix(&num, base).map(DfdlValue::UnsignedByte)
         }
-        Short => parse_int_typed_with_base(trimmed, "xs:short", base).map(DfdlValue::Short),
+        Short => {
+            let num = if base == 10 {
+                parse_field_text_number(trimmed, kind, props, strings)?
+            } else {
+                trimmed.to_string()
+            };
+            parse_int_typed_with_base(&num, "xs:short", base).map(DfdlValue::Short)
+        }
         UnsignedShort => {
-            let num = if base == 10 && props.custom_text_number_pattern {
+            let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
                 trimmed.to_string()
@@ -3008,7 +3036,7 @@ pub(crate) fn read_text_scalar(
             parse_int_typed_with_base(&num, "xs:int", base).map(DfdlValue::Int)
         }
         Integer => {
-            let num = if base == 10 && props.custom_text_number_pattern {
+            let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
                 trimmed.to_string()
@@ -3017,7 +3045,7 @@ pub(crate) fn read_text_scalar(
                 .map(DfdlValue::Integer)
         }
         UnsignedInt => {
-            let num = if base == 10 && props.custom_text_number_pattern {
+            let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {
                 trimmed.to_string()
@@ -3026,11 +3054,16 @@ pub(crate) fn read_text_scalar(
         }
         Long => {
             reject_text_standard_special_for_integer(trimmed, props, strings, "xs:long")?;
+            let num = if base == 10 {
+                parse_field_text_number(trimmed, kind, props, strings)?
+            } else {
+                trimmed.to_string()
+            };
             if props.unsigned_integer {
-                let v = parse_unsigned_radix_typed(trimmed, "xs:unsignedLong", base)?;
+                let v = parse_unsigned_radix_typed(&num, "xs:unsignedLong", base)?;
                 Ok(DfdlValue::UnsignedLong(v))
             } else {
-                parse_int_typed_with_base(trimmed, "xs:long", base).map(DfdlValue::Long)
+                parse_int_typed_with_base(&num, "xs:long", base).map(DfdlValue::Long)
             }
         }
         Float => {
@@ -3053,9 +3086,10 @@ pub(crate) fn read_text_scalar(
                 } else {
                     format_calendar_text(trimmed, pattern)?
                 };
-                return Ok(DfdlValue::DateTime(parsed));
+                Ok(DfdlValue::DateTime(parsed))
+            } else {
+                Ok(DfdlValue::DateTime(trimmed.into()))
             }
-            Ok(DfdlValue::DateTime(trimmed.into()))
         }
         String => {
             let sv = if props.encoding_error_policy == crate::schema::EncodingErrorPolicy::Replace
@@ -3071,7 +3105,24 @@ pub(crate) fn read_text_scalar(
         Complex => Err(VmError::TypeMismatch {
             expected: "complex".into(),
         }),
+    }?;
+    if needs_facet_validation(props) {
+        crate::vm::facet_validate::validate_decoded_facets(&value, kind, props, strings)?;
     }
+    Ok(value)
+}
+
+fn needs_facet_validation(props: &IrProps) -> bool {
+    if props.facet_check_constraints {
+        return true;
+    }
+    !props.facet_pattern_groups.is_empty()
+        || props.value_min_inclusive.is_some()
+        || props.value_max_inclusive.is_some()
+        || props.value_min_exclusive.is_some()
+        || props.value_max_exclusive.is_some()
+        || props.total_digits.is_some()
+        || props.fraction_digits.is_some()
 }
 
 pub(crate) fn parse_xs_boolean_lexical(

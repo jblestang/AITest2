@@ -7,10 +7,10 @@ use crate::length_validate::{
     validate_signed_one_bit_length_schema, validate_text_alignment_schema, DaffodilTunables,
 };
 use crate::schema::{
-    BuiltinType, ComplexContent, DfdlProps, LengthKind, LengthUnits, OccursCountKind, Particle,
-    Representation, SchemaDocument, SimpleBase, TypeDef, TypeName, expand_entities_str,
+    BuiltinType, ComplexContent, DfdlProps, GroupDecl, LengthKind, LengthUnits, OccursCountKind,
+    Particle, Representation, SchemaDocument, SimpleBase, TypeDef, TypeName, expand_entities_str,
     parse_text_standard_separator_list, parse_text_standard_zero_rep_list,
-    validate_length_pattern,
+    validate_length_facets_for_type, validate_length_pattern,
     validate_text_standard_distinct_values,
     validate_text_standard_exponent_rep_literal,
     validate_text_standard_separator_literal,
@@ -118,7 +118,7 @@ impl<'a> IrBuilder<'a> {
 
             if let TypeDef::Simple { base, props, .. } = type_def {
                 let defaults = self.defaults.clone();
-                let kind = value_kind_from_simple(base);
+                let kind = value_kind_from_simple(&self.schema, base);
                 let mut ir_props = finalize_element_props(
                     kind,
                     self.merge_props_full(&defaults, props, &root_element.props)?,
@@ -127,7 +127,14 @@ impl<'a> IrBuilder<'a> {
                 )?;
                 apply_unsigned_long_flag(&root_element.type_name, &mut ir_props);
                 apply_integer_type_flags(&root_element.type_name, &mut ir_props);
-                apply_restriction_facets(&mut ir_props, base);
+                apply_restriction_facets(
+                    &self.schema,
+                    &mut ir_props,
+                    base,
+                    &mut self.strings,
+                    &root_element.props,
+                );
+                validate_length_facets_for_type(&self.schema, base, kind, &ir_props)?;
                 validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern(root_name);
                 self.push(IrNode::Element {
@@ -199,14 +206,21 @@ impl<'a> IrBuilder<'a> {
         match type_def {
             TypeDef::Simple { base, props, .. } => {
                 let defaults = self.defaults.clone();
-                let kind = value_kind_from_simple(base);
+                let kind = value_kind_from_simple(&self.schema, base);
                 let mut ir_props = finalize_element_props(
                     kind,
                     self.merge_props_full(&defaults, props, element_props)?,
                     &self.strings,
                     self.tunables,
                 )?;
-                apply_restriction_facets(&mut ir_props, base);
+                apply_restriction_facets(
+                    &self.schema,
+                    &mut ir_props,
+                    base,
+                    &mut self.strings,
+                    element_props,
+                );
+                validate_length_facets_for_type(&self.schema, base, kind, &ir_props)?;
                 validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern("__value");
                 Ok(self.push(IrNode::Element {
@@ -336,7 +350,19 @@ impl<'a> IrBuilder<'a> {
                             )?;
                             if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
                                 if let TypeDef::Simple { base, props: type_props, .. } = type_def {
-                                    apply_restriction_facets(&mut merged, base);
+                                    apply_restriction_facets(
+                                        &self.schema,
+                                        &mut merged,
+                                        base,
+                                        &mut self.strings,
+                                        &element.props,
+                                    );
+                                    validate_length_facets_for_type(
+                                        &self.schema,
+                                        base,
+                                        kind,
+                                        &merged,
+                                    )?;
                                     if let Some(signed) = type_props.decimal_signed {
                                         merged.decimal_signed = signed;
                                     }
@@ -377,24 +403,48 @@ impl<'a> IrBuilder<'a> {
                     })?;
                 let ir_props = inherited.clone();
                 let child_inherited =
-                    particle_inherited_for_children(inherited, &group.props, &self.defaults);
-                let mut children = Vec::new();
-                let mut prior_element_names: Vec<String> = Vec::new();
-                for particle in &group.particles {
-                    children.push(self.compile_particle_inner(
-                        particle,
-                        &child_inherited,
-                        &prior_element_names,
-                        hidden,
-                    )?);
-                    if let Particle::Element(el) = particle {
-                        prior_element_names.push(el.name.clone());
+                    particle_inherited_for_children(inherited, group.props(), &self.defaults);
+                match group {
+                    GroupDecl::Sequence(seq) => {
+                        let mut children = Vec::new();
+                        let mut prior_element_names: Vec<String> = Vec::new();
+                        for particle in &seq.particles {
+                            children.push(self.compile_particle_inner(
+                                particle,
+                                &child_inherited,
+                                &prior_element_names,
+                                hidden,
+                            )?);
+                            if let Particle::Element(el) = particle {
+                                prior_element_names.push(el.name.clone());
+                            }
+                        }
+                        Ok(self.push(IrNode::Sequence {
+                            children,
+                            props: ir_props,
+                        }))
+                    }
+                    GroupDecl::Choice(ch) => {
+                        let mut branches = Vec::new();
+                        for branch in &ch.branches {
+                            let node = self.compile_particle_inner(
+                                branch,
+                                &child_inherited,
+                                &[],
+                                hidden,
+                            )?;
+                            branches.push(ChoiceBranch {
+                                name: self.strings.intern(&branch_name(branch)),
+                                initiator: branch_initiator(branch, &mut self.strings),
+                                node,
+                            });
+                        }
+                        Ok(self.push(IrNode::Choice {
+                            branches,
+                            props: ir_props,
+                        }))
                     }
                 }
-                Ok(self.push(IrNode::Sequence {
-                    children,
-                    props: ir_props,
-                }))
             }
             Particle::Sequence(sequence) => {
                 let ir_props = self.merge_props_full(inherited, &sequence.props, &DfdlProps::default())?;
@@ -410,15 +460,29 @@ impl<'a> IrBuilder<'a> {
                         .ok_or_else(|| SchemaError::InvalidProperty {
                             message: alloc::format!("unknown hidden group `{href}`"),
                         })?;
-                    for particle in &group.particles {
-                        children.push(self.compile_particle_inner(
-                            particle,
-                            &child_inherited,
-                            &prior_element_names,
-                            true,
-                        )?);
-                        if let Particle::Element(el) = particle {
-                            prior_element_names.push(el.name.clone());
+                    match group {
+                        GroupDecl::Sequence(seq) => {
+                            for particle in &seq.particles {
+                                children.push(self.compile_particle_inner(
+                                    particle,
+                                    &child_inherited,
+                                    &prior_element_names,
+                                    true,
+                                )?);
+                                if let Particle::Element(el) = particle {
+                                    prior_element_names.push(el.name.clone());
+                                }
+                            }
+                        }
+                        GroupDecl::Choice(ch) => {
+                            for branch in &ch.branches {
+                                children.push(self.compile_particle_inner(
+                                    branch,
+                                    &child_inherited,
+                                    &prior_element_names,
+                                    true,
+                                )?);
+                            }
                         }
                     }
                 }
@@ -631,7 +695,7 @@ impl<'a> IrBuilder<'a> {
             &DfdlProps::default(),
             &mut self.strings,
         )?;
-        let kind = value_kind_from_simple(base);
+        let kind = value_kind_from_simple(&self.schema, base);
         validate_prefix_length_type(type_name, props, &prefix_props, kind, &self.strings)?;
         if prefix_props.length_kind == LengthKind::Prefixed && depth >= 1 {
             return Err(SchemaError::InvalidProperty {
@@ -1618,23 +1682,27 @@ fn branch_initiator(particle: &Particle, strings: &mut StringPool) -> Option<Str
     raw.map(|s| strings.intern(s))
 }
 
-fn value_kind_from_simple(base: &SimpleBase) -> ValueKind {
-    match base {
-        SimpleBase::Builtin(b) => value_kind_from_builtin(*b),
-        SimpleBase::Restriction { base, .. } => value_kind_from_builtin(*base),
-    }
+fn value_kind_from_simple(schema: &SchemaDocument, base: &SimpleBase) -> ValueKind {
+    schema
+        .builtin_for_simple_base(base)
+        .map(value_kind_from_builtin)
+        .unwrap_or(ValueKind::String)
 }
 
-fn restriction_min_length(base: &SimpleBase) -> Option<u64> {
-    match base {
-        SimpleBase::Restriction { min_length, .. } => *min_length,
-        _ => None,
+fn apply_restriction_facets(
+    schema: &SchemaDocument,
+    props: &mut IrProps,
+    base: &SimpleBase,
+    strings: &mut StringPool,
+    element_props: &DfdlProps,
+) {
+    let eff = schema.effective_facets(base);
+    crate::schema::apply_effective_facets_to_ir(&eff, props, strings);
+    if element_props.facet_check_constraints {
+        props.facet_check_constraints = true;
     }
-}
-
-fn apply_restriction_facets(props: &mut IrProps, base: &SimpleBase) {
-    if let Some(min) = restriction_min_length(base) {
-        props.min_length = Some(min);
+    if let Some(msg) = &element_props.assert_message {
+        props.facet_assert_message = Some(strings.intern(msg.clone()));
     }
 }
 
@@ -1723,6 +1791,14 @@ fn overlay_dfdl_to_ir(
     props: &DfdlProps,
     strings: &mut StringPool,
 ) -> Result<IrProps> {
+    if let Some(v) = props.binary_decimal_virtual_point_sde {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: Property binaryDecimalVirtualPoint has value {v}, which is not valid."
+            ),
+        }
+        .into());
+    }
     if let Some(v) = props.representation {
         base.representation = v;
     }
@@ -2277,6 +2353,42 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.truncate_specified_length_string = overlay.truncate_specified_length_string;
     if overlay.min_length.is_some() {
         out.min_length = overlay.min_length;
+    }
+    if overlay.max_length.is_some() {
+        out.max_length = overlay.max_length;
+    }
+    if overlay.facet_length.is_some() {
+        out.facet_length = overlay.facet_length;
+    }
+    if overlay.implicit_facet_length.is_some() {
+        out.implicit_facet_length = overlay.implicit_facet_length;
+    }
+    if !overlay.facet_pattern_groups.is_empty() {
+        out.facet_pattern_groups = overlay.facet_pattern_groups.clone();
+    }
+    if overlay.value_min_inclusive.is_some() {
+        out.value_min_inclusive = overlay.value_min_inclusive;
+    }
+    if overlay.value_max_inclusive.is_some() {
+        out.value_max_inclusive = overlay.value_max_inclusive;
+    }
+    if overlay.value_min_exclusive.is_some() {
+        out.value_min_exclusive = overlay.value_min_exclusive;
+    }
+    if overlay.value_max_exclusive.is_some() {
+        out.value_max_exclusive = overlay.value_max_exclusive;
+    }
+    if overlay.total_digits.is_some() {
+        out.total_digits = overlay.total_digits;
+    }
+    if overlay.fraction_digits.is_some() {
+        out.fraction_digits = overlay.fraction_digits;
+    }
+    if overlay.facet_check_constraints {
+        out.facet_check_constraints = true;
+    }
+    if overlay.facet_assert_message.is_some() {
+        out.facet_assert_message = overlay.facet_assert_message;
     }
     if overlay.prefix_length.is_some() {
         out.prefix_length = overlay.prefix_length.clone();
