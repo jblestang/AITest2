@@ -1088,6 +1088,23 @@ fn finalize_element_props(
                 .into());
             }
         }
+        if ir.representation == Representation::Binary {
+            if !ir.binary_boolean_true_rep_defined {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: Property binaryBooleanTrueRep is not defined."
+                        .into(),
+                }
+                .into());
+            }
+            if !ir.binary_boolean_false_rep_defined {
+                return Err(SchemaError::InvalidProperty {
+                    message:
+                        "Schema Definition Error: Property binaryBooleanFalseRep is not defined."
+                            .into(),
+                }
+                .into());
+            }
+        }
     }
     if matches!(ir.length_kind, LengthKind::Explicit | LengthKind::Fixed)
         && ir.length.is_none()
@@ -2189,6 +2206,14 @@ fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if props.binary_boolean_true_rep_defined {
+        base.binary_boolean_true_rep_defined = true;
+        base.binary_boolean_true_rep = props.binary_boolean_true_rep;
+    }
+    if props.binary_boolean_false_rep_defined {
+        base.binary_boolean_false_rep_defined = true;
+        base.binary_boolean_false_rep = props.binary_boolean_false_rep;
+    }
     if props.default_value.is_some() {
         base.default_value = props
             .default_value
@@ -2428,6 +2453,14 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.text_boolean_false_rep.is_some() {
         out.text_boolean_false_rep = overlay.text_boolean_false_rep;
+    }
+    if overlay.binary_boolean_true_rep_defined {
+        out.binary_boolean_true_rep_defined = true;
+        out.binary_boolean_true_rep = overlay.binary_boolean_true_rep;
+    }
+    if overlay.binary_boolean_false_rep_defined {
+        out.binary_boolean_false_rep_defined = true;
+        out.binary_boolean_false_rep = overlay.binary_boolean_false_rep;
     }
     if overlay.default_value.is_some() {
         out.default_value = overlay.default_value;

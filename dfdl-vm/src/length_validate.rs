@@ -700,13 +700,6 @@ pub fn validate_fill_byte_schema(
             });
         }
     }
-    if enc.contains("X-DFDL-US-ASCII-7-BIT-PACKED") {
-        return Err(SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error: fillByte encoding {encoding}"
-            ),
-        });
-    }
     let char_count = if bytes.iter().all(|b| b.is_ascii()) {
         bytes.len()
     } else {

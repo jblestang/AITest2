@@ -1,0 +1,108 @@
+//! Text/binary boolean representation helpers.
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
+/// Split `textBooleanTrueRep` / `textBooleanFalseRep` into alternative literals (DFDL list syntax).
+pub fn tokenize_text_boolean_rep_list(raw: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let bytes = trimmed.as_bytes();
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        if bytes[i] == b'{' {
+            let start = i;
+            i += 1;
+            let mut depth = 1usize;
+            while i < bytes.len() && depth > 0 {
+                if bytes[i] == b'{' {
+                    depth += 1;
+                } else if bytes[i] == b'}' {
+                    depth -= 1;
+                }
+                i += 1;
+            }
+            out.push(trimmed[start..i].to_string());
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        out.push(trimmed[start..i].to_string());
+    }
+    out
+}
+
+/// Evaluate a single `{ ... }` or plain token to the comparison string at runtime.
+pub fn resolve_text_boolean_rep_token(token: &str) -> Result<String, String> {
+    let trimmed = token.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        let inner = trimmed[1..trimmed.len() - 1].trim();
+        if inner.starts_with('\'') && inner.ends_with('\'') && inner.len() >= 2 {
+            return Ok(inner[1..inner.len() - 1].to_string());
+        }
+        if inner.starts_with("xs:string(") && inner.ends_with(')') {
+            let arg = inner["xs:string(".len()..inner.len() - 1].trim();
+            if arg.starts_with('\'') && arg.ends_with('\'') && arg.len() >= 2 {
+                return Ok(arg[1..arg.len() - 1].to_string());
+            }
+            if let Some(v) = eval_simple_arithmetic(arg) {
+                return Ok(v.to_string());
+            }
+            return Err(alloc::format!("unsupported xs:string argument `{arg}`"));
+        }
+        return Err(alloc::format!("unsupported boolean rep expression `{inner}`"));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn eval_simple_arithmetic(expr: &str) -> Option<i64> {
+    let expr = expr.replace(' ', "");
+    if let Some((a, b)) = expr.split_once('-') {
+        let x = a.parse::<i64>().ok()?;
+        let y = b.parse::<i64>().ok()?;
+        return Some(x - y);
+    }
+    if let Some((a, b)) = expr.split_once('+') {
+        let x = a.parse::<i64>().ok()?;
+        let y = b.parse::<i64>().ok()?;
+        return Some(x + y);
+    }
+    expr.parse::<i64>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokenize_splits_whitespace_and_braces() {
+        let t = tokenize_text_boolean_rep_list("yes Y 1");
+        assert_eq!(t, vec!["yes", "Y", "1"]);
+        let t2 = tokenize_text_boolean_rep_list("{'a b c'} { xs:string(5-3) }");
+        assert_eq!(t2.len(), 2);
+        assert_eq!(t2[0], "{'a b c'}");
+    }
+
+    #[test]
+    fn resolve_xs_string_arithmetic() {
+        assert_eq!(
+            resolve_text_boolean_rep_token("{ xs:string(5-3) }").unwrap(),
+            "2"
+        );
+        assert_eq!(
+            resolve_text_boolean_rep_token("{'a b c'}").unwrap(),
+            "a b c"
+        );
+    }
+}

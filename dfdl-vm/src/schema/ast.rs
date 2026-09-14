@@ -85,6 +85,11 @@ pub struct DfdlProps {
     pub separator_position: Option<SeparatorPosition>,
     pub text_boolean_true_rep: Option<String>,
     pub text_boolean_false_rep: Option<String>,
+    pub binary_boolean_true_rep: Option<u64>,
+    /// `binaryBooleanTrueRep` was present (`""` allowed).
+    pub binary_boolean_true_rep_defined: bool,
+    pub binary_boolean_false_rep: Option<u64>,
+    pub binary_boolean_false_rep_defined: bool,
     pub default_value: Option<String>,
     pub alignment: Option<u64>,
     pub alignment_implicit: Option<bool>,

@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod boolean_reps;
 mod entities;
 mod facets;
 mod parser;

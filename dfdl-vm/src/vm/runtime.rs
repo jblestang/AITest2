@@ -523,6 +523,9 @@ fn implicit_binary_scalar_byte_length(kind: crate::ir::ValueKind, props: &IrProp
             _ => {}
         }
     }
+    if kind == crate::ir::ValueKind::Boolean && props.representation == Representation::Binary {
+        return 4;
+    }
     type_size(kind)
 }
 
@@ -2546,7 +2549,7 @@ fn decode_binary_from_raw_bits(
     }
 
     match kind {
-        Boolean => Ok(DfdlValue::Boolean(raw != 0)),
+        Boolean => Ok(DfdlValue::Boolean(decode_binary_boolean_sl(raw, props)?)),
         Byte => {
             let v = if bit_width == 1 {
                 raw as i8
@@ -2702,7 +2705,11 @@ fn decode_binary_bytes(
     }
 
     match kind {
-        Boolean => Ok(DfdlValue::Boolean(bytes.last().copied().unwrap_or(0) != 0)),
+        Boolean => {
+            let le = props.byte_order == ByteOrder::LittleEndian;
+            let sl = decode_unsigned_binary_bytes(bytes, le);
+            Ok(DfdlValue::Boolean(decode_binary_boolean_sl(sl, props)?))
+        }
         Byte => {
             if bit_width == Some(1) {
                 Ok(DfdlValue::Byte(decode_unsigned_binary_bytes(bytes, le) as i8))
@@ -3459,6 +3466,37 @@ fn needs_facet_validation(props: &IrProps) -> bool {
         || props.value_max_exclusive.is_some()
 }
 
+fn decode_binary_boolean_sl(
+    sl: u64,
+    props: &IrProps,
+) -> Result<bool, crate::error::VmError> {
+    use crate::error::VmError;
+    let false_rep = props.binary_boolean_false_rep.unwrap_or(0);
+    let true_empty = props.binary_boolean_true_rep_defined && props.binary_boolean_true_rep.is_none();
+    if true_empty {
+        if sl == false_rep {
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    } else {
+        let true_rep = props.binary_boolean_true_rep.ok_or(VmError::InvalidValue {
+            message: "binary boolean true rep missing".into(),
+        })?;
+        if sl == true_rep {
+            Ok(true)
+        } else if sl == false_rep {
+            Ok(false)
+        } else {
+            Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Parse Error. Unable to parse xs:boolean from binary: {sl}"
+                ),
+            })
+        }
+    }
+}
+
 pub(crate) fn parse_xs_boolean_lexical(
     trimmed: &str,
 ) -> Result<bool, crate::error::VmError> {
@@ -3472,21 +3510,60 @@ pub(crate) fn parse_xs_boolean_lexical(
     }
 }
 
+fn text_boolean_rep_candidates(
+    props: &IrProps,
+    strings: &StringPool,
+    true_side: bool,
+) -> Result<alloc::vec::Vec<alloc::string::String>, crate::error::VmError> {
+    use crate::error::VmError;
+    let id = if true_side {
+        props.text_boolean_true_rep
+    } else {
+        props.text_boolean_false_rep
+    };
+    let Some(id) = id else {
+        return Ok(alloc::vec::Vec::new());
+    };
+    let raw = strings.get(id)?;
+    let tokens = crate::schema::boolean_reps::tokenize_text_boolean_rep_list(raw);
+    let mut out = alloc::vec::Vec::new();
+    for tok in tokens {
+        let s = crate::schema::boolean_reps::resolve_text_boolean_rep_token(&tok).map_err(
+            |detail| VmError::InvalidValue {
+                message: detail,
+            },
+        )?;
+        out.push(s);
+    }
+    Ok(out)
+}
+
 fn parse_text_boolean(
     trimmed: &str,
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<bool, crate::error::VmError> {
     use crate::error::VmError;
-    if let Some(id) = props.text_boolean_true_rep {
-        if trimmed == strings.get(id)? {
-            return Ok(true);
+    let ignore = props.ignore_case;
+    let true_reps = text_boolean_rep_candidates(props, strings, true)?;
+    let false_reps = text_boolean_rep_candidates(props, strings, false)?;
+    let matches = |a: &str, b: &str| {
+        if ignore {
+            a.eq_ignore_ascii_case(b)
+        } else {
+            a == b
         }
+    };
+    if true_reps.iter().any(|r| matches(trimmed, r)) {
+        return Ok(true);
     }
-    if let Some(id) = props.text_boolean_false_rep {
-        if trimmed == strings.get(id)? {
-            return Ok(false);
-        }
+    if false_reps.iter().any(|r| matches(trimmed, r)) {
+        return Ok(false);
+    }
+    if !true_reps.is_empty() || !false_reps.is_empty() {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("Parse Error. Unable to parse xs:boolean from text: {trimmed}"),
+        });
     }
     match trimmed {
         "true" | "1" => Ok(true),

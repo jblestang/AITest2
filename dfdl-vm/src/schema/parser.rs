@@ -1404,6 +1404,14 @@ fn merge_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
     if overlay.text_boolean_false_rep.is_some() {
         base.text_boolean_false_rep = overlay.text_boolean_false_rep;
     }
+    if overlay.binary_boolean_true_rep_defined {
+        base.binary_boolean_true_rep_defined = true;
+        base.binary_boolean_true_rep = overlay.binary_boolean_true_rep;
+    }
+    if overlay.binary_boolean_false_rep_defined {
+        base.binary_boolean_false_rep_defined = true;
+        base.binary_boolean_false_rep = overlay.binary_boolean_false_rep;
+    }
     if overlay.default_value.is_some() {
         base.default_value = overlay.default_value;
     }
@@ -2217,6 +2225,28 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
             }
             "textBooleanTrueRep" => props.text_boolean_true_rep = Some(value.clone()),
             "textBooleanFalseRep" => props.text_boolean_false_rep = Some(value.clone()),
+            "binaryBooleanTrueRep" => {
+                props.binary_boolean_true_rep_defined = true;
+                if value.is_empty() {
+                    props.binary_boolean_true_rep = None;
+                } else {
+                    let n: u64 = value.parse().map_err(|_| ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "invalid binaryBooleanTrueRep `{value}`"
+                        ),
+                    })?;
+                    props.binary_boolean_true_rep = Some(n);
+                }
+            }
+            "binaryBooleanFalseRep" => {
+                props.binary_boolean_false_rep_defined = true;
+                let n: u64 = value.parse().map_err(|_| ParseError::InvalidXml {
+                    message: alloc::format!(
+                        "invalid binaryBooleanFalseRep `{value}`"
+                    ),
+                })?;
+                props.binary_boolean_false_rep = Some(n);
+            }
             "alignment" => {
                 if value == "implicit" {
                     props.alignment_implicit = Some(true);
