@@ -824,6 +824,7 @@ pub(crate) fn read_binary_scalar(
     stop_sequences: &[&IrProps],
     field_name: Option<&str>,
     tunables: &DaffodilTunables,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind;
@@ -841,6 +842,7 @@ pub(crate) fn read_binary_scalar(
             require_delimiter,
             stop_sequences,
             None,
+            scan_ctx,
         )?;
         return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
     }
@@ -5256,6 +5258,7 @@ pub(crate) fn read_text_scalar(
     field_name: Option<&str>,
     sibling_env: Option<&crate::schema::boolean_reps::BooleanSiblingEnv<'_>>,
     tunables: &DaffodilTunables,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -5329,6 +5332,7 @@ pub(crate) fn read_text_scalar(
                 require_delimiter,
                 stop_sequences,
                 Some(enc),
+                scan_ctx,
             )?;
             if has_non_empty_terminator(props, strings)?
                 && field_terminator_matches_at_cursor(cursor, props, strings)?
@@ -5376,10 +5380,26 @@ pub(crate) fn read_text_scalar(
                         false,
                     )?
                 } else {
-                    read_until_delimiters(cursor, props, strings, false, stop_sequences, Some(enc))?
+                    read_until_delimiters(
+                        cursor,
+                        props,
+                        strings,
+                        false,
+                        stop_sequences,
+                        Some(enc),
+                        scan_ctx,
+                    )?
                 }
             } else {
-                read_until_delimiters(cursor, props, strings, false, stop_sequences, Some(enc))?
+                read_until_delimiters(
+                    cursor,
+                    props,
+                    strings,
+                    false,
+                    stop_sequences,
+                    Some(enc),
+                    scan_ctx,
+                )?
             }
         }
         LengthKind::Prefixed => read_prefixed_payload(cursor, props, strings, field_name)?,
@@ -7276,14 +7296,53 @@ fn non_empty_delimiter_scan_patterns(
     Ok(patterns)
 }
 
+/// When decoding the last particle of an infix-separated sequence, the sequence's
+/// infix separator is not consumed after the field and must not bound delimited content.
+pub(crate) struct SequenceChildScanContext<'a> {
+    pub parent_sequence: &'a IrProps,
+    pub has_following_sibling: bool,
+}
+
+fn include_stop_sequence_delimiter_in_field_scan(
+    seq: &IrProps,
+    pattern_id: StringId,
+    field_props: &IrProps,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    let Some(ctx) = scan_ctx else {
+        return Ok(true);
+    };
+    if !core::ptr::eq(ctx.parent_sequence, seq) || ctx.has_following_sibling {
+        return Ok(true);
+    }
+    // Repeating particles still treat the parent infix separator as a field boundary.
+    if field_props.occurs_max != Some(1) {
+        return Ok(true);
+    }
+    if should_defer_infix_sequence_separator(seq, pattern_id, field_props, strings)? {
+        return Ok(false);
+    }
+    if should_defer_postfix_sequence_separator(seq, pattern_id, field_props, strings)? {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 fn enclosing_delimiter_scan_patterns(
     props: &IrProps,
     strings: &StringPool,
     stop_sequences: &[&IrProps],
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<alloc::vec::Vec<DelimScanPattern>, crate::error::VmError> {
     let mut patterns = non_empty_delimiter_scan_patterns(props, strings)?;
     for seq in stop_sequences {
         for id in delimiter_pattern_ids(seq) {
+            if !include_stop_sequence_delimiter_in_field_scan(
+                seq, id, props, scan_ctx, strings,
+            )? {
+                continue;
+            }
             let pat = strings.get(id)?;
             push_delimiter_scan_patterns(&mut patterns, pat, seq.ignore_case);
         }
@@ -7400,7 +7459,7 @@ pub(crate) fn would_read_empty_delimited_field(
     strings: &StringPool,
     stop_sequences: &[&IrProps],
 ) -> Result<bool, crate::error::VmError> {
-    let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences)?;
+    let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences, None)?;
     for entry in &patterns {
         if let Some(n) = crate::schema::match_delimiter_opts(
             &cursor.data[cursor.pos..],
@@ -7515,9 +7574,10 @@ pub(crate) fn read_until_delimiters(
     require_delimiter: bool,
     stop_sequences: &[&IrProps],
     encoding: Option<&str>,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
-    let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences)?;
+    let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences, scan_ctx)?;
     if let Some(enc) = encoding {
         if let Some(spec) = bits_charset_spec(enc) {
             if !patterns.is_empty() {
@@ -7741,6 +7801,7 @@ pub(crate) fn read_delimited_bytes(
         strings,
         require_delimiter,
         stop_sequences,
+        None,
         None,
     )
 }
@@ -9280,7 +9341,7 @@ fn ambiguous_delimiter_prefix_at_cursor(
     strings: &StringPool,
     stop_sequences: &[&IrProps],
 ) -> Result<bool, crate::error::VmError> {
-    let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences)?;
+    let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences, None)?;
     let mut matches = alloc::vec::Vec::new();
     for entry in &patterns {
         if let Some(n) = crate::schema::match_delimiter_opts(
@@ -9415,6 +9476,7 @@ pub(crate) fn read_simple(
     sibling_env: Option<&crate::schema::boolean_reps::BooleanSiblingEnv<'_>>,
     enable_facet_validation: bool,
     defer_facet_validation: bool,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
 
@@ -9459,6 +9521,7 @@ pub(crate) fn read_simple(
             field_name,
             sibling_env,
             tunables,
+            scan_ctx,
         )?
     } else {
         read_binary_scalar(
@@ -9470,6 +9533,7 @@ pub(crate) fn read_simple(
             stop_sequences,
             field_name,
             tunables,
+            scan_ctx,
         )?
     };
     if props.length_kind == LengthKind::Delimited {
@@ -10919,7 +10983,7 @@ mod delimited_stop_tests {
         let stops = [&row_seq, &cell_seq];
         let mut cursor = Cursor::new(b"\n");
         let raw =
-            read_until_delimiters(&mut cursor, &cell, &strings, false, &stops, None).unwrap();
+            read_until_delimiters(&mut cursor, &cell, &strings, false, &stops, None, None).unwrap();
         assert!(raw.is_empty(), "expected empty before newline, got {raw:?}");
     }
 

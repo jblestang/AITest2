@@ -1734,6 +1734,7 @@ impl<'a> Decoder<'a> {
                                         false,
                                         stop_sequences,
                                         enc.as_deref(),
+                                        None,
                                     )?;
                                     if crate::schema::match_delimiter_opts_for_encoding(
                                         &cursor.data[cursor.pos..],
@@ -1853,6 +1854,12 @@ impl<'a> Decoder<'a> {
                         &sibling_bytes_map,
                     );
                     self.runtime_check_bit_order_change(&props, cursor)?;
+                    let scan_ctx = parent_sequence.map(|parent| {
+                        super::runtime::SequenceChildScanContext {
+                            parent_sequence: parent,
+                            has_following_sibling: require_delimiter,
+                        }
+                    });
                     let value = read_simple(
                         cursor,
                         *kind,
@@ -1867,6 +1874,7 @@ impl<'a> Decoder<'a> {
                         sibling_env.as_ref(),
                         self.ctx.config.enable_facet_validation,
                         self.ctx.config.defer_facet_validation,
+                        scan_ctx.as_ref(),
                     )
                     .map_err(crate::error::Error::from)?;
                     self.note_sequence_field_bit_order(&props);
@@ -2462,6 +2470,14 @@ impl<'a> Decoder<'a> {
             }
             let found_display =
                 format_found_at_cursor(&cursor.data, cursor.pos, enc.as_deref());
+            if props.separator_position == SeparatorPosition::Infix {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Parse Error. Failed to find infix separator. Separator '{pat}' not found"
+                    ),
+                }
+                .into());
+            }
             let position_label = match props.separator_position {
                 SeparatorPosition::Prefix => "prefix separator",
                 SeparatorPosition::Infix => "infix separator",
@@ -2940,6 +2956,7 @@ fn eval_input_value_calc(
             None,
             None,
             &crate::length_validate::DaffodilTunables::default(),
+            None,
         )
         .map_err(Into::into);
     }
@@ -2974,6 +2991,7 @@ fn eval_input_value_calc(
             None,
             None,
             &crate::length_validate::DaffodilTunables::default(),
+            None,
         )
         .map_err(Into::into);
     }
@@ -3195,6 +3213,7 @@ fn peek_choice_discriminator_dot(
             None,
             false,
             false,
+            None,
         ) {
             return Some(s.text);
         }
