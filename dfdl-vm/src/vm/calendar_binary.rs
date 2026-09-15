@@ -28,6 +28,72 @@ fn split_epoch_timezone(iso: &str) -> (&str, i64) {
     (iso, 0)
 }
 
+/// True when `value` satisfies `dfdl:CalendarTimeZoneType` (empty string or `UTC` with optional offset).
+pub fn is_valid_dfdl_calendar_time_zone(raw: &str) -> bool {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return true;
+    }
+    if raw.len() < 3 {
+        return false;
+    }
+    let (head, tail) = raw.split_at(3);
+    if !head.eq_ignore_ascii_case("UTC") {
+        return false;
+    }
+    if tail.is_empty() {
+        return true;
+    }
+    parse_dfdl_calendar_tz_offset(tail)
+}
+
+fn parse_dfdl_calendar_tz_offset(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.is_empty() || (b[0] != b'+' && b[0] != b'-') {
+        return false;
+    }
+    let mut idx = 1usize;
+    if idx >= b.len() || !b[idx].is_ascii_digit() {
+        return false;
+    }
+    let hour_start = idx;
+    if idx + 1 < b.len() && b[idx + 1].is_ascii_digit() && (b[idx] == b'0' || b[idx] == b'1') {
+        idx += 2;
+    } else {
+        idx += 1;
+    }
+    let hour_str = match core::str::from_utf8(&b[hour_start..idx]) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    if hour_str.len() == 2 {
+        let hour: u32 = match hour_str.parse() {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        if hour > 19 {
+            return false;
+        }
+    }
+    let mut parts = 0;
+    while parts < 2 && idx < b.len() {
+        if b[idx] != b':' {
+            return false;
+        }
+        idx += 1;
+        if idx + 1 >= b.len() || !b[idx].is_ascii_digit() || !b[idx + 1].is_ascii_digit() {
+            return false;
+        }
+        let mm = (b[idx] - b'0') * 10 + (b[idx + 1] - b'0');
+        if mm > 59 {
+            return false;
+        }
+        idx += 2;
+        parts += 1;
+    }
+    idx == b.len()
+}
+
 /// Map `dfdl:calendarTimeZone` to an XSD timezone suffix (`+00:00`, `-05:00`, …).
 /// Empty property value means no timezone in the lexical result.
 pub fn calendar_timezone_xsd_suffix(raw: &str) -> Option<alloc::string::String> {
@@ -1370,7 +1436,32 @@ pub fn validate_calendar_schema(
     strings: &StringPool,
 ) -> Result<(), SchemaError> {
     validate_text_calendar_schema(kind, props, strings)?;
-    validate_binary_calendar_schema(kind, props, strings)
+    validate_binary_calendar_schema(kind, props, strings)?;
+    if matches!(kind, ValueKind::DateTime | ValueKind::Time) {
+        validate_calendar_time_zone_ir(props, strings)?;
+    }
+    Ok(())
+}
+
+fn validate_calendar_time_zone_ir(
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), SchemaError> {
+    if !props.calendar_time_zone_defined {
+        return Ok(());
+    }
+    let raw = props
+        .calendar_time_zone
+        .and_then(|id| strings.get(id).ok())
+        .unwrap_or("");
+    if is_valid_dfdl_calendar_time_zone(raw) {
+        return Ok(());
+    }
+    Err(SchemaError::InvalidProperty {
+        message: alloc::format!(
+            "Schema Definition Error: Value '{raw}' is not valid with respect to its type, 'CalendarTimeZoneType'"
+        ),
+    })
 }
 
 fn known_binary_length_in_bits(props: &IrProps) -> Option<u64> {

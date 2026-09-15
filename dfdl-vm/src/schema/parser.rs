@@ -429,7 +429,12 @@ impl<'a> XsdParser<'a> {
         if let Some(dir) = include_dir {
             child_resolver = child_resolver.with_base_dir(dir);
         }
-        let included = parse_schema_with_resolver(&content, child_resolver)?;
+        let include_label = location
+            .rsplit('/')
+            .next()
+            .unwrap_or(location.as_str());
+        let included =
+            parse_schema_with_resolver_and_label(&content, child_resolver, Some(include_label))?;
         if !included.dfdl_annotations_seen {
             let label = location
                 .rsplit('/')
@@ -527,6 +532,7 @@ impl<'a> XsdParser<'a> {
                 &attrs,
                 Some(&mut self.doc.schema_diagnostics),
                 Some(&self.doc.variables),
+                self.doc.schema_source_label.as_deref(),
             )?;
         let name = xsd_attrs
             .get("name")
@@ -947,6 +953,7 @@ impl<'a> XsdParser<'a> {
                 &attrs,
                 Some(&mut self.doc.schema_diagnostics),
                 Some(&self.doc.variables),
+                self.doc.schema_source_label.as_deref(),
             )?;
         let is_ref = xsd_attrs.contains_key("ref");
         let has_element_name_attr = xsd_attrs.contains_key("name");
@@ -1545,11 +1552,16 @@ impl<'a> XsdParser<'a> {
     }
 
     fn finalize_props(&self, mut props: DfdlProps) -> DfdlProps {
+        let had_format_ref = props.format_ref.is_some();
         if let Some(ref_name) = props.format_ref.take() {
             if let Some(base) = self.lookup_named_format(&ref_name) {
                 strip_empty_initiator_for_format_ref(&mut props);
                 props = merge_dfdl_props(base, props);
             }
+        }
+        // DFDL-6-007R: schema-level terminator defaults apply to format-referenced types (long_chain_06).
+        if had_format_ref && props.terminator.is_none() {
+            props.terminator = self.doc.format_defaults.props.terminator.clone();
         }
         props
     }
@@ -1580,7 +1592,12 @@ impl<'a> XsdParser<'a> {
             return Ok(DfdlProps::default());
         }
 
-        let mut props = props_from_attrs_with_variables(&attrs, Some(&self.doc.variables))?;
+        let mut props = props_from_attrs_with_variables(
+            &attrs,
+            Some(&self.doc.variables),
+            self.doc.schema_source_label.as_deref(),
+            Some(&mut self.doc.schema_diagnostics),
+        )?;
         if local == "assert" || local == "discriminator" {
             props.has_statement_annotation = true;
             if let Some(msg) = attrs.get("message") {
@@ -1978,6 +1995,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.escape_scheme_ref.is_some() {
         base.escape_scheme_ref = overlay.escape_scheme_ref.clone();
+    }
+    if overlay.hidden_group_ref.is_some() {
+        base.hidden_group_ref = overlay.hidden_group_ref.clone();
     }
     if overlay.initiated_content.is_some() {
         base.initiated_content = overlay.initiated_content;
@@ -2739,8 +2759,9 @@ fn local_name_from_qname(qname: &str) -> &str {
 fn split_dfdl_attrs_with_variables(
     element_local: &str,
     attrs: &BTreeMap<String, String>,
-    diagnostics: Option<&mut alloc::vec::Vec<String>>,
+    mut diagnostics: Option<&mut alloc::vec::Vec<String>>,
     variables: Option<&BTreeMap<String, String>>,
+    schema_label: Option<&str>,
 ) -> Result<(BTreeMap<String, String>, DfdlProps)> {
     let mut xsd = BTreeMap::new();
     let mut dfdl_map = BTreeMap::new();
@@ -2759,10 +2780,14 @@ fn split_dfdl_attrs_with_variables(
             xsd.insert(k.clone(), v.clone());
         }
     }
-    let props = match props_from_attrs_with_variables(&dfdl_map, variables) {
+    let props = match if let Some(diags) = diagnostics.as_mut() {
+        props_from_attrs_with_variables(&dfdl_map, variables, schema_label, Some(diags))
+    } else {
+        props_from_attrs_with_variables(&dfdl_map, variables, schema_label, None)
+    } {
         Ok(p) => p,
         Err(e) => {
-            if let Some(out) = diagnostics {
+            if let Some(out) = diagnostics.as_mut() {
                 out.push(e.to_string());
                 DfdlProps::default()
             } else {
@@ -2778,7 +2803,7 @@ fn split_dfdl_attrs(
     attrs: &BTreeMap<String, String>,
     diagnostics: Option<&mut alloc::vec::Vec<String>>,
 ) -> Result<(BTreeMap<String, String>, DfdlProps)> {
-    split_dfdl_attrs_with_variables(element_local, attrs, diagnostics, None)
+    split_dfdl_attrs_with_variables(element_local, attrs, diagnostics, None, None)
 }
 
 fn record_global_element_xsd_diagnostics(
@@ -2911,13 +2936,33 @@ fn is_dfdl_property(name: &str) -> bool {
     )
 }
 
+fn record_invalid_calendar_time_zone(
+    value: &str,
+    schema_label: Option<&str>,
+    diagnostics: &mut alloc::vec::Vec<String>,
+) {
+    if crate::vm::calendar_binary::is_valid_dfdl_calendar_time_zone(value) {
+        return;
+    }
+    let mut msg = alloc::format!(
+        "Schema Definition Error: Value '{value}' is not valid with respect to its type, 'CalendarTimeZoneType'"
+    );
+    if let Some(label) = schema_label {
+        msg.push('\n');
+        msg.push_str(label);
+    }
+    diagnostics.push(msg);
+}
+
 fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
-    props_from_attrs_with_variables(attrs, None)
+    props_from_attrs_with_variables(attrs, None, None, None)
 }
 
 fn props_from_attrs_with_variables(
     attrs: &BTreeMap<String, String>,
     variables: Option<&BTreeMap<String, String>>,
+    schema_label: Option<&str>,
+    mut schema_diagnostics: Option<&mut alloc::vec::Vec<String>>,
 ) -> Result<DfdlProps> {
     let mut props = DfdlProps::default();
     for (key, value) in attrs {
@@ -3342,6 +3387,9 @@ fn props_from_attrs_with_variables(
                 props.calendar_check_policy_lax = Some(matches!(value.as_str(), "lax"));
             }
             "calendarTimeZone" => {
+                if let Some(diags) = schema_diagnostics.as_deref_mut() {
+                    record_invalid_calendar_time_zone(&value, schema_label, diags);
+                }
                 props.calendar_time_zone = Some(value.clone());
                 props.calendar_time_zone_defined = true;
             }
