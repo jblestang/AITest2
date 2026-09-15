@@ -2037,6 +2037,20 @@ fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
         if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {
             return Ok(());
         }
+        if props.binary_number_rep == crate::schema::BinaryNumberRep::Binary
+            && matches!(
+                kind,
+                ValueKind::Byte
+                    | ValueKind::UnsignedByte
+                    | ValueKind::Short
+                    | ValueKind::UnsignedShort
+                    | ValueKind::Int
+                    | ValueKind::UnsignedInt
+                    |                 ValueKind::Long | ValueKind::Integer
+            )
+        {
+            return Ok(());
+        }
         if matches!(kind, ValueKind::DateTime | ValueKind::Time) {
             if matches!(
                 props.binary_calendar_rep,
@@ -3286,6 +3300,14 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     {
         // Keep type-derived lengthKind when overlay only carries inherited implicit defaults
         // (including when the overlay adds a runtime length expression via length_sibling).
+    } else if matches!(
+        base.length_kind,
+        LengthKind::Explicit | LengthKind::Fixed | LengthKind::Prefixed | LengthKind::Pattern
+    ) && overlay.length_kind == LengthKind::Delimited
+        && overlay.length.is_none()
+        && overlay.length_pattern.is_none()
+    {
+        // Format default lengthKind=delimited must not override explicit simpleType / element length.
     } else {
         out.length_kind = overlay.length_kind;
     }

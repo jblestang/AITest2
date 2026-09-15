@@ -5596,7 +5596,7 @@ pub(crate) fn read_text_scalar(
     Ok(value)
 }
 
-fn consume_text_field_terminator_after_fixed_length(
+pub(crate) fn consume_text_field_terminator_after_fixed_length(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,

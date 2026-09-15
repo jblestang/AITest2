@@ -280,6 +280,23 @@ impl<'a> Decoder<'a> {
                         _ => None,
                     };
                     if idx > 0 {
+                        if let Ok(IrNode::Element {
+                            props: prev_props, ..
+                        }) = self.ctx.program.node(children[idx - 1])
+                        {
+                            if prev_props.representation == Representation::Text
+                                && matches!(
+                                    prev_props.length_kind,
+                                    LengthKind::Explicit | LengthKind::Fixed
+                                )
+                            {
+                                let _ = crate::vm::runtime::consume_text_field_terminator_after_fixed_length(
+                                    cursor,
+                                    prev_props,
+                                    self.ctx.strings(),
+                                );
+                            }
+                        }
                         if let Some(sep_id) = props.separator {
                             let pat = self.ctx.strings().get(sep_id)?;
                             if let Some(err) = self.separator_enclosing_delimiter_conflict(
@@ -1677,6 +1694,25 @@ impl<'a> Decoder<'a> {
             return Err(VmError::InvalidValue {
                 message: alloc::format!(
                     "Parse Error. infix separator. Delimiter not found!  Was looking for ({pat}) but found \"{found_display}\" instead"
+                ),
+            }
+            .into());
+        }
+        let nl_like_sep = pat.contains('\n') || pat.trim() == "%NL;" || pat.starts_with("%NL");
+        let mandatory_postfix = props.separator_position == SeparatorPosition::Postfix
+            && nl_like_sep
+            && item_props.is_some()
+            && items.is_some_and(|it| !it.is_empty())
+            && !cursor.is_empty();
+        if mandatory_postfix {
+            if cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+                return Ok(());
+            }
+            let found_display =
+                format_found_at_cursor(&cursor.data, cursor.pos, enc.as_deref());
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Parse Error. postfix separator. Delimiter not found!  Was looking for ({pat}) but found \"{found_display}\" instead"
                 ),
             }
             .into());
