@@ -5281,6 +5281,16 @@ fn validate_runtime_text_boolean_same_length(
     Ok(())
 }
 
+fn pick_text_boolean_unparse_rep(reps: &[alloc::string::String]) -> alloc::string::String {
+    let Some(s) = reps.first() else {
+        return alloc::string::String::new();
+    };
+    s.split_whitespace()
+        .next()
+        .unwrap_or(s.as_str())
+        .to_string()
+}
+
 fn parse_text_boolean(
     trimmed: &str,
     props: &IrProps,
@@ -5351,6 +5361,99 @@ fn parse_text_boolean(
     }
 }
 
+fn resolve_blob_value_bytes(value: &crate::value::DfdlValue) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::value::DfdlValue;
+    match value {
+        DfdlValue::Blob(bytes) => Ok(bytes.clone()),
+        DfdlValue::String(s) => crate::tdml::resolve_blob_uri_to_bytes(&s.text).map_err(|m| {
+            VmError::InvalidValue {
+                message: if m.contains("Unable to open blob") {
+                    alloc::format!("Unparse Error: {m}")
+                } else {
+                    m
+                },
+            }
+        }),
+        DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => {
+            crate::tdml::resolve_blob_uri_to_bytes(s).map_err(|m| VmError::InvalidValue {
+                message: if m.contains("Unable to open blob") {
+                    alloc::format!("Unparse Error: {m}")
+                } else {
+                    m
+                },
+            })
+        }
+        other => Err(VmError::InvalidValue {
+            message: alloc::format!("blob unparse expected URI string, got `{other:?}`"),
+        }),
+    }
+}
+
+fn write_blob_scalar(
+    out: &mut alloc::vec::Vec<u8>,
+    bit_count: &mut u8,
+    value: &crate::value::DfdlValue,
+    props: &IrProps,
+    field_name: Option<&str>,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::schema::{LengthKind, LengthUnits, ObjectKind};
+
+    if props.object_kind != ObjectKind::Bytes {
+        return Err(VmError::InvalidValue {
+            message: "internal blob encode on non-bytes element".into(),
+        });
+    }
+    if props.length_kind != LengthKind::Explicit {
+        return Err(VmError::InvalidValue {
+            message: "objectKind='bytes' must have dfdl:lengthKind='explicit'".into(),
+        });
+    }
+    let len = props.length.ok_or(VmError::InvalidValue {
+        message: "explicit blob missing length".into(),
+    })? as usize;
+    let len_bits = match props.length_units {
+        LengthUnits::Bytes => len.saturating_mul(8),
+        LengthUnits::Bits => len,
+        LengthUnits::Characters => {
+            return Err(VmError::InvalidValue {
+                message: "lengthUnits='characters' is not valid for blob data.".into(),
+            })
+        }
+    };
+    let bytes = resolve_blob_value_bytes(value)?;
+    let value_bits = bytes.len().saturating_mul(8);
+    if value_bits > len_bits {
+        let mut message = alloc::format!(
+            "Unparse Error: Blob length ({value_bits} bits) exceeds explicit length value: {len_bits} bits"
+        );
+        if let Some(name) = field_name {
+            message.push_str("\nSchema context: ");
+            message.push_str(name);
+        }
+        return Err(VmError::InvalidValue { message });
+    }
+    let write_bytes = (len_bits + 7) / 8;
+    let mut payload = bytes;
+    if payload.len() < write_bytes {
+        payload.extend(core::iter::repeat(props.fill_byte).take(write_bytes - payload.len()));
+    }
+    if props.length_units == LengthUnits::Bits && len_bits % 8 != 0 {
+        write_bits_from_stream_with_config(
+            out,
+            bit_count,
+            &payload,
+            len_bits,
+            props.bit_order,
+            None,
+        )?;
+    } else {
+        write_byte_aligned(out, bit_count, &payload[..write_bytes.min(payload.len())])?;
+    }
+    Ok(())
+}
+
 pub(crate) fn write_binary_scalar(
     out: &mut alloc::vec::Vec<u8>,
     bit_count: &mut u8,
@@ -5364,7 +5467,12 @@ pub(crate) fn write_binary_scalar(
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
+    use crate::schema::ObjectKind;
     use crate::value::DfdlValue;
+
+    if props.object_kind == ObjectKind::Bytes {
+        return write_blob_scalar(out, bit_count, value, props, field_name);
+    }
 
     if kind == HexBinary {
         if let Some(max) = tunables.max_hex_binary_length_in_bytes {
@@ -5911,15 +6019,21 @@ pub(crate) fn write_text_scalar(
     } else {
         match (kind, value) {
         (Boolean, DfdlValue::Boolean(v)) => {
+            let true_reps = text_boolean_rep_candidates(props, strings, true, None)?;
+            let false_reps = text_boolean_rep_candidates(props, strings, false, None)?;
             if *v {
-                match props.text_boolean_true_rep {
-                    Some(id) => strings.get(id)?.to_string(),
-                    None => alloc::string::String::from("true"),
+                let picked = pick_text_boolean_unparse_rep(&true_reps);
+                if picked.is_empty() {
+                    alloc::string::String::from("true")
+                } else {
+                    picked
                 }
             } else {
-                match props.text_boolean_false_rep {
-                    Some(id) => strings.get(id)?.to_string(),
-                    None => alloc::string::String::from("false"),
+                let picked = pick_text_boolean_unparse_rep(&false_reps);
+                if picked.is_empty() {
+                    alloc::string::String::from("false")
+                } else {
+                    picked
                 }
             }
         }
@@ -9437,9 +9551,11 @@ pub(crate) fn validate_unparse_scalar_lexical(
     value: &crate::value::DfdlValue,
     kind: crate::ir::ValueKind,
     props: &IrProps,
+    strings: &StringPool,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind;
+    use crate::schema::LengthUnits;
     use crate::value::DfdlValue;
 
     let base = props.text_standard_base;
@@ -9502,17 +9618,44 @@ pub(crate) fn validate_unparse_scalar_lexical(
                 return Err(unparse_not_valid_xs(type_name));
             }
         }
-        (ValueKind::HexBinary, DfdlValue::String(s)) => {
-            let t = s.text.trim();
-            if t.len() % 2 != 0 {
-                return Err(VmError::InvalidValue {
-                    message: alloc::format!(
-                        "Unparse Error: Hex string must have an even number of characters, but was {} for {t}",
-                        t.len()
-                    ),
-                });
+        (ValueKind::HexBinary, val @ (DfdlValue::HexBinary(_) | DfdlValue::String(_))) => {
+            let bytes = match val {
+                DfdlValue::HexBinary(b) => b.clone(),
+                DfdlValue::String(s) => {
+                    let t = s.text.trim();
+                    if t.len() % 2 != 0 {
+                        return Err(VmError::InvalidValue {
+                            message: alloc::format!(
+                                "Unparse Error: Hex string must have an even number of characters, but was {} for {t}",
+                                t.len()
+                            ),
+                        });
+                    }
+                    decode_hex_binary(t).map_err(|_| unparse_not_valid_xs("xs:hexBinary"))?
+                }
+                _ => unreachable!(),
+            };
+            if props.length_kind == crate::schema::LengthKind::Explicit {
+                if let Some(len) = props.length {
+                    let len_bits = match props.length_units {
+                        LengthUnits::Bytes => len.saturating_mul(8),
+                        LengthUnits::Bits => len,
+                        LengthUnits::Characters => len.saturating_mul(8),
+                    };
+                    let value_bits = (bytes.len() as u64).saturating_mul(8);
+                    if value_bits > len_bits {
+                        return Err(VmError::InvalidValue {
+                            message: alloc::format!(
+                                "Unparse Error: Length of xs:hexBinary exceeds calculated length of {value_bits} bits: {len_bits}"
+                            ),
+                        });
+                    }
+                }
             }
-            decode_hex_binary(t).map_err(|_| unparse_not_valid_xs("xs:hexBinary"))?;
+        }
+        (ValueKind::Boolean, DfdlValue::String(s)) => {
+            parse_text_boolean(&s.text, props, strings, None)
+                .map_err(|_| unparse_not_valid_xs("xs:boolean"))?;
         }
         (ValueKind::DateTime, DfdlValue::DateTime(s)) | (ValueKind::Time, DfdlValue::DateTime(s)) => {
             if props.calendar_date_only {
@@ -9624,8 +9767,33 @@ pub(crate) fn write_simple(
     field_name: Option<&str>,
     delim_meta: Option<&crate::value::FieldDelimiterMeta>,
 ) -> Result<(), crate::error::VmError> {
-    validate_unparse_scalar_lexical(value, kind, props)?;
+    validate_unparse_scalar_lexical(value, kind, props, strings)?;
     let value = coerce_value_for_kind(value, kind)?;
+    if props.object_kind == crate::schema::ObjectKind::Bytes {
+        if let Some(id) = props.initiator {
+            let pat = strings.get(id)?;
+            if !pat.is_empty() {
+                let output_nl = props
+                    .output_new_line
+                    .and_then(|id| strings.get(id).ok());
+                let bytes = encode_property_delimiter(pat, output_nl);
+                write_byte_aligned(out, bit_count, &bytes)?;
+            }
+        }
+        write_blob_scalar(out, bit_count, &value, props, field_name)?;
+        if let Some(id) = props.terminator {
+            let pat = strings.get(id)?;
+            if !pat.is_empty() {
+                let output_nl = props
+                    .output_new_line
+                    .and_then(|id| strings.get(id).ok());
+                let bytes = encode_property_delimiter(pat, output_nl);
+                write_byte_aligned(out, bit_count, &bytes)?;
+            }
+        }
+        crate::vm::alignment::write_trailing_skip(out, bit_count, props)?;
+        return Ok(());
+    }
     if let Some(id) = props.initiator {
         let pat = strings.get(id)?;
         if !pat.is_empty() {

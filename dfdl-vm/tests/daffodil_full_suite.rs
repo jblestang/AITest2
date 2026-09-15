@@ -404,14 +404,14 @@ fn daffodil_section05_regression_gate() {
     );
     // Baseline (2026-03): unparseError infoset lexicals; binary boolean reps; calendar time unparse patterns.
     assert!(
-        stats.pass >= 779,
-        "section05: expected at least 779 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 787,
+        "section05: expected at least 787 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 32,
+        stats.fail <= 24,
         "section05 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,

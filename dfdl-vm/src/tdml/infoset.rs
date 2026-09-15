@@ -692,6 +692,33 @@ fn scalar_to_string(value: &DfdlValue) -> String {
     }
 }
 
+/// Load blob bytes for unparse from a TDML `xs:anyURI` reference or `file:` URI.
+pub fn resolve_blob_uri_to_bytes(uri: &str) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
+    let uri = uri.trim();
+    if uri.contains('\'') {
+        return Err("Illegal character".into());
+    }
+    if uri.contains("://") && !uri.starts_with("file:") {
+        return Err(alloc::format!("Blob URI must be a file: {uri}"));
+    }
+    #[cfg(feature = "std")]
+    {
+        let path = if let Some(rest) = uri.strip_prefix("file:") {
+            std::path::PathBuf::from(rest)
+        } else {
+            std::path::PathBuf::from(tdml_blob_reference_path(uri))
+        };
+        std::fs::read(&path).map_err(|_| {
+            alloc::format!("Unable to open blob for reading: {uri}")
+        })
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = uri;
+        Err("blob unparse requires the `std` feature".into())
+    }
+}
+
 fn tdml_blob_reference_path(uri: &str) -> alloc::string::String {
     alloc::format!(
         "{}/../third_party/daffodil/daffodil-test/src/test/resources/{}",

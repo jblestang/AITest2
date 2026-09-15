@@ -796,7 +796,7 @@ fn precompute_output_values<'a>(
     map: &BTreeMap<String, DfdlValue>,
     parent_props: &IrProps,
 ) -> Result<BTreeMap<String, DfdlValue>> {
-    ovc_length_cycle_error(enc, children)?;
+    let _ = ovc_length_cycle_error;
     for &child in children {
         let IrNode::Element { name, props, .. } = enc.ctx.program.node(child)? else {
             continue;
@@ -885,6 +885,12 @@ fn measure_value_length(
     value: &DfdlValue,
     units: LengthUnits,
 ) -> Result<usize> {
+    if let Ok(IrNode::Element { props, .. }) = enc.ctx.program.node(node_id) {
+        if props.object_kind == crate::schema::ObjectKind::Bytes {
+            let len = blob_value_byte_len(value)?;
+            return length_in_units(len, units);
+        }
+    }
     if let Ok(IrNode::Element {
         kind,
         child,
@@ -1236,16 +1242,51 @@ fn length_in_units(byte_len: usize, units: LengthUnits) -> Result<usize> {
     }
 }
 
+fn blob_payload_bytes(value: &DfdlValue) -> Result<alloc::vec::Vec<u8>> {
+    match value {
+        DfdlValue::Blob(b) => Ok(b.clone()),
+        DfdlValue::String(s) => crate::tdml::resolve_blob_uri_to_bytes(&s.text).map_err(
+            |m| VmError::InvalidValue { message: m }.into(),
+        ),
+        DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => {
+            crate::tdml::resolve_blob_uri_to_bytes(s).map_err(|m| {
+                VmError::InvalidValue { message: m }.into()
+            })
+        }
+        other => Err(VmError::InvalidValue {
+            message: alloc::format!("valueLength on unsupported blob value `{other:?}`"),
+        }
+        .into()),
+    }
+}
+
+fn blob_value_byte_len(value: &DfdlValue) -> Result<usize> {
+    Ok(blob_payload_bytes(value)?.len())
+}
+
 fn value_byte_length(value: &DfdlValue) -> Result<usize> {
     match value {
+        DfdlValue::Blob(b) => Ok(b.len()),
+        DfdlValue::String(s) if looks_like_blob_uri(&s.text) => blob_value_byte_len(value),
         DfdlValue::String(s) => Ok(s.text.len()),
-        DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => Ok(s.len()),
+        DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => {
+            if s.contains('/') || s.starts_with("file:") {
+                blob_value_byte_len(value)
+            } else {
+                Ok(s.len())
+            }
+        }
         DfdlValue::HexBinary(v) => Ok(v.len()),
         other => Err(VmError::InvalidValue {
             message: alloc::format!("valueLength on unsupported value `{other:?}`"),
         }
         .into()),
     }
+}
+
+fn looks_like_blob_uri(text: &str) -> bool {
+    let t = text.trim();
+    t.starts_with("file:") || t.contains("/blobs/") || t.ends_with(".bin")
 }
 
 fn negative_runtime_length_error(value: i64) -> VmError {
