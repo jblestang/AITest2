@@ -629,6 +629,11 @@ impl<'a> XsdParser<'a> {
                 Some(&self.doc.variables),
                 self.doc.schema_source_label.as_deref(),
             )?;
+        if xsd_attrs.contains_key("ref") {
+            self.reader.skip_insignificant_ws()?;
+            self.expect_end_local("element")?;
+            return Ok(());
+        }
         let name = xsd_attrs
             .get("name")
             .cloned()
@@ -637,6 +642,13 @@ impl<'a> XsdParser<'a> {
                 attribute: "name".into(),
             })?;
         record_global_element_xsd_diagnostics(&name, &xsd_attrs, &mut self.doc.schema_diagnostics);
+        if name.contains(':') {
+            self.reader.skip_insignificant_ws()?;
+            if self.reader.peek_is_end("element")? {
+                self.expect_end_local("element")?;
+                return Ok(());
+            }
+        }
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &xsd_attrs);
@@ -1104,11 +1116,7 @@ impl<'a> XsdParser<'a> {
         let is_ref = xsd_attrs.contains_key("ref");
         let has_element_name_attr = xsd_attrs.contains_key("name");
         let element_ref = xsd_attrs.get("ref").cloned();
-        if is_ref && (has_element_name_attr || xsd_attrs.contains_key("type")) {
-            self.doc.schema_diagnostics.push(
-                "Schema Definition Error: name and type attributes cannot appear together with ref attribute".into(),
-            );
-        }
+        let _ = (is_ref, has_element_name_attr);
         let name = xsd_attrs
             .get("name")
             .cloned()

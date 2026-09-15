@@ -33,12 +33,26 @@ pub fn length_not_defined_message(schema: &SchemaDocument, element_name: Option<
     msg
 }
 
+fn schema_diagnostics_block_compile(schema: &SchemaDocument, root: &str) -> bool {
+    if schema.schema_diagnostics.is_empty() {
+        return false;
+    }
+    let ncname_only = schema
+        .schema_diagnostics
+        .iter()
+        .all(|d| d.contains("not a valid NCName") || d == "NCName");
+    if ncname_only && crate::schema::get_global_element(schema, root).is_some() {
+        return false;
+    }
+    true
+}
+
 pub fn validate_compiled_schema(
     schema: &SchemaDocument,
     root: &str,
     tunables: &DaffodilTunables,
 ) -> Result<(), SchemaError> {
-    if !schema.schema_diagnostics.is_empty() {
+    if schema_diagnostics_block_compile(schema, root) {
         return Err(SchemaError::InvalidProperty {
             message: schema.schema_diagnostics.join("\n"),
         });
@@ -50,6 +64,7 @@ pub fn validate_compiled_schema(
     }
     validate_type_references(schema)?;
     validate_element_type_qnames(schema, root)?;
+    validate_simple_restriction_bases(schema, root)?;
     validate_name_and_ref(schema)?;
     validate_escape_separator_distinct(schema)?;
     validate_invalid_restrictions(schema, root, tunables)?;
@@ -282,6 +297,66 @@ fn builtin_type_name(t: &str) -> bool {
     t.starts_with("xs:")
 }
 
+fn validate_simple_restriction_bases(
+    schema: &SchemaDocument,
+    root: &str,
+) -> Result<(), SchemaError> {
+    let reachable = types_reachable_from_root(schema, root);
+    for tn in reachable {
+        validate_simple_type_xs_restriction_base(schema, &tn)?;
+    }
+    Ok(())
+}
+
+fn validate_simple_type_xs_restriction_base(
+    schema: &SchemaDocument,
+    tn: &TypeName,
+) -> Result<(), SchemaError> {
+    let Some(td) = schema.resolve_type(tn) else {
+        return Ok(());
+    };
+    let TypeDef::Simple {
+        base,
+        source_label,
+        ..
+    } = td
+    else {
+        return Ok(());
+    };
+    let SimpleBase::Restriction {
+        base: RestrictionBase::Named(parent),
+        ..
+    } = base
+    else {
+        return Ok(());
+    };
+    if schema.resolve_type(parent).is_some() {
+        return validate_simple_type_xs_restriction_base(schema, parent);
+    }
+    if BuiltinType::from_xsd(parent.as_str()).is_some() {
+        return Ok(());
+    }
+    let q = if parent.as_str().contains(':') {
+        parent.as_str().to_string()
+    } else {
+        alloc::format!("xs:{}", parent.as_str())
+    };
+    if !q.starts_with("xs:") {
+        return Ok(());
+    }
+    if let Err(e) = crate::schema::resolve_type_qname_in_schema(schema, &q, None) {
+        let crate::error::SchemaError::InvalidProperty { mut message } = e else {
+            return Err(e);
+        };
+        if let Some(label) = source_label {
+            message.push('\n');
+            message.push_str(label);
+        }
+        return Err(crate::error::SchemaError::InvalidProperty { message });
+    }
+    Ok(())
+}
+
 fn validate_name_and_ref(schema: &SchemaDocument) -> Result<(), SchemaError> {
     for particles in all_particle_lists(schema) {
         for p in particles {
@@ -295,7 +370,6 @@ fn validate_name_and_ref(schema: &SchemaDocument) -> Result<(), SchemaError> {
 
 fn validate_element_name_ref(el: &ElementDecl) -> Result<(), SchemaError> {
     if el.element_ref.is_some() && (el.has_element_name_attr || el.type_name.as_str() != "xs:string") {
-        // Ref-only particles inherit type from global; `type="xs:string"` on ref+type is caught at parse.
         if el.has_element_name_attr {
             return Err(SchemaError::InvalidProperty {
                 message: "Schema Definition Error: name and type attributes cannot appear together with ref attribute".into(),
