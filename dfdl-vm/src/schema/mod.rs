@@ -49,3 +49,5 @@ pub use parser::{
     resolve_global_element_storage_key, ParseOptions,
 };
 pub use resolver::SchemaResolver;
+#[cfg(feature = "std")]
+pub use resolver::read_schema_text_file;

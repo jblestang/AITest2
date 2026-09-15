@@ -175,7 +175,7 @@ impl SchemaResolver {
                     base.join(file_name),
                 ];
                 for path in &candidates {
-                    if let Ok(content) = std::fs::read_to_string(path) {
+                    if let Ok(content) = read_schema_text_file(path) {
                         let parent = path
                             .parent()
                             .map(|p| p.to_string_lossy().into_owned());
@@ -213,5 +213,94 @@ fn read_daffodil_test_resource(loc: &str) -> Option<String> {
     let root = daffodil_test_resources_root();
     let normalized = loc.trim_start_matches('/');
     let path = Path::new(&root).join(normalized);
-    std::fs::read_to_string(&path).ok()
+    read_schema_text_file(&path).ok()
+}
+
+/// Read an on-disk XSD/DFDL schema as UTF-8 text, decoding UTF-16 when declared or implied by BOM.
+#[cfg(feature = "std")]
+pub fn read_schema_text_file(path: &std::path::Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    decode_schema_bytes(&bytes)
+        .map(normalize_decoded_schema_xml_decl)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+#[cfg(feature = "std")]
+fn normalize_decoded_schema_xml_decl(mut text: String) -> String {
+    let Some(end) = text.find("?>") else {
+        return text;
+    };
+    let (decl, rest) = text.split_at(end);
+    let mut normalized = decl.to_string();
+    for enc in [
+        "UTF-16BE",
+        "UTF-16LE",
+        "UTF-16",
+        "utf-16be",
+        "utf-16le",
+        "utf-16",
+    ] {
+        normalized = normalized.replace(
+            &alloc::format!("encoding=\"{enc}\""),
+            "encoding=\"UTF-8\"",
+        );
+        normalized = normalized.replace(
+            &alloc::format!("encoding='{enc}'"),
+            "encoding=\"UTF-8\"",
+        );
+    }
+    text = alloc::format!("{normalized}{rest}");
+    text
+}
+
+fn decode_schema_bytes(bytes: &[u8]) -> core::result::Result<String, String> {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8(bytes[3..].to_vec())
+            .map_err(|e| alloc::format!("invalid UTF-8 after BOM: {e}"));
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        return decode_utf16_be(&bytes[2..]);
+    }
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        return decode_utf16_le(&bytes[2..]);
+    }
+    if bytes.len() >= 2 && bytes[0] == 0 && bytes[1] == b'<' {
+        return decode_utf16_be(bytes);
+    }
+    if bytes.len() >= 2 && bytes[0] == b'<' && bytes[1] == 0 {
+        return decode_utf16_le(bytes);
+    }
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]);
+    let head_upper = head.to_ascii_uppercase();
+    if head_upper.contains("ENCODING=\"UTF-16BE\"") || head_upper.contains("ENCODING='UTF-16BE'") {
+        return decode_utf16_be(bytes);
+    }
+    if head_upper.contains("ENCODING=\"UTF-16LE\"") || head_upper.contains("ENCODING='UTF-16LE'") {
+        return decode_utf16_le(bytes);
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|e| alloc::format!("invalid UTF-8 schema: {e}"))
+}
+
+#[cfg(feature = "std")]
+fn decode_utf16_be(bytes: &[u8]) -> core::result::Result<String, String> {
+    if bytes.len() % 2 != 0 {
+        return Err("UTF-16BE schema has odd byte length".into());
+    }
+    let mut units = alloc::vec::Vec::with_capacity(bytes.len() / 2);
+    for chunk in bytes.chunks_exact(2) {
+        units.push(u16::from_be_bytes([chunk[0], chunk[1]]));
+    }
+    String::from_utf16(&units).map_err(|e| alloc::format!("invalid UTF-16BE schema: {e}"))
+}
+
+#[cfg(feature = "std")]
+fn decode_utf16_le(bytes: &[u8]) -> core::result::Result<String, String> {
+    if bytes.len() % 2 != 0 {
+        return Err("UTF-16LE schema has odd byte length".into());
+    }
+    let mut units = alloc::vec::Vec::with_capacity(bytes.len() / 2);
+    for chunk in bytes.chunks_exact(2) {
+        units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+    String::from_utf16(&units).map_err(|e| alloc::format!("invalid UTF-16LE schema: {e}"))
 }
