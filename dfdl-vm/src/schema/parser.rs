@@ -4247,6 +4247,11 @@ fn props_from_attrs_with_variables(
                     } else if let Some(steps) = parse_fn_count_path(inner) {
                         props.occurs_count_fn_path = Some(steps);
                         props.occurs_count_kind = Some(OccursCountKind::Expression);
+                    } else if let Some(steps) =
+                        parse_input_value_calc_relative_path(&alloc::format!("{{{inner}}}"))
+                    {
+                        props.occurs_count_fn_path = Some(steps);
+                        props.occurs_count_kind = Some(OccursCountKind::Expression);
                     }
                 }
             }

@@ -804,16 +804,11 @@ impl<'a> Decoder<'a> {
         *self.parent_postfix_sep_consumed.borrow_mut() = false;
 
         let mut min = props.occurs_min;
-        if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
-            min = 0;
-            if cursor.is_empty() {
-                return Ok(DfdlValue::Array(Vec::new()));
-            }
-        }
         let mut max = props.occurs_max.unwrap_or(u64::MAX);
+        let mut occurs_from_expression = false;
         if props.occurs_count_kind == OccursCountKind::Expression {
             if let Some(steps) = props.occurs_count_fn_path.as_ref() {
-                let n = eval_fn_count_path(
+                let n = eval_occurs_count_expression(
                     steps,
                     siblings,
                     self.ctx.strings(),
@@ -821,6 +816,15 @@ impl<'a> Decoder<'a> {
                 )?;
                 min = n;
                 max = n;
+                occurs_from_expression = true;
+            }
+        }
+        if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
+            if !occurs_from_expression {
+                min = 0;
+            }
+            if cursor.is_empty() && min == 0 {
+                return Ok(DfdlValue::Array(Vec::new()));
             }
         }
         if props.occurs_count_kind == OccursCountKind::Parsed {
@@ -2484,11 +2488,6 @@ fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
         match inner {
             DfdlValue::Sequence(seq) => {
                 if !seq.fields.contains_key(name) {
-                    if seq.fields.is_empty() {
-                        let mut map = BTreeMap::new();
-                        map.insert(name.into(), DfdlValue::Sequence(seq));
-                        return DfdlValue::sequence(map);
-                    }
                     return DfdlValue::Sequence(seq);
                 }
                 DfdlValue::Sequence(seq)
@@ -2939,14 +2938,28 @@ fn eval_input_value_calc_path(
     Ok(DfdlValue::String(StringValue::new(text.to_string())))
 }
 
-fn eval_fn_count_path(
+fn eval_occurs_count_expression(
     steps: &[crate::ir::IrInputPathStep],
     siblings: Option<&BTreeMap<String, SiblingState>>,
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
 ) -> Result<u64> {
     let value = eval_infoset_path_steps(steps, siblings, strings, tunables)?;
+    if let Some(n) = value.as_i64() {
+        if n >= 0 {
+            return Ok(n as u64);
+        }
+    }
     Ok(count_dfdl_value_nodes(&value))
+}
+
+fn eval_fn_count_path(
+    steps: &[crate::ir::IrInputPathStep],
+    siblings: Option<&BTreeMap<String, SiblingState>>,
+    strings: &crate::ir::StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
+) -> Result<u64> {
+    eval_occurs_count_expression(steps, siblings, strings, tunables)
 }
 
 fn count_dfdl_value_nodes(value: &DfdlValue) -> u64 {
