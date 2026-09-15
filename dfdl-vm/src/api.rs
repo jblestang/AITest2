@@ -106,6 +106,9 @@ impl DfdlSpec {
 
     /// Convenience: encode a value using a fresh encoder instance.
     pub fn encode(&self, value: &DfdlValue) -> Result<Vec<u8>> {
+        if let Some(msg) = namespace_entity_limit_error(&self.schema, &self.program.root_element) {
+            return Err(crate::error::VmError::InvalidValue { message: msg }.into());
+        }
         self.encoder().encode_to_vec(value)
     }
 
@@ -119,6 +122,9 @@ impl DfdlSpec {
         value: &DfdlValue,
         config: RuntimeConfig,
     ) -> Result<(Vec<u8>, u8)> {
+        if let Some(msg) = namespace_entity_limit_error(&self.schema, &self.program.root_element) {
+            return Err(crate::error::VmError::InvalidValue { message: msg }.into());
+        }
         let mut out = Vec::new();
         let bit_count = self
             .encoder_with_config(config)
