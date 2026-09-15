@@ -402,16 +402,16 @@ fn daffodil_section05_regression_gate() {
         stats.parse_fail, 0,
         "section05 TDML load errors: {stats:?}"
     );
-    // Baseline (2026-03): calendarLanguage runtime; nested unparse cardinality; hexBinary implicit length SDE.
+    // Baseline (2026-03): XSD pattern full-match; union/pattern validation messages; insufficient-bits errors.
     assert!(
-        stats.pass >= 794,
-        "section05: expected at least 794 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 799,
+        "section05: expected at least 799 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 17,
+        stats.fail <= 12,
         "section05 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,

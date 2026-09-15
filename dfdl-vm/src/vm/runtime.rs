@@ -7132,7 +7132,7 @@ pub(crate) fn insufficient_data_bits_error(needed_bits: usize, found_bits: usize
     use crate::error::VmError;
     VmError::InvalidValue {
         message: alloc::format!(
-            "Parse Error. Insufficient bits in data. needed {needed_bits} bit(s). found only {found_bits} ({needed_bits} bit(s) but found only {found_bits})"
+            "Parse Error. Insufficient bits in data. Needed {needed_bits} bit(s). found only {found_bits}. {found_bits} available"
         ),
     }
 }
@@ -7532,11 +7532,7 @@ pub(crate) fn read_prefixed_payload(
                 LengthUnits::Characters => span.saturating_mul(8),
             };
             let found = cursor.remaining() * 8 + cursor.bit_count as usize;
-            VmError::InvalidValue {
-                message: alloc::format!(
-                    "Insufficient bits in data. needed {needed} bit(s). found only {found}"
-                ),
-            }
+            insufficient_data_bits_error(needed, found)
         } else {
             e
         }
@@ -8042,9 +8038,14 @@ fn lax_numeric_field_text(text: &str, props: &IrProps, type_name: &str) -> alloc
     if props.text_standard_base == 10 && props.text_number_check_policy == BinaryNumberCheckPolicy::Lax
     {
         if explicit_length_unsigned_short_whitespace(type_name, props) {
-            text.chars()
-                .filter(|c| !c.is_whitespace())
-                .collect()
+            // Lax.dfdl.xsd strips internal whitespace; Embedded+textTrimKind=padChar rejects it (DFDL-5-019R).
+            if props.text_trim_kind == TextTrimKind::PadChar {
+                text.trim().to_string()
+            } else {
+                text.chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect()
+            }
         } else {
             text.trim().to_string()
         }
@@ -8074,7 +8075,9 @@ fn reject_internal_whitespace_explicit_field(
         return Ok(());
     }
     if explicit_length_unsigned_short_whitespace(type_name, props) {
-        if props.text_number_check_policy == BinaryNumberCheckPolicy::Lax {
+        if props.text_number_check_policy == BinaryNumberCheckPolicy::Lax
+            && props.text_trim_kind != TextTrimKind::PadChar
+        {
             return Ok(());
         }
         if props.text_number_check_policy == BinaryNumberCheckPolicy::Strict

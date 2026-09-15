@@ -2,6 +2,22 @@ use super::ast::{
     RestrictionBase, SchemaDocument, SimpleBase, TypeDef, TypeName, UnionMember,
 };
 use crate::schema::match_length_pattern;
+use regex_automata::meta::Regex;
+use regex_automata::{Anchored, Input};
+
+fn pattern_matches_whole(text: &str, pat: &str) -> bool {
+    let bytes = text.as_bytes();
+    let pat = pat.trim();
+    if pat.is_empty() {
+        return text.is_empty();
+    }
+    let anchored = format!(r"\A(?:{pat})\z");
+    if let Ok(re) = Regex::new(&anchored) {
+        let input = Input::new(bytes).anchored(Anchored::Yes);
+        return re.is_match(input);
+    }
+    match_length_pattern(bytes, pat).is_some_and(|len| len == bytes.len())
+}
 
 /// Return false when the lexical value is not valid for any member of the union underlying `type_name`.
 pub fn validate_union_membership(
@@ -103,11 +119,9 @@ fn restriction_level_accepts(
         let bytes = text.as_bytes();
         let mut any = false;
         for pat in patterns {
-            if let Some(len) = match_length_pattern(bytes, pat) {
-                if len == bytes.len() {
-                    any = true;
-                    break;
-                }
+            if pattern_matches_whole(text, pat) {
+                any = true;
+                break;
             }
         }
         if !any {

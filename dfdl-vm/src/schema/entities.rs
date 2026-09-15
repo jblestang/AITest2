@@ -1750,6 +1750,8 @@ mod tests {
         assert_eq!(match_length_pattern(b"batcz", "(b|c|h)at"), Some(3));
         assert_eq!(match_length_pattern(b"catx", "(b|c|h)at"), Some(3));
         assert_eq!(match_length_pattern(b"dat", "(b|c|h)at"), None);
+        assert_eq!(match_length_pattern(b"bbb", "a*|bbb+"), Some(3));
+        assert_eq!(match_length_pattern(b"aaaaaaa", "a{0,5}|bbb+"), None);
     }
 
     #[test]

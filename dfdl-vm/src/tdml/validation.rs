@@ -113,35 +113,7 @@ fn walk_particle(
                         return Ok(());
                     }
                     if let Some(ename) = ename {
-                        if detail.contains("facet pattern") {
-                            if full_xerces_style || *kind == ValueKind::String {
-                                errors.push(alloc::format!("Validation Error"));
-                                errors.push(ename.to_string());
-                                errors.push(alloc::format!("pattern"));
-                            } else {
-                                errors.push(alloc::format!("failed facet checks"));
-                                errors.push(alloc::format!("pattern"));
-                            }
-                            if let Some(start) = detail.find('(') {
-                                if let Some(end) = detail.rfind(')') {
-                                    errors.push(detail[start + 1..end].to_string());
-                                }
-                            }
-                            let lex = value_lexical(value, *kind).unwrap_or("");
-                            if full_xerces_style && !lex.is_empty() {
-                                errors.push(alloc::format!("'{lex}'"));
-                                errors.push(alloc::format!("not facet-valid"));
-                                errors.push(alloc::format!("pattern"));
-                                if let Some(start) = detail.find('(') {
-                                    if let Some(end) = detail.rfind(')') {
-                                        errors.push(alloc::format!(
-                                            "'{}'",
-                                            &detail[start + 1..end]
-                                        ));
-                                    }
-                                }
-                            }
-                        } else if detail.contains("failed facet checks") {
+                        if detail.contains("failed facet checks") {
                             let rest = detail
                                 .strip_prefix("failed facet checks due to: ")
                                 .map(str::trim);
@@ -388,7 +360,18 @@ fn walk_particle(
                                     }
                                 }
                             } else if !full_xerces_style {
-                                if rest.is_some_and(|r| {
+                                if rest.is_some_and(|r| r.starts_with("facet pattern")) {
+                                    if type_has_union_members(schema, program, props) {
+                                        errors.push(alloc::format!(
+                                            "failed facet checks due to: facet pattern"
+                                        ));
+                                        errors.push(alloc::format!("ex:{ename}"));
+                                    } else {
+                                        errors.push(alloc::format!(
+                                            "ex:{ename} failed facet checks"
+                                        ));
+                                    }
+                                } else if rest.is_some_and(|r| {
                                     r.starts_with("facet minInclusive")
                                         || r.starts_with("facet maxInclusive")
                                 }) {
@@ -447,6 +430,9 @@ fn walk_particle(
                                         }
                                     }
                                 }
+                            } else if rest.is_some_and(|r| r.starts_with("facet pattern")) {
+                                errors.push(alloc::format!("ex:{ename}"));
+                                errors.push(alloc::format!("not valid"));
                             } else {
                                 errors.push(ename.to_string());
                                 errors.push(alloc::format!("failed facet checks"));
@@ -727,6 +713,43 @@ fn value_lexical_any(value: &DfdlValue, kind: ValueKind) -> Option<alloc::string
         (ValueKind::Integer, DfdlValue::Integer(v)) => Some(v.clone()),
         (ValueKind::Decimal, DfdlValue::Decimal(v)) => Some(v.clone()),
         _ => None,
+    }
+}
+
+fn type_has_union_members(
+    schema: &SchemaDocument,
+    program: &IrProgram,
+    props: &crate::ir::IrProps,
+) -> bool {
+    let Some(type_id) = props.xsd_type else {
+        return false;
+    };
+    let Ok(name) = program.strings.get(type_id) else {
+        return false;
+    };
+    let type_name = TypeName::new(name);
+    let Some(crate::schema::TypeDef::Simple { base, .. }) = schema.resolve_type(&type_name) else {
+        return false;
+    };
+    match base {
+        crate::schema::SimpleBase::Union { .. } => true,
+        crate::schema::SimpleBase::Restriction {
+            base: crate::schema::RestrictionBase::Named(parent),
+            ..
+        } => schema
+            .resolve_type(parent)
+            .and_then(|td| {
+                if let crate::schema::TypeDef::Simple { base: parent_base, .. } = td {
+                    Some(matches!(
+                        parent_base,
+                        crate::schema::SimpleBase::Union { .. }
+                    ))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(false),
+        _ => false,
     }
 }
 

@@ -553,10 +553,21 @@ fn validate_string_facets(text: &str, props: &IrProps, strings: &StringPool) -> 
 }
 
 fn pattern_group_matches(text: &str, or_pattern: &str) -> bool {
+    use regex_automata::meta::Regex;
+    use regex_automata::{Anchored, Input};
     let bytes = text.as_bytes();
-    // Match the full restriction-level pattern (OR branches are already `|` in the
-    // regex). Do not split on `|` — that breaks character classes like `\|`.
-    match_length_pattern(bytes, or_pattern).is_some_and(|len| len == bytes.len())
+    let pat = or_pattern.trim();
+    if pat.is_empty() {
+        return text.is_empty();
+    }
+    // XSD patterns apply to the entire lexical value; `a*|bbb+` must not succeed via `a*`
+    // matching zero characters when the value is `bbb`.
+    let anchored = format!(r"\A(?:{pat})\z");
+    if let Ok(re) = Regex::new(&anchored) {
+        let input = Input::new(bytes).anchored(Anchored::Yes);
+        return re.is_match(input);
+    }
+    match_length_pattern(bytes, pat).is_some_and(|len| len == bytes.len())
 }
 
 fn validate_digit_facets(
