@@ -104,7 +104,9 @@ impl<'a> IrBuilder<'a> {
                 name: root_name.to_string(),
             })?;
 
-        let root = if let Some(builtin) = BuiltinType::from_xsd(root_element.type_name.as_str()) {
+        let root = if let Some(builtin) =
+            builtin_for_element_type_name(&self.schema, &root_element.type_name)
+        {
             let kind = value_kind_from_builtin(builtin);
             let defaults = self.defaults.clone();
             let mut merged =
@@ -226,21 +228,27 @@ impl<'a> IrBuilder<'a> {
     }
 
     fn compile_type(&mut self, type_name: &TypeName, element_props: &DfdlProps) -> Result<u32> {
-        if let Some(BuiltinType::String | BuiltinType::HexBinary) = BuiltinType::from_xsd(type_name.as_str()) {
-            return Err(SchemaError::UnsupportedFeature {
-                feature: alloc::format!("simple type used as root `{type_name:?}`"),
+        if !self.schema.types.contains_key(type_name) {
+            if let Some(BuiltinType::String | BuiltinType::HexBinary) =
+                BuiltinType::from_xsd(type_name.as_str())
+            {
+                return Err(SchemaError::UnsupportedFeature {
+                    feature: alloc::format!("simple type used as root `{type_name:?}`"),
+                }
+                .into());
             }
-            .into());
         }
 
         if let Some(builtin) = BuiltinType::from_xsd(type_name.as_str()) {
-            return Err(SchemaError::UnsupportedFeature {
-                feature: alloc::format!(
-                    "scalar root type `{}` requires an element wrapper",
-                    builtin.xsd_name()
-                ),
+            if !self.schema.types.contains_key(type_name) {
+                return Err(SchemaError::UnsupportedFeature {
+                    feature: alloc::format!(
+                        "scalar root type `{}` requires an element wrapper",
+                        builtin.xsd_name()
+                    ),
+                }
+                .into());
             }
-            .into());
         }
 
         let type_def = self
@@ -335,7 +343,9 @@ impl<'a> IrBuilder<'a> {
                     self.merge_props_full(inherited, &DfdlProps::default(), &element_props)?;
                 validate_text_standard_sibling_order(&merged, prior_element_names, &self.strings)?;
                 let name = self.strings.intern(&element.name);
-                if let Some(builtin) = BuiltinType::from_xsd(element.type_name.as_str()) {
+                if let Some(builtin) =
+                    builtin_for_element_type_name(self.schema, &element.type_name)
+                {
                     let kind = value_kind_from_builtin(builtin);
                     let mut ir_props = merged;
                     apply_type_name_ir_flags(&element.type_name, &mut ir_props);
@@ -456,6 +466,12 @@ impl<'a> IrBuilder<'a> {
                             }
                             if element_props.length.is_none() {
                                 merged_ir.length = child_props.length;
+                            }
+                            if merged_ir.terminator.is_none() {
+                                merged_ir.terminator = child_props.terminator;
+                            }
+                            if merged_ir.initiator.is_none() {
+                                merged_ir.initiator = child_props.initiator;
                             }
                             if element_props.alignment.is_none() {
                                 merged_ir.alignment = child_props.alignment;
@@ -2568,6 +2584,17 @@ fn value_kind_from_simple(schema: &SchemaDocument, base: &SimpleBase) -> ValueKi
         .builtin_for_simple_base(base)
         .map(value_kind_from_builtin)
         .unwrap_or(ValueKind::String)
+}
+
+/// XSD built-in names like `int` must not shadow a user simpleType with the same local name (DFDL-563).
+fn builtin_for_element_type_name(
+    schema: &SchemaDocument,
+    type_name: &TypeName,
+) -> Option<BuiltinType> {
+    if schema.types.contains_key(type_name) {
+        return None;
+    }
+    BuiltinType::from_xsd(type_name.as_str())
 }
 
 fn apply_restriction_facets(
