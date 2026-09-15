@@ -3738,6 +3738,9 @@ fn parse_field_text_number(
             return Ok(trimmed.into());
         }
     }
+    if let Some(zero) = text_standard_zero_rep_match(trimmed, props, strings) {
+        return Ok(zero);
+    }
     let Some(pat_id) = props.text_number_pattern else {
         return Ok(trimmed.into());
     };
@@ -3975,6 +3978,7 @@ fn text_standard_zero_rep_match(
         return None;
     }
     let ic = props.ignore_case;
+    let bytes = trimmed.as_bytes();
     for rep in reps {
         let matches = if ic {
             trimmed.eq_ignore_ascii_case(rep.as_str())
@@ -3983,6 +3987,13 @@ fn text_standard_zero_rep_match(
         };
         if matches {
             return Some("0".into());
+        }
+        if rep.contains('%') {
+            if let Some(n) = crate::schema::match_delimiter_opts(bytes, rep.as_str(), ic) {
+                if n == bytes.len() {
+                    return Some("0".into());
+                }
+            }
         }
     }
     None
@@ -4992,6 +5003,8 @@ pub(crate) fn try_consume_nillable_element_nil(
     props: &IrProps,
     parent_sequence: Option<&IrProps>,
     strings: &StringPool,
+    // When true, empty nil may consume the enclosing sequence separator (complex `/after` nil).
+    empty_nil_at_parent_separator: bool,
 ) -> Result<bool, crate::error::VmError> {
     use crate::error::VmError;
     use crate::schema::NilKind;
@@ -5004,89 +5017,118 @@ pub(crate) fn try_consume_nillable_element_nil(
     ) {
         return Ok(false);
     }
-    let saved = cursor.pos;
     let empty_nil = nil_value_includes_empty(props, strings)?;
-    if let Some(nil_len) = match_nil_literal_prefix(cursor, props, strings)? {
-        cursor.advance(nil_len);
-        if let Some(term_id) = props.terminator {
-            let term = strings.get(term_id)?;
-            if !term.is_empty()
-                && crate::schema::match_delimiter_opts(
-                    &cursor.data[cursor.pos..],
-                    term,
-                    props.ignore_case,
-                )
-                .is_some()
-            {
-                let enc = encoding_name(props, strings).ok();
-                let _ = cursor.consume_delimiter(term, props.ignore_case, enc.as_deref());
-                return Ok(true);
-            }
-        }
-        if props.nil_kind == Some(NilKind::LiteralValue) && nil_len > 0 {
-            return Ok(true);
-        }
-        if empty_nil && nil_len == 0 {
-            // fall through to parent-separator / EOS empty-nil checks below
-        } else {
-            cursor.pos = saved;
-        }
-    }
-    if empty_nil {
-        if let Some(term_id) = props.terminator {
-            let term = strings.get(term_id)?;
-            if !term.is_empty()
-                && crate::schema::match_delimiter_opts(
-                    &cursor.data[cursor.pos..],
-                    term,
-                    props.ignore_case,
-                )
-                .is_some()
-            {
-                let parent_owns = parent_sequence.is_some_and(|parent| {
-                    parent.terminator == Some(term_id)
-                });
-                if parent_owns {
-                    return Ok(true);
-                }
-                let enc = encoding_name(props, strings).ok();
-                let _ = cursor.consume_delimiter(term, props.ignore_case, enc.as_deref());
-                return Ok(true);
-            }
-        }
-        if let Some(parent) = parent_sequence {
-            if let Some(sep_id) = parent.separator {
-                let sep = strings.get(sep_id)?;
-                if !sep.is_empty()
-                    && crate::schema::match_delimiter_opts(
-                        &cursor.data[cursor.pos..],
-                        sep,
-                        parent.ignore_case,
-                    )
-                    .is_some()
-                {
-                    return Ok(true);
-                }
-            }
-            if let Some(term_id) = parent.terminator {
+    loop {
+        let saved = cursor.pos;
+        if let Some(nil_len) = match_nil_literal_prefix(cursor, props, strings)? {
+            cursor.advance(nil_len);
+            if let Some(term_id) = props.terminator {
                 let term = strings.get(term_id)?;
                 if !term.is_empty()
                     && crate::schema::match_delimiter_opts(
                         &cursor.data[cursor.pos..],
                         term,
-                        parent.ignore_case,
+                        props.ignore_case,
                     )
                     .is_some()
                 {
+                    let parent_owns = parent_sequence
+                        .is_some_and(|parent| parent.terminator == Some(term_id));
+                    if !parent_owns {
+                        let enc = encoding_name(props, strings).ok();
+                        let _ = cursor.consume_delimiter(term, props.ignore_case, enc.as_deref());
+                    }
                     return Ok(true);
                 }
             }
+            if props.nil_kind == Some(NilKind::LiteralValue) && nil_len > 0 {
+                return Ok(true);
+            }
+            if empty_nil && nil_len == 0 {
+                // fall through to parent-separator / EOS empty-nil checks below
+            } else {
+                cursor.pos = saved;
+            }
         }
-        if cursor.pos >= cursor.data.len() {
-            return Ok(true);
+        if empty_nil {
+            if let Some(term_id) = props.terminator {
+                let term = strings.get(term_id)?;
+                if !term.is_empty()
+                    && crate::schema::match_delimiter_opts(
+                        &cursor.data[cursor.pos..],
+                        term,
+                        props.ignore_case,
+                    )
+                    .is_some()
+                {
+                    let parent_owns = parent_sequence.is_some_and(|parent| {
+                        parent.terminator == Some(term_id)
+                    });
+                    if parent_owns {
+                        return Ok(true);
+                    }
+                    let enc = encoding_name(props, strings).ok();
+                    let _ = cursor.consume_delimiter(term, props.ignore_case, enc.as_deref());
+                    return Ok(true);
+                }
+            }
+            if let Some(parent) = parent_sequence {
+                if empty_nil_at_parent_separator {
+                    if let Some(sep_id) = parent.separator {
+                        let sep = strings.get(sep_id)?;
+                        if !sep.is_empty()
+                            && crate::schema::match_delimiter_opts(
+                                &cursor.data[cursor.pos..],
+                                sep,
+                                parent.ignore_case,
+                            )
+                            .is_some()
+                        {
+                            let enc = encoding_name(parent, strings).ok();
+                            let _ = cursor.consume_delimiter(
+                                sep,
+                                parent.ignore_case,
+                                enc.as_deref(),
+                            );
+                            return Ok(true);
+                        }
+                    }
+                } else if let Some(sep_id) = parent.separator {
+                    let sep = strings.get(sep_id)?;
+                    if !sep.is_empty()
+                        && crate::schema::match_delimiter_opts(
+                            &cursor.data[cursor.pos..],
+                            sep,
+                            parent.ignore_case,
+                        )
+                        .is_some()
+                    {
+                        let enc = encoding_name(parent, strings).ok();
+                        let _ =
+                            cursor.consume_delimiter(sep, parent.ignore_case, enc.as_deref());
+                        continue;
+                    }
+                }
+                if let Some(term_id) = parent.terminator {
+                    let term = strings.get(term_id)?;
+                    if !term.is_empty()
+                        && crate::schema::match_delimiter_opts(
+                            &cursor.data[cursor.pos..],
+                            term,
+                            parent.ignore_case,
+                        )
+                        .is_some()
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+            if cursor.pos >= cursor.data.len() {
+                return Ok(true);
+            }
         }
+        return Ok(false);
     }
-    Ok(false)
 }
 
 fn match_nil_literal_prefix(
@@ -5100,8 +5142,24 @@ fn match_nil_literal_prefix(
     let mut best: Option<usize> = None;
     let data = &cursor.data[cursor.pos..];
     for alt in alts {
+        if alt.contains('%') {
+            if let Some(len) = crate::schema::match_pattern_opts_for_encoding(
+                data,
+                alt.as_str(),
+                props.ignore_case,
+                None,
+            ) {
+                if len > 0 && best.map(|prev| len > prev).unwrap_or(true) {
+                    best = Some(len);
+                }
+            }
+            continue;
+        }
         let bytes = crate::schema::expand_entities(&alt);
-        let matched = if props.ignore_case && !bytes.is_empty() {
+        if bytes.is_empty() {
+            continue;
+        }
+        let matched = if props.ignore_case {
             data.len() >= bytes.len()
                 && data[..bytes.len()]
                     .iter()

@@ -1155,6 +1155,7 @@ impl<'a> Decoder<'a> {
                             &props,
                             parent_sequence,
                             self.ctx.strings(),
+                            true,
                         )?
                     {
                         return Ok(wrap_named(
@@ -1514,6 +1515,7 @@ impl<'a> Decoder<'a> {
                             &props,
                             parent_sequence,
                             self.ctx.strings(),
+                            false,
                         )?
                     {
                         return Ok(wrap_named(

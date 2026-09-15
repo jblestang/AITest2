@@ -378,7 +378,13 @@ pub fn parse_text_standard_zero_rep_list(raw: &str) -> alloc::vec::Vec<String> {
         return Vec::new();
     }
     raw.split_whitespace()
-        .map(|t| expand_entities_str(t))
+        .map(|t| {
+            if t.contains('%') {
+                t.to_string()
+            } else {
+                expand_entities_str(t)
+            }
+        })
         .collect()
 }
 
@@ -2519,6 +2525,13 @@ mod tests {
         assert_eq!(super::match_pattern(b"*x", "*"), Some(1));
         assert_eq!(match_delimiter(b"*x", "*"), Some(1));
         assert_eq!(match_delimiter(b"*", "*"), Some(1));
+    }
+
+    #[test]
+    fn text_standard_zero_rep_z_wsp_pattern() {
+        let pat = "Z%WSP*;Z%WSP*;Z";
+        let doc = b"Z Z Z";
+        assert_eq!(match_delimiter_opts(doc, pat, false), Some(doc.len()));
     }
 
     #[test]
