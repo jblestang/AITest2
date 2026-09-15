@@ -1711,6 +1711,9 @@ impl<'a> Decoder<'a> {
                         break;
                     }
                     if (items.len() as u64) >= min {
+                        if is_element_absent(&e) {
+                            continue;
+                        }
                         if self.try_consume_treat_as_absent_separator_on_error(
                             props,
                             parent_sequence,
@@ -2156,6 +2159,34 @@ impl<'a> Decoder<'a> {
                                         enc.as_deref(),
                                         None,
                                     )?;
+                                    if bytes.is_empty()
+                                        && self.inner_sequence_first_particle_min(*child_id)? == 0
+                                    {
+                                        let mut consumed_parent_postfix_sep = false;
+                                        if let Some(n) =
+                                            crate::schema::match_delimiter_opts_for_encoding(
+                                                &cursor.data[cursor.pos..],
+                                                sep,
+                                                parent.ignore_case,
+                                                enc.as_deref(),
+                                            )
+                                        {
+                                            if n > 0 {
+                                                let _ = cursor.consume_delimiter(
+                                                    sep,
+                                                    parent.ignore_case,
+                                                    enc.as_deref(),
+                                                );
+                                                consumed_parent_postfix_sep =
+                                                    parent.separator_position
+                                                        == SeparatorPosition::Postfix;
+                                            }
+                                        }
+                                        if consumed_parent_postfix_sep {
+                                            self.postfix_bounded_parent_sep_consumed.set(true);
+                                        }
+                                        return Err(VmError::ElementAbsent.into());
+                                    }
                                     let mut consumed_parent_postfix_sep = false;
                                     let sep_pos_before = cursor.pos;
                                     if let Some(n) = crate::schema::match_delimiter_opts_for_encoding(
@@ -3104,6 +3135,25 @@ impl<'a> Decoder<'a> {
                 .map(|id| self.ctx.strings().get(id).map(|s| s.to_string()))
                 .transpose()?),
             _ => Ok(None),
+        }
+    }
+
+    fn inner_sequence_first_particle_min(&self, child_id: u32) -> Result<u64> {
+        let node_id = match self.ctx.program.node(child_id)? {
+            IrNode::Element { child: Some(id), .. } => *id,
+            _ => child_id,
+        };
+        match self.ctx.program.node(node_id)? {
+            IrNode::Sequence { children, .. } => {
+                let Some(&first) = children.first() else {
+                    return Ok(0);
+                };
+                match self.ctx.program.node(first)? {
+                    IrNode::Element { props, .. } => Ok(props.occurs_min),
+                    _ => Ok(1),
+                }
+            }
+            _ => Ok(1),
         }
     }
 
