@@ -856,7 +856,7 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 consume_element_trailing_framing(cursor, props)?;
-                self.validate_particle_discriminator(props)?;
+                self.validate_particle_discriminator(props, "")?;
                 Ok(DfdlValue::Sequence(crate::value::SequenceValue {
                     fields: map,
                     meta: crate::value::SequenceMeta {
@@ -1081,7 +1081,7 @@ impl<'a> Decoder<'a> {
             }
             return Err(e);
         }
-        self.validate_particle_discriminator(props)?;
+        self.validate_particle_discriminator(props, "")?;
         Ok(DfdlValue::Sequence(crate::value::SequenceValue {
             fields: map,
             meta: crate::value::SequenceMeta {
@@ -1585,7 +1585,7 @@ impl<'a> Decoder<'a> {
             }
         }
         consume_element_trailing_framing(cursor, props)?;
-        self.validate_particle_discriminator(props)?;
+        self.validate_particle_discriminator(props, "")?;
         Ok(DfdlValue::Sequence(crate::value::SequenceValue {
             fields: map,
             meta: crate::value::SequenceMeta {
@@ -1628,8 +1628,12 @@ impl<'a> Decoder<'a> {
             .into());
         };
         let mut one_shot = props.clone();
-        one_shot.occurs_min = 0;
         one_shot.occurs_max = Some(1);
+        one_shot.occurs_min = if self.initiator_present_at_cursor(cursor, &props)? {
+            1
+        } else {
+            0
+        };
         self.decode_element_occurrences(
             node_id,
             &one_shot,
@@ -1798,7 +1802,7 @@ impl<'a> Decoder<'a> {
                     FramingExtraOccurrences::Double => max = max.saturating_mul(2),
                     FramingExtraOccurrences::None => {}
                 }
-            } else if max != u64::MAX {
+            } else if max > 1 {
                 // DFDL-5-062R: parsed count kind ignores maxOccurs during parse (post-decode validation only).
                 max = u64::MAX;
             }
@@ -2879,7 +2883,7 @@ impl<'a> Decoder<'a> {
                             .borrow_mut()
                             .insert(field_name, delim_meta);
                     }
-                    self.validate_particle_discriminator(&props)?;
+                    self.validate_particle_discriminator(&props, value.as_str().unwrap_or(""))?;
                     Ok(value)
                 }
             }
@@ -3321,13 +3325,21 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    fn validate_particle_discriminator(&self, props: &IrProps) -> Result<()> {
+    fn validate_particle_discriminator(&self, props: &IrProps, dot: &str) -> Result<()> {
         let Some(id) = props.discriminator_test else {
             return Ok(());
         };
         let expr = self.ctx.strings().get(id)?;
-        if crate::schema::eval_discriminator_expression(expr, "").unwrap_or(false) {
+        if crate::schema::eval_discriminator_expression(expr, dot).unwrap_or(false) {
             return Ok(());
+        }
+        if let Some(msg_id) = props.facet_assert_message {
+            if let Ok(msg) = self.ctx.strings().get(msg_id) {
+                return Err(VmError::InvalidValue {
+                    message: msg.to_string(),
+                }
+                .into());
+            }
         }
         Err(VmError::InvalidValue {
             message: "Assertion test failed".into(),
