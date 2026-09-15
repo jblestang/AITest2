@@ -792,7 +792,14 @@ impl SchemaDocument {
             && props.format_ref.is_none();
         let base_length = out.length;
         out = crate::schema::parser::merge_dfdl_props(out, props.clone());
-        if overlay_only_default_length {
+        // Schema-file format default length (injected at parse) must not override restriction-chain
+        // length from a format ref in an imported/included schema (long_chain_04 / format_03).
+        let restore_chain_length = props.length_kind.is_none()
+            && props.format_ref.is_none()
+            && base_length.is_some()
+            && props.length.is_some()
+            && props.length != base_length;
+        if overlay_only_default_length || restore_chain_length {
             if let Some(len) = base_length {
                 out.length = Some(len);
             }
