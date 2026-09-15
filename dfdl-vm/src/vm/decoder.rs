@@ -308,6 +308,20 @@ impl<'a> Decoder<'a> {
                         child_stops,
                     ) {
                         Ok(child_value) => {
+                            if let Ok(IrNode::Element { props: cp, .. }) =
+                                self.ctx.program.node(child)
+                            {
+                                if cp.occurs_min == 0
+                                    && is_suppressible_empty_representation(
+                                        &child_value,
+                                        cp,
+                                        self.ctx.strings(),
+                                    )?
+                                {
+                                    prev_absent_or_empty = true;
+                                    continue;
+                                }
+                            }
                             prev_absent_or_empty = child_element_props
                                 .map(|cp| {
                                     if cp.length_kind == LengthKind::Explicit

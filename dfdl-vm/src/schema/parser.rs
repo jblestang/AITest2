@@ -172,8 +172,16 @@ impl<'a> XsdParser<'a> {
         for (k, v) in other.scoped_schema_warnings {
             self.doc.scoped_schema_warnings.entry(k).or_default().extend(v);
         }
-        self.doc.format_defaults.props =
-            merge_dfdl_props(self.doc.format_defaults.props.clone(), other.format_defaults.props);
+        self.doc.format_defaults.props = match kind {
+            SchemaMergeKind::Include => merge_included_format_defaults(
+                self.doc.format_defaults.props.clone(),
+                other.format_defaults.props,
+            ),
+            SchemaMergeKind::Import => merge_dfdl_props(
+                self.doc.format_defaults.props.clone(),
+                other.format_defaults.props,
+            ),
+        };
         self.doc.format_defaults.props.calendar_time_zone_defined = false;
         Ok(())
     }
@@ -1849,6 +1857,25 @@ fn merge_occurs(props: &mut DfdlProps, attrs: &BTreeMap<String, String>) {
             props.occurs_max = Some(v);
         }
     }
+}
+
+/// Merge format defaults from an included/imported schema without letting explicit `""`
+/// delimiter properties in the included file clobber non-empty values on the including schema.
+fn merge_included_format_defaults(base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
+    let clear_init = overlay.initiator.as_deref().is_some_and(str::is_empty);
+    let clear_term = overlay.terminator.as_deref().is_some_and(str::is_empty);
+    let clear_sep = overlay.separator.as_deref().is_some_and(str::is_empty);
+    let mut merged = merge_dfdl_props(base.clone(), overlay);
+    if clear_init {
+        merged.initiator = base.initiator;
+    }
+    if clear_term {
+        merged.terminator = base.terminator;
+    }
+    if clear_sep {
+        merged.separator = base.separator;
+    }
+    merged
 }
 
 pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {
