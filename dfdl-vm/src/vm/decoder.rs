@@ -102,6 +102,8 @@ pub struct Decoder<'a> {
     field_delimiters: RefCell<BTreeMap<String, FieldDelimiterMeta>>,
     /// Previous sibling `dfdl:bitOrder` within the innermost open sequence (runtime SDE).
     seq_bit_order: RefCell<Option<BitOrder>>,
+    /// Parent postfix separator already consumed by separator-bounded implicit complex decode.
+    parent_postfix_sep_consumed: RefCell<bool>,
 }
 
 impl<'a> Decoder<'a> {
@@ -116,6 +118,7 @@ impl<'a> Decoder<'a> {
             enclosing_names: RefCell::new(Vec::new()),
             field_delimiters: RefCell::new(BTreeMap::new()),
             seq_bit_order: RefCell::new(None),
+            parent_postfix_sep_consumed: RefCell::new(false),
         }
     }
 
@@ -258,6 +261,7 @@ impl<'a> Decoder<'a> {
                 let mut separator_alts = Vec::new();
                 let mut field_delim_meta = BTreeMap::new();
                 let mut prev_absent_or_empty = false;
+                let mut inter_child_sep_consumed_by_prev = false;
                 for (idx, &child) in children.iter().enumerate() {
                     let child_has_following = self.following_sibling_consumes_input(children, idx);
                     let child_element_props = match self.ctx.program.node(child) {
@@ -283,7 +287,10 @@ impl<'a> Decoder<'a> {
                             should_suppress_decode_infix_separator(props, cp, prev_absent_or_empty)
                         })
                         .unwrap_or(false);
-                    let sep_alt = if suppress_sep || !self.particle_consumes_input(child) {
+                    let sep_alt = if inter_child_sep_consumed_by_prev {
+                        inter_child_sep_consumed_by_prev = false;
+                        None
+                    } else if suppress_sep || !self.particle_consumes_input(child) {
                         None
                     } else {
                         self.consume_separator(
@@ -359,6 +366,9 @@ impl<'a> Decoder<'a> {
                                 );
                             }
                             insert_child(&mut map, child, child_value, self.ctx.program)?;
+                            if self.implicit_complex_consumed_parent_postfix(child, props)? {
+                                inter_child_sep_consumed_by_prev = true;
+                            }
                             if let IrNode::Element { name, .. } = self.ctx.program.node(child)? {
                                 let key = self.ctx.strings().get(*name)?.to_string();
                                 if let Some(meta) = self.field_delimiters.borrow_mut().remove(&key) {
@@ -602,6 +612,7 @@ impl<'a> Decoder<'a> {
         stop_sequences: &[&IrProps],
     ) -> Result<DfdlValue> {
         validate_unbounded_wsp_star_terminator(props, self.ctx.strings())?;
+        *self.parent_postfix_sep_consumed.borrow_mut() = false;
 
         let mut min = props.occurs_min;
         if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
@@ -666,9 +677,14 @@ impl<'a> Decoder<'a> {
                 }
             }
             let before_occurrence_sep = cursor.clone();
-            if !items.is_empty() {
+            if !items.is_empty()
+                && !parent_sequence.is_some_and(|p| {
+                    p.separator_position == SeparatorPosition::Postfix
+                })
+            {
                 // Always try: delimited fields may defer enclosing consume, leaving the
                 // occurrence separator at the cursor; if already consumed, this is a no-op.
+                // Postfix separators are consumed after each occurrence (below), not before the next.
                 self.consume_occurrence_separator(
                     parent_sequence,
                     Some(props),
@@ -1172,6 +1188,12 @@ impl<'a> Decoder<'a> {
                                             parent.ignore_case,
                                             enc.as_deref(),
                                         );
+                                        if parent.separator_position
+                                            == SeparatorPosition::Postfix
+                                        {
+                                            *self.parent_postfix_sep_consumed.borrow_mut() =
+                                                true;
+                                        }
                                     }
                                     let mut sub = Cursor::new(&bytes);
                                     let scope = bytes.len();
@@ -1539,6 +1561,10 @@ impl<'a> Decoder<'a> {
         items: Option<&[DfdlValue]>,
         cursor: &mut Cursor<'_>,
     ) -> Result<()> {
+        if *self.parent_postfix_sep_consumed.borrow() {
+            *self.parent_postfix_sep_consumed.borrow_mut() = false;
+            return Ok(());
+        }
         let Some(props) = parent_sequence else {
             return Ok(());
         };
@@ -1550,6 +1576,7 @@ impl<'a> Decoder<'a> {
         let require = match (item_props, items) {
             (Some(ip), Some(items))
                 if !items.is_empty()
+                    && props.separator_position != SeparatorPosition::Postfix
                     && ip.occurs_count_kind == OccursCountKind::Parsed
                     && (pat.contains('\n')
                         || pat.trim() == "%NL;"
@@ -1806,6 +1833,40 @@ impl<'a> Decoder<'a> {
                 .transpose()?),
             _ => Ok(None),
         }
+    }
+
+    /// True when [`decode_single_element`] reads an implicit-length complex child in a
+    /// sub-buffer bounded by (and consuming) the parent sequence's postfix separator.
+    fn implicit_complex_consumed_parent_postfix(
+        &self,
+        child_id: u32,
+        parent: &IrProps,
+    ) -> Result<bool> {
+        if !matches!(
+            parent.separator_position,
+            SeparatorPosition::Postfix
+        ) {
+            return Ok(false);
+        }
+        let Some(sep_id) = parent.separator else {
+            return Ok(false);
+        };
+        let Ok(IrNode::Element {
+            props,
+            child: Some(inner),
+            ..
+        }) = self.ctx.program.node(child_id)
+        else {
+            return Ok(false);
+        };
+        if props.length_kind != LengthKind::Implicit {
+            return Ok(false);
+        }
+        let parent_sep = self.ctx.strings().get(sep_id)?;
+        if self.inner_sequence_separator(child_id)?.as_deref() == Some(parent_sep) {
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     /// Enumeration-only facet checks for choice disambiguation (DFDL-2-019R).
