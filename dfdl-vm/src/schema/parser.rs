@@ -965,6 +965,7 @@ impl<'a> XsdParser<'a> {
                             return Ok(ComplexContent::Sequence(SequenceDecl {
                                 props: DfdlProps::default(),
                                 particles: alloc::vec![Particle::GroupRef(gr)],
+                                had_markup_before_particles: false,
                             }));
                         }
                         "annotation" => self.skip_element_body("annotation")?,
@@ -1084,9 +1085,14 @@ impl<'a> XsdParser<'a> {
             return Ok(SequenceDecl {
                 props,
                 particles: Vec::new(),
+                had_markup_before_particles: false,
             });
         }
 
+        let had_markup_before_particles = matches!(
+            self.reader.peek(),
+            Ok(XmlEvent::StartElement { name, .. }) if name.local_name == "annotation"
+        );
         props = self.parse_inline_content(
             props,
             &["element", "sequence", "choice", "group", "annotation"],
@@ -1136,7 +1142,11 @@ impl<'a> XsdParser<'a> {
             }
         }
 
-        Ok(SequenceDecl { props, particles })
+        Ok(SequenceDecl {
+            props,
+            particles,
+            had_markup_before_particles,
+        })
     }
 
     fn parse_choice(&mut self, attrs: BTreeMap<String, String>) -> Result<ChoiceDecl> {
@@ -2090,6 +2100,18 @@ impl<'a> XsdParser<'a> {
                 }
             }
             return Ok(props);
+        }
+        if local == "sequence" {
+            if self.reader.peek_is_end("sequence")? {
+                self.expect_end_local("sequence")?;
+                return Ok(props);
+            }
+            return Err(crate::error::SchemaError::InvalidProperty {
+                message:
+                    "Schema Definition Error: A sequence with hiddenGroupRef cannot have children."
+                        .into(),
+            }
+            .into());
         }
         if self.reader.peek_is_end(local)? {
             self.expect_end_local(local)?;
@@ -5176,5 +5198,29 @@ mod tests {
 </xs:schema>"#;
         let doc = parse_schema(xsd).expect("annotated group parses");
         assert!(doc.groups.contains_key("sequenceGroup"));
+    }
+
+    #[test]
+    fn hidden_group_ref_sequence_with_children_is_sde() {
+        let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/" xmlns:ex="http://example.com">
+  <xs:group name="hg">
+    <xs:sequence>
+      <xs:element name="f" type="xs:int"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="e">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:sequence dfdl:hiddenGroupRef="ex:hg">
+          <xs:element name="x" type="xs:int"/>
+        </xs:sequence>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"#;
+        let err = parse_schema(xsd).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("cannot have children"), "{msg}");
     }
 }

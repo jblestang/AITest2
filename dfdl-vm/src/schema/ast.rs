@@ -497,6 +497,8 @@ pub struct ElementDecl {
 pub struct SequenceDecl {
     pub props: DfdlProps,
     pub particles: Vec<Particle>,
+    /// True when `xs:annotation` appeared before model-group particles (hiddenGroupRef SDE).
+    pub had_markup_before_particles: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

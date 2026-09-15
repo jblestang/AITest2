@@ -670,6 +670,16 @@ impl<'a> IrBuilder<'a> {
                 }
             }
             Particle::Sequence(sequence) => {
+                if sequence.props.hidden_group_ref.is_some()
+                    && (!sequence.particles.is_empty() || sequence.had_markup_before_particles)
+                {
+                    return Err(SchemaError::InvalidProperty {
+                        message:
+                            "Schema Definition Error: A sequence with hiddenGroupRef cannot have children."
+                                .into(),
+                    }
+                    .into());
+                }
                 validate_model_group_occurs("sequence", &sequence.props)?;
                 let ir_props = self.merge_props_full(inherited, &sequence.props, &DfdlProps::default())?;
                 let child_inherited =
@@ -830,6 +840,16 @@ impl<'a> IrBuilder<'a> {
     fn compile_complex(&mut self, content: &ComplexContent, type_base: &IrProps) -> Result<u32> {
         match content {
             ComplexContent::Sequence(sequence) => {
+                if sequence.props.hidden_group_ref.is_some()
+                    && (!sequence.particles.is_empty() || sequence.had_markup_before_particles)
+                {
+                    return Err(SchemaError::InvalidProperty {
+                        message:
+                            "Schema Definition Error: A sequence with hiddenGroupRef cannot have children."
+                                .into(),
+                    }
+                    .into());
+                }
                 if let Some(ref href) = sequence.props.hidden_group_ref {
                     if href.is_empty() {
                         return Err(SchemaError::InvalidProperty {

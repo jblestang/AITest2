@@ -1,8 +1,8 @@
 use crate::error::SchemaError;
 use crate::length_validate::{DaffodilTunables, InvalidRestrictionPolicy};
 use crate::schema::{
-    BuiltinType, ComplexContent, ElementDecl, GroupDecl, Particle, RestrictionBase, SchemaDocument,
-    SimpleBase, TypeDef, TypeName,
+    BuiltinType, ComplexContent, ElementDecl, GroupDecl, LengthKind, Particle, RestrictionBase,
+    SchemaDocument, SimpleBase, TypeDef, TypeName,
 };
 use alloc::collections::{BTreeSet, VecDeque};
 
@@ -81,6 +81,9 @@ fn validate_reachable_complex_type_model_groups(
     root: &str,
 ) -> Result<(), SchemaError> {
     const NO_MODEL_GROUP: &str = "Schema Definition Error: A complex type must have exactly one model-group element child which is a sequence, choice, or group reference.";
+    let root_implicit_length = crate::schema::get_global_element(schema, root)
+        .and_then(|ge| ge.props.length_kind)
+        == Some(LengthKind::Implicit);
     let mut seen = BTreeSet::new();
     let mut type_queue = VecDeque::new();
     if let Some(ge) = crate::schema::get_global_element(schema, root) {
@@ -107,7 +110,8 @@ fn validate_reachable_complex_type_model_groups(
             ComplexContent::Sequence(seq)
                 if seq.particles.is_empty()
                     && seq.props.hidden_group_ref.is_none()
-                    && !tn.as_str().starts_with("__inline_") =>
+                    && !tn.as_str().starts_with("__inline_")
+                    && !root_implicit_length =>
             {
                 return Err(SchemaError::InvalidProperty {
                     message: "Schema Definition Error".into(),
