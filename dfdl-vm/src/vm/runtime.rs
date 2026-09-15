@@ -9426,7 +9426,7 @@ pub(crate) fn read_simple(
                 let ctx = field_name.unwrap_or("element");
                 return Err(VmError::InvalidValue {
                     message: alloc::format!(
-                        "Parse Error: Init('{pat}') - {ctx}: Delimiter not found!\nWas looking for ({pat}) but found \"{found_display}\" instead"
+                        "Parse Error: Init('{pat}') not found. Initiator '{pat}' not found. {ctx}: Delimiter not found!\nWas looking for ({pat}) but found \"{found_display}\" instead"
                     ),
                 });
             };

@@ -72,13 +72,29 @@ pub fn validate_compiled_schema(
     validate_unique_particle_attribution(schema)?;
     validate_sequence_separator_encoding(schema, root)?;
     validate_discriminators_in_reachable_schema(schema, root)?;
-    validate_global_complex_type_model_groups(schema)?;
+    validate_reachable_complex_type_model_groups(schema, root)?;
     Ok(())
 }
 
-fn validate_global_complex_type_model_groups(schema: &SchemaDocument) -> Result<(), SchemaError> {
+fn validate_reachable_complex_type_model_groups(
+    schema: &SchemaDocument,
+    root: &str,
+) -> Result<(), SchemaError> {
     const NO_MODEL_GROUP: &str = "Schema Definition Error: A complex type must have exactly one model-group element child which is a sequence, choice, or group reference.";
-    for (type_name, td) in &schema.types {
+    let mut seen = BTreeSet::new();
+    let mut type_queue = VecDeque::new();
+    if let Some(ge) = crate::schema::get_global_element(schema, root) {
+        if BuiltinType::from_xsd(ge.type_name.as_str()).is_none() {
+            type_queue.push_back(ge.type_name.clone());
+        }
+    }
+    while let Some(tn) = type_queue.pop_front() {
+        if !seen.insert(tn.clone()) {
+            continue;
+        }
+        let Some(td) = schema.resolve_type(&tn) else {
+            continue;
+        };
         let TypeDef::Complex { content, .. } = td else {
             continue;
         };
@@ -91,7 +107,7 @@ fn validate_global_complex_type_model_groups(schema: &SchemaDocument) -> Result<
             ComplexContent::Sequence(seq)
                 if seq.particles.is_empty()
                     && seq.props.hidden_group_ref.is_none()
-                    && !type_name.as_str().starts_with("__inline_") =>
+                    && !tn.as_str().starts_with("__inline_") =>
             {
                 return Err(SchemaError::InvalidProperty {
                     message: "Schema Definition Error".into(),
@@ -99,6 +115,7 @@ fn validate_global_complex_type_model_groups(schema: &SchemaDocument) -> Result<
             }
             _ => {}
         }
+        enqueue_particle_types(schema, content, &mut type_queue);
     }
     Ok(())
 }

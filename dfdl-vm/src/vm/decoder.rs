@@ -935,12 +935,22 @@ impl<'a> Decoder<'a> {
                 // Always try: delimited fields may defer enclosing consume, leaving the
                 // occurrence separator at the cursor; if already consumed, this is a no-op.
                 // Postfix separators are consumed after each occurrence (below), not before the next.
-                self.consume_occurrence_separator(
+                if let Err(e) = self.consume_occurrence_separator(
                     parent_sequence,
                     Some(props),
                     Some(items.as_slice()),
                     cursor,
-                )?;
+                ) {
+                    if populate_errors && (items.len() as u64) < min {
+                        if let Some(path) = populate_path.as_deref() {
+                            return Err(
+                                populate_failed_error(path, items.len() as u64 + 1, &e.to_string())
+                                    .into(),
+                            );
+                        }
+                    }
+                    return Err(e);
+                }
             }
             let require_delimiter = has_following_sibling;
             let saved = cursor.clone();
@@ -1901,6 +1911,24 @@ impl<'a> Decoder<'a> {
         };
         let pat = self.ctx.strings().get(id)?;
         let enc = encoding_name(props, self.ctx.strings()).ok();
+        if let (Some(ip), Some(items)) = (item_props, items) {
+            if !items.is_empty()
+                && props.separator_position != SeparatorPosition::Postfix
+                && matches!(
+                    ip.occurs_count_kind,
+                    OccursCountKind::Implicit | OccursCountKind::Fixed
+                )
+                && (items.len() as u64) < ip.occurs_min
+            {
+                if cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+                    return Ok(());
+                }
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("Separator '{pat}' not found"),
+                }
+                .into());
+            }
+        }
         let require = match (item_props, items) {
             (Some(ip), Some(items))
                 if !items.is_empty()

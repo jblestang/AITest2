@@ -817,6 +817,7 @@ impl<'a> IrBuilder<'a> {
         match content {
             ComplexContent::Sequence(sequence) => {
                 validate_model_group_occurs("sequence", &sequence.props)?;
+                validate_implicit_unbounded_in_sequence(&sequence.particles, false)?;
                 let mut ir_props = self.merge_props_full(
                     type_base,
                     &sequence.props,
