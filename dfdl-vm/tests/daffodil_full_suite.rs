@@ -1,7 +1,8 @@
 //! Full Daffodil TDML conformance harness across all vendored sections.
 //!
 //! - `daffodil_section12_length_kind_regression_gate` — CI gate (305 cases, must pass)
-//! - `daffodil_full_suite_report` — baseline report for all sections (ignored, slow)
+//! - `daffodil_full_suite_report` — baseline report for all sections (ignored; may stack-overflow)
+//! - `section_compliance_report` + `scripts/run-compliance-by-section.sh` — per-bucket scans (preferred)
 use dfdl_vm::tdml::{
     parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
     TdmlSuite,
