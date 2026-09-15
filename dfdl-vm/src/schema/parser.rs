@@ -2039,9 +2039,20 @@ impl<'a> XsdParser<'a> {
             if self.reader.peek_is_end(local)? {
                 self.expect_end_local(local)?;
             } else {
+                let mut scoped = self
+                    .annotation_prefix_overrides
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| self.doc.namespace_prefixes.clone());
+                collect_namespace_prefixes(&attrs, &mut scoped);
                 let test = self.read_simple_element_text(local)?;
                 if local == "discriminator" {
-                    props.discriminator_test = Some(test.trim().to_string());
+                    let trimmed = test.trim().to_string();
+                    crate::schema_validate::validate_discriminator_xpath_prefixes(&trimmed, &scoped)
+                        .map_err(|e| ParseError::InvalidXml {
+                            message: e.to_string(),
+                        })?;
+                    props.discriminator_test = Some(trimmed);
                 }
                 apply_dfdl_assert_test(&mut props, test.trim());
             }
@@ -2435,6 +2446,50 @@ fn merge_included_format_defaults(base: DfdlProps, overlay: DfdlProps) -> DfdlPr
         merged.separator = base.separator;
     }
     merged
+}
+
+/// Apply schema `dfdl:format` defaults from a global element declaration without
+/// clobbering explicit element length/encoding overrides.
+pub(crate) fn merge_global_element_format_context(base: &mut DfdlProps, ctx: &DfdlProps) {
+    if base.initiator.is_none() {
+        base.initiator = ctx
+            .initiator
+            .clone()
+            .filter(|s| !s.is_empty());
+    }
+    if base.terminator.is_none() {
+        base.terminator = ctx
+            .terminator
+            .clone()
+            .filter(|s| !s.is_empty());
+    }
+    if base.separator.is_none() {
+        base.separator = ctx
+            .separator
+            .clone()
+            .filter(|s| !s.is_empty());
+    }
+    if base.encoding.is_none() {
+        base.encoding = ctx.encoding.clone();
+    }
+    if base.representation.is_none() {
+        base.representation = ctx.representation;
+    }
+    if base.separator_position.is_none() {
+        base.separator_position = ctx.separator_position;
+    }
+    if base.separator_suppression_policy.is_none() {
+        base.separator_suppression_policy = ctx.separator_suppression_policy;
+    }
+    if base.ignore_case.is_none() {
+        base.ignore_case = ctx.ignore_case;
+    }
+    if base.text_trim_kind.is_none() {
+        base.text_trim_kind = ctx.text_trim_kind;
+    }
+    if base.initiated_content.is_none() {
+        base.initiated_content = ctx.initiated_content;
+    }
 }
 
 pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {

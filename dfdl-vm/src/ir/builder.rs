@@ -239,6 +239,19 @@ impl<'a> IrBuilder<'a> {
             variables: self.schema.variables.clone(),
         };
         validate_program_sequence_bit_orders(&program)?;
+        for node in &program.nodes {
+            if let IrNode::Element { props, .. } = node {
+                if let Some(id) = props.discriminator_test {
+                    let test = program.strings.get(id).map_err(|e| SchemaError::InvalidProperty {
+                        message: e.to_string(),
+                    })?;
+                    crate::schema_validate::validate_discriminator_xpath_prefixes(
+                        test,
+                        &self.schema.namespace_prefixes,
+                    )?;
+                }
+            }
+        }
         Ok(program)
     }
 

@@ -73,6 +73,9 @@ impl DfdlSpec {
 
     /// Convenience: decode bytes using a fresh decoder instance.
     pub fn decode(&self, input: &[u8]) -> Result<DfdlValue> {
+        if let Some(msg) = namespace_entity_limit_error(&self.schema, &self.program.root_element) {
+            return Err(crate::error::VmError::InvalidValue { message: msg }.into());
+        }
         self.decoder().decode(input)
     }
 
@@ -82,7 +85,23 @@ impl DfdlSpec {
         input: &[u8],
         frame_bits: Option<usize>,
     ) -> Result<DfdlValue> {
+        if let Some(msg) = namespace_entity_limit_error(&self.schema, &self.program.root_element) {
+            return Err(crate::error::VmError::InvalidValue { message: msg }.into());
+        }
         self.decoder().decode_with_bit_limit(input, frame_bits, None)
+    }
+
+    pub fn decode_with_bit_limit_and_transmission(
+        &self,
+        input: &[u8],
+        frame_bits: Option<usize>,
+        transmission_bit_order: Option<crate::schema::BitOrder>,
+    ) -> Result<DfdlValue> {
+        if let Some(msg) = namespace_entity_limit_error(&self.schema, &self.program.root_element) {
+            return Err(crate::error::VmError::InvalidValue { message: msg }.into());
+        }
+        self.decoder()
+            .decode_with_bit_limit(input, frame_bits, transmission_bit_order)
     }
 
     /// Convenience: encode a value using a fresh encoder instance.
@@ -105,6 +124,24 @@ impl DfdlSpec {
             .encoder_with_config(config)
             .encode_with_bit_count(value, &mut out)?;
         Ok((out, bit_count))
+    }
+}
+
+pub(crate) fn namespace_entity_limit_error(
+    schema: &SchemaDocument,
+    root: &str,
+) -> Option<String> {
+    const MAX_ENTITY_PREFIX_LEN: usize = 5248;
+    let ge = crate::schema::get_global_element(schema, root)?;
+    let q = ge.type_xsd_qname.as_ref()?;
+    let prefix = q.split_once(':')?.0;
+    if prefix.len() >= MAX_ENTITY_PREFIX_LEN {
+        Some(alloc::format!(
+            "length of entity {len}, 5,248 exceeds limit",
+            len = prefix.len()
+        ))
+    } else {
+        None
     }
 }
 

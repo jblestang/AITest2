@@ -70,6 +70,7 @@ pub fn validate_compiled_schema(
     validate_invalid_restrictions(schema, root, tunables)?;
     validate_max_hex_binary_length(schema, root, tunables)?;
     validate_unique_particle_attribution(schema)?;
+    validate_sequence_separator_encoding(schema, root)?;
     Ok(())
 }
 
@@ -562,6 +563,234 @@ fn enqueue_particle(schema: &SchemaDocument, particle: &Particle, queue: &mut Ve
             }
         }
     }
+}
+
+const XPATH_FUNCTIONS_NS: &str = "http://www.w3.org/2005/xpath-functions";
+
+pub fn validate_discriminator_xpath_prefixes(
+    test: &str,
+    prefix_map: &alloc::collections::BTreeMap<String, String>,
+) -> Result<(), SchemaError> {
+    if !test.contains("fn:") {
+        return Ok(());
+    }
+    let bound = prefix_map
+        .get("fn")
+        .is_some_and(|uri| uri == XPATH_FUNCTIONS_NS);
+    if !bound {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Prefix 'fn' has not been declared".into(),
+        });
+    }
+    Ok(())
+}
+
+fn effective_encoding_name(props: &crate::schema::DfdlProps) -> Option<&str> {
+    props.encoding.as_deref()
+}
+
+fn effective_length_kind(
+    props: &crate::schema::DfdlProps,
+    inherited: &crate::schema::DfdlProps,
+) -> crate::schema::LengthKind {
+    props
+        .length_kind
+        .or(inherited.length_kind)
+        .unwrap_or(crate::schema::LengthKind::Delimited)
+}
+
+fn encodings_compatible_for_delimiter_scan(a: &str, b: &str) -> bool {
+    use crate::vm::encoding::normalize_encoding_name;
+    match (
+        normalize_encoding_name(a),
+        normalize_encoding_name(b),
+    ) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.eq_ignore_ascii_case(b),
+    }
+}
+
+fn validate_sequence_separator_encoding(schema: &SchemaDocument, root: &str) -> Result<(), SchemaError> {
+    let Some(ge) = crate::schema::get_global_element(schema, root) else {
+        return Ok(());
+    };
+    let mut queue = VecDeque::new();
+    if let Some(td) = schema.resolve_type(&ge.type_name) {
+        if let TypeDef::Complex { content, .. } = td {
+            let inherited = schema.format_defaults.props.clone();
+            enqueue_complex_content(schema, content, &inherited, &mut queue);
+        }
+    }
+    while let Some((particles, inherited)) = queue.pop_front() {
+        for seq in sequence_groups_in_particles(&particles) {
+            validate_one_sequence_separator_encoding(
+                schema,
+                &seq.props,
+                &seq.particles,
+                &inherited,
+            )?;
+        }
+        for p in &particles {
+            enqueue_particle_with_inherited(schema, p, &inherited, &mut queue);
+        }
+    }
+    Ok(())
+}
+
+struct SeqView<'a> {
+    props: &'a crate::schema::DfdlProps,
+    particles: &'a [Particle],
+}
+
+fn sequence_groups_in_particles(particles: &[Particle]) -> alloc::vec::Vec<SeqView<'_>> {
+    let mut out = alloc::vec::Vec::new();
+    for p in particles {
+        if let Particle::Sequence(seq) = p {
+            out.push(SeqView {
+                props: &seq.props,
+                particles: &seq.particles,
+            });
+        }
+    }
+    out
+}
+
+fn merge_inherited_group_props(
+    inherited: &crate::schema::DfdlProps,
+    group: &crate::schema::DfdlProps,
+) -> crate::schema::DfdlProps {
+    crate::schema::merge_dfdl_props(inherited.clone(), group.clone())
+}
+
+fn enqueue_complex_content(
+    schema: &SchemaDocument,
+    content: &ComplexContent,
+    inherited: &crate::schema::DfdlProps,
+    queue: &mut VecDeque<(alloc::vec::Vec<Particle>, crate::schema::DfdlProps)>,
+) {
+    match content {
+        ComplexContent::Empty => {}
+        ComplexContent::Sequence(s) => {
+            queue.push_back((s.particles.clone(), inherited.clone()));
+        }
+        ComplexContent::Choice(c) => {
+            queue.push_back((c.branches.clone(), inherited.clone()));
+        }
+    }
+}
+
+fn enqueue_particle_with_inherited(
+    schema: &SchemaDocument,
+    p: &Particle,
+    inherited: &crate::schema::DfdlProps,
+    queue: &mut VecDeque<(alloc::vec::Vec<Particle>, crate::schema::DfdlProps)>,
+) {
+    match p {
+        Particle::Element(el) => {
+            if let Some(td) = schema.resolve_type(&el.type_name) {
+                if let TypeDef::Complex { content, props, .. } = td {
+                    let next = merge_inherited_group_props(inherited, &el.props);
+                    let next = crate::schema::merge_dfdl_props(next, props.clone());
+                    enqueue_complex_content(schema, content, &next, queue);
+                }
+            }
+        }
+        Particle::Sequence(seq) => {
+            let next = merge_inherited_group_props(inherited, &seq.props);
+            queue.push_back((seq.particles.clone(), next));
+        }
+        Particle::Choice(ch) => {
+            let next = merge_inherited_group_props(inherited, &ch.props);
+            queue.push_back((ch.branches.clone(), next));
+        }
+        Particle::GroupRef(gr) => {
+            if let Some(g) = schema.groups.get(gr.name.rsplit(':').next().unwrap_or(gr.name.as_str()))
+            {
+                match g {
+                    GroupDecl::Sequence(s) => {
+                        queue.push_back((s.particles.clone(), inherited.clone()));
+                    }
+                    GroupDecl::Choice(c) => {
+                        queue.push_back((c.branches.clone(), inherited.clone()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn element_effective_props(schema: &SchemaDocument, el: &ElementDecl) -> crate::schema::DfdlProps {
+    let mut props = el.props.clone();
+    if let Some(ref er) = el.element_ref {
+        if let Some(g) = crate::schema::get_global_element(schema, er) {
+            props = crate::schema::merge_dfdl_props(g.props.clone(), props);
+            crate::schema::merge_global_element_format_context(&mut props, &g.format_context);
+        }
+    }
+    props
+}
+
+fn has_non_empty_delimiter(props: &crate::schema::DfdlProps, key: &str) -> bool {
+    match key {
+        "separator" => props
+            .separator
+            .as_deref()
+            .is_some_and(|s| !s.is_empty()),
+        "terminator" => props
+            .terminator
+            .as_deref()
+            .is_some_and(|s| !s.is_empty()),
+        "initiator" => props
+            .initiator
+            .as_deref()
+            .is_some_and(|s| !s.is_empty()),
+        _ => false,
+    }
+}
+
+fn validate_one_sequence_separator_encoding(
+    schema: &SchemaDocument,
+    seq_props: &crate::schema::DfdlProps,
+    particles: &[Particle],
+    inherited: &crate::schema::DfdlProps,
+) -> Result<(), SchemaError> {
+    if !has_non_empty_delimiter(seq_props, "separator") {
+        return Ok(());
+    }
+    let group_props = merge_inherited_group_props(inherited, seq_props);
+    let Some(seq_enc) = effective_encoding_name(&group_props) else {
+        return Ok(());
+    };
+    let elems: alloc::vec::Vec<_> = particles
+        .iter()
+        .filter_map(|p| {
+            if let Particle::Element(el) = p {
+                Some(el)
+            } else {
+                None
+            }
+        })
+        .collect();
+    for pair in elems.windows(2) {
+        let prev = element_effective_props(schema, pair[0]);
+        let next = element_effective_props(schema, pair[1]);
+        if effective_length_kind(&prev, inherited) != crate::schema::LengthKind::Delimited {
+            continue;
+        }
+        if !has_non_empty_delimiter(&prev, "terminator") {
+            if let Some(child_enc) = effective_encoding_name(&prev) {
+                if !encodings_compatible_for_delimiter_scan(seq_enc, child_enc) {
+                    return Err(SchemaError::InvalidProperty {
+                        message: alloc::format!(
+                            "Schema Definition Error: The separator of the enclosing group must be in the same encoding as the delimited element that precedes it. encoding separator"
+                        ),
+                    });
+                }
+            }
+        }
+        let _ = next;
+    }
+    Ok(())
 }
 
 fn validate_invalid_restrictions(

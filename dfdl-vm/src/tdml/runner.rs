@@ -266,6 +266,20 @@ pub fn run_parser_test_with_options(
     }
 
     if let Some(expected_errors) = &test.expected_errors {
+        if let Some(msg) =
+            crate::api::namespace_entity_limit_error(spec.schema(), &test.root)
+        {
+            if error_messages_match(expected_errors, &msg) {
+                return Ok(TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Pass,
+                });
+            }
+            return Ok(TestResult {
+                name: test.name.clone(),
+                outcome: TestOutcome::Fail(alloc::format!("decode error mismatch: {msg}")),
+            });
+        }
         return match spec
             .decoder_with_config(config)
             .decode_with_tdml_options(&document_data, frame_bits, transmission, tdml_regions.clone())
