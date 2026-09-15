@@ -363,6 +363,12 @@ impl<'a> Decoder<'a> {
                         }
                     }
                     self.field_delimiters.borrow_mut().clear();
+                    if let Ok(IrNode::Element { props: cp, .. }) = self.ctx.program.node(child) {
+                        if element_discriminator_always_false(cp, self.ctx.strings()) {
+                            prev_absent_or_empty = true;
+                            continue;
+                        }
+                    }
                     let suppress_sep = child_element_props
                         .map(|cp| {
                             should_suppress_decode_infix_separator(props, cp, prev_absent_or_empty)
@@ -492,6 +498,17 @@ impl<'a> Decoder<'a> {
                                 );
                             }
                             insert_child(&mut map, child, child_value, self.ctx.program)?;
+                            if idx + 1 < children.len() {
+                                if let Ok(IrNode::Element { props: cp, .. }) =
+                                    self.ctx.program.node(child)
+                                {
+                                    if self.consume_trailing_empty_infix_separators(
+                                        props, cp, cursor,
+                                    )? {
+                                        inter_child_sep_consumed_by_prev = true;
+                                    }
+                                }
+                            }
                             if idx == 0
                                 && children.len() > 1
                                 && props.separator.is_none()
@@ -845,6 +862,7 @@ impl<'a> Decoder<'a> {
         let populate_path = element_prefixed_name(self.ctx.program, node_id).ok();
         let populate_errors = should_populate_array_errors(props);
         let mut items = Vec::new();
+        let mut implicit_empty_probe = false;
         let delimiter_stops =
             filter_delimiter_stop_sequences(stop_sequences, self.ctx.strings())?;
         if props.empty_element_parse_policy == EmptyElementParsePolicy::TreatAsAbsent
@@ -902,7 +920,14 @@ impl<'a> Decoder<'a> {
                 continue;
             }
             if items.len() as u64 >= min && cursor.is_empty() {
-                break;
+                if props.occurs_count_kind == OccursCountKind::Implicit
+                    && items.is_empty()
+                    && !implicit_empty_probe
+                {
+                    implicit_empty_probe = true;
+                } else {
+                    break;
+                }
             }
             if (items.len() as u64) >= min {
                 if max == u64::MAX
@@ -1021,6 +1046,9 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 Err(e) => {
+                    if implicit_empty_probe {
+                        return Err(e);
+                    }
                     if min == 0 && items.is_empty() {
                         *cursor = saved;
                         let consumed = self.try_consume_treat_as_absent_separator_on_error(
@@ -2067,6 +2095,53 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
+    fn consume_trailing_empty_infix_separators(
+        &self,
+        seq_props: &IrProps,
+        child_props: &IrProps,
+        cursor: &mut Cursor<'_>,
+    ) -> Result<bool> {
+        use crate::schema::SeparatorSuppressionPolicy;
+        let lax = matches!(
+            seq_props.separator_suppression_policy,
+            Some(SeparatorSuppressionPolicy::TrailingEmpty)
+                | Some(SeparatorSuppressionPolicy::TrailingEmptyStrict)
+        );
+        if !lax || child_props.occurs_count_kind != OccursCountKind::Implicit {
+            return Ok(false);
+        }
+        let max_rep = child_props.occurs_max.unwrap_or(u64::MAX);
+        if max_rep <= 1 {
+            return Ok(false);
+        }
+        let Some(sep_id) = seq_props.separator else {
+            return Ok(false);
+        };
+        if seq_props.separator_position != SeparatorPosition::Infix {
+            return Ok(false);
+        }
+        let pat = self.ctx.strings().get(sep_id)?;
+        if pat.is_empty() {
+            return Ok(false);
+        }
+        let enc = encoding_name(seq_props, self.ctx.strings()).ok();
+        let mut consumed_any = false;
+        while crate::schema::match_delimiter_opts_for_encoding(
+            &cursor.data[cursor.pos..],
+            pat,
+            seq_props.ignore_case,
+            enc.as_deref(),
+        )
+        .is_some()
+        {
+            if !cursor.consume_delimiter(pat, seq_props.ignore_case, enc.as_deref()) {
+                break;
+            }
+            consumed_any = true;
+        }
+        Ok(consumed_any)
+    }
+
     fn consume_separator(
         &self,
         props: &IrProps,
@@ -2764,6 +2839,22 @@ fn dfdl_value_text(value: &DfdlValue) -> &str {
     }
 }
 
+fn element_discriminator_always_false(props: &IrProps, strings: &StringPool) -> bool {
+    let Some(id) = props.discriminator_test else {
+        return false;
+    };
+    let Ok(expr) = strings.get(id) else {
+        return false;
+    };
+    let inner = expr
+        .trim()
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(expr.as_ref())
+        .trim();
+    matches!(inner, "fn:false()" | "false()")
+}
+
 fn choice_branch_discriminator_matches(
     program: &IrProgram,
     branch_node: u32,
@@ -2988,7 +3079,9 @@ fn eval_infoset_path_steps(
         .and_then(|m| m.get(first_local))
         .map(|s| &s.value)
         .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Schema Definition Error: {first_local} does not exist"),
+            message: alloc::format!(
+                "Schema Definition Error: expression evaluation error: {first_local} does not exist"
+            ),
         })?;
     for step in steps.iter().skip(1) {
         let local = strings.get(step.local)?;
