@@ -210,8 +210,14 @@ fn validate_escape_separator_distinct(schema: &SchemaDocument) -> Result<(), Sch
             let Some(ref_name) = el.props.escape_scheme_ref.as_deref() else {
                 continue;
             };
-            let key = ref_name.rsplit(':').next().unwrap_or(ref_name);
-            let Some(scheme) = schema.named_escape_schemes.get(key) else {
+            let Some(scheme) = schema
+                .named_escape_schemes
+                .get(ref_name)
+                .cloned()
+                .or_else(|| {
+                    crate::schema::lookup_named_escape_scheme_in_document(schema, ref_name)
+                })
+            else {
                 continue;
             };
             if scheme.escape_kind == crate::schema::EscapeKind::EscapeCharacter {

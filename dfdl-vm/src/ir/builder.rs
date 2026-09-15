@@ -2448,9 +2448,14 @@ fn resolve_escape_scheme(
         ir.escape_scheme = None;
         return;
     }
-    let key = ref_name.rsplit(':').next().unwrap_or(ref_name.as_str());
-    if let Some(scheme) = schema.named_escape_schemes.get(key) {
-        ir.escape_scheme = Some(scheme.clone());
+    if ref_name.contains('|') {
+        if let Some(scheme) = schema.named_escape_schemes.get(ref_name) {
+            ir.escape_scheme = Some(scheme.clone());
+            return;
+        }
+    }
+    if let Some(scheme) = crate::schema::lookup_named_escape_scheme_in_document(schema, ref_name) {
+        ir.escape_scheme = Some(scheme);
     }
 }
 

@@ -95,6 +95,8 @@ struct XsdParser<'a> {
     suppress_schema_definition_warnings: Option<String>,
     /// Global element whose annotations are currently being parsed (warning scope).
     warning_scope: Option<String>,
+    /// Namespace prefix bindings from enclosing `xs:annotation` elements (escapeSchemeRef).
+    annotation_prefix_overrides: alloc::vec::Vec<BTreeMap<String, String>>,
 }
 
 impl<'a> XsdParser<'a> {
@@ -107,6 +109,34 @@ impl<'a> XsdParser<'a> {
             in_define_format: false,
             suppress_schema_definition_warnings: None,
             warning_scope: None,
+            annotation_prefix_overrides: alloc::vec::Vec::new(),
+        }
+    }
+
+    fn escape_scheme_ref_storage_key(&self, qname: &str) -> String {
+        let prefixes = self
+            .annotation_prefix_overrides
+            .last()
+            .unwrap_or(&self.doc.namespace_prefixes);
+        if let Some((prefix, local)) = qname.split_once(':') {
+            if let Some(uri) = prefixes.get(prefix) {
+                return format_storage_key(&normalize_qname(local), Some(uri.as_str()));
+            }
+        }
+        format_storage_key(
+            &normalize_qname(qname),
+            self.doc.target_namespace.as_deref(),
+        )
+    }
+
+    fn normalize_escape_scheme_ref(&self, props: &mut DfdlProps) {
+        if props
+            .escape_scheme_ref
+            .as_ref()
+            .is_some_and(|r| !r.is_empty())
+        {
+            let qname = props.escape_scheme_ref.clone().unwrap();
+            props.escape_scheme_ref = Some(self.escape_scheme_ref_storage_key(&qname));
         }
     }
 
@@ -261,9 +291,14 @@ impl<'a> XsdParser<'a> {
     fn parse_document(&mut self) -> Result<SchemaDocument> {
         loop {
             match self.reader.next_event()? {
-                XmlEvent::StartElement { name, attributes, .. } => {
+                XmlEvent::StartElement {
+                    name,
+                    attributes,
+                    namespace,
+                    ..
+                } => {
                     if local_name_str(&name.local_name) == "schema" {
-                        self.parse_schema_element(attrs_to_map(&attributes))?;
+                        self.parse_schema_element(attrs_to_map(&attributes), namespace)?;
                     } else {
                         let local = local_name_str(&name.local_name).to_string();
                         let ns = name
@@ -308,10 +343,18 @@ impl<'a> XsdParser<'a> {
         Ok(core::mem::take(&mut self.doc))
     }
 
-    fn parse_schema_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
+    fn parse_schema_element(
+        &mut self,
+        attrs: BTreeMap<String, String>,
+        namespace: xml_no_std::namespace::Namespace,
+    ) -> Result<()> {
         self.doc.target_namespace = attrs.get("targetNamespace").cloned();
-        self.doc.namespace_prefixes.clear();
+        self.doc.namespace_prefixes = crate::xml_util::namespace_prefix_map(&namespace);
         collect_namespace_prefixes(&attrs, &mut self.doc.namespace_prefixes);
+        // Fallback when namespace bindings are missing from the reader event.
+        if let Some(text) = self.doc.schema_source_text.as_deref() {
+            supplement_namespace_prefixes_from_text(text, &mut self.doc.namespace_prefixes);
+        }
         if attrs.keys().any(|k| k.contains("dfdl") || k.ends_with(":dfdl"))
             || attrs.values().any(|v| v.as_str() == DFDL_NS)
         {
@@ -340,7 +383,7 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     let prefix = name.prefix.clone();
-                    let child_attrs = self.reader.take_start_attributes()?;
+                    let (child_attrs, child_namespace) = self.reader.take_start_element()?;
                     match local.as_str() {
                         "element" => {
                             if let Err(e) = self.parse_global_element(child_attrs) {
@@ -414,7 +457,7 @@ impl<'a> XsdParser<'a> {
                             }
                         }
                         "annotation" => {
-                            let props = self.parse_annotation(child_attrs)?;
+                            let props = self.parse_annotation(child_attrs, child_namespace)?;
                             self.doc.format_defaults.props =
                                 merge_dfdl_props(self.doc.format_defaults.props.clone(), props);
                         }
@@ -1448,8 +1491,11 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     if local == "annotation" {
-                        let child_attrs = self.reader.take_start_attributes()?;
-                        props = merge_dfdl_props(props, self.parse_annotation(child_attrs)?);
+                        let (child_attrs, namespace) = self.reader.take_start_element()?;
+                        props = merge_dfdl_props(
+                            props,
+                            self.parse_annotation(child_attrs, namespace)?,
+                        );
                     } else if allowed.iter().any(|a| *a == local.as_str()) {
                         break;
                     } else {
@@ -1479,8 +1525,23 @@ impl<'a> XsdParser<'a> {
         Ok(props)
     }
 
-    fn parse_annotation(&mut self, attrs: BTreeMap<String, String>) -> Result<DfdlProps> {
-        let _ = attrs;
+    fn parse_annotation(
+        &mut self,
+        attrs: BTreeMap<String, String>,
+        namespace: xml_no_std::namespace::Namespace,
+    ) -> Result<DfdlProps> {
+        let mut scoped = self.doc.namespace_prefixes.clone();
+        for (prefix, uri) in crate::xml_util::namespace_prefix_map(&namespace) {
+            scoped.insert(prefix, uri);
+        }
+        collect_namespace_prefixes(&attrs, &mut scoped);
+        self.annotation_prefix_overrides.push(scoped);
+        let result = self.parse_annotation_body();
+        self.annotation_prefix_overrides.pop();
+        result
+    }
+
+    fn parse_annotation_body(&mut self) -> Result<DfdlProps> {
         let mut props = DfdlProps::default();
 
         self.reader.skip_insignificant_ws()?;
@@ -1691,6 +1752,7 @@ impl<'a> XsdParser<'a> {
             self.doc.schema_source_label.as_deref(),
             Some(&mut self.doc.schema_diagnostics),
         )?;
+        self.normalize_escape_scheme_ref(&mut props);
         if local == "assert" || local == "discriminator" {
             props.has_statement_annotation = true;
             if let Some(msg) = attrs.get("message") {
@@ -1938,10 +2000,57 @@ impl<'a> XsdParser<'a> {
             }
         }
         if let Some(name) = scheme_name {
-            self.doc.named_escape_schemes.insert(name, scheme);
+            let key = format_storage_key(&name, self.doc.target_namespace.as_deref());
+            self.doc.named_escape_schemes.insert(key, scheme);
         }
         Ok(())
     }
+}
+
+pub(crate) fn lookup_named_escape_scheme_in_document(
+    doc: &SchemaDocument,
+    qname: &str,
+) -> Option<EscapeSchemeDef> {
+    let local = normalize_qname(qname);
+    if !qname.contains(':') {
+        let bare = format_storage_key(&local, None);
+        if let Some(v) = doc.named_escape_schemes.get(&bare) {
+            return Some(v.clone());
+        }
+        let tns_key = format_storage_key(&local, doc.target_namespace.as_deref());
+        if let Some(v) = doc.named_escape_schemes.get(&tns_key) {
+            return Some(v.clone());
+        }
+        return None;
+    }
+    let key = resolve_format_qname_in_document(doc, qname);
+    if let Some(scheme) = doc.named_escape_schemes.get(&key) {
+        return Some(scheme.clone());
+    }
+    if let Some(tns) = doc.target_namespace.as_deref() {
+        let tns_key = format_storage_key(&local, Some(tns));
+        if tns_key != key {
+            if let Some(scheme) = doc.named_escape_schemes.get(&tns_key) {
+                return Some(scheme.clone());
+            }
+        }
+    }
+    let fallback = format_storage_key(&local, None);
+    if fallback != key {
+        if let Some(scheme) = doc.named_escape_schemes.get(&fallback) {
+            return Some(scheme.clone());
+        }
+    }
+    let matching: alloc::vec::Vec<_> = doc
+        .named_escape_schemes
+        .iter()
+        .filter(|(k, _)| format_local_from_storage_key(k) == local)
+        .map(|(_, v)| v.clone())
+        .collect();
+    if matching.len() == 1 {
+        return Some(matching.into_iter().next().unwrap());
+    }
+    None
 }
 
 fn escape_scheme_from_attrs(attrs: &BTreeMap<String, String>) -> EscapeSchemeDef {

@@ -4,6 +4,7 @@ use crate::error::{ParseError, Result};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use xml_no_std::name::OwnedName;
+use xml_no_std::namespace::Namespace;
 use xml_no_std::reader::{EventReader, ParserConfig, XmlEvent};
 use xml_no_std::writer::{EmitterConfig, EventWriter};
 
@@ -100,8 +101,17 @@ impl<'a> XmlReader<'a> {
 
     /// Consume the next event, which must be a `StartElement`, and return its attributes.
     pub fn take_start_attributes(&mut self) -> Result<BTreeMap<String, String>> {
+        self.take_start_element().map(|(attrs, _)| attrs)
+    }
+
+    /// Consume the next `StartElement` and return attributes plus in-scope namespace bindings.
+    pub fn take_start_element(&mut self) -> Result<(BTreeMap<String, String>, Namespace)> {
         match self.next_event()? {
-            XmlEvent::StartElement { attributes, .. } => Ok(attrs_to_map(&attributes)),
+            XmlEvent::StartElement {
+                attributes,
+                namespace,
+                ..
+            } => Ok((attrs_to_map(&attributes), namespace)),
             other => Err(ParseError::InvalidXml {
                 message: alloc::format!(
                     "expected start element, found {:?}",
@@ -277,6 +287,13 @@ pub fn attr_key(name: &OwnedName) -> String {
         Some(prefix) => alloc::format!("{prefix}:{}", name.local_name),
         None => name.local_name.clone(),
     }
+}
+
+pub fn namespace_prefix_map(namespace: &Namespace) -> BTreeMap<String, String> {
+    namespace
+        .iter()
+        .map(|(prefix, uri)| (prefix.to_string(), uri.to_string()))
+        .collect()
 }
 
 pub fn attrs_to_map(attrs: &[xml_no_std::attribute::OwnedAttribute]) -> BTreeMap<String, String> {
