@@ -101,8 +101,8 @@ const SECTION02_BASELINE_PASS_MIN: usize = 96;
 const SECTION02_BASELINE_FAIL_MAX: usize = 0;
 
 /// Baseline for all `section06/**` TDML (namespaces + entities).
-const SECTION06_BASELINE_PASS_MIN: usize = 139;
-const SECTION06_BASELINE_FAIL_MAX: usize = 39;
+const SECTION06_BASELINE_PASS_MIN: usize = 140;
+const SECTION06_BASELINE_FAIL_MAX: usize = 38;
 
 fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
     let Ok(tdml) = fs::read_to_string(path) else {
