@@ -83,7 +83,9 @@ pub fn validate_text_alignment_schema(
     if props.alignment_implicit {
         return Ok(());
     }
-    if props.representation != Representation::Text {
+    let textual_scalar = props.representation == Representation::Text
+        || matches!(kind, ValueKind::String | ValueKind::HexBinary);
+    if !textual_scalar {
         return Ok(());
     }
     let Some(type_name) = text_prim_type_name(kind) else {

@@ -585,8 +585,8 @@ impl<'a> IrBuilder<'a> {
                         }
                     }
                     let mut ir_props = props;
-                    if element_props.length_kind.is_none() && inherited.length_kind_defined {
-                        ir_props.length_kind = inherited.length_kind;
+                    if element_props.length_kind.is_none() {
+                        ir_props.length_kind = LengthKind::Implicit;
                     }
                     let mut ir_props = finalize_element_props(
                         ValueKind::Complex,
@@ -1377,6 +1377,9 @@ fn finalize_element_props(
     element_name: Option<&str>,
 ) -> Result<IrProps> {
     use crate::schema::{NilKind, ObjectKind, TextPadKind, TextTrimKind};
+    if kind == ValueKind::Complex && ir.length_kind == LengthKind::Delimited {
+        ir.length_kind = LengthKind::Implicit;
+    }
     if ir.object_kind == ObjectKind::Chars {
         return Err(SchemaError::InvalidProperty {
             message: "Schema Definition Error: Property value objectKind='chars' is not supported."

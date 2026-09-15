@@ -49,3 +49,8 @@ fn implicit_alignment_date_t2() {
 fn implicit_alignment_date_time_t() {
     assert_passes("implicitAlignmentDateTimeT");
 }
+
+#[test]
+fn left_and_right_framing_choice05() {
+    assert_passes("leftAndRightFramingChoice05");
+}

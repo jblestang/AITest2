@@ -708,6 +708,7 @@ mod tests {
             assert_eq!(props.alignment_units, LengthUnits::Bytes);
         }
     }
+
 }
 
 pub fn consume_trailing_skip(

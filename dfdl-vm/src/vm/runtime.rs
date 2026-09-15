@@ -9936,11 +9936,15 @@ fn write_prefix_field(
     strings: &StringPool,
     field_name: Option<&str>,
 ) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
     use crate::schema::Representation;
     validate_prefix_facets(value, prefix, field_name)?;
     if prefix.props.length_kind == LengthKind::Prefixed {
-        let payload = prefix_scalar_payload(value, prefix, strings)?;
-        return write_prefixed_bytes(out, bit_count, &payload, &prefix.props, strings, field_name);
+        return Err(VmError::InvalidValue {
+            message:
+                "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" is not supported"
+                    .into(),
+        });
     }
     match prefix.props.representation {
         Representation::Text => {

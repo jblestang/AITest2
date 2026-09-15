@@ -590,6 +590,9 @@ pub fn validate_delimiter_es_restriction(prop: &str, raw: &str) -> Result<(), St
     if prop == "separator" {
         return Err("Separator contains disallowed ES".into());
     }
+    if prop == "terminator" {
+        return Err("dfdl:terminator cannot own ES".into());
+    }
     validate_es_not_sole_delimiter_alternative(prop, &alts)
 }
 

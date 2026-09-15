@@ -526,10 +526,15 @@ impl<'a> Decoder<'a> {
                             {
                                 if cp.occurs_min == 0 {
                                     let msg = e.to_string();
-                                    let optional_parse_absent = props.separator_suppression_policy
-                                        == Some(
-                                            crate::schema::SeparatorSuppressionPolicy::AnyEmpty,
-                                        )
+                                    let scalar_optional = matches!(
+                                        self.ctx.program.node(child),
+                                        Ok(IrNode::Element { child: None, .. })
+                                    );
+                                    let optional_parse_absent = scalar_optional
+                                        && props.separator_suppression_policy
+                                            == Some(
+                                                crate::schema::SeparatorSuppressionPolicy::AnyEmpty,
+                                            )
                                         && msg.contains("Parse Error");
                                     if msg.contains("Init('")
                                         || msg.contains("initiator mismatch")
@@ -537,8 +542,20 @@ impl<'a> Decoder<'a> {
                                         || optional_parse_absent
                                     {
                                         prev_absent_or_empty = true;
-                                        if cursor.pos == saved.pos {
-                                            *cursor = saved;
+                                        *cursor = saved;
+                                        if optional_parse_absent
+                                            && props.separator.is_some()
+                                            && props.separator_position
+                                                == SeparatorPosition::Infix
+                                        {
+                                            let _ = self.consume_separator(
+                                                props,
+                                                cursor,
+                                                idx,
+                                                children.len(),
+                                                &mut infix_sep_newline_prefix,
+                                                &particle_stops,
+                                            )?;
                                         }
                                         continue;
                                     }
@@ -1998,6 +2015,16 @@ impl<'a> Decoder<'a> {
             {
                 return Ok(Some(alt));
             }
+            if props.separator_position == SeparatorPosition::Infix
+                && props.separator_suppression_policy
+                    == Some(crate::schema::SeparatorSuppressionPolicy::AnyEmpty)
+                && index > 0
+            {
+                let b = cursor.data.get(cursor.pos).copied().unwrap_or(0);
+                if b == b'-' || b == b'+' {
+                    return Ok(None);
+                }
+            }
             let found_display =
                 format_found_at_cursor(&cursor.data, cursor.pos, enc.as_deref());
             let position_label = match props.separator_position {
@@ -2359,12 +2386,6 @@ fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
         match inner {
             DfdlValue::Sequence(seq) => {
                 if !seq.fields.contains_key(name) {
-                    // Implicit complex element seq_01: keep inner fields under seq_01 for choice/infoset.
-                    if name == "seq_01" {
-                        let mut map = BTreeMap::new();
-                        map.insert(name.into(), DfdlValue::Sequence(seq));
-                        return DfdlValue::sequence(map);
-                    }
                     return DfdlValue::Sequence(seq);
                 }
                 DfdlValue::Sequence(seq)
@@ -3153,6 +3174,9 @@ fn format_choice_branch_error(branch: &ChoiceBranch, strings: &StringPool, err: 
             }
         }
         return alloc::format!("{branch_name}: Initiator not found");
+    }
+    if msg.contains("unexpected end of input") || msg.is_empty() {
+        return alloc::format!("{branch_name}: {msg}");
     }
     msg.to_string()
 }
