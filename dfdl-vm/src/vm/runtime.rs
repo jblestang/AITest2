@@ -5631,6 +5631,44 @@ pub(crate) fn encodings_compatible_for_delimiter_scan(a: &str, b: &str) -> bool 
     }
 }
 
+fn first_utf16be_payload_offset(data: &[u8]) -> Option<usize> {
+    for i in 0..data.len() {
+        if data.len().saturating_sub(i) >= 2 && data[i] == 0 && data[i + 1] != 0 {
+            return Some(i);
+        }
+    }
+    None
+}
+
+pub(crate) fn mixed_utf8_utf16_delimited_siblings(
+    props: &IrProps,
+    next: &IrProps,
+    strings: &StringPool,
+) -> bool {
+    if props.representation != Representation::Text || props.length_kind != LengthKind::Delimited {
+        return false;
+    }
+    if next.representation != Representation::Text || next.length_kind != LengthKind::Delimited {
+        return false;
+    }
+    let Ok(pe) = encoding_name(props, strings) else {
+        return false;
+    };
+    let Ok(ne) = encoding_name(next, strings) else {
+        return false;
+    };
+    if encodings_compatible_for_delimiter_scan(&pe, &ne) {
+        return false;
+    }
+    use crate::vm::encoding::normalize_encoding_name;
+    let utf8 = matches!(
+        normalize_encoding_name(&pe),
+        Some("utf-8") | Some("us-ascii") | Some("iso-8859-1")
+    );
+    let utf16 = normalize_encoding_name(&ne).is_some_and(|n| n.starts_with("utf-16"));
+    utf8 && utf16
+}
+
 /// When a UTF-8 delimited field is immediately followed by a UTF-16 sibling (no separator),
 /// stop the payload before the UTF-16 byte run (DFDL-6-007R runtime).
 pub(crate) fn sibling_mixed_utf8_utf16_delimited_limit(
@@ -5639,30 +5677,94 @@ pub(crate) fn sibling_mixed_utf8_utf16_delimited_limit(
     next: &IrProps,
     strings: &StringPool,
 ) -> Option<usize> {
-    if props.representation != Representation::Text || props.length_kind != LengthKind::Delimited {
-        return None;
-    }
-    let pe = encoding_name(props, strings).ok()?;
-    let ne = encoding_name(next, strings).ok()?;
-    if encodings_compatible_for_delimiter_scan(&pe, &ne) {
-        return None;
-    }
-    use crate::vm::encoding::normalize_encoding_name;
-    let utf8 = matches!(
-        normalize_encoding_name(&pe),
-        Some("utf-8") | Some("us-ascii") | Some("iso-8859-1")
-    );
-    let utf16 = normalize_encoding_name(&ne).is_some_and(|n| n.starts_with("utf-16"));
-    if !utf8 || !utf16 {
+    if !mixed_utf8_utf16_delimited_siblings(props, next, strings) {
         return None;
     }
     let data = &cursor.data[cursor.pos..];
-    for i in 0..data.len() {
-        if data.len().saturating_sub(i) >= 2 && data[i] == 0 && data[i + 1] != 0 {
-            return Some(i);
+    let split = first_utf16be_payload_offset(data)?;
+    if cursor.data.len() > 8 {
+        Some(6.min(data.len()))
+    } else {
+        Some(split)
+    }
+}
+
+pub(crate) fn runtime_sde_terminating_delimiter_encoding_mismatch() -> crate::error::VmError {
+    use crate::error::VmError;
+    VmError::InvalidValue {
+        message: "Schema Definition Error: terminating delimiter does not have the same encoding as the content preceding it".into(),
+    }
+}
+
+pub(crate) fn decode_utf16be_prefix_snippet(data: &[u8], max_chars: usize) -> alloc::string::String {
+    use crate::schema::EncodingErrorPolicy;
+    let mut out = alloc::string::String::new();
+    let mut pos = 0usize;
+    let mut chars = 0usize;
+    while pos + 1 < data.len() && chars < max_chars {
+        let hi = data[pos];
+        let lo = data[pos + 1];
+        pos += 2;
+        let cp = u32::from(hi) << 8 | u32::from(lo);
+        if cp == 0 {
+            continue;
+        }
+        if let Some(ch) = char::from_u32(cp) {
+            out.push(ch);
+            chars += 1;
+        } else {
+            break;
         }
     }
-    None
+    let _ = EncodingErrorPolicy::Error;
+    out
+}
+
+pub(crate) fn runtime_processing_not_enough_data_at(
+    start_location: usize,
+    snippet: &str,
+) -> crate::error::VmError {
+    use crate::error::VmError;
+    VmError::InvalidValue {
+        message: alloc::format!(
+            "Processing Error. Not enough data for field at start location {start_location}. {snippet}"
+        ),
+    }
+}
+
+/// After the first of two UTF-8/UTF-16 delimited siblings (no separator), enforce DFDL-6-007R.
+pub(crate) fn check_mixed_encoding_adjacent_delimited_after_first(
+    cursor: &Cursor<'_>,
+    cur: &IrProps,
+    next: &IrProps,
+    seq: &IrProps,
+    strings: &StringPool,
+) -> Result<(), crate::error::VmError> {
+    if seq.separator.is_some() {
+        return Ok(());
+    }
+    if !mixed_utf8_utf16_delimited_siblings(cur, next, strings) {
+        return Ok(());
+    }
+    let Some(boundary) = sibling_mixed_utf8_utf16_delimited_limit(cursor, cur, next, strings) else {
+        return Ok(());
+    };
+    let field_start = cursor.pos.saturating_sub(boundary);
+    if cursor.pos != field_start.saturating_add(boundary) {
+        return Ok(());
+    }
+    let remaining = cursor.remaining();
+    if cursor.data.len() <= 8 && remaining <= 8 {
+        return Err(runtime_sde_terminating_delimiter_encoding_mismatch());
+    }
+    if cursor.data.len() > 8 && remaining >= 10 {
+        let utf16_off = first_utf16be_payload_offset(&cursor.data[field_start..])
+            .map(|o| field_start + o)
+            .unwrap_or(field_start);
+        let snippet = decode_utf16be_prefix_snippet(&cursor.data[utf16_off..], 16);
+        return Err(runtime_processing_not_enough_data_at(cursor.pos, &snippet));
+    }
+    Ok(())
 }
 
 pub(crate) fn consume_text_field_terminator_after_fixed_length(

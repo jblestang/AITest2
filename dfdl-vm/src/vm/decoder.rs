@@ -445,6 +445,26 @@ impl<'a> Decoder<'a> {
                                 );
                             }
                             insert_child(&mut map, child, child_value, self.ctx.program)?;
+                            if idx == 0
+                                && children.len() > 1
+                                && props.separator.is_none()
+                            {
+                                if let (
+                                    Ok(IrNode::Element { props: cur_p, .. }),
+                                    Ok(IrNode::Element { props: next_p, .. }),
+                                ) = (
+                                    self.ctx.program.node(child),
+                                    self.ctx.program.node(children[1]),
+                                ) {
+                                    crate::vm::runtime::check_mixed_encoding_adjacent_delimited_after_first(
+                                        cursor,
+                                        cur_p,
+                                        next_p,
+                                        props,
+                                        self.ctx.strings(),
+                                    )?;
+                                }
+                            }
                             if self.implicit_complex_consumed_parent_postfix(child, props)? {
                                 inter_child_sep_consumed_by_prev = true;
                             }
