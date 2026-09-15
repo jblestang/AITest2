@@ -664,6 +664,13 @@ impl<'a> Decoder<'a> {
             if items.len() as u64 >= min && cursor.is_empty() {
                 break;
             }
+            if (items.len() as u64) >= min
+                && props.occurs_count_kind == OccursCountKind::Implicit
+                && max == u64::MAX
+                && self.at_implicit_occurrence_stop(cursor, stop_sequences)?
+            {
+                break;
+            }
             if let Some(limit) = self.ctx.program.tunables.max_occurs_bounds {
                 if (items.len() as u32) >= limit {
                     let path = element_prefixed_name(self.ctx.program, node_id)
@@ -1429,6 +1436,35 @@ impl<'a> Decoder<'a> {
                 self.ctx.program.node(node_id)?,
                 IrNode::Element { child: Some(_), .. }
             ))
+    }
+
+    /// True when the cursor is at an enclosing `stop_sequences` terminator (implicit unbounded stop).
+    fn at_implicit_occurrence_stop(
+        &self,
+        cursor: &Cursor<'_>,
+        stop_sequences: &[&IrProps],
+    ) -> Result<bool> {
+        for stop in stop_sequences {
+            let Some(id) = stop.terminator else {
+                continue;
+            };
+            let pat = self.ctx.strings().get(id)?;
+            if pat.is_empty() {
+                continue;
+            }
+            let enc = encoding_name(stop, self.ctx.strings()).ok();
+            if crate::schema::match_delimiter_opts_for_encoding(
+                &cursor.data[cursor.pos..],
+                pat,
+                stop.ignore_case,
+                enc.as_deref(),
+            )
+            .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn should_skip_empty_complex_delimited_occurrence(

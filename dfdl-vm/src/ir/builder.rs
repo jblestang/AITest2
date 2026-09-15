@@ -682,7 +682,9 @@ impl<'a> IrBuilder<'a> {
                     &sequence.props,
                     &DfdlProps::default(),
                 )?;
-                if ir_props.separator.is_none() {
+                if ir_props.separator.is_none()
+                    && sequence.props.separator.as_deref() != Some("")
+                {
                     ir_props.separator = self.defaults.separator;
                 }
                 let mut child_inherited =
@@ -2911,7 +2913,9 @@ fn overlay_dfdl_to_ir(
         }
     }
     if let Some(ref s) = props.separator {
-        if !s.is_empty() {
+        if s.is_empty() {
+            base.separator = None;
+        } else {
             base.separator = Some(strings.intern(s.clone()));
         }
     }
