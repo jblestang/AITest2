@@ -1,11 +1,19 @@
 use crate::error::VmError;
 use crate::ir::{IrNode, IrProgram, IrProps};
-use crate::schema::SchemaDocument;
+use crate::schema::{
+    BuiltinType, ComplexContent, DfdlProps, ElementDecl, GroupDecl, Particle, SchemaDocument,
+    TypeDef,
+};
 use crate::tdml::InfosetNode;
 use crate::value::DfdlValue;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
+
+fn group_local_name(qname: &str) -> &str {
+    qname.rsplit(':').next().unwrap_or(qname)
+}
 
 fn qname_for_error(local: &str, ns: Option<&str>) -> String {
     match ns {
@@ -94,6 +102,7 @@ fn validate_unparse_infoset_nodes_inner(
     if enforce_element_form {
         validate_element_form(root_node, qualified, tns, None, &root_parent, true)?;
     }
+    validate_hidden_groups_unparse(schema, root)?;
     let root_id = program.root;
     validate_infoset_particle(
         program,
@@ -105,6 +114,235 @@ fn validate_unparse_infoset_nodes_inner(
         enforce_element_form,
     )?;
     Ok(())
+}
+
+/// Hidden group refs require every descendant to be optional, defaultable, or have OVC (Daffodil unparse compile).
+pub fn validate_hidden_groups_unparse(schema: &SchemaDocument, root: &str) -> Result<(), String> {
+    let Some(ge) = crate::schema::get_global_element(schema, root) else {
+        return Ok(());
+    };
+    if BuiltinType::from_xsd(ge.type_name.as_str()).is_some() {
+        return Ok(());
+    }
+    let Some(type_def) = schema.resolve_type(&ge.type_name) else {
+        return Ok(());
+    };
+    let TypeDef::Complex { content, .. } = type_def else {
+        return Ok(());
+    };
+    let mut hidden_targets = BTreeSet::new();
+    collect_hidden_group_refs_in_content(schema, content, &mut hidden_targets);
+    for target in hidden_targets {
+        let local = group_local_name(&target);
+        if local.is_empty() {
+            continue;
+        }
+        validate_hidden_group_model(schema, local, &mut Vec::new())?;
+    }
+    Ok(())
+}
+
+fn collect_hidden_group_refs_in_content(
+    schema: &SchemaDocument,
+    content: &ComplexContent,
+    out: &mut BTreeSet<String>,
+) {
+    match content {
+        ComplexContent::Sequence(seq) => {
+            if let Some(ref href) = seq.props.hidden_group_ref {
+                out.insert(href.clone());
+                let local = group_local_name(href);
+                if let Some(GroupDecl::Sequence(gseq)) = schema.groups.get(local) {
+                    for p in &gseq.particles {
+                        collect_hidden_group_refs_in_particle(schema, p, out);
+                    }
+                }
+            }
+            for p in &seq.particles {
+                collect_hidden_group_refs_in_particle(schema, p, out);
+            }
+        }
+        ComplexContent::Choice(ch) => {
+            for p in &ch.branches {
+                collect_hidden_group_refs_in_particle(schema, p, out);
+            }
+        }
+        ComplexContent::Empty => {}
+    }
+}
+
+fn collect_hidden_group_refs_in_particle(
+    schema: &SchemaDocument,
+    particle: &Particle,
+    out: &mut BTreeSet<String>,
+) {
+    match particle {
+        Particle::Element(el) => {
+            if BuiltinType::from_xsd(el.type_name.as_str()).is_some() {
+                return;
+            }
+            if let Some(TypeDef::Complex { content, .. }) = schema.resolve_type(&el.type_name) {
+                collect_hidden_group_refs_in_content(schema, content, out);
+            }
+        }
+        Particle::Sequence(s) => {
+            if let Some(ref href) = s.props.hidden_group_ref {
+                out.insert(href.clone());
+                let local = group_local_name(href);
+                if let Some(GroupDecl::Sequence(gseq)) = schema.groups.get(local) {
+                    for p in &gseq.particles {
+                        collect_hidden_group_refs_in_particle(schema, p, out);
+                    }
+                }
+            }
+            for p in &s.particles {
+                collect_hidden_group_refs_in_particle(schema, p, out);
+            }
+        }
+        Particle::Choice(c) => {
+            for p in &c.branches {
+                collect_hidden_group_refs_in_particle(schema, p, out);
+            }
+        }
+        Particle::GroupRef(gr) => {
+            let local = gr.name.rsplit(':').next().unwrap_or(gr.name.as_str());
+            if let Some(group) = schema.groups.get(local) {
+                match group {
+                    GroupDecl::Sequence(s) => {
+                        for p in &s.particles {
+                            collect_hidden_group_refs_in_particle(schema, p, out);
+                        }
+                    }
+                    GroupDecl::Choice(c) => {
+                        for p in &c.branches {
+                            collect_hidden_group_refs_in_particle(schema, p, out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn validate_hidden_group_model(
+    schema: &SchemaDocument,
+    group_name: &str,
+    stack: &mut Vec<String>,
+) -> Result<(), String> {
+    if stack.iter().any(|s| s == group_name) {
+        return Ok(());
+    }
+    stack.push(group_name.to_string());
+    let group = schema
+        .groups
+        .get(group_name)
+        .ok_or_else(|| format!("Schema Definition Error: hidden group `{group_name}` not found"))?;
+    let particles = match group {
+        GroupDecl::Sequence(s) => s.particles.as_slice(),
+        GroupDecl::Choice(_) => {
+            stack.pop();
+            return Ok(());
+        }
+    };
+    let mut failures = Vec::new();
+    for particle in particles {
+        if let Particle::Sequence(s) = particle {
+            if let Some(ref href) = s.props.hidden_group_ref {
+                let nested = group_local_name(href);
+                validate_hidden_group_model(schema, &nested, stack)?;
+                continue;
+            }
+        }
+        if !particle_can_unparse_if_no_events(schema, particle) {
+            if let Some(label) = particle_display(schema, particle) {
+                failures.push(label);
+            }
+        }
+    }
+    stack.pop();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Schema Definition Error: Element(s) of hidden group must define dfdl:outputValueCalc, be defaultable or be optional:\n{}",
+            failures.join("\n")
+        ))
+    }
+}
+
+fn particle_display(_schema: &SchemaDocument, particle: &Particle) -> Option<String> {
+    match particle {
+        Particle::Element(el) => Some(format!("ex:{}", el.name)),
+        Particle::GroupRef(gr) => Some(gr.name.clone()),
+        _ => None,
+    }
+}
+
+fn can_be_absent_from_unparse_infoset(props: &DfdlProps) -> bool {
+    props.occurs_min.unwrap_or(1) == 0
+        || props.output_value_calc.is_some()
+        || props
+            .default_value
+            .as_ref()
+            .is_some_and(|s| !s.is_empty())
+}
+
+fn particle_can_unparse_if_no_events(schema: &SchemaDocument, particle: &Particle) -> bool {
+    match particle {
+        Particle::Element(el) => element_can_unparse_if_no_events(schema, el),
+        Particle::Sequence(s) => s
+            .particles
+            .iter()
+            .all(|p| particle_can_unparse_if_no_events(schema, p)),
+        Particle::Choice(c) => c
+            .branches
+            .iter()
+            .any(|p| particle_can_unparse_if_no_events(schema, p)),
+        Particle::GroupRef(gr) => {
+            let local = gr.name.rsplit(':').next().unwrap_or(gr.name.as_str());
+            schema.groups.get(local).is_some_and(|group| match group {
+                GroupDecl::Sequence(s) => s
+                    .particles
+                    .iter()
+                    .all(|p| particle_can_unparse_if_no_events(schema, p)),
+                GroupDecl::Choice(c) => c
+                    .branches
+                    .iter()
+                    .any(|p| particle_can_unparse_if_no_events(schema, p)),
+            })
+        }
+    }
+}
+
+fn element_can_unparse_if_no_events(schema: &SchemaDocument, el: &ElementDecl) -> bool {
+    let props = &el.props;
+    if can_be_absent_from_unparse_infoset(props) {
+        return true;
+    }
+    if BuiltinType::from_xsd(el.type_name.as_str()).is_some() {
+        return false;
+    }
+    if let Some(TypeDef::Complex { content, .. }) = schema.resolve_type(&el.type_name) {
+        return complex_content_can_unparse_if_no_events(schema, content);
+    }
+    false
+}
+
+fn complex_content_can_unparse_if_no_events(
+    schema: &SchemaDocument,
+    content: &ComplexContent,
+) -> bool {
+    match content {
+        ComplexContent::Sequence(s) => s
+            .particles
+            .iter()
+            .all(|p| particle_can_unparse_if_no_events(schema, p)),
+        ComplexContent::Choice(c) => c
+            .branches
+            .iter()
+            .any(|p| particle_can_unparse_if_no_events(schema, p)),
+        ComplexContent::Empty => true,
+    }
 }
 
 fn validate_element_form(
@@ -252,7 +490,7 @@ fn validate_sequence_children(
         else {
             continue;
         };
-        if props.output_value_calc.is_some() {
+        if props.hidden || props.output_value_calc.is_some() {
             continue;
         }
         let elem_name = program.strings.get(*name).map_err(|e| e.to_string())?;

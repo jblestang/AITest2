@@ -182,10 +182,7 @@ impl<'a> Encoder<'a> {
                 }
                 if let Some(child_id) = child {
                     let name_str = self.ctx.strings().get(*name)?;
-                    let field = match value.field(name_str) {
-                        Some(inner) => inner,
-                        None => value,
-                    };
+                    let field = element_payload_value(value, name_str);
                     if needs_length_frame(props) {
                         if *kind == crate::ir::ValueKind::Complex
                             && matches!(
@@ -444,14 +441,7 @@ impl<'a> Encoder<'a> {
                     return self.encode_nil_element(*kind, props, out, bit_count);
                 }
                 if let Some(child_id) = child {
-                    let field = if matches!(&value, DfdlValue::Null) {
-                        &value
-                    } else {
-                        match value.field(key) {
-                            Some(inner) => inner,
-                            None => &value,
-                        }
-                    };
+                    let field = element_payload_value(&value, key);
                     if needs_length_frame(&resolved) {
                         let schema_ctx = schema_context_field_name(key);
                         self.encode_framed_element(
@@ -607,11 +597,15 @@ impl<'a> Encoder<'a> {
         key: &str,
         map: &BTreeMap<String, DfdlValue>,
     ) -> Result<DfdlValue> {
-        if let Some(v) = map.get(key) {
-            return Ok(v.clone());
-        }
         if props.output_value_calc.is_some() {
             return eval_output_value_calc(self, props, map, &[], props);
+        }
+        if props.hidden {
+            // Hidden particles are not in the infoset; encode complex children via OVC/defaults only.
+            return Ok(DfdlValue::sequence(BTreeMap::new()));
+        }
+        if let Some(v) = map.get(key) {
+            return Ok(v.clone());
         }
         Err(VmError::MissingField { name: key.into() }.into())
     }
@@ -1405,6 +1399,17 @@ fn needs_length_frame(props: &IrProps) -> bool {
         props.length_kind,
         LengthKind::Prefixed | LengthKind::Explicit | LengthKind::Fixed | LengthKind::Delimited
     )
+}
+
+/// When `value` is already this element's payload (from a parent sequence map), do not use
+/// transparent `DfdlValue::field` unwrapping — it can drill into a same-named descendant.
+fn element_payload_value<'a>(value: &'a DfdlValue, local_name: &str) -> &'a DfdlValue {
+    if let Some(fields) = value.sequence_fields() {
+        if fields.contains_key(local_name) {
+            return fields.get(local_name).expect("key just checked");
+        }
+    }
+    value
 }
 
 fn unwrap_root_for_encode<'a>(

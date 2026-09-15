@@ -73,6 +73,22 @@ pub fn validate_compiled_schema(
     validate_sequence_separator_encoding(schema, root)?;
     validate_discriminators_in_reachable_schema(schema, root)?;
     validate_reachable_complex_type_model_groups(schema, root)?;
+    validate_group_definitions_no_hidden_group_ref(schema)?;
+    Ok(())
+}
+
+fn validate_group_definitions_no_hidden_group_ref(
+    schema: &SchemaDocument,
+) -> Result<(), SchemaError> {
+    for group in schema.groups.values() {
+        if let GroupDecl::Sequence(seq) = group {
+            if seq.props.hidden_group_ref.is_some() {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: the model group of a group definition cannot be a sequence with dfdl:hiddenGroupRef".into(),
+                });
+            }
+        }
+    }
     Ok(())
 }
 

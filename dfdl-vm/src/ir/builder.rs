@@ -219,6 +219,7 @@ impl<'a> IrBuilder<'a> {
                     &root_element.type_name,
                     &root_element.props,
                     Some(root_name),
+                    false,
                 )?;
                 let defaults = self.defaults.clone();
                 let mut ir_props = self.merge_props_full(
@@ -263,6 +264,7 @@ impl<'a> IrBuilder<'a> {
         type_name: &TypeName,
         element_props: &DfdlProps,
         facet_diagnostic: Option<&str>,
+        hidden: bool,
     ) -> Result<u32> {
         if !self.schema.types.contains_key(type_name) {
             if let Some(BuiltinType::String | BuiltinType::HexBinary) =
@@ -357,7 +359,7 @@ impl<'a> IrBuilder<'a> {
                 let defaults = self.defaults.clone();
                 let inherited = element_props_for_complex_content(element_props);
                 let type_base = self.merge_props_full(&defaults, props, &inherited)?;
-                self.compile_complex(content, &type_base)
+                self.compile_complex(content, &type_base, hidden)
             }
         }
     }
@@ -459,6 +461,7 @@ impl<'a> IrBuilder<'a> {
                         &element.type_name,
                         &compile_element_props_owned,
                         Some(element.name.as_str()),
+                        hidden,
                     )?;
                     let child_node = self.nodes.get(child as usize).ok_or_else(|| {
                         SchemaError::InvalidProperty {
@@ -837,7 +840,12 @@ impl<'a> IrBuilder<'a> {
         }
     }
 
-    fn compile_complex(&mut self, content: &ComplexContent, type_base: &IrProps) -> Result<u32> {
+    fn compile_complex(
+        &mut self,
+        content: &ComplexContent,
+        type_base: &IrProps,
+        hidden: bool,
+    ) -> Result<u32> {
         match content {
             ComplexContent::Sequence(sequence) => {
                 if sequence.props.hidden_group_ref.is_some()
@@ -905,10 +913,11 @@ impl<'a> IrBuilder<'a> {
                                 );
                                 for p in &seq.particles {
                                     validate_initiated_content_particle(&seq.props, p)?;
-                                    children.push(self.compile_particle(
+                                    children.push(self.compile_particle_inner(
                                         p,
                                         &child_inherited,
                                         &prior_element_names,
+                                        hidden,
                                     )?);
                                     if let Particle::Element(el) = p {
                                         prior_element_names.push(el.name.clone());
@@ -917,18 +926,20 @@ impl<'a> IrBuilder<'a> {
                                 continue;
                             }
                             GroupDecl::Choice(_) => {
-                                children.push(self.compile_particle(
+                                children.push(self.compile_particle_inner(
                                     particle,
                                     &child_inherited,
                                     &prior_element_names,
+                                    hidden,
                                 )?);
                             }
                         }
                     } else {
-                        children.push(self.compile_particle(
+                        children.push(self.compile_particle_inner(
                             particle,
                             &child_inherited,
                             &prior_element_names,
+                            hidden,
                         )?);
                         if let Particle::Element(el) = particle {
                             prior_element_names.push(el.name.clone());
@@ -951,7 +962,8 @@ impl<'a> IrBuilder<'a> {
                     particle_inherited_for_children(type_base, &choice.props, &self.defaults);
                 let mut branches = Vec::new();
                 for branch in &choice.branches {
-                    let node = self.compile_particle(branch, &child_inherited, &[])?;
+                    let node =
+                        self.compile_particle_inner(branch, &child_inherited, &[], hidden)?;
                     branches.push(ChoiceBranch {
                         name: self.strings.intern(branch_name(branch)),
                         initiator: branch_initiator(branch, &mut self.strings),
