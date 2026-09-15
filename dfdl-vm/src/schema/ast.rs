@@ -18,7 +18,7 @@ impl TypeName {
 }
 
 /// Parsed DFDL representation properties attached to a schema construct.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct DfdlProps {
     pub representation: Option<Representation>,
     pub byte_order: Option<ByteOrder>,
@@ -187,6 +187,8 @@ pub struct DfdlProps {
     pub parse_unparse_policy: Option<ParseUnparsePolicy>,
     /// `{ ../ex:a/b }` style inputValueCalc (path after `../`).
     pub input_value_calc_path: Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>>,
+    /// Arithmetic / absolute-path inputValueCalc (e.g. AC000 product expression).
+    pub input_value_calc_expression: Option<InputValueCalcExpression>,
     pub text_bidi: Option<bool>,
     pub floating: Option<bool>,
     /// `dfdl:escapeSchemeRef` (empty string clears inherited scheme).
@@ -337,6 +339,14 @@ pub enum TextPadKind {
     PadChar,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum InputValueCalcExpression {
+    Add(alloc::vec::Vec<InputValueCalcExpression>),
+    Mul(alloc::vec::Vec<InputValueCalcExpression>),
+    Path(alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>),
+    StringOf(alloc::boxed::Box<InputValueCalcExpression>),
+}
+
 /// One segment of `{ fn:concat(...) }` in `dfdl:inputValueCalc`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputValueCalcSegment {
@@ -347,6 +357,7 @@ pub enum InputValueCalcSegment {
         start: usize,
         length: usize,
     },
+    InfosetPath(alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

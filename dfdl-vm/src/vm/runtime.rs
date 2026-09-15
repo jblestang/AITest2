@@ -2463,6 +2463,11 @@ pub(crate) fn resolve_calendar_language(
                         out.push(ch);
                     }
                 }
+                IrInputValueCalcSegment::InfosetPath(_) => {
+                    return Err(crate::error::VmError::InvalidValue {
+                        message: "calendarLanguage infoset path not supported".into(),
+                    });
+                }
             }
         }
         if !calendar_language_is_valid(&out) {

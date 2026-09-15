@@ -774,8 +774,29 @@ impl<'a> IrBuilder<'a> {
                                     group_prior.push(el.name.clone());
                                 }
                             }
-                            children.extend(group_children);
-                            let _ = ir_props;
+                            let inline_hidden = seq
+                                .props
+                                .separator
+                                .as_deref()
+                                .map_or(true, |s| s.is_empty())
+                                && seq
+                                    .props
+                                    .terminator
+                                    .as_deref()
+                                    .map_or(true, |s| s.is_empty())
+                                && seq
+                                    .props
+                                    .initiator
+                                    .as_deref()
+                                    .map_or(true, |s| s.is_empty());
+                            if inline_hidden {
+                                children.extend(group_children);
+                            } else {
+                                children.push(self.push(IrNode::Sequence {
+                                    children: group_children,
+                                    props: ir_props,
+                                }));
+                            }
                             Ok(())
                         }
                         GroupDecl::Choice(ch) => {
@@ -1671,6 +1692,7 @@ fn finalize_element_props(
         && ir.input_value_calc_sibling.is_none()
         && ir.input_value_calc_segments.is_none()
         && ir.input_value_calc_path.is_none()
+        && ir.input_value_calc_expression.is_none()
     {
         let message = schema
             .map(|s| crate::schema_validate::length_not_defined_message(s, element_name))
@@ -2425,6 +2447,7 @@ fn validate_implicit_text_length(kind: ValueKind, props: &IrProps) -> Result<()>
         || props.input_value_calc_sibling.is_some()
         || props.input_value_calc_segments.is_some()
         || props.input_value_calc_path.is_some()
+        || props.input_value_calc_expression.is_some()
     {
         return Ok(());
     }
@@ -3316,6 +3339,9 @@ fn overlay_dfdl_to_ir(
                 .collect(),
         );
     }
+    if let Some(expr) = &props.input_value_calc_expression {
+        base.input_value_calc_expression = Some(intern_input_value_calc_expression(expr, strings));
+    }
     if props.choice_dispatch_sibling.is_some() {
         base.choice_dispatch_sibling = props
             .choice_dispatch_sibling
@@ -3467,6 +3493,7 @@ fn element_props_for_simple_type_compile(element: &DfdlProps) -> DfdlProps {
         input_value_calc_sibling: element.input_value_calc_sibling.clone(),
         input_value_calc_segments: element.input_value_calc_segments.clone(),
         input_value_calc_path: element.input_value_calc_path.clone(),
+        input_value_calc_expression: element.input_value_calc_expression.clone(),
         ..DfdlProps::default()
     }
 }
@@ -3748,6 +3775,12 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.input_value_calc_literal = overlay.input_value_calc_literal;
     out.input_value_calc_sibling = overlay.input_value_calc_sibling;
     out.input_value_calc_segments = overlay.input_value_calc_segments.clone();
+    if overlay.input_value_calc_path.is_some() {
+        out.input_value_calc_path = overlay.input_value_calc_path.clone();
+    }
+    if overlay.input_value_calc_expression.is_some() {
+        out.input_value_calc_expression = overlay.input_value_calc_expression.clone();
+    }
     if overlay.calendar_date_only {
         out.calendar_date_only = true;
     }
@@ -3837,7 +3870,8 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if (out.input_value_calc.is_some()
         || out.input_value_calc_sibling.is_some()
         || out.input_value_calc_segments.is_some()
-        || out.input_value_calc_path.is_some())
+        || out.input_value_calc_path.is_some()
+        || out.input_value_calc_expression.is_some())
         && out.length.is_none()
         && matches!(out.length_kind, LengthKind::Explicit | LengthKind::Fixed)
     {
@@ -3886,6 +3920,40 @@ pub fn compile_named_with_tunables(
     IrBuilder::new(schema, tunables)?.build(&root_name)
 }
 
+fn intern_input_value_calc_expression(
+    expr: &crate::schema::InputValueCalcExpression,
+    strings: &mut crate::ir::StringPool,
+) -> crate::ir::IrInputValueCalcExpression {
+    use crate::ir::IrInputValueCalcExpression;
+    use crate::schema::InputValueCalcExpression;
+    match expr {
+        InputValueCalcExpression::Add(items) => IrInputValueCalcExpression::Add(
+            items
+                .iter()
+                .map(|e| intern_input_value_calc_expression(e, strings))
+                .collect(),
+        ),
+        InputValueCalcExpression::Mul(items) => IrInputValueCalcExpression::Mul(
+            items
+                .iter()
+                .map(|e| intern_input_value_calc_expression(e, strings))
+                .collect(),
+        ),
+        InputValueCalcExpression::Path(steps) => IrInputValueCalcExpression::Path(
+            steps
+                .iter()
+                .map(|(prefix, local)| crate::ir::IrInputPathStep {
+                    prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
+                    local: strings.intern(local.clone()),
+                })
+                .collect(),
+        ),
+        InputValueCalcExpression::StringOf(inner) => IrInputValueCalcExpression::StringOf(
+            alloc::boxed::Box::new(intern_input_value_calc_expression(inner, strings)),
+        ),
+    }
+}
+
 fn intern_input_value_calc_segments(
     segments: &[crate::schema::InputValueCalcSegment],
     strings: &mut crate::ir::StringPool,
@@ -3908,6 +3976,17 @@ fn intern_input_value_calc_segments(
                 start: *start as u32,
                 length: *length as u32,
             },
+            crate::schema::InputValueCalcSegment::InfosetPath(steps) => {
+                crate::ir::IrInputValueCalcSegment::InfosetPath(
+                    steps
+                        .iter()
+                        .map(|(prefix, local)| crate::ir::IrInputPathStep {
+                            prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
+                            local: strings.intern(local.clone()),
+                        })
+                        .collect(),
+                )
+            }
         })
         .collect()
 }

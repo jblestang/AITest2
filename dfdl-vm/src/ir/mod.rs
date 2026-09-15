@@ -95,6 +95,15 @@ pub enum IrInputValueCalcSegment {
         start: u32,
         length: u32,
     },
+    InfosetPath(alloc::vec::Vec<IrInputPathStep>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IrInputValueCalcExpression {
+    Add(alloc::vec::Vec<IrInputValueCalcExpression>),
+    Mul(alloc::vec::Vec<IrInputValueCalcExpression>),
+    Path(alloc::vec::Vec<IrInputPathStep>),
+    StringOf(alloc::boxed::Box<IrInputValueCalcExpression>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -213,6 +222,7 @@ pub struct IrProps {
     pub input_value_calc_sibling: Option<StringId>,
     pub input_value_calc_segments: Option<Vec<IrInputValueCalcSegment>>,
     pub input_value_calc_path: Option<Vec<IrInputPathStep>>,
+    pub input_value_calc_expression: Option<IrInputValueCalcExpression>,
     /// True when the XSD type is `xs:date` (vs `xs:dateTime`).
     pub calendar_date_only: bool,
     /// `dfdl:calendarCheckPolicy="lax"` (lenient field normalization).
@@ -391,6 +401,7 @@ impl Default for IrProps {
             input_value_calc_sibling: None,
             input_value_calc_segments: None,
             input_value_calc_path: None,
+            input_value_calc_expression: None,
             calendar_date_only: false,
             calendar_check_policy_lax: false,
             output_value_calc: None,

@@ -2950,6 +2950,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.input_value_calc_path.is_some() {
         base.input_value_calc_path = overlay.input_value_calc_path.clone();
     }
+    if overlay.input_value_calc_expression.is_some() {
+        base.input_value_calc_expression = overlay.input_value_calc_expression.clone();
+    }
     if overlay.parse_unparse_policy.is_some() {
         base.parse_unparse_policy = overlay.parse_unparse_policy;
     }
@@ -3065,8 +3068,163 @@ fn split_top_level_commas(s: &str) -> alloc::vec::Vec<alloc::string::String> {
     out
 }
 
-fn parse_input_value_calc_concat(value: &str) -> Option<alloc::vec::Vec<crate::schema::InputValueCalcSegment>> {
+fn split_top_level_ivc_op(s: &str, op: char) -> Option<alloc::vec::Vec<alloc::string::String>> {
+    let mut parts = alloc::vec::Vec::new();
+    let mut current = alloc::string::String::new();
+    let mut depth = 0i32;
+    for ch in s.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            c if c == op && depth == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    if parts.len() <= 1 {
+        return None;
+    }
+    Some(parts)
+}
+
+fn parse_ivc_path_steps(s: &str) -> Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>> {
+    let s = s.trim();
+    let rest = if let Some(r) = s.strip_prefix('/') {
+        r
+    } else if let Some(r) = s.strip_prefix("../") {
+        r
+    } else {
+        return None;
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    let mut steps = alloc::vec::Vec::new();
+    for step in rest.split('/').filter(|p| !p.is_empty()) {
+        let (prefix, local) = if let Some((p, l)) = step.split_once(':') {
+            (Some(p.to_string()), l.to_string())
+        } else {
+            (None, step.to_string())
+        };
+        steps.push((prefix, local));
+    }
+    Some(steps)
+}
+
+fn parse_ivc_path_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
+    Some(crate::schema::InputValueCalcExpression::Path(parse_ivc_path_steps(s)?))
+}
+
+fn parse_ivc_mul_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
+    let s = s.trim();
+    if let Some(parts) = split_top_level_ivc_op(s, '*') {
+        let mut terms = alloc::vec::Vec::new();
+        for part in parts {
+            terms.push(parse_ivc_path_expr(&part)?);
+        }
+        return Some(crate::schema::InputValueCalcExpression::Mul(terms));
+    }
+    parse_ivc_path_expr(s)
+}
+
+fn parse_ivc_add_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
+    let s = s.trim();
+    if let Some(parts) = split_top_level_ivc_op(s, '+') {
+        let mut terms = alloc::vec::Vec::new();
+        for part in parts {
+            terms.push(parse_ivc_mul_expr(&part)?);
+        }
+        return Some(crate::schema::InputValueCalcExpression::Add(terms));
+    }
+    parse_ivc_mul_expr(s)
+}
+
+fn parse_input_value_calc_expression(value: &str) -> Option<crate::schema::InputValueCalcExpression> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    if let Some(rest) = inner.strip_prefix("xs:string(").and_then(|r| r.strip_suffix(')')) {
+        let path = parse_ivc_mul_expr(rest.trim())?;
+        return Some(crate::schema::InputValueCalcExpression::StringOf(
+            alloc::boxed::Box::new(path),
+        ));
+    }
+    parse_ivc_add_expr(inner)
+}
+
+fn parse_concat_arg_segment(part: &str) -> Option<alloc::vec::Vec<crate::schema::InputValueCalcSegment>> {
     use crate::schema::InputValueCalcSegment;
+    let part = part.trim();
+    if part.is_empty() {
+        return None;
+    }
+    if let Some(nested) = part.strip_prefix("fn:concat(") {
+        if !part.ends_with(')') {
+            return None;
+        }
+        let nested_args = &nested[..nested.len() - 1];
+        return parse_concat_args_flat(nested_args);
+    }
+    if let Some(name) = part.strip_prefix("../") {
+        return Some(alloc::vec![InputValueCalcSegment::Sibling(
+            local_name_from_qname(name).to_string(),
+        )]);
+    }
+    if part.starts_with('/') {
+        if let Some(steps) = parse_ivc_path_steps(part) {
+            return Some(alloc::vec![InputValueCalcSegment::InfosetPath(steps)]);
+        }
+    }
+    if part.len() >= 2
+        && ((part.starts_with('\'') && part.ends_with('\''))
+            || (part.starts_with('"') && part.ends_with('"')))
+    {
+        let inner = &part[1..part.len() - 1];
+        let unescaped = inner.replace("''", "'").replace("\"\"", "\"");
+        return Some(alloc::vec![InputValueCalcSegment::Literal(unescaped)]);
+    }
+    if let Some(rest) = part.strip_prefix("fn:substring(") {
+        if !rest.ends_with(')') {
+            return None;
+        }
+        let sub_args = split_top_level_commas(&rest[..rest.len() - 1]);
+        if sub_args.len() != 3 {
+            return None;
+        }
+        let sib = sub_args[0].strip_prefix("../")?;
+        let start: usize = sub_args[1].parse().ok()?;
+        let length: usize = sub_args[2].parse().ok()?;
+        return Some(alloc::vec![InputValueCalcSegment::Substring {
+            sibling: local_name_from_qname(sib).to_string(),
+            start,
+            length,
+        }]);
+    }
+    None
+}
+
+fn parse_concat_args_flat(args: &str) -> Option<alloc::vec::Vec<crate::schema::InputValueCalcSegment>> {
+    let mut out = alloc::vec::Vec::new();
+    for part in split_top_level_commas(args) {
+        out.extend(parse_concat_arg_segment(&part)?);
+    }
+    Some(out)
+}
+
+fn parse_input_value_calc_concat(value: &str) -> Option<alloc::vec::Vec<crate::schema::InputValueCalcSegment>> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;
@@ -3077,47 +3235,7 @@ fn parse_input_value_calc_concat(value: &str) -> Option<alloc::vec::Vec<crate::s
         return None;
     }
     let args = &rest[..rest.len() - 1];
-    let mut out = alloc::vec::Vec::new();
-    for part in split_top_level_commas(args) {
-        if part.is_empty() {
-            return None;
-        }
-        if let Some(name) = part.strip_prefix("../") {
-            out.push(InputValueCalcSegment::Sibling(
-                local_name_from_qname(name).to_string(),
-            ));
-            continue;
-        }
-        if part.len() >= 2
-            && ((part.starts_with('\'') && part.ends_with('\''))
-                || (part.starts_with('"') && part.ends_with('"')))
-        {
-            let inner = &part[1..part.len() - 1];
-            let unescaped = inner.replace("''", "'").replace("\"\"", "\"");
-            out.push(InputValueCalcSegment::Literal(unescaped));
-            continue;
-        }
-        if let Some(rest) = part.strip_prefix("fn:substring(") {
-            if !rest.ends_with(')') {
-                return None;
-            }
-            let sub_args = split_top_level_commas(&rest[..rest.len() - 1]);
-            if sub_args.len() != 3 {
-                return None;
-            }
-            let sib = sub_args[0].strip_prefix("../")?;
-            let start: usize = sub_args[1].parse().ok()?;
-            let length: usize = sub_args[2].parse().ok()?;
-            out.push(InputValueCalcSegment::Substring {
-                sibling: local_name_from_qname(sib).to_string(),
-                start,
-                length,
-            });
-            continue;
-        }
-        return None;
-    }
-    Some(out)
+    parse_concat_args_flat(args)
 }
 
 fn parse_parse_unparse_policy(value: &str) -> Result<ParseUnparsePolicy> {
@@ -4027,7 +4145,9 @@ fn props_from_attrs_with_variables(
                 }
             }
             "inputValueCalc" => {
-                if let Some(segments) = parse_input_value_calc_concat(value) {
+                if let Some(expr) = parse_input_value_calc_expression(value) {
+                    props.input_value_calc_expression = Some(expr);
+                } else if let Some(segments) = parse_input_value_calc_concat(value) {
                     props.input_value_calc_segments = Some(segments);
                 } else if let Some(steps) = parse_input_value_calc_relative_path(value) {
                     props.input_value_calc_path = Some(steps);
