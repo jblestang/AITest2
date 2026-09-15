@@ -179,6 +179,8 @@ pub struct DfdlProps {
     pub assert_int_eq: Option<i64>,
     /// `dfdl:discriminator` body text for choice branch selection.
     pub discriminator_test: Option<String>,
+    /// XPath prefix bindings in scope on this construct's `dfdl:discriminator` only.
+    pub discriminator_xpath_prefixes: Option<alloc::collections::BTreeMap<String, String>>,
     /// Daffodil extension `dfdlx:objectKind` (`bytes` / `chars`).
     pub object_kind: Option<ObjectKind>,
     /// `dfdlx:parseUnparsePolicy` (`both` / `parseOnly` / `unparseOnly`).

@@ -2043,15 +2043,12 @@ impl<'a> XsdParser<'a> {
                     .annotation_prefix_overrides
                     .last()
                     .cloned()
-                    .unwrap_or_else(|| self.doc.namespace_prefixes.clone());
+                    .unwrap_or_default();
                 collect_namespace_prefixes(&attrs, &mut scoped);
                 let test = self.read_simple_element_text(local)?;
                 if local == "discriminator" {
                     let trimmed = test.trim().to_string();
-                    crate::schema_validate::validate_discriminator_xpath_prefixes(&trimmed, &scoped)
-                        .map_err(|e| ParseError::InvalidXml {
-                            message: e.to_string(),
-                        })?;
+                    props.discriminator_xpath_prefixes = Some(scoped);
                     props.discriminator_test = Some(trimmed);
                 }
                 apply_dfdl_assert_test(&mut props, test.trim());
@@ -2866,6 +2863,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.discriminator_test.is_some() {
         base.discriminator_test = overlay.discriminator_test.clone();
+    }
+    if overlay.discriminator_xpath_prefixes.is_some() {
+        base.discriminator_xpath_prefixes = overlay.discriminator_xpath_prefixes.clone();
     }
     if overlay.object_kind.is_some() {
         base.object_kind = overlay.object_kind;

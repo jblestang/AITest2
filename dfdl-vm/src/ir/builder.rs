@@ -49,6 +49,19 @@ fn dfdl_props_for_element_ref(schema: &SchemaDocument, element: &ElementDecl) ->
     if let Some(ref er) = element.element_ref {
         if let Some(g) = get_global_element(schema, er) {
             props = merge_dfdl_props(g.props.clone(), props);
+            let imported = g
+                .source_label
+                .as_deref()
+                .is_some_and(|s| s != schema.schema_source_label.as_deref().unwrap_or(""));
+            if imported {
+                if props.initiator.is_none() {
+                    props.initiator = g
+                        .format_context
+                        .initiator
+                        .clone()
+                        .filter(|s| !s.is_empty());
+                }
+            }
         }
     }
     props
@@ -239,19 +252,6 @@ impl<'a> IrBuilder<'a> {
             variables: self.schema.variables.clone(),
         };
         validate_program_sequence_bit_orders(&program)?;
-        for node in &program.nodes {
-            if let IrNode::Element { props, .. } = node {
-                if let Some(id) = props.discriminator_test {
-                    let test = program.strings.get(id).map_err(|e| SchemaError::InvalidProperty {
-                        message: e.to_string(),
-                    })?;
-                    crate::schema_validate::validate_discriminator_xpath_prefixes(
-                        test,
-                        &self.schema.namespace_prefixes,
-                    )?;
-                }
-            }
-        }
         Ok(program)
     }
 
@@ -378,6 +378,14 @@ impl<'a> IrBuilder<'a> {
         match particle {
             Particle::Element(element) => {
                 let element_props = dfdl_props_for_element_ref(self.schema, element);
+                if let Some(ref test) = element_props.discriminator_test {
+                    let empty = alloc::collections::BTreeMap::new();
+                    let prefixes = element_props
+                        .discriminator_xpath_prefixes
+                        .as_ref()
+                        .unwrap_or(&empty);
+                    crate::schema_validate::validate_discriminator_xpath_prefixes(test, prefixes)?;
+                }
                 let mut merged =
                     self.merge_props_full(inherited, &DfdlProps::default(), &element_props)?;
                 apply_format_default_delimiters(&mut merged, &self.defaults);

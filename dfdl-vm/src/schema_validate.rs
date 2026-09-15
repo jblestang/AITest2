@@ -71,6 +71,7 @@ pub fn validate_compiled_schema(
     validate_max_hex_binary_length(schema, root, tunables)?;
     validate_unique_particle_attribution(schema)?;
     validate_sequence_separator_encoding(schema, root)?;
+    validate_discriminators_in_reachable_schema(schema, root)?;
     Ok(())
 }
 
@@ -567,6 +568,71 @@ fn enqueue_particle(schema: &SchemaDocument, particle: &Particle, queue: &mut Ve
 
 const XPATH_FUNCTIONS_NS: &str = "http://www.w3.org/2005/xpath-functions";
 
+fn validate_discriminators_in_reachable_schema(
+    schema: &SchemaDocument,
+    root: &str,
+) -> Result<(), SchemaError> {
+    let mut queue = VecDeque::new();
+    let empty = alloc::collections::BTreeMap::new();
+    if let Some(ge) = crate::schema::get_global_element(schema, root) {
+        if let Some(ref test) = ge.props.discriminator_test {
+            let prefixes = ge
+                .props
+                .discriminator_xpath_prefixes
+                .as_ref()
+                .unwrap_or(&empty);
+            validate_discriminator_xpath_prefixes(test, prefixes)?;
+        }
+        if let Some(td) = schema.resolve_type(&ge.type_name) {
+            if let TypeDef::Complex { content, .. } = td {
+                enqueue_complex_content_for_discriminator_walk(schema, content, &mut queue)?;
+            }
+        }
+    }
+    while let Some(particles) = queue.pop_front() {
+        for p in &particles {
+            if let Particle::Element(el) = p {
+                if let Some(ref test) = el.props.discriminator_test {
+                    let prefixes = el
+                        .props
+                        .discriminator_xpath_prefixes
+                        .as_ref()
+                        .unwrap_or(&empty);
+                    validate_discriminator_xpath_prefixes(test, prefixes)?;
+                }
+                if let Some(td) = schema.resolve_type(&el.type_name) {
+                    if let TypeDef::Complex { content, .. } = td {
+                        enqueue_complex_content_for_discriminator_walk(schema, content, &mut queue)?;
+                    }
+                }
+            } else if let Particle::Sequence(seq) = p {
+                queue.push_back(seq.particles.clone());
+            } else if let Particle::Choice(ch) = p {
+                queue.push_back(ch.branches.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn enqueue_complex_content_for_discriminator_walk(
+    _schema: &SchemaDocument,
+    content: &ComplexContent,
+    queue: &mut VecDeque<alloc::vec::Vec<Particle>>,
+) -> Result<(), SchemaError> {
+    match content {
+        ComplexContent::Empty => Ok(()),
+        ComplexContent::Sequence(s) => {
+            queue.push_back(s.particles.clone());
+            Ok(())
+        }
+        ComplexContent::Choice(c) => {
+            queue.push_back(c.branches.clone());
+            Ok(())
+        }
+    }
+}
+
 pub fn validate_discriminator_xpath_prefixes(
     test: &str,
     prefix_map: &alloc::collections::BTreeMap<String, String>,
@@ -599,6 +665,21 @@ fn effective_length_kind(
         .unwrap_or(crate::schema::LengthKind::Delimited)
 }
 
+fn ascii_infix_separator_scannable_in_encoding(
+    seq_props: &crate::schema::DfdlProps,
+    field_enc: &str,
+) -> bool {
+    let Some(sep) = seq_props.separator.as_deref() else {
+        return false;
+    };
+    if sep.is_empty() || !sep.is_ascii() {
+        return false;
+    }
+    use crate::vm::encoding::normalize_encoding_name;
+    let enc = normalize_encoding_name(field_enc);
+    enc.is_some_and(|n| n.starts_with("utf-16") || n == "utf-8" || n == "us-ascii" || n == "iso-8859-1")
+}
+
 fn encodings_compatible_for_delimiter_scan(a: &str, b: &str) -> bool {
     use crate::vm::encoding::normalize_encoding_name;
     match (
@@ -618,7 +699,7 @@ fn validate_sequence_separator_encoding(schema: &SchemaDocument, root: &str) -> 
     if let Some(td) = schema.resolve_type(&ge.type_name) {
         if let TypeDef::Complex { content, .. } = td {
             let inherited = schema.format_defaults.props.clone();
-            enqueue_complex_content(schema, content, &inherited, &mut queue);
+            enqueue_complex_content(schema, content, &inherited, &mut queue)?;
         }
     }
     while let Some((particles, inherited)) = queue.pop_front() {
@@ -631,7 +712,7 @@ fn validate_sequence_separator_encoding(schema: &SchemaDocument, root: &str) -> 
             )?;
         }
         for p in &particles {
-            enqueue_particle_with_inherited(schema, p, &inherited, &mut queue);
+            enqueue_particle_with_inherited(schema, p, &inherited, &mut queue)?;
         }
     }
     Ok(())
@@ -667,14 +748,18 @@ fn enqueue_complex_content(
     content: &ComplexContent,
     inherited: &crate::schema::DfdlProps,
     queue: &mut VecDeque<(alloc::vec::Vec<Particle>, crate::schema::DfdlProps)>,
-) {
+) -> Result<(), SchemaError> {
     match content {
-        ComplexContent::Empty => {}
+        ComplexContent::Empty => Ok(()),
         ComplexContent::Sequence(s) => {
-            queue.push_back((s.particles.clone(), inherited.clone()));
+            validate_one_sequence_separator_encoding(schema, &s.props, &s.particles, inherited)?;
+            let group_inherited = merge_inherited_group_props(inherited, &s.props);
+            queue.push_back((s.particles.clone(), group_inherited));
+            Ok(())
         }
         ComplexContent::Choice(c) => {
             queue.push_back((c.branches.clone(), inherited.clone()));
+            Ok(())
         }
     }
 }
@@ -684,18 +769,19 @@ fn enqueue_particle_with_inherited(
     p: &Particle,
     inherited: &crate::schema::DfdlProps,
     queue: &mut VecDeque<(alloc::vec::Vec<Particle>, crate::schema::DfdlProps)>,
-) {
+) -> Result<(), SchemaError> {
     match p {
         Particle::Element(el) => {
             if let Some(td) = schema.resolve_type(&el.type_name) {
                 if let TypeDef::Complex { content, props, .. } = td {
                     let next = merge_inherited_group_props(inherited, &el.props);
                     let next = crate::schema::merge_dfdl_props(next, props.clone());
-                    enqueue_complex_content(schema, content, &next, queue);
+                    enqueue_complex_content(schema, content, &next, queue)?;
                 }
             }
         }
         Particle::Sequence(seq) => {
+            validate_one_sequence_separator_encoding(schema, &seq.props, &seq.particles, inherited)?;
             let next = merge_inherited_group_props(inherited, &seq.props);
             queue.push_back((seq.particles.clone(), next));
         }
@@ -717,6 +803,7 @@ fn enqueue_particle_with_inherited(
             }
         }
     }
+    Ok(())
 }
 
 fn element_effective_props(schema: &SchemaDocument, el: &ElementDecl) -> crate::schema::DfdlProps {
@@ -724,7 +811,6 @@ fn element_effective_props(schema: &SchemaDocument, el: &ElementDecl) -> crate::
     if let Some(ref er) = el.element_ref {
         if let Some(g) = crate::schema::get_global_element(schema, er) {
             props = crate::schema::merge_dfdl_props(g.props.clone(), props);
-            crate::schema::merge_global_element_format_context(&mut props, &g.format_context);
         }
     }
     props
@@ -774,12 +860,15 @@ fn validate_one_sequence_separator_encoding(
     for pair in elems.windows(2) {
         let prev = element_effective_props(schema, pair[0]);
         let next = element_effective_props(schema, pair[1]);
-        if effective_length_kind(&prev, inherited) != crate::schema::LengthKind::Delimited {
+        if effective_length_kind(&prev, &group_props) != crate::schema::LengthKind::Delimited {
             continue;
         }
         if !has_non_empty_delimiter(&prev, "terminator") {
             if let Some(child_enc) = effective_encoding_name(&prev) {
-                if !encodings_compatible_for_delimiter_scan(seq_enc, child_enc) {
+                let allow_ascii_utf16 = ascii_infix_separator_scannable_in_encoding(seq_props, child_enc)
+                    && !encodings_compatible_for_delimiter_scan(seq_enc, child_enc);
+                if !encodings_compatible_for_delimiter_scan(seq_enc, child_enc) && !allow_ascii_utf16
+                {
                     return Err(SchemaError::InvalidProperty {
                         message: alloc::format!(
                             "Schema Definition Error: The separator of the enclosing group must be in the same encoding as the delimited element that precedes it. encoding separator"
@@ -788,7 +877,20 @@ fn validate_one_sequence_separator_encoding(
                 }
             }
         }
-        let _ = next;
+        if effective_length_kind(&next, &group_props) == crate::schema::LengthKind::Delimited
+            && effective_length_kind(&prev, &group_props) == crate::schema::LengthKind::Delimited
+            && !has_non_empty_delimiter(&prev, "terminator")
+        {
+            if let Some(next_enc) = effective_encoding_name(&next) {
+                if !encodings_compatible_for_delimiter_scan(seq_enc, next_enc) {
+                    return Err(SchemaError::InvalidProperty {
+                        message: alloc::format!(
+                            "Schema Definition Error: The separator of the enclosing group must be in the same encoding as the delimited element that precedes it. encoding separator"
+                        ),
+                    });
+                }
+            }
+        }
     }
     Ok(())
 }
