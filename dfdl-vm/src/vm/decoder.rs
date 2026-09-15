@@ -3336,7 +3336,7 @@ impl<'a> Decoder<'a> {
         if let Some(msg_id) = props.facet_assert_message {
             if let Ok(msg) = self.ctx.strings().get(msg_id) {
                 return Err(VmError::InvalidValue {
-                    message: msg.to_string(),
+                    message: alloc::format!("Parse Error. Assertion failed: {msg}"),
                 }
                 .into());
             }
