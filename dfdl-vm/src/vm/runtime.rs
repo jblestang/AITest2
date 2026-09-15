@@ -863,7 +863,7 @@ pub(crate) fn read_binary_scalar(
             {
                 validate_packed_binary_bit_length_parse(len, kind, props.binary_number_rep)?;
             }
-            if len == 0 {
+            if len == 0 && kind != ValueKind::Decimal {
                 return Err(VmError::InvalidValue {
                     message: "zero-length scalar".into(),
                 });
@@ -881,6 +881,11 @@ pub(crate) fn read_binary_scalar(
             && kind != ValueKind::String
             && kind != ValueKind::HexBinary
         {
+            if len < 8 {
+                let raw = cursor.read_stream_bits(len, props.bit_order)?;
+                let raw = normalize_bit_field_raw(raw, len, props.byte_order, props.bit_order);
+                return decode_binary_from_raw_bits(kind, raw, len, props, strings, tunables);
+            }
             let bytes = if props.bit_order == BitOrder::LeastSignificantBitFirst {
                 cursor.read_hex_binary_bits(len, props.bit_order)?
             } else if cursor.bit_count != 0 {
@@ -4617,7 +4622,7 @@ fn normalize_bit_field_raw(
     }
     // LSBF 1–2 bit fields pack LSB-first in the stream (reverse to MSBF numeric order).
     if bit_width < 8 {
-        if bit_order == BitOrder::LeastSignificantBitFirst && bit_width <= 2 {
+        if bit_order == BitOrder::LeastSignificantBitFirst && bit_width <= 3 {
             return reverse_field_bits(raw, bit_width) & bit_mask(bit_width);
         }
         return raw & bit_mask(bit_width);
@@ -5697,7 +5702,6 @@ pub(crate) fn runtime_sde_terminating_delimiter_encoding_mismatch() -> crate::er
 }
 
 pub(crate) fn decode_utf16be_prefix_snippet(data: &[u8], max_chars: usize) -> alloc::string::String {
-    use crate::schema::EncodingErrorPolicy;
     let mut out = alloc::string::String::new();
     let mut pos = 0usize;
     let mut chars = 0usize;
@@ -5716,7 +5720,6 @@ pub(crate) fn decode_utf16be_prefix_snippet(data: &[u8], max_chars: usize) -> al
             break;
         }
     }
-    let _ = EncodingErrorPolicy::Error;
     out
 }
 
@@ -7500,7 +7503,7 @@ pub(crate) fn insufficient_data_bits_error(needed_bits: usize, found_bits: usize
     use crate::error::VmError;
     VmError::InvalidValue {
         message: alloc::format!(
-            "Parse Error. Insufficient bits in data. Needed {needed_bits} bit(s). found only {found_bits}. {found_bits} available"
+            "Parse Error. Insufficient bits in data. {needed_bits} bit(s) but found only {found_bits}"
         ),
     }
 }

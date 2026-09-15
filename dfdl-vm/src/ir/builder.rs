@@ -941,6 +941,25 @@ impl<'a> IrBuilder<'a> {
             }
             .into());
         };
+        let includes_prefix = element_props
+            .prefix_includes_prefix_length
+            .or(type_props.prefix_includes_prefix_length)
+            .unwrap_or(false);
+        if includes_prefix {
+            if let Some(TypeDef::Simple { props: pprops, .. }) = self.schema.resolve_type(type_name) {
+                if pprops.length_units == Some(LengthUnits::Bits)
+                    && ir.length_units == LengthUnits::Bytes
+                {
+                    return Err(SchemaError::InvalidProperty {
+                        message: alloc::format!(
+                            "Schema Definition Error. ex:{} dfdl:prefixIncludesPrefixLength=\"yes\" dfdl:prefixLengthType dfdl:lengthUnits",
+                            type_name.as_str()
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
         ir.prefix_length = Some(alloc::boxed::Box::new(
             self.resolve_prefix_length_type(type_name, depth)?,
         ));
@@ -1010,13 +1029,6 @@ impl<'a> IrBuilder<'a> {
         )?;
         let kind = value_kind_from_simple(&self.schema, base);
         validate_prefix_length_type(type_name, props, &prefix_props, kind, &self.strings)?;
-        if depth >= 1 && prefix_props.length_kind == LengthKind::Prefixed {
-            return Err(SchemaError::InvalidProperty {
-                message: "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" not supported"
-                    .into(),
-            }
-            .into());
-        }
         self.attach_prefix_length(props, &DfdlProps::default(), &mut prefix_props, depth + 1)?;
         if kind == ValueKind::Decimal {
             return Err(SchemaError::InvalidProperty {
@@ -2482,13 +2494,6 @@ fn validate_prefix_length_type(
         .into());
     }
 
-    if prefix_props.length_kind == LengthKind::Prefixed {
-        return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" not supported"
-                .into(),
-        }
-        .into());
-    }
     let encoding = strings
         .get(prefix_props.encoding)
         .unwrap_or("utf-8");

@@ -736,6 +736,9 @@ impl<'a> Decoder<'a> {
         let mut min = props.occurs_min;
         if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
             min = 0;
+            if cursor.is_empty() {
+                return Ok(DfdlValue::Array(Vec::new()));
+            }
         }
         let mut max = props.occurs_max.unwrap_or(u64::MAX);
         if props.occurs_count_kind == OccursCountKind::Expression {
@@ -787,9 +790,6 @@ impl<'a> Decoder<'a> {
         }
         while (items.len() as u64) < max {
             if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
-                if items.is_empty() {
-                    items.push(DfdlValue::string(""));
-                }
                 break;
             }
             if items.len() as u64 >= min && cursor.is_empty() {
@@ -1146,13 +1146,6 @@ impl<'a> Decoder<'a> {
                             LengthUnits::Bytes => len.saturating_mul(8),
                             LengthUnits::Characters => unreachable!("handled above"),
                         };
-                        let available = crate::vm::runtime::bits_available_in_cursor(cursor);
-                        if available < bit_len {
-                            return Err(crate::vm::runtime::insufficient_data_bits_error(
-                                bit_len, available,
-                            )
-                            .into());
-                        }
                         let frame_start = cursor.absolute_bit_index();
                         let prev_limit = cursor
                             .frame_bit_limit
@@ -1612,11 +1605,14 @@ impl<'a> Decoder<'a> {
         parent_sequence: Option<&IrProps>,
     ) -> Result<bool> {
         let parent_sep = parent_sequence.and_then(|p| p.separator);
+        let parent_postfix = parent_sequence.is_some_and(|p| {
+            p.separator_position == SeparatorPosition::Postfix && p.separator.is_some()
+        });
         for stop in stop_sequences {
             let Some(sep_id) = stop.separator else {
                 continue;
             };
-            if parent_sep == Some(sep_id) {
+            if parent_sep == Some(sep_id) && !parent_postfix {
                 continue;
             }
             let pat = self.ctx.strings().get(sep_id)?;
@@ -1814,6 +1810,17 @@ impl<'a> Decoder<'a> {
             && !cursor.is_empty();
         if mandatory_postfix {
             if cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+                return Ok(());
+            }
+            // Postfix may already have been consumed by separator-bounded implicit complex decode.
+            if crate::schema::match_delimiter_opts_for_encoding(
+                &cursor.data[cursor.pos..],
+                pat,
+                props.ignore_case,
+                enc.as_deref(),
+            )
+            .is_none()
+            {
                 return Ok(());
             }
             let found_display =
@@ -2234,6 +2241,9 @@ fn should_write_separator(position: SeparatorPosition, index: usize, total: usiz
 }
 
 fn insert_field(map: &mut BTreeMap<String, DfdlValue>, key: String, value: DfdlValue) {
+    if matches!(&value, DfdlValue::Array(items) if items.is_empty()) {
+        return;
+    }
     if let Some(existing) = map.remove(&key) {
         map.insert(key, append_value(existing, value));
     } else {
