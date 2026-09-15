@@ -484,6 +484,8 @@ pub struct ElementDecl {
     /// True when the XSD `name="..."` attribute was present (not only `ref`).
     pub has_element_name_attr: bool,
     pub type_name: TypeName,
+    pub type_xsd_qname: Option<String>,
+    pub type_qname_scope: Option<alloc::collections::BTreeMap<String, String>>,
     pub props: DfdlProps,
     pub particle: Option<Box<Particle>>,
     pub default_value: Option<String>,
@@ -712,6 +714,8 @@ pub struct GlobalElement {
     pub type_qname_prefixed: bool,
     /// Raw `type="..."` attribute when present (e.g. `c03:nestType`).
     pub type_xsd_qname: Option<String>,
+    /// Namespace prefix bindings in scope where `type="..."` was written.
+    pub type_qname_scope: Option<alloc::collections::BTreeMap<String, String>>,
     pub props: DfdlProps,
     pub format_context: DfdlProps,
     pub source_label: Option<String>,

@@ -8,7 +8,7 @@ mod resolver;
 
 pub(crate) use parser::{
     format_ref_qname_for_diag, lookup_named_escape_scheme_in_document,
-    lookup_named_format_in_document, merge_dfdl_props,
+    lookup_named_format_in_document, merge_dfdl_props, resolve_type_qname_in_schema,
 };
 
 pub use ast::*;

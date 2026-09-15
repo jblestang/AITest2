@@ -49,6 +49,7 @@ pub fn validate_compiled_schema(
         });
     }
     validate_type_references(schema)?;
+    validate_element_type_qnames(schema, root)?;
     validate_name_and_ref(schema)?;
     validate_escape_separator_distinct(schema)?;
     validate_invalid_restrictions(schema, root, tunables)?;
@@ -58,7 +59,7 @@ pub fn validate_compiled_schema(
 }
 
 fn validate_unique_particle_attribution(schema: &SchemaDocument) -> Result<(), SchemaError> {
-    for particles in all_particle_lists(schema) {
+    for particles in all_choice_particle_lists(schema) {
         validate_particle_list_upa(particles)?;
     }
     Ok(())
@@ -119,6 +120,115 @@ fn validate_max_hex_binary_length(
         return Err(SchemaError::InvalidProperty {
             message: alloc::format!("Parse Error: xs:hexBinary maximum {max} {len}"),
         });
+    }
+    Ok(())
+}
+
+fn validate_element_type_qnames(schema: &SchemaDocument, root: &str) -> Result<(), SchemaError> {
+    let Some(ge) = crate::schema::get_global_element(schema, root) else {
+        return Ok(());
+    };
+    if let Some(ref q) = ge.type_xsd_qname {
+        crate::schema::resolve_type_qname_in_schema(
+            schema,
+            q,
+            ge.type_qname_scope.as_ref(),
+        )?;
+    }
+    let mut queue = VecDeque::new();
+    if BuiltinType::from_xsd(ge.type_name.as_str()).is_none() {
+        queue.push_back(ge.type_name.clone());
+    }
+    let mut seen = BTreeSet::new();
+    while let Some(tn) = queue.pop_front() {
+        if !seen.insert(tn.clone()) {
+            continue;
+        }
+        let Some(td) = schema.resolve_type(&tn) else {
+            continue;
+        };
+        let TypeDef::Complex { content, .. } = td else {
+            continue;
+        };
+        validate_particles_type_qnames(schema, content, &mut queue)?;
+    }
+    Ok(())
+}
+
+fn validate_particles_type_qnames(
+    schema: &SchemaDocument,
+    content: &ComplexContent,
+    queue: &mut VecDeque<TypeName>,
+) -> Result<(), SchemaError> {
+    let particles = match content {
+        ComplexContent::Sequence(s) => &s.particles,
+        ComplexContent::Choice(c) => &c.branches,
+        ComplexContent::Empty => return Ok(()),
+    };
+    for p in particles {
+        validate_particle_type_qnames(schema, p, queue)?;
+    }
+    Ok(())
+}
+
+fn validate_particle_type_qnames(
+    schema: &SchemaDocument,
+    particle: &Particle,
+    queue: &mut VecDeque<TypeName>,
+) -> Result<(), SchemaError> {
+    match particle {
+        Particle::Element(el) => {
+            let type_qname = el
+                .type_xsd_qname
+                .as_deref()
+                .or_else(|| {
+                    el.element_ref.as_deref().and_then(|r| {
+                        crate::schema::get_global_element(schema, r)
+                            .and_then(|g| g.type_xsd_qname.as_deref())
+                    })
+                });
+            let type_scope = if el.type_xsd_qname.is_some() {
+                el.type_qname_scope.as_ref()
+            } else {
+                el.element_ref.as_deref().and_then(|r| {
+                    crate::schema::get_global_element(schema, r)
+                        .and_then(|g| g.type_qname_scope.as_ref())
+                })
+            };
+            if let Some(q) = type_qname {
+                crate::schema::resolve_type_qname_in_schema(schema, q, type_scope)?;
+            }
+            if BuiltinType::from_xsd(el.type_name.as_str()).is_none() {
+                queue.push_back(el.type_name.clone());
+            }
+        }
+        Particle::Sequence(s) => {
+            for p in &s.particles {
+                validate_particle_type_qnames(schema, p, queue)?;
+            }
+        }
+        Particle::Choice(c) => {
+            for p in &c.branches {
+                validate_particle_type_qnames(schema, p, queue)?;
+            }
+        }
+        Particle::GroupRef(gr) => {
+            let local = gr.name.rsplit(':').next().unwrap_or(gr.name.as_str());
+            if let Some(group) = schema.groups.get(local) {
+                match group {
+                    GroupDecl::Sequence(s) => {
+                        for p in &s.particles {
+                            validate_particle_type_qnames(schema, p, queue)?;
+                        }
+                    }
+                    GroupDecl::Choice(c) => {
+                        for p in &c.branches {
+                            validate_particle_type_qnames(schema, p, queue)?;
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -187,6 +297,23 @@ fn all_particle_lists(schema: &SchemaDocument) -> Vec<&[Particle]> {
         match g {
             GroupDecl::Sequence(s) => out.push(s.particles.as_slice()),
             GroupDecl::Choice(c) => out.push(c.branches.as_slice()),
+        }
+    }
+    out
+}
+
+fn all_choice_particle_lists(schema: &SchemaDocument) -> Vec<&[Particle]> {
+    let mut out = Vec::new();
+    for td in schema.types.values() {
+        if let TypeDef::Complex { content, .. } = td {
+            if let ComplexContent::Choice(c) = content {
+                out.push(c.branches.as_slice());
+            }
+        }
+    }
+    for g in schema.groups.values() {
+        if let GroupDecl::Choice(c) = g {
+            out.push(c.branches.as_slice());
         }
     }
     out

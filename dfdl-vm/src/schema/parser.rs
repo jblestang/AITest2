@@ -397,7 +397,7 @@ impl<'a> XsdParser<'a> {
                     let (child_attrs, child_namespace) = self.reader.take_start_element()?;
                     match local.as_str() {
                         "element" => {
-                            if let Err(e) = self.parse_global_element(child_attrs) {
+                            if let Err(e) = self.parse_global_element(child_attrs, child_namespace) {
                                 self.doc.schema_diagnostics.push(e.to_string());
                                 let _ = self.skip_element_body("element");
                             }
@@ -575,14 +575,29 @@ impl<'a> XsdParser<'a> {
         lookup_named_format_in_document(&self.doc, qname)
     }
 
-    fn parse_global_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
+    fn element_type_prefix_map(
+        &self,
+        namespace: &xml_no_std::namespace::Namespace,
+    ) -> BTreeMap<String, String> {
+        let mut scoped = self.doc.namespace_prefixes.clone();
+        for (prefix, uri) in crate::xml_util::namespace_prefix_map(namespace) {
+            scoped.insert(prefix, uri);
+        }
+        scoped
+    }
+
+    fn parse_global_element(
+        &mut self,
+        attrs: BTreeMap<String, String>,
+        namespace: xml_no_std::namespace::Namespace,
+    ) -> Result<()> {
         let suppress = take_daf_suppress_warnings(&attrs);
         let prev_suppress =
             core::mem::replace(&mut self.suppress_schema_definition_warnings, suppress);
         let name_hint = attrs.get("name").cloned();
         let prev_scope = self.warning_scope.clone();
         self.warning_scope = name_hint;
-        let parse_result = self.parse_global_element_inner(attrs);
+        let parse_result = self.parse_global_element_inner(attrs, namespace);
         self.warning_scope = prev_scope;
         self.suppress_schema_definition_warnings = prev_suppress;
         parse_result
@@ -600,7 +615,12 @@ impl<'a> XsdParser<'a> {
         )
     }
 
-    fn parse_global_element_inner(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
+    fn parse_global_element_inner(
+        &mut self,
+        attrs: BTreeMap<String, String>,
+        namespace: xml_no_std::namespace::Namespace,
+    ) -> Result<()> {
+        let type_prefix_map = self.element_type_prefix_map(&namespace);
         let (xsd_attrs, dfdl_from_attrs) =
             split_dfdl_attrs_with_variables(
                 "element",
@@ -627,8 +647,13 @@ impl<'a> XsdParser<'a> {
             props.suppress_schema_definition_warnings = Some(s.clone());
         }
 
+        let type_xsd_qname = xsd_attrs.get("type").cloned();
+        let type_qname_scope = type_xsd_qname
+            .as_ref()
+            .map(|_| type_prefix_map.clone());
         let type_name = if let Some(t) = xsd_attrs.get("type") {
-            TypeName::new(normalize_qname(t))
+            resolve_type_qname_in_schema(&self.doc, t, Some(&type_prefix_map))
+                .unwrap_or_else(|_| TypeName::new(normalize_qname(t)))
         } else {
             self.reader.skip_insignificant_ws()?;
             if self.reader.peek_is_end("element")? {
@@ -639,6 +664,7 @@ impl<'a> XsdParser<'a> {
                     name,
                     type_qname_prefixed: false,
                     type_xsd_qname: None,
+                    type_qname_scope: None,
                     type_name: TypeName::new("xs:string"),
                     props,
                     format_context,
@@ -655,6 +681,7 @@ impl<'a> XsdParser<'a> {
                     name,
                     type_qname_prefixed: true,
                     type_xsd_qname: None,
+                    type_qname_scope: None,
                     type_name: TypeName::new("xs:string"),
                     props,
                     format_context,
@@ -671,6 +698,7 @@ impl<'a> XsdParser<'a> {
                 name,
                 type_qname_prefixed: true,
                 type_xsd_qname: None,
+                type_qname_scope: None,
                 type_name: inline.0,
                 props,
                 format_context,
@@ -704,6 +732,7 @@ impl<'a> XsdParser<'a> {
             name,
             type_qname_prefixed,
             type_xsd_qname,
+            type_qname_scope,
             type_name: resolved_type,
             props,
             format_context,
@@ -941,10 +970,14 @@ impl<'a> XsdParser<'a> {
                     break;
                 }
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
-                XmlEvent::StartElement { .. } => {
-                    let (local, _, child_attrs) = self.consume_start()?;
+                XmlEvent::StartElement { name, .. } => {
+                    let local = name.local_name.clone();
+                    let (child_attrs, child_namespace) = self.reader.take_start_element()?;
                     match local.as_str() {
-                        "element" => particles.push(Particle::Element(self.parse_element_decl(child_attrs)?)),
+                        "element" => particles.push(Particle::Element(self.parse_element_decl(
+                            child_attrs,
+                            child_namespace,
+                        )?)),
                         "sequence" => {
                             particles.push(Particle::Sequence(self.parse_sequence(child_attrs)?))
                         }
@@ -1003,9 +1036,12 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
-                    let child_attrs = self.reader.take_start_attributes()?;
+                    let (child_attrs, child_namespace) = self.reader.take_start_element()?;
                     match local.as_str() {
-                        "element" => branches.push(Particle::Element(self.parse_element_decl(child_attrs)?)),
+                        "element" => branches.push(Particle::Element(self.parse_element_decl(
+                            child_attrs,
+                            child_namespace,
+                        )?)),
                         "sequence" => {
                             branches.push(Particle::Sequence(self.parse_sequence(child_attrs)?))
                         }
@@ -1037,16 +1073,25 @@ impl<'a> XsdParser<'a> {
         Ok(ChoiceDecl { props, branches })
     }
 
-    fn parse_element_decl(&mut self, attrs: BTreeMap<String, String>) -> Result<ElementDecl> {
+    fn parse_element_decl(
+        &mut self,
+        attrs: BTreeMap<String, String>,
+        namespace: xml_no_std::namespace::Namespace,
+    ) -> Result<ElementDecl> {
         let suppress = take_daf_suppress_warnings(&attrs);
         let prev_suppress =
             core::mem::replace(&mut self.suppress_schema_definition_warnings, suppress);
-        let result = self.parse_element_decl_inner(attrs);
+        let result = self.parse_element_decl_inner(attrs, namespace);
         self.suppress_schema_definition_warnings = prev_suppress;
         result
     }
 
-    fn parse_element_decl_inner(&mut self, attrs: BTreeMap<String, String>) -> Result<ElementDecl> {
+    fn parse_element_decl_inner(
+        &mut self,
+        attrs: BTreeMap<String, String>,
+        namespace: xml_no_std::namespace::Namespace,
+    ) -> Result<ElementDecl> {
+        let type_prefix_map = self.element_type_prefix_map(&namespace);
         let (xsd_attrs, dfdl_from_attrs) =
             split_dfdl_attrs_with_variables(
                 "element",
@@ -1082,8 +1127,13 @@ impl<'a> XsdParser<'a> {
             props.suppress_schema_definition_warnings = Some(s.clone());
         }
 
+        let type_xsd_qname = xsd_attrs.get("type").cloned();
+        let type_qname_scope = type_xsd_qname
+            .as_ref()
+            .map(|_| type_prefix_map.clone());
         let type_name = if let Some(t) = xsd_attrs.get("type") {
-            TypeName::new(normalize_qname(t))
+            resolve_type_qname_in_schema(&self.doc, t, Some(&type_prefix_map))
+                .unwrap_or_else(|_| TypeName::new(normalize_qname(t)))
         } else if is_ref {
             let ref_qname = element_ref.as_deref().unwrap_or(name.as_str());
             let global = if let Some(g) = get_global_element(&self.doc, ref_qname) {
@@ -1095,6 +1145,7 @@ impl<'a> XsdParser<'a> {
                     name: name.clone(),
                     type_qname_prefixed: false,
                     type_xsd_qname: None,
+                    type_qname_scope: None,
                     type_name: TypeName::new("xs:string"),
                     props: DfdlProps::default(),
                     format_context: DfdlProps::default(),
@@ -1130,6 +1181,8 @@ impl<'a> XsdParser<'a> {
                 element_ref: None,
                 has_element_name_attr,
                 type_name: inline.0,
+                type_xsd_qname: None,
+                type_qname_scope: None,
                 props,
                 particle: None,
                 default_value,
@@ -1161,6 +1214,8 @@ impl<'a> XsdParser<'a> {
             element_ref,
             has_element_name_attr,
             type_name: resolved_type,
+            type_xsd_qname,
+            type_qname_scope,
             props: self.finalize_props(props),
             particle: None,
             default_value,
@@ -4283,6 +4338,65 @@ fn collect_namespace_prefixes(attrs: &BTreeMap<String, String>, out: &mut BTreeM
             out.insert(key.clone(), value.clone());
         }
     }
+}
+
+pub(crate) fn resolve_type_qname_in_schema(
+    doc: &SchemaDocument,
+    type_attr: &str,
+    scope: Option<&BTreeMap<String, String>>,
+) -> core::result::Result<TypeName, crate::error::SchemaError> {
+    use crate::error::SchemaError;
+    use crate::schema::{BuiltinType, TypeName};
+    const XSD_NS: &str = "http://www.w3.org/2001/XMLSchema";
+    let mut prefix_map = doc.namespace_prefixes.clone();
+    if let Some(s) = scope {
+        for (k, v) in s {
+            prefix_map.insert(k.clone(), v.clone());
+        }
+    }
+    if !type_attr.contains(':') {
+        let local = normalize_qname(type_attr);
+        if BuiltinType::from_xsd(&local).is_some() {
+            let q = if local.contains(':') {
+                local
+            } else {
+                alloc::format!("xs:{local}")
+            };
+            return Ok(TypeName::new(q));
+        }
+        if doc.types.contains_key(&TypeName::new(&local)) {
+            return Ok(TypeName::new(local));
+        }
+        return Ok(TypeName::new(local));
+    }
+    let (prefix, local) = type_attr.split_once(':').unwrap();
+    let local = normalize_qname(local);
+    let Some(uri) = prefix_map.get(prefix) else {
+        return Ok(TypeName::new(local));
+    };
+    if uri == XSD_NS {
+        let q = alloc::format!("xs:{local}");
+        if BuiltinType::from_xsd(&q).is_some() {
+            return Ok(TypeName::new(q));
+        }
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: No type definition found for '{type_attr}'."
+            ),
+        });
+    }
+    if doc.types.contains_key(&TypeName::new(&local)) {
+        return Ok(TypeName::new(local));
+    }
+    let xs_q = alloc::format!("xs:{local}");
+    if prefix == "xs" && BuiltinType::from_xsd(&xs_q).is_some() {
+        return Ok(TypeName::new(xs_q));
+    }
+    Err(SchemaError::InvalidProperty {
+        message: alloc::format!(
+            "Schema Definition Error: No type definition found for '{type_attr}'."
+        ),
+    })
 }
 
 fn format_storage_key(local: &str, namespace: Option<&str>) -> String {
