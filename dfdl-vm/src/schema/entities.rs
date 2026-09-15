@@ -678,6 +678,17 @@ pub fn validate_delimiter_schema_attribute(raw: &str) -> Result<(), String> {
     validate_entity_tokens_in_literal_lenient(raw)
 }
 
+/// True when alternative `alt_index` of a multi-alt delimiter may match with zero bytes consumed
+/// while input remains (e.g. `%ES;` in `%ES; :`).
+pub fn delimiter_alt_allows_trailing_input(pattern: &str, alt_index: u8) -> bool {
+    let alts = delimiter_alternatives(pattern);
+    if alts.len() <= 1 {
+        return is_zero_length_delimiter(pattern);
+    }
+    alts.get(alt_index as usize)
+        .is_some_and(|a| is_zero_length_delimiter(a))
+}
+
 /// True when a delimiter pattern is zero-length after entity expansion.
 pub fn is_zero_length_delimiter(raw: &str) -> bool {
     if raw.is_empty() {
@@ -833,15 +844,19 @@ pub fn match_delimiter_with_alt(
             }
         }
     }
-    let mut alts = delimiter_alternatives(pattern);
+    let alts = delimiter_alternatives(pattern);
     if alts.len() > 1 {
-        alts.sort_by_key(|b| core::cmp::Reverse(b.len()));
+        let mut best: Option<(usize, u8)> = None;
         for (idx, alt) in alts.iter().enumerate() {
             if let Some(n) = match_delimiter_compound(input, alt, ignore_case) {
-                return Some((n, idx as u8));
+                match best {
+                    None => best = Some((n, idx as u8)),
+                    Some((best_n, _)) if n > best_n => best = Some((n, idx as u8)),
+                    _ => {}
+                }
             }
         }
-        return None;
+        return best;
     }
     match_delimiter_compound(input, pattern, ignore_case).map(|n| (n, 0))
 }
@@ -863,15 +878,19 @@ pub fn match_delimiter_opts(input: &[u8], pattern: &str, ignore_case: bool) -> O
             }
         }
     }
-    let mut alts = delimiter_alternatives(pattern);
+    let alts = delimiter_alternatives(pattern);
     if alts.len() > 1 {
-        alts.sort_by_key(|b| core::cmp::Reverse(b.len()));
+        let mut best: Option<usize> = None;
         for alt in &alts {
             if let Some(n) = match_delimiter_compound(input, alt, ignore_case) {
-                return Some(n);
+                match best {
+                    None => best = Some(n),
+                    Some(best_n) if n > best_n => best = Some(n),
+                    _ => {}
+                }
             }
         }
-        return None;
+        return best;
     }
     match_delimiter_compound(input, pattern, ignore_case)
 }
@@ -1830,6 +1849,12 @@ mod tests {
     }
 
     #[test]
+    fn match_es_or_colon_terminator_alts() {
+        let pat = "%ES; :";
+        assert_eq!(match_delimiter_with_alt(b",1", pat, false), Some((0, 0)));
+        assert_eq!(match_delimiter_with_alt(b":,1", pat, false), Some((1, 1)));
+    }
+
     fn validate_percent_escape_in_delimiter() {
         assert!(validate_delimiter_property_value("%%").is_ok());
         assert!(validate_delimiter_property_value("%").is_ok());

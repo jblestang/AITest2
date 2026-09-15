@@ -363,7 +363,10 @@ impl<'a> Decoder<'a> {
                         if let Some((n, alt)) =
                             cursor.consume_delimiter_with_alt(pat, props.ignore_case)
                         {
-                            if n == 0 && !cursor.is_empty() {
+                            if n == 0
+                                && !cursor.is_empty()
+                                && !crate::schema::delimiter_alt_allows_trailing_input(pat, alt)
+                            {
                                 return Err(VmError::InvalidValue {
                                     message: alloc::format!("terminator mismatch: expected `{pat}`"),
                                 }
