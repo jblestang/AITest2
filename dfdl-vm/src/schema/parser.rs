@@ -172,16 +172,14 @@ impl<'a> XsdParser<'a> {
         for (k, v) in other.scoped_schema_warnings {
             self.doc.scoped_schema_warnings.entry(k).or_default().extend(v);
         }
-        self.doc.format_defaults.props = match kind {
-            SchemaMergeKind::Include => merge_included_format_defaults(
+        if kind == SchemaMergeKind::Include {
+            self.doc.format_defaults.props = merge_included_format_defaults(
                 self.doc.format_defaults.props.clone(),
                 other.format_defaults.props,
-            ),
-            SchemaMergeKind::Import => merge_dfdl_props(
-                self.doc.format_defaults.props.clone(),
-                other.format_defaults.props,
-            ),
-        };
+            );
+        }
+        // Import: do not merge imported format defaults into the parent schema; components
+        // defined in the parent keep the parent's `dfdl:format` (DFDL-6-007R scope tests).
         self.doc.format_defaults.props.calendar_time_zone_defined = false;
         Ok(())
     }
@@ -663,6 +661,9 @@ impl<'a> XsdParser<'a> {
         self.expect_end_local("simpleType")?;
 
         if let Some(type_name) = name {
+            if props.length.is_none() {
+                props.length = self.doc.format_defaults.props.length;
+            }
             self.doc.types.insert(
                 TypeName::new(type_name.clone()),
                 TypeDef::Simple {

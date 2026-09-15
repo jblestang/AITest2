@@ -8109,7 +8109,8 @@ fn trim_text_value<'a>(
                     .unwrap_or(props.text_string_justification);
                 trim_pad_char_for_justification(input, &pad, just)
             } else {
-                trim_pad_char(input, &pad)
+                let just = text_justification_for_kind(props, kind);
+                trim_pad_char_for_justification(input, &pad, just)
             }
         }
     }

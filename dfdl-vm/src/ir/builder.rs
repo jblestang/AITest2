@@ -8,7 +8,8 @@ use crate::length_validate::{
 };
 use crate::schema::{
     BuiltinType, ComplexContent, DfdlProps, GroupDecl, LengthKind, LengthUnits, OccursCountKind,
-    Particle, Representation, SchemaDocument, SimpleBase, TypeDef, TypeName, expand_entities_str,
+    Particle, Representation, SchemaDocument, SimpleBase, TextTrimKind, TypeDef, TypeName,
+    expand_entities_str,
     parse_text_standard_separator_list, parse_text_standard_zero_rep_list,
     validate_length_facets_for_type, validate_length_pattern,
     validate_text_standard_distinct_values,
@@ -368,6 +369,17 @@ impl<'a> IrBuilder<'a> {
                                 merged_ir.text_string_justification =
                                     child_props.text_string_justification;
                             }
+                            if element.props.text_number_pad_character.is_none() {
+                                merged_ir.text_number_pad_character =
+                                    child_props.text_number_pad_character;
+                            }
+                            if element.props.text_trim_kind.is_none() {
+                                merged_ir.text_trim_kind = child_props.text_trim_kind;
+                            }
+                            if element.props.text_number_justification.is_none() {
+                                merged_ir.text_number_justification =
+                                    child_props.text_number_justification;
+                            }
                             if element.props.alignment_units.is_none() {
                                 merged_ir.alignment_units = child_props.alignment_units;
                             }
@@ -627,6 +639,9 @@ impl<'a> IrBuilder<'a> {
                     &sequence.props,
                     &DfdlProps::default(),
                 )?;
+                if ir_props.separator.is_none() {
+                    ir_props.separator = self.defaults.separator;
+                }
                 let mut child_inherited =
                     particle_inherited_for_children(type_base, &sequence.props, &self.defaults);
                 let mut children = Vec::new();
@@ -3064,9 +3079,13 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.empty_element_parse_policy = overlay.empty_element_parse_policy;
     out.occurs_count_kind = overlay.occurs_count_kind;
     out.ignore_case = overlay.ignore_case;
-    out.text_trim_kind = overlay.text_trim_kind;
+    if overlay.text_trim_kind != TextTrimKind::None {
+        out.text_trim_kind = overlay.text_trim_kind;
+    }
     out.text_pad_kind = overlay.text_pad_kind;
-    out.text_number_pad_character = overlay.text_number_pad_character;
+    if overlay.text_number_pad_character.is_some() {
+        out.text_number_pad_character = overlay.text_number_pad_character;
+    }
     out.text_string_pad_character = overlay.text_string_pad_character;
     out.text_string_pad_character_property_form =
         overlay.text_string_pad_character_property_form;
