@@ -5288,6 +5288,11 @@ pub(crate) fn read_text_scalar(
     } else {
         text
     };
+    let text = if kind == crate::ir::ValueKind::String {
+        normalize_string_line_endings(&text)
+    } else {
+        text
+    };
     let trimmed = trim_text_value(&text, kind, props.text_trim_kind, props, strings);
     let trimmed = if kind == crate::ir::ValueKind::String {
         if let Some(ref scheme) = props.escape_scheme {
@@ -8072,6 +8077,14 @@ fn validate_implicit_calendar_lexical(
     validate_implicit_date_part(&text[..sep], tunables, "xs:dateTime", text)?;
     validate_implicit_time_part(&text[sep + 1..], true)?;
     Ok(())
+}
+
+/// Normalize CR/LF in decoded string scalars (XML infoset line endings are LF).
+fn normalize_string_line_endings(text: &str) -> String {
+    if !text.contains('\r') {
+        return text.to_string();
+    }
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn trim_text_value<'a>(

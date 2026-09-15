@@ -4,47 +4,27 @@ use alloc::vec;
 use alloc::vec::Vec;
 use regex_automata::{meta::Regex, Anchored, Input};
 
-/// Expand DFDL entity references in property values.
-///
-/// Supports `%NL;`, `%CR;`, `%LF;`, `%SP;`, `%HT;`, `%WSP;`, `%WS;`, `%#rNN;` (hex byte).
-pub fn expand_entities(input: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            if i + 1 < bytes.len() && bytes[i + 1] == b'%' {
-                out.push(b'%');
-                i += 2;
-                continue;
+fn codepoint_to_delimiter_bytes(cp: u32, encoding: Option<&str>) -> Option<Vec<u8>> {
+    use crate::vm::encoding::{encode_document_text, normalize_encoding_name};
+    if let Some(enc) = encoding.and_then(normalize_encoding_name) {
+        match enc {
+            "iso-8859-1" | "ascii" | "ebcdic-cp-us" => {
+                if cp <= 0xff {
+                    return Some(vec![cp as u8]);
+                }
+                return None;
             }
-            if let Some((entity, consumed)) = parse_entity(&input[i..]) {
-                out.extend_from_slice(&entity);
-                i += consumed;
-                continue;
+            "utf-16be" | "utf-16le" => {
+                let ch = char::from_u32(cp)?;
+                return encode_document_text(&ch.to_string(), enc).ok();
             }
+            _ => {}
         }
-        out.push(bytes[i]);
-        i += 1;
     }
-    out
+    unicode_codepoint_to_utf8(cp)
 }
 
-/// Expand entities in a string, preserving UTF-8 where possible.
-pub fn expand_entities_str(input: &str) -> String {
-    let bytes = expand_entities(input);
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
-fn unicode_codepoint_to_utf8(cp: u32) -> Option<Vec<u8>> {
-    char::from_u32(cp).map(|c| {
-        let mut buf = [0u8; 4];
-        let s = c.encode_utf8(&mut buf);
-        s.as_bytes().to_vec()
-    })
-}
-
-fn named_entity_bytes(name: &str) -> Option<Vec<u8>> {
+fn named_entity_bytes_for_encoding(name: &str, encoding: Option<&str>) -> Option<Vec<u8>> {
     let value: u32 = match name {
         "NUL" => 0,
         "SOH" => 1,
@@ -86,10 +66,10 @@ fn named_entity_bytes(name: &str) -> Option<Vec<u8>> {
         "NL" => 0x0A,
         _ => return None,
     };
-    unicode_codepoint_to_utf8(value)
+    codepoint_to_delimiter_bytes(value, encoding)
 }
 
-fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
+fn parse_entity_for_encoding(input: &str, encoding: Option<&str>) -> Option<(Vec<u8>, usize)> {
     if !input.starts_with('%') {
         return None;
     }
@@ -111,7 +91,7 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
             other if other.starts_with("#x") || other.starts_with("#X") => {
                 let hex = &other[2..];
                 let cp = u32::from_str_radix(hex, 16).ok()?;
-                unicode_codepoint_to_utf8(cp)?
+                codepoint_to_delimiter_bytes(cp, encoding)?
             }
             other if other.starts_with("#r") || other.starts_with("#R") => {
                 let hex = &other[2..];
@@ -120,13 +100,62 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
             other if other.starts_with('#') => {
                 let dec = &other[1..];
                 let cp = dec.parse::<u32>().ok()?;
-                unicode_codepoint_to_utf8(cp)?
+                codepoint_to_delimiter_bytes(cp, encoding)?
             }
-            other => named_entity_bytes(other)?,
+            other => named_entity_bytes_for_encoding(other, encoding)?,
         };
         return Some((value, consumed));
     }
     None
+}
+
+/// Expand DFDL entity references in property values for delimiter matching in the given encoding.
+pub fn expand_entities_for_encoding(input: &str, encoding: Option<&str>) -> Vec<u8> {
+    let mut out = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'%' {
+                out.push(b'%');
+                i += 2;
+                continue;
+            }
+            if let Some((entity, consumed)) = parse_entity_for_encoding(&input[i..], encoding) {
+                out.extend_from_slice(&entity);
+                i += consumed;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Expand DFDL entity references in property values.
+///
+/// Supports `%NL;`, `%CR;`, `%LF;`, `%SP;`, `%HT;`, `%WSP;`, `%WS;`, `%#rNN;` (hex byte).
+pub fn expand_entities(input: &str) -> Vec<u8> {
+    expand_entities_for_encoding(input, None)
+}
+
+/// Expand entities in a string, preserving UTF-8 where possible.
+pub fn expand_entities_str(input: &str) -> String {
+    let bytes = expand_entities(input);
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn unicode_codepoint_to_utf8(cp: u32) -> Option<Vec<u8>> {
+    char::from_u32(cp).map(|c| {
+        let mut buf = [0u8; 4];
+        let s = c.encode_utf8(&mut buf);
+        s.as_bytes().to_vec()
+    })
+}
+
+fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
+    parse_entity_for_encoding(input, None)
 }
 
 /// Normalize a DFDL delimiter property value (trim ignored trailing space, expand entities).
@@ -584,6 +613,13 @@ fn validate_es_not_sole_delimiter_alternative(
     })
 }
 
+/// True when a `{...}` terminator expression includes a `%ES;` literal (invalid with `lengthKind='delimited'`).
+pub fn delimited_terminator_expression_uses_es_literal(expr: &str) -> bool {
+    delimiter_expression_string_literals(expr)
+        .iter()
+        .any(|lit| lit.trim() == "%ES;")
+}
+
 /// Extract quoted string literals from a simple `if ... then 'a' else 'b'` expression.
 fn delimiter_expression_string_literals(expr: &str) -> alloc::vec::Vec<alloc::string::String> {
     let inner = expr
@@ -658,6 +694,12 @@ pub fn runtime_delimiter_expression_may_be_zero_length(expr: &str) -> bool {
 
 /// Validate `{...}` delimiter property expressions at schema compile time.
 pub fn validate_runtime_delimiter_expression(prop: &str, expr: &str) -> Result<(), String> {
+    for lit in delimiter_expression_string_literals(expr) {
+        validate_delimiter_property_value(&lit)?;
+        if lit.trim() == "%" && prop == "terminator" {
+            return Err(format!("Invalid DFDL Entity (%) found\n%%"));
+        }
+    }
     if let Some(lit) = eval_compile_time_delimiter_expression(expr) {
         validate_delimiter_property_value(&lit)?;
         validate_delimiter_es_restriction(prop, &lit)?;
@@ -795,7 +837,13 @@ fn match_nl_entity_utf16(input: &[u8], pattern: &str, le: bool) -> Option<usize>
     }
 }
 
-fn match_pattern_opts_utf16(input: &[u8], pattern: &str, ignore_case: bool, le: bool) -> Option<usize> {
+fn match_pattern_opts_utf16(
+    input: &[u8],
+    pattern: &str,
+    ignore_case: bool,
+    le: bool,
+    encoding: Option<&str>,
+) -> Option<usize> {
     if pattern.is_empty() {
         return Some(0);
     }
@@ -820,7 +868,7 @@ fn match_pattern_opts_utf16(input: &[u8], pattern: &str, ignore_case: bool, le: 
     if pattern.starts_with("%WSP") || pattern.starts_with("%WS") {
         return match_wsp_entity(input, pattern);
     }
-    let expanded = expand_entities(pattern);
+    let expanded = expand_entities_for_encoding(pattern, encoding);
     if expanded.is_empty() {
         return Some(0);
     }
@@ -834,7 +882,11 @@ fn match_pattern_opts_utf16(input: &[u8], pattern: &str, ignore_case: bool, le: 
     } else {
         &expanded[..]
     };
-    let wire = wire_delimiter_logical_bytes(base, le);
+    let wire = if encoding.is_some() {
+        base.to_vec()
+    } else {
+        wire_delimiter_logical_bytes(base, le)
+    };
     match quantifier {
         None => {
             if base == b"\n" {
@@ -882,9 +934,9 @@ pub fn match_pattern_opts_for_encoding(
     encoding: Option<&str>,
 ) -> Option<usize> {
     if let Some(le) = utf16_little_endian_from_encoding(encoding) {
-        return match_pattern_opts_utf16(input, pattern, ignore_case, le);
+        return match_pattern_opts_utf16(input, pattern, ignore_case, le, encoding);
     }
-    match_pattern_opts_legacy(input, pattern, ignore_case)
+    match_pattern_opts_legacy(input, pattern, ignore_case, encoding)
 }
 
 /// Match input against a DFDL delimiter/initiator/terminator pattern.
@@ -898,7 +950,12 @@ pub fn match_pattern_opts(input: &[u8], pattern: &str, ignore_case: bool) -> Opt
     match_pattern_opts_for_encoding(input, pattern, ignore_case, None)
 }
 
-fn match_pattern_opts_legacy(input: &[u8], pattern: &str, ignore_case: bool) -> Option<usize> {
+fn match_pattern_opts_legacy(
+    input: &[u8],
+    pattern: &str,
+    ignore_case: bool,
+    encoding: Option<&str>,
+) -> Option<usize> {
     if pattern.is_empty() {
         return Some(0);
     }
@@ -930,7 +987,7 @@ fn match_pattern_opts_legacy(input: &[u8], pattern: &str, ignore_case: bool) -> 
         return match_wsp_entity(input, pattern);
     }
 
-    let expanded = expand_entities(pattern);
+    let expanded = expand_entities_for_encoding(pattern, encoding);
     if expanded.is_empty() {
         return Some(0);
     }
@@ -2217,6 +2274,18 @@ mod tests {
         let alts2 = super::delimiter_alternatives("{{ {{ [");
         assert_eq!(alts2, vec!["{{", "{{", "["]);
         assert_eq!(match_delimiter(b"{{9", "{{ {{ ["), Some(2));
+    }
+
+    #[test]
+    fn iso8859_hex_entity_initiator_bytes() {
+        let pat = "%#x80;%#x81;";
+        let expanded = expand_entities_for_encoding(pat, Some("iso-8859-1"));
+        assert_eq!(expanded, vec![0x80, 0x81]);
+        let data = [0x80, 0x81, b'x'];
+        assert_eq!(
+            match_delimiter_opts_for_encoding(&data[..], pat, false, Some("ISO-8859-1")),
+            Some(2)
+        );
     }
 
     #[test]

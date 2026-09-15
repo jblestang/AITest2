@@ -1654,6 +1654,15 @@ fn validate_delimiter_at_compile(prop: &str, raw: &str, props: &DfdlProps) -> Re
             }
             .into());
         }
+        if prop == "terminator"
+            && props.length_kind == Some(LengthKind::Delimited)
+            && crate::schema::delimited_terminator_expression_uses_es_literal(trimmed)
+        {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error. dfdl:terminator — ES entity cannot appear on its own when dfdl:lengthKind=\"delimited\"".into(),
+            }
+            .into());
+        }
         return Ok(());
     }
     let skip_entity_check = prop == "initiator" && props.initiator_percent_escaped;
