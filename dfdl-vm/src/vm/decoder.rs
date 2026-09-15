@@ -292,6 +292,10 @@ impl<'a> Decoder<'a> {
                         None
                     } else if suppress_sep || !self.particle_consumes_input(child) {
                         None
+                    } else if props.separator_position == SeparatorPosition::Postfix && idx > 0 {
+                        // Postfix separators are consumed after each prior occurrence
+                        // (see decode_element_occurrences), not before the next index.
+                        None
                     } else {
                         self.consume_separator(
                             props,

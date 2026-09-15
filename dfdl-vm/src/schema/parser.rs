@@ -395,10 +395,16 @@ impl<'a> XsdParser<'a> {
                             let _ = self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
                         }
                         "defineVariable" => {
-                            if let Some(name) = child_attrs.get("name") {
-                                if let Some(default) = child_attrs.get("defaultValue") {
-                                    self.doc.variables.insert(name.clone(), default.clone());
-                                }
+                            let name = child_attrs
+                                .iter()
+                                .find(|(k, _)| local_tag(k) == "name")
+                                .map(|(_, v)| v.clone());
+                            let default = child_attrs
+                                .iter()
+                                .find(|(k, _)| local_tag(k) == "defaultValue")
+                                .map(|(_, v)| v.clone());
+                            if let (Some(name), Some(default)) = (name, default) {
+                                self.doc.variables.insert(name, default);
                             }
                             self.reader.skip_insignificant_ws()?;
                             if !self.reader.peek_is_end("defineVariable")? {
@@ -1566,7 +1572,10 @@ impl<'a> XsdParser<'a> {
                             }
                             let dfdl_props =
                                 self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
-                            if local != "defineFormat" && local != "defineEscapeScheme" {
+                            if local != "defineFormat"
+                                && local != "defineEscapeScheme"
+                                && local != "defineVariable"
+                            {
                                 props = merge_dfdl_props(props, dfdl_props);
                             }
                         } else {
@@ -1631,6 +1640,26 @@ impl<'a> XsdParser<'a> {
         }
         if local == "defineEscapeScheme" {
             let _ = self.parse_define_escape_scheme(attrs)?;
+            return Ok(DfdlProps::default());
+        }
+        if local == "defineVariable" {
+            let name = attrs
+                .iter()
+                .find(|(k, _)| local_tag(k) == "name")
+                .map(|(_, v)| v.clone());
+            let default = attrs
+                .iter()
+                .find(|(k, _)| local_tag(k) == "defaultValue")
+                .map(|(_, v)| v.clone());
+            if let (Some(name), Some(default)) = (name, default) {
+                self.doc.variables.insert(name, default);
+            }
+            self.reader.skip_insignificant_ws()?;
+            if !self.reader.peek_is_end("defineVariable")? {
+                self.reader.skip_current_subtree()?;
+            } else {
+                self.expect_end_local("defineVariable")?;
+            }
             return Ok(DfdlProps::default());
         }
 
@@ -2727,6 +2756,20 @@ fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>
     }
 }
 
+fn parse_variable_input_value_calc(
+    value: &str,
+    vars: &BTreeMap<String, String>,
+) -> Option<(InputValueCalc, Option<String>)> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let name = inner.strip_prefix('$')?.trim();
+    let lit = vars.get(name)?.clone();
+    Some((InputValueCalc::StringLiteral, Some(lit)))
+}
+
 fn parse_variable_length_expr(value: &str, vars: &BTreeMap<String, String>) -> Option<u64> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
@@ -3452,6 +3495,11 @@ fn props_from_attrs_with_variables(
                     props.input_value_calc_segments = Some(segments);
                 } else if let Some(steps) = parse_input_value_calc_relative_path(value) {
                     props.input_value_calc_path = Some(steps);
+                } else if let Some((calc, lit)) = variables
+                    .and_then(|vars| parse_variable_input_value_calc(value, vars))
+                {
+                    props.input_value_calc = Some(calc);
+                    props.input_value_calc_literal = lit;
                 } else if let Some(calc) = parse_input_value_calc(value) {
                     props.input_value_calc = Some(calc.0);
                     props.input_value_calc_sibling = calc.1;

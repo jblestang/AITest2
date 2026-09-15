@@ -7,8 +7,9 @@ use crate::length_validate::{
     validate_signed_one_bit_length_schema, validate_text_alignment_schema, DaffodilTunables,
 };
 use crate::schema::{
-    BuiltinType, ComplexContent, DfdlProps, GroupDecl, LengthKind, LengthUnits, OccursCountKind,
-    Particle, Representation, SchemaDocument, SimpleBase, TextTrimKind, TypeDef, TypeName,
+    BuiltinType, ComplexContent, DfdlProps, ElementDecl, GroupDecl, LengthKind, LengthUnits,
+    OccursCountKind, Particle, Representation, SchemaDocument, SimpleBase, TextTrimKind, TypeDef,
+    TypeName, get_global_element,
     expand_entities_str,
     parse_text_standard_separator_list, parse_text_standard_zero_rep_list,
     validate_length_facets_for_type, validate_length_pattern,
@@ -27,6 +28,19 @@ struct IrBuilder<'a> {
     strings: StringPool,
     defaults: IrProps,
     tunables: DaffodilTunables,
+}
+
+/// Merge global element DFDL props when a particle uses `ref=` (forward refs may leave
+/// particle props empty at parse time — noTargetNamespace_01).
+fn dfdl_props_for_element_ref(schema: &SchemaDocument, element: &ElementDecl) -> DfdlProps {
+    use crate::schema::merge_dfdl_props;
+    let mut props = element.props.clone();
+    if let Some(ref er) = element.element_ref {
+        if let Some(g) = get_global_element(schema, er) {
+            props = merge_dfdl_props(g.props.clone(), props);
+        }
+    }
+    props
 }
 
 impl<'a> IrBuilder<'a> {
@@ -315,8 +329,9 @@ impl<'a> IrBuilder<'a> {
     ) -> Result<u32> {
         match particle {
             Particle::Element(element) => {
+                let element_props = dfdl_props_for_element_ref(self.schema, element);
                 let merged =
-                    self.merge_props_full(inherited, &DfdlProps::default(), &element.props)?;
+                    self.merge_props_full(inherited, &DfdlProps::default(), &element_props)?;
                 validate_text_standard_sibling_order(&merged, prior_element_names, &self.strings)?;
                 let name = self.strings.intern(&element.name);
                 if let Some(builtin) = BuiltinType::from_xsd(element.type_name.as_str()) {
@@ -336,7 +351,7 @@ impl<'a> IrBuilder<'a> {
                     &mut ir_props,
                     &SimpleBase::Builtin(builtin),
                     &mut self.strings,
-                    &element.props,
+                    &element_props,
                 );
                 validate_binary_calendar_compile(kind, &ir_props, &self.strings)?;
                 validate_fixed_occurs_count(&ir_props)?;
@@ -362,7 +377,7 @@ impl<'a> IrBuilder<'a> {
                                 validate_text_number_pad_character_overlap(
                                     er.as_str(),
                                     &type_label,
-                                    &element.props,
+                                    &element_props,
                                     type_props,
                                 )?;
                             }
@@ -374,9 +389,9 @@ impl<'a> IrBuilder<'a> {
                     let compile_element_props_owned =
                         match self.schema.resolve_type(&element.type_name) {
                             Some(TypeDef::Simple { .. }) => {
-                                element_props_for_simple_type_compile(&element.props)
+                                element_props_for_simple_type_compile(&element_props)
                             }
-                            _ => element.props.clone(),
+                            _ => element_props.clone(),
                         };
                     let child = self.compile_type(&element.type_name, &compile_element_props_owned)?;
                     let child_node = self.nodes.get(child as usize).ok_or_else(|| {
@@ -394,54 +409,54 @@ impl<'a> IrBuilder<'a> {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
                             let mut merged_ir = merge_ir_props(&child_props, &overlay);
-                            if element.props.representation.is_none() {
+                            if element_props.representation.is_none() {
                                 merged_ir.representation = child_props.representation;
                             }
-                            if element.props.encoding.is_none() {
+                            if element_props.encoding.is_none() {
                                 merged_ir.encoding = child_props.encoding;
                             }
-                            if element.props.text_string_pad_character.is_none() {
+                            if element_props.text_string_pad_character.is_none() {
                                 merged_ir.text_string_pad_character =
                                     child_props.text_string_pad_character;
                                 merged_ir.text_string_pad_character_property_form =
                                     child_props.text_string_pad_character_property_form;
                             }
-                            if element.props.text_string_justification.is_none() {
+                            if element_props.text_string_justification.is_none() {
                                 merged_ir.text_string_justification =
                                     child_props.text_string_justification;
                             }
-                            if element.props.text_number_pad_character.is_none() {
+                            if element_props.text_number_pad_character.is_none() {
                                 merged_ir.text_number_pad_character =
                                     child_props.text_number_pad_character;
                                 merged_ir.text_number_pad_character_property_form =
                                     child_props.text_number_pad_character_property_form;
                             }
-                            if element.props.text_trim_kind.is_none() {
+                            if element_props.text_trim_kind.is_none() {
                                 merged_ir.text_trim_kind = child_props.text_trim_kind;
                             }
-                            if element.props.text_number_justification.is_none() {
+                            if element_props.text_number_justification.is_none() {
                                 merged_ir.text_number_justification =
                                     child_props.text_number_justification;
                             }
-                            if element.props.alignment_units.is_none() {
+                            if element_props.alignment_units.is_none() {
                                 merged_ir.alignment_units = child_props.alignment_units;
                             }
-                            if element.props.length_units.is_none() {
+                            if element_props.length_units.is_none() {
                                 merged_ir.length_units = child_props.length_units;
                             }
-                            if element.props.leading_skip.is_none() {
+                            if element_props.leading_skip.is_none() {
                                 merged_ir.leading_skip = child_props.leading_skip;
                             }
-                            if element.props.trailing_skip.is_none() {
+                            if element_props.trailing_skip.is_none() {
                                 merged_ir.trailing_skip = child_props.trailing_skip;
                             }
-                            if element.props.length_kind.is_none() {
+                            if element_props.length_kind.is_none() {
                                 merged_ir.length_kind = child_props.length_kind;
                             }
-                            if element.props.length.is_none() {
+                            if element_props.length.is_none() {
                                 merged_ir.length = child_props.length;
                             }
-                            if element.props.alignment.is_none() {
+                            if element_props.alignment.is_none() {
                                 merged_ir.alignment = child_props.alignment;
                                 merged_ir.alignment_implicit = child_props.alignment_implicit;
                             }
@@ -472,7 +487,7 @@ impl<'a> IrBuilder<'a> {
                                         &mut merged,
                                         base,
                                         &mut self.strings,
-                                        &element.props,
+                                        &element_props,
                                     );
                                     validate_binary_calendar_compile(kind, &merged, &self.strings)?;
                                     if let Some(signed) = type_props.decimal_signed {
@@ -492,7 +507,7 @@ impl<'a> IrBuilder<'a> {
                         }
                     }
                     let mut ir_props = props;
-                    if element.props.length_kind.is_none() && inherited.length_kind_defined {
+                    if element_props.length_kind.is_none() && inherited.length_kind_defined {
                         ir_props.length_kind = inherited.length_kind;
                     }
                     let mut ir_props = finalize_element_props(

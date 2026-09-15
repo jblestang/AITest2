@@ -7027,6 +7027,17 @@ fn should_defer_prefix_sequence_separator(
         && !has_non_empty_terminator(field_props, strings)?)
 }
 
+fn should_defer_postfix_sequence_separator(
+    seq_props: &IrProps,
+    separator_id: StringId,
+    field_props: &IrProps,
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    Ok(seq_props.separator_position == SeparatorPosition::Postfix
+        && seq_props.separator == Some(separator_id)
+        && !has_non_empty_terminator(field_props, strings)?)
+}
+
 fn should_defer_sequence_stop_delimiter_in_field(
     seq_props: &IrProps,
     pattern_id: StringId,
@@ -7040,6 +7051,9 @@ fn should_defer_sequence_stop_delimiter_in_field(
         return Ok(true);
     }
     if should_defer_prefix_sequence_separator(seq_props, pattern_id, field_props, strings)? {
+        return Ok(true);
+    }
+    if should_defer_postfix_sequence_separator(seq_props, pattern_id, field_props, strings)? {
         return Ok(true);
     }
     should_defer_infix_sequence_separator(seq_props, pattern_id, field_props, strings)
