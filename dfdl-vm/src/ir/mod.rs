@@ -255,6 +255,8 @@ pub struct IrProps {
     pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
     pub empty_element_parse_policy: crate::schema::EmptyElementParsePolicy,
     pub occurs_count_kind: OccursCountKind,
+    /// `fn:count(...)` steps for `occursCountKind="expression"`.
+    pub occurs_count_fn_path: Option<Vec<IrInputPathStep>>,
     /// When true, parsed value is not placed in the infoset (hidden model group member).
     pub hidden: bool,
     pub ignore_case: bool,
@@ -420,6 +422,7 @@ impl Default for IrProps {
             separator_suppression_policy: None,
             empty_element_parse_policy: crate::schema::EmptyElementParsePolicy::TreatAsEmpty,
             occurs_count_kind: OccursCountKind::Parsed,
+            occurs_count_fn_path: None,
             hidden: false,
             ignore_case: false,
             initiated_content: false,

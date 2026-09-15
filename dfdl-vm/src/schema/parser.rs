@@ -2151,6 +2151,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.occurs_count_kind.is_some() {
         base.occurs_count_kind = overlay.occurs_count_kind;
     }
+    if overlay.occurs_count_fn_path.is_some() {
+        base.occurs_count_fn_path = overlay.occurs_count_fn_path.clone();
+    }
     if overlay.escape_scheme_ref.is_some() {
         base.escape_scheme_ref = overlay.escape_scheme_ref.clone();
     }
@@ -2593,6 +2596,30 @@ fn parse_parse_unparse_policy(value: &str) -> Result<ParseUnparsePolicy> {
             .into())
         }
     })
+}
+
+fn parse_fn_count_path(
+    inner: &str,
+) -> Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>> {
+    let inner = inner.trim();
+    let path = inner.strip_prefix("fn:count(")?.strip_suffix(')')?.trim();
+    let mut rest = path;
+    while rest.starts_with("../") {
+        rest = &rest[3..];
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    let mut steps = alloc::vec::Vec::new();
+    for step in rest.split('/').filter(|s| !s.is_empty()) {
+        let (prefix, local) = if let Some((p, l)) = step.split_once(':') {
+            (Some(p.to_string()), l.to_string())
+        } else {
+            (None, step.to_string())
+        };
+        steps.push((prefix, local));
+    }
+    Some(steps)
 }
 
 fn parse_input_value_calc_relative_path(
@@ -3738,6 +3765,9 @@ fn props_from_attrs_with_variables(
                     if let Ok(n) = inner.parse::<u64>() {
                         props.occurs_min = Some(n);
                         props.occurs_max = Some(n);
+                        props.occurs_count_kind = Some(OccursCountKind::Expression);
+                    } else if let Some(steps) = parse_fn_count_path(inner) {
+                        props.occurs_count_fn_path = Some(steps);
                         props.occurs_count_kind = Some(OccursCountKind::Expression);
                     }
                 }

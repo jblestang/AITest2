@@ -162,6 +162,8 @@ pub struct DfdlProps {
     pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
     pub empty_element_parse_policy: Option<EmptyElementParsePolicy>,
     pub occurs_count_kind: Option<OccursCountKind>,
+    /// Steps after `fn:count(` / parent `../` segments for `{ fn:count(../../a/b) }`.
+    pub occurs_count_fn_path: Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>>,
     /// `dfdl:hiddenGroupRef` on a sequence (inline hidden model group).
     pub hidden_group_ref: Option<String>,
     /// When true, initiator/terminator/separator matching ignores ASCII case.

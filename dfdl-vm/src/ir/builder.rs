@@ -3089,6 +3089,17 @@ fn overlay_dfdl_to_ir(
                 .collect(),
         );
     }
+    if let Some(steps) = &props.occurs_count_fn_path {
+        base.occurs_count_fn_path = Some(
+            steps
+                .iter()
+                .map(|(prefix, local)| crate::ir::IrInputPathStep {
+                    prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
+                    local: strings.intern(local.clone()),
+                })
+                .collect(),
+        );
+    }
     if props.choice_dispatch_literal.is_some() {
         base.choice_dispatch_literal = props
             .choice_dispatch_literal

@@ -619,6 +619,18 @@ impl<'a> Decoder<'a> {
             min = 0;
         }
         let mut max = props.occurs_max.unwrap_or(u64::MAX);
+        if props.occurs_count_kind == OccursCountKind::Expression {
+            if let Some(steps) = props.occurs_count_fn_path.as_ref() {
+                let n = eval_fn_count_path(
+                    steps,
+                    siblings,
+                    self.ctx.strings(),
+                    &self.ctx.program.tunables,
+                )?;
+                min = n;
+                max = n;
+            }
+        }
         if props.occurs_count_kind == OccursCountKind::Parsed {
             if props.occurs_max == Some(0) && min == 0 {
                 // maxOccurs=0 with parsed count: scan padding (e.g. NUL-separated) without infoset items.
@@ -2472,6 +2484,24 @@ fn eval_input_value_calc_path(
     let value = eval_infoset_path_steps(steps, siblings, strings, tunables)?;
     let text = dfdl_value_text(&value);
     Ok(DfdlValue::String(StringValue::new(text.to_string())))
+}
+
+fn eval_fn_count_path(
+    steps: &[crate::ir::IrInputPathStep],
+    siblings: Option<&BTreeMap<String, SiblingState>>,
+    strings: &crate::ir::StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
+) -> Result<u64> {
+    let value = eval_infoset_path_steps(steps, siblings, strings, tunables)?;
+    Ok(count_dfdl_value_nodes(&value))
+}
+
+fn count_dfdl_value_nodes(value: &DfdlValue) -> u64 {
+    match value {
+        DfdlValue::Array(items) => items.len() as u64,
+        DfdlValue::Null => 0,
+        _ => 1,
+    }
 }
 
 fn eval_infoset_path_steps(
