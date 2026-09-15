@@ -7,9 +7,10 @@ use super::runtime::{
     default_value_for, encoding_name, has_non_empty_terminator,
     is_suppressible_empty_representation, prefixed_payload_byte_length, read_delimited_bytes,
     read_length_span, read_prefixed_payload, read_simple, read_until_separator,
-    should_suppress_decode_infix_separator, validate_explicit_decimal_before_decode,
-    validate_unbounded_wsp_star_terminator, would_read_empty_delimited_field, Cursor,
-    RuntimeConfig, VmContext,
+    should_suppress_decode_infix_separator, should_suppress_decode_occurrence_separator,
+    validate_explicit_decimal_before_decode,
+    validate_unbounded_wsp_star_terminator, would_read_empty_delimited_field,
+    format_found_at_cursor, Cursor, RuntimeConfig, VmContext,
 };
 use crate::schema::boolean_reps::BooleanSiblingEnv;
 use crate::length_validate::{binary_length_validation_applies, validate_data_length_vm};
@@ -668,7 +669,12 @@ impl<'a> Decoder<'a> {
             if !items.is_empty() {
                 // Always try: delimited fields may defer enclosing consume, leaving the
                 // occurrence separator at the cursor; if already consumed, this is a no-op.
-                self.consume_occurrence_separator(parent_sequence, cursor)?;
+                self.consume_occurrence_separator(
+                    parent_sequence,
+                    Some(props),
+                    Some(items.as_slice()),
+                    cursor,
+                )?;
             }
             let require_delimiter = has_following_sibling;
             let saved = cursor.clone();
@@ -726,7 +732,12 @@ impl<'a> Decoder<'a> {
                     if parent_sequence.is_some_and(|p| {
                         p.separator_position == SeparatorPosition::Postfix
                     }) {
-                        self.consume_occurrence_separator(parent_sequence, cursor)?;
+                        self.consume_occurrence_separator(
+                            parent_sequence,
+                            Some(props),
+                            Some(items.as_slice()),
+                            cursor,
+                        )?;
                     }
                 }
                 Err(e) => {
@@ -1517,13 +1528,15 @@ impl<'a> Decoder<'a> {
             return Ok(false);
         }
         let before = cursor.pos;
-        self.consume_occurrence_separator(Some(parent), cursor)?;
+        self.consume_occurrence_separator(Some(parent), None, None, cursor)?;
         Ok(cursor.pos > before)
     }
 
     fn consume_occurrence_separator(
         &self,
         parent_sequence: Option<&IrProps>,
+        item_props: Option<&IrProps>,
+        items: Option<&[DfdlValue]>,
         cursor: &mut Cursor<'_>,
     ) -> Result<()> {
         let Some(props) = parent_sequence else {
@@ -1534,6 +1547,31 @@ impl<'a> Decoder<'a> {
         };
         let pat = self.ctx.strings().get(id)?;
         let enc = encoding_name(props, self.ctx.strings()).ok();
+        let require = match (item_props, items) {
+            (Some(ip), Some(items))
+                if !items.is_empty()
+                    && ip.occurs_count_kind == OccursCountKind::Parsed
+                    && (pat.contains('\n')
+                        || pat.trim() == "%NL;"
+                        || pat.starts_with("%NL")) =>
+            {
+                !should_suppress_decode_occurrence_separator(props, ip, items, self.ctx.strings())?
+            }
+            _ => false,
+        };
+        if require {
+            if cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+                return Ok(());
+            }
+            let found_display =
+                format_found_at_cursor(&cursor.data, cursor.pos, enc.as_deref());
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Parse Error. infix separator. Delimiter not found!  Was looking for ({pat}) but found \"{found_display}\" instead"
+                ),
+            }
+            .into());
+        }
         if crate::schema::match_delimiter_opts_for_encoding(
             &cursor.data[cursor.pos..],
             pat,
@@ -1638,16 +1676,8 @@ impl<'a> Decoder<'a> {
             {
                 return Ok(Some(alt));
             }
-            let found = cursor
-                .data
-                .get(cursor.pos)
-                .map(|b| *b as char)
-                .unwrap_or('\0');
-            let found_display = if found.is_ascii() && !found.is_control() {
-                alloc::format!("{found}")
-            } else {
-                alloc::format!("\\x{b:02x}", b = cursor.data.get(cursor.pos).copied().unwrap_or(0))
-            };
+            let found_display =
+                format_found_at_cursor(&cursor.data, cursor.pos, enc.as_deref());
             let position_label = match props.separator_position {
                 SeparatorPosition::Prefix => "prefix separator",
                 SeparatorPosition::Infix => "infix separator",

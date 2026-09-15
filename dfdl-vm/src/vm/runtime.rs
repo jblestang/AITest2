@@ -5117,6 +5117,29 @@ fn pattern_allows_zero_length_match(
     Ok(match_length_pattern(&cursor.data[cursor.pos..], pat) == Some(0))
 }
 
+/// Explicit/fixed length in bytes with UTF-16: Daffodil may decode a lone trailing byte as a character.
+fn decode_specified_length_text_bytes(
+    raw: &[u8],
+    enc: &str,
+    props: &IrProps,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    let utf16 = normalize_encoding_name(enc).is_some_and(|n| n.starts_with("utf-16"));
+    let byte_len = matches!(
+        props.length_kind,
+        LengthKind::Explicit | LengthKind::Fixed
+    ) && props.length_units == LengthUnits::Bytes;
+    // Single-byte explicit UTF-16 fields: Daffodil StringOfSpecifiedLength leaves incomplete
+    // code units empty, but decodes a lone non-zero byte as that character.
+    if utf16 && byte_len && raw.len() == 1 {
+        return Ok(if raw[0] == 0 {
+            alloc::string::String::new()
+        } else {
+            alloc::string::String::from(raw[0] as char)
+        });
+    }
+    decode_text_bytes(raw, enc, props.encoding_error_policy)
+}
+
 pub(crate) fn read_text_scalar(
     cursor: &mut Cursor<'_>,
     kind: crate::ir::ValueKind,
@@ -5281,7 +5304,7 @@ pub(crate) fn read_text_scalar(
         };
         decode_bits_charset_payload(&raw, n_bits, spec)?
     } else {
-        decode_text_bytes(&raw, enc, props.encoding_error_policy)?
+        decode_specified_length_text_bytes(&raw, enc, props)?
     };
     let text = if kind == crate::ir::ValueKind::String && uses_xml_illegal_char_remap(enc) {
         remap_xml_illegal_characters_to_pua(&text)
@@ -7594,6 +7617,39 @@ pub(crate) fn trailing_suppressed_count(
     Ok(count)
 }
 
+/// When decoding, the next occurrence separator (before item `items.len()`) may be skipped
+/// under `anyEmpty` if the previous occurrence was an empty representation.
+pub(crate) fn should_suppress_decode_occurrence_separator(
+    sep_props: &IrProps,
+    item_props: &IrProps,
+    items: &[crate::value::DfdlValue],
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    if items.is_empty() {
+        return Ok(false);
+    }
+    let policy = sep_props
+        .separator_suppression_policy
+        .or(item_props.separator_suppression_policy);
+    if policy != Some(SeparatorSuppressionPolicy::AnyEmpty) {
+        return Ok(false);
+    }
+    match sep_props.separator_position {
+        SeparatorPosition::Prefix | SeparatorPosition::Postfix => {
+            Ok(is_suppressible_empty_representation(
+                &items[items.len() - 1],
+                item_props,
+                strings,
+            )?)
+        }
+        SeparatorPosition::Infix => Ok(is_suppressible_empty_representation(
+            &items[items.len() - 1],
+            item_props,
+            strings,
+        )?),
+    }
+}
+
 pub(crate) fn should_suppress_occurrence_separator(
     sep_props: &IrProps,
     item_props: &IrProps,
@@ -7856,6 +7912,45 @@ fn read_prefix_field_payload(
 
 fn format_delimiter_for_error(pat: &str) -> alloc::string::String {
     pat.replace('\n', "%NL;").replace('\r', "%CR;")
+}
+
+/// Visible glyph for delimiter-mismatch errors (DFDL control-picture convention).
+pub(crate) fn remap_control_or_line_ending_to_visible(c: char) -> char {
+    let n = c as u32;
+    match n {
+        n if n <= 0x1f => char::from_u32(n + 0x2400).unwrap_or(c),
+        0x20 => '\u{2423}',
+        0x7f => '\u{2421}',
+        _ => c,
+    }
+}
+
+pub(crate) fn format_found_at_cursor(
+    data: &[u8],
+    pos: usize,
+    encoding: Option<&str>,
+) -> alloc::string::String {
+    if pos >= data.len() {
+        return String::new();
+    }
+    let enc = encoding
+        .map(|e| e.to_ascii_uppercase())
+        .unwrap_or_else(|| alloc::string::String::from("UTF-8"));
+    if enc.contains("UTF-16") || enc.contains("UTF16") {
+        let le = enc.contains("LE");
+        let (hi, lo) = if le { (1, 0) } else { (0, 1) };
+        if pos + 1 < data.len() {
+            let code = u32::from(data[pos + hi]) << 8 | u32::from(data[pos + lo]);
+            if let Some(ch) = char::from_u32(code) {
+                return remap_control_or_line_ending_to_visible(ch).to_string();
+            }
+        }
+    }
+    let b = data[pos];
+    if b.is_ascii() && !b.is_ascii_control() {
+        return (b as char).to_string();
+    }
+    remap_control_or_line_ending_to_visible(b as char).to_string()
 }
 
 fn decode_unsigned_bytes(bytes: &[u8], le: bool) -> u64 {
@@ -8976,16 +9071,8 @@ pub(crate) fn read_simple(
             let Some((_n, alt)) =
                 cursor.consume_delimiter_with_alt(pat, props.ignore_case, Some(encoding))
             else {
-                let found = cursor
-                    .data
-                    .get(cursor.pos)
-                    .map(|b| *b as char)
-                    .unwrap_or('\0');
-                let found_display = if found.is_ascii() && !found.is_control() {
-                    alloc::format!("{found}")
-                } else {
-                    alloc::format!("\\x{b:02x}", b = cursor.data.get(cursor.pos).copied().unwrap_or(0))
-                };
+                let found_display =
+                    format_found_at_cursor(&cursor.data, cursor.pos, Some(encoding));
                 let ctx = field_name.unwrap_or("element");
                 return Err(VmError::InvalidValue {
                     message: alloc::format!(
