@@ -7258,7 +7258,13 @@ fn read_until_delimiters(
         cursor.bit_count = 0;
         return Ok(rest);
     }
-    read_until_any_delimiter(cursor, &patterns, require_delimiter, encoding)
+    read_until_any_delimiter(
+        cursor,
+        &patterns,
+        require_delimiter,
+        encoding,
+        !stop_sequences.is_empty(),
+    )
 }
 
 pub(crate) fn read_until_separator(
@@ -7271,7 +7277,7 @@ pub(crate) fn read_until_separator(
         pat: separator.to_string(),
         ignore_case,
     }];
-    read_until_any_delimiter(cursor, &patterns, require_delimiter, None)
+    read_until_any_delimiter(cursor, &patterns, require_delimiter, None, false)
 }
 
 pub(crate) fn bits_available_in_cursor(cursor: &Cursor<'_>) -> usize {
@@ -7443,6 +7449,7 @@ fn read_until_any_delimiter(
     delimiters: &[DelimScanPattern],
     require_delimiter: bool,
     encoding: Option<&str>,
+    allow_payload_at_eos: bool,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let start = cursor.pos;
@@ -7475,6 +7482,9 @@ fn read_until_any_delimiter(
         return Ok(Vec::new());
     }
     if require_delimiter {
+        if allow_payload_at_eos && cursor.remaining() == 0 {
+            return Ok(cursor.data[start..cursor.pos].to_vec());
+        }
         let terms = delimiters
             .iter()
             .map(|p| alloc::format!("`{}`", format_delimiter_for_error(&p.pat)))

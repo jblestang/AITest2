@@ -746,12 +746,19 @@ impl<'a> Decoder<'a> {
             if items.len() as u64 >= min && cursor.is_empty() {
                 break;
             }
-            if (items.len() as u64) >= min
-                && props.occurs_count_kind == OccursCountKind::Implicit
-                && max == u64::MAX
-                && self.at_implicit_occurrence_stop(cursor, stop_sequences)?
-            {
-                break;
+            if (items.len() as u64) >= min {
+                if max == u64::MAX
+                    && self.at_enclosing_terminator_stop(cursor, stop_sequences)?
+                {
+                    break;
+                }
+                if self.at_enclosing_separator_stop(
+                    cursor,
+                    stop_sequences,
+                    parent_sequence,
+                )? {
+                    break;
+                }
             }
             if let Some(limit) = self.ctx.program.tunables.max_occurs_bounds {
                 if (items.len() as u32) >= limit {
@@ -1521,8 +1528,7 @@ impl<'a> Decoder<'a> {
             ))
     }
 
-    /// True when the cursor is at an enclosing `stop_sequences` terminator (implicit unbounded stop).
-    fn at_implicit_occurrence_stop(
+    fn at_enclosing_terminator_stop(
         &self,
         cursor: &Cursor<'_>,
         stop_sequences: &[&IrProps],
@@ -1532,6 +1538,39 @@ impl<'a> Decoder<'a> {
                 continue;
             };
             let pat = self.ctx.strings().get(id)?;
+            if pat.is_empty() {
+                continue;
+            }
+            let enc = encoding_name(stop, self.ctx.strings()).ok();
+            if crate::schema::match_delimiter_opts_for_encoding(
+                &cursor.data[cursor.pos..],
+                pat,
+                stop.ignore_case,
+                enc.as_deref(),
+            )
+            .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn at_enclosing_separator_stop(
+        &self,
+        cursor: &Cursor<'_>,
+        stop_sequences: &[&IrProps],
+        parent_sequence: Option<&IrProps>,
+    ) -> Result<bool> {
+        let parent_sep = parent_sequence.and_then(|p| p.separator);
+        for stop in stop_sequences {
+            let Some(sep_id) = stop.separator else {
+                continue;
+            };
+            if parent_sep == Some(sep_id) {
+                continue;
+            }
+            let pat = self.ctx.strings().get(sep_id)?;
             if pat.is_empty() {
                 continue;
             }

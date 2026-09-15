@@ -104,19 +104,37 @@ impl SchemaResolver {
         #[cfg(feature = "std")]
         {
             use std::path::Path;
-            for base in &self.base_dirs {
+            let mut try_base = |base: &str| -> Option<String> {
                 let candidates = [Path::new(base).join(loc), Path::new(base).join(file_name)];
                 for path in &candidates {
                     if path.is_file() {
                         if let Ok(canon) = path.canonicalize() {
-                            return canon.to_string_lossy().into_owned();
+                            return Some(canon.to_string_lossy().into_owned());
                         }
-                        return path.to_string_lossy().into_owned();
+                        return Some(path.to_string_lossy().into_owned());
+                    }
+                }
+                None
+            };
+            if loc.starts_with('/') {
+                for base in &self.base_dirs {
+                    if let Some(key) = try_base(base) {
+                        return key;
+                    }
+                }
+            } else {
+                for base in self.base_dirs.iter().rev() {
+                    if let Some(key) = try_base(base) {
+                        return key;
                     }
                 }
             }
         }
-        if let Some(base) = self.base_dirs.first() {
+        if let Some(base) = if loc.starts_with('/') {
+            self.base_dirs.first()
+        } else {
+            self.base_dirs.last()
+        } {
             return alloc::format!("{base}/{loc}");
         }
         loc.to_string()
@@ -161,14 +179,7 @@ impl SchemaResolver {
         #[cfg(feature = "std")]
         {
             use std::path::{Path, PathBuf};
-            let mut search_bases: Vec<PathBuf> = self
-                .base_dirs
-                .iter()
-                .map(|b| PathBuf::from(b))
-                .collect();
-            search_bases.push(PathBuf::from(daffodil_test_resources_root()));
-
-            for base in search_bases.iter().rev() {
+            let search = |base: &Path| -> Option<(String, Option<String>)> {
                 let candidates = [
                     base.join(loc),
                     base.join(normalized),
@@ -179,9 +190,26 @@ impl SchemaResolver {
                         let parent = path
                             .parent()
                             .map(|p| p.to_string_lossy().into_owned());
-                        return Ok((content, parent));
+                        return Some((content, parent));
                     }
                 }
+                None
+            };
+            if loc.starts_with('/') {
+                for base in &self.base_dirs {
+                    if let Some(found) = search(Path::new(base)) {
+                        return Ok(found);
+                    }
+                }
+            } else {
+                for base in self.base_dirs.iter().rev() {
+                    if let Some(found) = search(Path::new(base)) {
+                        return Ok(found);
+                    }
+                }
+            }
+            if let Some(found) = search(Path::new(&daffodil_test_resources_root())) {
+                return Ok(found);
             }
         }
         Err(ParseError::InvalidXml {
