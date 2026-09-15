@@ -555,6 +555,7 @@ impl<'a> XsdParser<'a> {
                 self.insert_global_element(GlobalElement {
                     name,
                     type_qname_prefixed: false,
+                    type_xsd_qname: None,
                     type_name: TypeName::new("xs:string"),
                     props: self.finalize_props(props),
                 });
@@ -566,6 +567,7 @@ impl<'a> XsdParser<'a> {
                 self.insert_global_element(GlobalElement {
                     name,
                     type_qname_prefixed: true,
+                    type_xsd_qname: None,
                     type_name: TypeName::new("xs:string"),
                     props: self.finalize_props(props),
                 });
@@ -577,6 +579,7 @@ impl<'a> XsdParser<'a> {
             self.insert_global_element(GlobalElement {
                 name,
                 type_qname_prefixed: true,
+                type_xsd_qname: None,
                 type_name: inline.0,
                 props: self.finalize_props(props),
             });
@@ -585,6 +588,7 @@ impl<'a> XsdParser<'a> {
 
         self.reader.skip_insignificant_ws()?;
         let mut resolved_type = type_name;
+        let type_xsd_qname = xsd_attrs.get("type").cloned();
         if self.reader.peek_is_end("element")? {
             self.expect_end_local("element")?;
         } else {
@@ -604,6 +608,7 @@ impl<'a> XsdParser<'a> {
         self.insert_global_element(GlobalElement {
             name,
             type_qname_prefixed,
+            type_xsd_qname,
             type_name: resolved_type,
             props: self.finalize_props(props),
         });
@@ -977,6 +982,7 @@ impl<'a> XsdParser<'a> {
                 let stub = GlobalElement {
                     name: name.clone(),
                     type_qname_prefixed: false,
+                    type_xsd_qname: None,
                     type_name: TypeName::new("xs:string"),
                     props: DfdlProps::default(),
                 };

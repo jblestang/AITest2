@@ -95,7 +95,10 @@ impl fmt::Display for VmError {
                 )
             }
             VmError::InvalidChoice { branch_errors } => {
-                write!(f, "Parse Error. All choice alternatives failed")?;
+                write!(
+                    f,
+                    "Parse Error: Alternative failed. All choice alternatives failed"
+                )?;
                 for detail in branch_errors {
                     if detail.is_empty() {
                         continue;

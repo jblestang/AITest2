@@ -327,6 +327,23 @@ impl<'a> IrBuilder<'a> {
                     }))
                 } else {
                     let props = merged;
+                    if let Some(ref er) = element.element_ref {
+                        if let Some(TypeDef::Simple { props: type_props, .. }) =
+                            self.schema.resolve_type(&element.type_name)
+                        {
+                            let type_label = crate::schema::get_global_element(self.schema, er)
+                                .and_then(|g| g.type_xsd_qname.clone())
+                                .unwrap_or_else(|| element.type_name.as_str().to_string());
+                            if er.contains(':') && type_label.contains(':') {
+                                validate_text_number_pad_character_overlap(
+                                    er.as_str(),
+                                    &type_label,
+                                    &element.props,
+                                    type_props,
+                                )?;
+                            }
+                        }
+                    }
                     // Simple types: compile the type without element overlays so merge_ir_props
                     // can preserve type/format alignment as framing_alignment when the element
                     // overrides dfdl:alignment (Section 12 aligned_data alignment03).
@@ -1923,6 +1940,31 @@ fn validate_model_group_occurs(group: &str, props: &DfdlProps) -> Result<()> {
         return Err(SchemaError::InvalidProperty {
             message: alloc::format!(
                 "Schema Definition Error. xs:minOccurs and xs:maxOccurs cannot appear in xs:{group} model group"
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_text_number_pad_character_overlap(
+    element_label: &str,
+    type_label: &str,
+    element: &DfdlProps,
+    type_props: &DfdlProps,
+) -> Result<()> {
+    let el = element
+        .text_number_pad_character
+        .as_ref()
+        .is_some_and(|s| !s.is_empty());
+    let ty = type_props
+        .text_number_pad_character
+        .as_ref()
+        .is_some_and(|s| !s.is_empty());
+    if el && ty {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. Overlapping properties: textNumberPadCharacter overlaps between {element_label} and {type_label}. Overlap is not allowed."
             ),
         }
         .into());

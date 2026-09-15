@@ -688,6 +688,8 @@ pub struct GlobalElement {
     pub type_name: TypeName,
     /// True when the XSD `type="..."` attribute used a prefixed QName (e.g. `ex:itemType`).
     pub type_qname_prefixed: bool,
+    /// Raw `type="..."` attribute when present (e.g. `c03:nestType`).
+    pub type_xsd_qname: Option<String>,
     pub props: DfdlProps,
 }
 
