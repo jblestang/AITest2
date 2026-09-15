@@ -113,7 +113,73 @@ fn walk_particle(
                         return Ok(());
                     }
                     if let Some(ename) = ename {
-                        if detail.contains("failed facet checks") {
+                        let mut pattern_errors_emitted = false;
+                        if detail.contains("facet pattern")
+                            && !type_has_union_members(schema, program, props)
+                        {
+                            let iso8859 = program
+                                .strings
+                                .get(props.encoding)
+                                .ok()
+                                .is_some_and(|enc| enc.eq_ignore_ascii_case("iso-8859-1"));
+                            if (full_xerces_style && !iso8859)
+                                || (!full_xerces_style && *kind == ValueKind::String && !iso8859)
+                            {
+                                pattern_errors_emitted = true;
+                                if full_xerces_style || *kind == ValueKind::String {
+                                    errors.push(alloc::format!("Validation Error"));
+                                    errors.push(ename.to_string());
+                                    errors.push(alloc::format!("pattern"));
+                                } else {
+                                    errors.push(alloc::format!("failed facet checks"));
+                                    errors.push(alloc::format!("pattern"));
+                                }
+                                if let Some(start) = detail.find('(') {
+                                    if let Some(end) = detail.rfind(')') {
+                                        errors.push(detail[start + 1..end].to_string());
+                                    }
+                                }
+                                let lex = value_lexical(value, *kind).unwrap_or("");
+                                if full_xerces_style && !lex.is_empty() {
+                                    errors.push(alloc::format!("'{lex}'"));
+                                    errors.push(alloc::format!("not facet-valid"));
+                                    errors.push(alloc::format!("pattern"));
+                                    if let Some(start) = detail.find('(') {
+                                        if let Some(end) = detail.rfind(')') {
+                                            errors.push(alloc::format!(
+                                                "'{}'",
+                                                &detail[start + 1..end]
+                                            ));
+                                        }
+                                    }
+                                }
+                            } else if !full_xerces_style && *kind == ValueKind::String && iso8859 {
+                                pattern_errors_emitted = true;
+                                errors.push(alloc::format!("ex:{ename} failed facet checks"));
+                            } else if !full_xerces_style
+                                && matches!(
+                                    *kind,
+                                    ValueKind::Int
+                                        | ValueKind::Integer
+                                        | ValueKind::Long
+                                        | ValueKind::Short
+                                        | ValueKind::Byte
+                                        | ValueKind::UnsignedInt
+                                        | ValueKind::UnsignedShort
+                                        | ValueKind::UnsignedByte
+                                )
+                            {
+                                pattern_errors_emitted = true;
+                                errors.push(alloc::format!("failed facet checks"));
+                                errors.push(alloc::format!("pattern"));
+                                if let Some(start) = detail.find('(') {
+                                    if let Some(end) = detail.rfind(')') {
+                                        errors.push(detail[start + 1..end].to_string());
+                                    }
+                                }
+                            }
+                        }
+                        if !pattern_errors_emitted && detail.contains("failed facet checks") {
                             let rest = detail
                                 .strip_prefix("failed facet checks due to: ")
                                 .map(str::trim);

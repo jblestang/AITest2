@@ -1,4 +1,7 @@
-use super::facet_validate::{needs_facet_validation, validate_decoded_facets_tdml};
+use super::facet_validate::{
+    needs_choice_discriminator_facet_check, needs_facet_validation,
+    validate_choice_discriminator_facets, validate_decoded_facets_tdml,
+};
 use super::runtime::{
     consume_element_framing, consume_element_trailing_framing, consume_enclosing_delimiter,
     default_value_for, encoding_name, has_non_empty_terminator,
@@ -1639,15 +1642,15 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// Facet checks that guide choice selection (enumeration, checkConstraints discriminators).
-    /// These run even when TDML validation is off; post-decode Xerces validation is separate.
+    /// Enumeration-only facet checks for choice disambiguation (DFDL-2-019R).
+    /// Min/max/pattern validation is deferred to TDML post-decode validation.
     fn choice_branch_needs_post_decode_facet_check(&self, branch_node: u32) -> bool {
-        if self.ctx.config.defer_facet_validation {
-            return true;
-        }
         let Ok(IrNode::Element { props, .. }) = self.ctx.program.node(branch_node) else {
             return false;
         };
+        if self.ctx.config.defer_facet_validation {
+            return needs_choice_discriminator_facet_check(props);
+        }
         needs_facet_validation(props)
     }
 
@@ -1659,7 +1662,15 @@ impl<'a> Decoder<'a> {
         let IrNode::Element { kind, props, .. } = self.ctx.program.node(branch_node)? else {
             return Ok(());
         };
-        if needs_facet_validation(props) {
+        if self.ctx.config.defer_facet_validation {
+            validate_choice_discriminator_facets(
+                value,
+                *kind,
+                props,
+                self.ctx.strings(),
+            )
+            .map_err(Error::from)?;
+        } else if needs_facet_validation(props) {
             validate_decoded_facets_tdml(
                 value,
                 *kind,

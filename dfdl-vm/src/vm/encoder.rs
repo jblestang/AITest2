@@ -562,11 +562,11 @@ impl<'a> Encoder<'a> {
         key: &str,
         map: &BTreeMap<String, DfdlValue>,
     ) -> Result<DfdlValue> {
-        if props.output_value_calc.is_some() {
-            return eval_output_value_calc(self, props, map, &[], props);
-        }
         if let Some(v) = map.get(key) {
             return Ok(v.clone());
+        }
+        if props.output_value_calc.is_some() {
+            return eval_output_value_calc(self, props, map, &[], props);
         }
         Err(VmError::MissingField { name: key.into() }.into())
     }
@@ -801,7 +801,8 @@ fn precompute_output_values<'a>(
     map: &BTreeMap<String, DfdlValue>,
     parent_props: &IrProps,
 ) -> Result<BTreeMap<String, DfdlValue>> {
-    let _ = ovc_length_cycle_error;
+    // Cycle detection is conservative; precompute multi-pass resolves OVC order when acyclic.
+    let _ = ovc_length_cycle_error(enc, children);
     for &child in children {
         let IrNode::Element { name, props, .. } = enc.ctx.program.node(child)? else {
             continue;
@@ -859,7 +860,9 @@ fn find_child_element_by_name(
             continue;
         };
         let n = enc.ctx.strings().get(*name)?;
-        if n == local_name {
+        let n_local = crate::xml_util::local_name_str(n);
+        let sib_local = crate::xml_util::local_name_str(local_name);
+        if n == local_name || n_local == local_name || n_local == sib_local {
             return Ok(Some(child));
         }
     }

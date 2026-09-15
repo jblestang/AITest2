@@ -28,6 +28,65 @@ pub fn facet_validation_error(
     }
 }
 
+/// Facets that may disambiguate choice branches during parse (not min/max/pattern).
+pub fn needs_choice_discriminator_facet_check(props: &IrProps) -> bool {
+    !props.facet_enumeration.is_empty()
+}
+
+pub fn validate_choice_discriminator_facets(
+    value: &DfdlValue,
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), VmError> {
+    if props.facet_enumeration.is_empty() {
+        return Ok(());
+    }
+    match kind {
+        ValueKind::String => {
+            if let DfdlValue::String(s) = value {
+                validate_enumeration_lexical(s.text.as_str(), props, strings)?;
+            }
+        }
+        ValueKind::Integer => {
+            if let DfdlValue::Integer(lex) = value {
+                if let Ok(n) = lex.parse::<i64>() {
+                    validate_enumeration_numeric(n, props, strings)?;
+                }
+            }
+        }
+        _ => {
+            if let Some(n) = numeric_value_i64(value) {
+                validate_enumeration_numeric(n, props, strings)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_enumeration_lexical(
+    text: &str,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), VmError> {
+    let mut allowed = false;
+    for id in &props.facet_enumeration {
+        let allowed_val = strings.get(*id)?;
+        if text == allowed_val {
+            allowed = true;
+            break;
+        }
+    }
+    if !allowed {
+        return Err(facet_validation_error(
+            props,
+            strings,
+            alloc::format!("failed facet checks due to: enumeration"),
+        ));
+    }
+    Ok(())
+}
+
 pub fn needs_facet_validation(props: &IrProps) -> bool {
     if props.facet_check_constraints {
         return true;

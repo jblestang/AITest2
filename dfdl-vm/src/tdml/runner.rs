@@ -595,6 +595,22 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
             &test.root,
             &infoset_nodes,
         )
+    } else if test.expected_errors.as_ref().is_some_and(|expected| {
+        expected.iter().any(|e| {
+            let el = e.to_ascii_lowercase();
+            el.contains("element end")
+                || el.contains("element start")
+                || el.contains("expected element")
+                || el.contains("schema definition error")
+                || el.contains("no global element")
+        })
+    }) {
+        crate::unparse_validate::validate_unparse_infoset_cardinality(
+            spec.schema(),
+            spec.program(),
+            &test.root,
+            &infoset_nodes,
+        )
     } else {
         Ok(())
     };
