@@ -459,10 +459,23 @@ impl<'a> XsdParser<'a> {
         }
         let fallback = format_storage_key(&local, None);
         if fallback != key {
-            self.doc.named_formats.get(&fallback).cloned()
-        } else {
-            None
+            if let Some(base) = self.doc.named_formats.get(&fallback) {
+                return Some(base.clone());
+            }
         }
+        if qname.contains(':') {
+            let matching: alloc::vec::Vec<_> = self
+                .doc
+                .named_formats
+                .iter()
+                .filter(|(k, _)| format_local_from_storage_key(k) == local)
+                .map(|(_, v)| v.clone())
+                .collect();
+            if matching.len() == 1 {
+                return Some(matching.into_iter().next().unwrap());
+            }
+        }
+        None
     }
 
     fn parse_global_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
@@ -1471,7 +1484,9 @@ impl<'a> XsdParser<'a> {
                             }
                             let dfdl_props =
                                 self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
-                            props = merge_dfdl_props(props, dfdl_props);
+                            if local != "defineFormat" && local != "defineEscapeScheme" {
+                                props = merge_dfdl_props(props, dfdl_props);
+                            }
                         } else {
                             self.skip_element_body(&local)?;
                         }
@@ -1546,7 +1561,11 @@ impl<'a> XsdParser<'a> {
             let enc_policy_explicit = attrs.keys().any(|k| {
                 local_tag(k) == "encodingErrorPolicy" || k.ends_with(":encodingErrorPolicy")
             });
-            if let Some(ref_name) = attrs.get("ref") {
+            let format_ref_name = attrs
+                .get("ref")
+                .map(String::as_str)
+                .or(props.format_ref.as_deref());
+            if let Some(ref_name) = format_ref_name {
                 if let Some(base) = self.lookup_named_format(ref_name) {
                     props = merge_dfdl_props(base, props);
                 }
@@ -3815,6 +3834,48 @@ mod tests {
         } else {
             panic!("expected complex type");
         }
+    }
+
+    #[test]
+    fn ibm_general_purpose_imported_format_defaults_have_byte_order() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section05/simple_types/nonNegativeInteger.dfdl.xsd"
+        );
+        let xsd = std::fs::read_to_string(path).expect("read");
+        let dir = std::path::Path::new(path).parent().unwrap();
+        let doc = parse_schema_with_options(
+            &xsd,
+            &ParseOptions {
+                base_dir: Some(dir.to_string_lossy().into()),
+                schema_label: None,
+            },
+        )
+        .expect("parse");
+        assert_eq!(
+            doc.format_defaults.props.byte_order,
+            Some(crate::schema::ByteOrder::BigEndian)
+        );
+    }
+
+    #[test]
+    fn define_format_in_appinfo_does_not_merge_into_format_defaults() {
+        let xsd = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/">
+  <xs:annotation>
+    <xs:appinfo source="http://www.ogf.org/dfdl/">
+      <dfdl:format initiator="" terminator="" separator=""/>
+      <dfdl:defineFormat name="pipes">
+        <dfdl:format separator="|" initiator="||" terminator="|||"/>
+      </dfdl:defineFormat>
+    </xs:appinfo>
+  </xs:annotation>
+  <xs:element name="A" type="xs:int"/>
+</xs:schema>"#;
+        let doc = parse_schema(xsd).expect("parse");
+        assert_eq!(doc.format_defaults.props.initiator.as_deref(), Some(""));
+        assert!(doc.named_formats.contains_key("|pipes"));
     }
 
     #[test]
