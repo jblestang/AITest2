@@ -1361,6 +1361,65 @@ fn split_whitespace_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<all
         .collect()
 }
 
+const NIL_VALUE_DISALLOWED_BINARY_LITERAL: &[&str] = &[
+    "%NL;", "%LF;", "%CR;", "%WSP;", "%WSP+;", "%WSP*;", "%WS;", "%WS+;", "%WS*;",
+];
+
+/// Compile-time `dfdl:nilValue` checks (DFDL-6-046R, DFDL-13-235R).
+pub fn validate_nil_value_compile(
+    raw: &str,
+    nil_kind: Option<crate::schema::NilKind>,
+    representation: crate::schema::Representation,
+) -> Result<(), String> {
+    use crate::schema::{NilKind, Representation};
+    if raw.is_empty() {
+        return Err(
+            "Property dfdl:nilValue cannot be empty string. Use dfdl:nilValue='%ES;' for empty string."
+                .into(),
+        );
+    }
+    let kind = nil_kind.unwrap_or(NilKind::LiteralValue);
+    if kind == NilKind::LiteralCharacter {
+        for token in ["%NL;", "%ES;", "%WSP;", "%WSP+;", "%WSP*;"] {
+            if raw.contains(token) {
+                return Err(format!(
+                    "Property dfdl:nilValue contains disallowed character class(es): {token}"
+                ));
+            }
+        }
+        for alt in nil_value_alternatives(raw) {
+            let expanded = expand_entities(alt.trim());
+            let as_text = alloc::string::String::from_utf8_lossy(&expanded);
+            if as_text.chars().count() != 1 {
+                return Err(
+                    "For property dfdl:nilValue the length of string must be exactly 1 character."
+                        .into(),
+                );
+            }
+        }
+    }
+    if representation == Representation::Binary && kind == NilKind::LiteralValue {
+        for token in NIL_VALUE_DISALLOWED_BINARY_LITERAL {
+            if raw.contains(token) {
+                return Err(format!(
+                    "Property dfdl:nilValue contains disallowed character class(es): {token}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `escapeBlockStart` / `escapeBlockEnd` must not contain literal whitespace (DFDL-6-036R).
+pub fn validate_escape_block_property(raw: &str) -> Result<(), String> {
+    if raw.chars().any(|c| c.is_whitespace()) {
+        return Err(format!(
+            "The string ({raw}) must not contain any whitespace. Use DFDL Entities (property escapeScheme)"
+        ));
+    }
+    Ok(())
+}
+
 /// Alternatives in a `dfdl:nilValue` property (whitespace-separated tokens / entities).
 pub fn nil_value_alternatives(raw: &str) -> alloc::vec::Vec<alloc::string::String> {
     if let Some(alts) = split_entity_and_literal_alternatives(raw) {
@@ -2509,5 +2568,23 @@ mod alt_split_tests {
         assert_eq!(encode_delimiter("? . !"), vec![b'?']);
         assert_eq!(encode_property_delimiter("%ES; %NL; !", None), Vec::<u8>::new());
         assert_eq!(encode_property_delimiter("%WSP+; * )", None), vec![b' ']);
+    }
+
+    #[test]
+    fn nil_value_compile_empty_and_binary_nl() {
+        use crate::schema::{NilKind, Representation};
+        assert!(validate_nil_value_compile("", None, Representation::Text).is_err());
+        assert!(validate_nil_value_compile(
+            "%NL;",
+            Some(NilKind::LiteralValue),
+            Representation::Binary
+        )
+        .is_err());
+        assert!(validate_nil_value_compile(
+            "%NUL;%NUL;%NUL;%NUL;",
+            Some(NilKind::LiteralValue),
+            Representation::Binary
+        )
+        .is_ok());
     }
 }

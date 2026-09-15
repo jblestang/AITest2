@@ -1825,9 +1825,11 @@ fn escape_scheme_from_attrs(attrs: &BTreeMap<String, String>) -> EscapeSchemeDef
         escape_escape_character: attrs
             .get("escapeEscapeCharacter")
             .map(|s| expand_entities_str(s)),
+        escape_block_start_raw: attrs.get("escapeBlockStart").cloned(),
         escape_block_start: attrs
             .get("escapeBlockStart")
             .map(|s| expand_entities_str(s)),
+        escape_block_end_raw: attrs.get("escapeBlockEnd").cloned(),
         escape_block_end: attrs
             .get("escapeBlockEnd")
             .map(|s| expand_entities_str(s)),

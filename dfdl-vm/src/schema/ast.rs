@@ -191,7 +191,11 @@ pub struct EscapeSchemeDef {
     pub escape_kind: EscapeKind,
     pub escape_character: Option<String>,
     pub escape_escape_character: Option<String>,
+    /// Raw `escapeBlockStart` attribute (before entity expansion), for compile-time SDE checks.
+    pub escape_block_start_raw: Option<String>,
     pub escape_block_start: Option<String>,
+    /// Raw `escapeBlockEnd` attribute (before entity expansion), for compile-time SDE checks.
+    pub escape_block_end_raw: Option<String>,
     pub escape_block_end: Option<String>,
 }
 

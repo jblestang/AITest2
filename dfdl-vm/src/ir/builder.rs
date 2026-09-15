@@ -1235,6 +1235,41 @@ fn finalize_element_props(
     if ir.nillable && ir.nil_value.is_some() && ir.nil_kind.is_none() {
         ir.nil_kind = Some(NilKind::LiteralValue);
     }
+    if ir.nillable {
+        if let Some(nil_id) = ir.nil_value {
+            let raw = strings.get(nil_id).map_err(|e| SchemaError::InvalidProperty {
+                message: e.to_string(),
+            })?;
+            if let Err(msg) = crate::schema::validate_nil_value_compile(
+                raw,
+                ir.nil_kind,
+                ir.representation,
+            ) {
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!("Schema Definition Error: {msg}"),
+                }
+                .into());
+            }
+        }
+    }
+    if let Some(ref scheme) = ir.escape_scheme {
+        use crate::schema::{EscapeKind, validate_escape_block_property};
+        if scheme.escape_kind == EscapeKind::EscapeBlock {
+            for raw in [
+                scheme.escape_block_start_raw.as_deref(),
+                scheme.escape_block_end_raw.as_deref(),
+            ] {
+                if let Some(s) = raw {
+                    if let Err(msg) = validate_escape_block_property(s) {
+                        return Err(SchemaError::InvalidProperty {
+                            message: alloc::format!("Schema Definition Error: {msg}"),
+                        }
+                        .into());
+                    }
+                }
+            }
+        }
+    }
     validate_binary_delimited(kind, &ir)?;
     validate_hex_binary_delimited_encoding(kind, &ir, strings)?;
     crate::length_validate::validate_binary_decimal_virtual_point_schema(kind, &ir)?;

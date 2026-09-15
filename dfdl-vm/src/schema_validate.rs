@@ -54,7 +54,6 @@ pub fn validate_compiled_schema(
     validate_invalid_restrictions(schema, root, tunables)?;
     validate_max_hex_binary_length(schema, root, tunables)?;
     validate_unique_particle_attribution(schema)?;
-    let _ = root;
     Ok(())
 }
 
