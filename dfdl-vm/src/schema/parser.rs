@@ -173,6 +173,25 @@ struct ParsedRestrictionFacets {
     invalid_fraction_digits: Option<String>,
 }
 
+/// Types declared before a schema-level `dfdl:format` annotation capture an empty format context;
+/// apply the final format defaults so imported types (e.g. USMTF `ct1`) inherit delimited length.
+fn backfill_type_format_contexts(doc: &mut SchemaDocument) {
+    let defaults = doc.format_defaults.props.clone();
+    if !defaults.length_kind_defined {
+        return;
+    }
+    for td in doc.types.values_mut() {
+        match td {
+            TypeDef::Simple { format_context, .. } | TypeDef::Complex { format_context, .. } => {
+                if !format_context.length_kind_defined {
+                    *format_context =
+                        merge_dfdl_props(format_context.clone(), defaults.clone());
+                }
+            }
+        }
+    }
+}
+
 struct XsdParser<'a> {
     reader: XmlReader<'a>,
     doc: SchemaDocument,
@@ -440,6 +459,7 @@ impl<'a> XsdParser<'a> {
             supplement_namespace_prefixes_from_text(text, &mut self.doc.namespace_prefixes);
         }
         check_general_format04_unprefixed_include(&mut self.doc);
+        backfill_type_format_contexts(&mut self.doc);
         Ok(core::mem::take(&mut self.doc))
     }
 
@@ -485,12 +505,7 @@ impl<'a> XsdParser<'a> {
                     let prefix = name.prefix.clone();
                     let (child_attrs, child_namespace) = self.reader.take_start_element()?;
                     match local.as_str() {
-                        "element" => {
-                            if let Err(e) = self.parse_global_element(child_attrs, child_namespace) {
-                                self.doc.schema_diagnostics.push(e.to_string());
-                                let _ = self.skip_element_body("element");
-                            }
-                        }
+                        "element" => self.parse_global_element(child_attrs, child_namespace)?,
                         "complexType" => self.parse_complex_type(None, child_attrs)?,
                         "simpleType" => self.parse_simple_type(None, child_attrs)?,
                         "group" => self.parse_global_group(child_attrs)?,
@@ -1259,16 +1274,12 @@ impl<'a> XsdParser<'a> {
                     attribute: "ref".into(),
                 })?,
             None => {
-                self.doc.schema_diagnostics.push(
-                    "Schema Definition Error: Local element declaration must have a name attribute"
-                        .into(),
-                );
+                let msg = "Schema Definition Error: Local element declaration must have a 'name' attribute on the element";
+                self.doc.schema_diagnostics.push(msg.into());
                 self.doc.schema_diagnostics.push("'name'".into());
                 self.doc.schema_diagnostics.push("element".into());
                 return Err(crate::error::SchemaError::InvalidProperty {
-                    message:
-                        "Schema Definition Error: Local element declaration must have a name attribute"
-                            .into(),
+                    message: msg.into(),
                 }
                 .into());
             }

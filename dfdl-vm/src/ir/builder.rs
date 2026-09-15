@@ -355,10 +355,20 @@ impl<'a> IrBuilder<'a> {
                     child: None,
                 }))
             }
-            TypeDef::Complex { content, props, .. } => {
-                let defaults = self.defaults.clone();
+            TypeDef::Complex {
+                content,
+                props,
+                format_context,
+                ..
+            } => {
+                let mut base_ir = self.defaults.clone();
+                if !format_context.length_kind_defined {
+                    base_ir.length_kind = LengthKind::Implicit;
+                    base_ir.length_kind_defined = false;
+                }
+                base_ir = overlay_dfdl_to_ir(base_ir, format_context, &mut self.strings)?;
                 let inherited = element_props_for_complex_content(element_props);
-                let type_base = self.merge_props_full(&defaults, props, &inherited)?;
+                let type_base = self.merge_props_full(&base_ir, props, &inherited)?;
                 self.compile_complex(content, &type_base, hidden)
             }
         }
@@ -2837,8 +2847,12 @@ fn particle_inherited_for_children(
 ) -> IrProps {
     // Group-level delimiter and ignoreCase properties apply to the group node, not descendants.
     let mut inherited = parent_inherited.clone();
-    if group_props.length_kind.is_none() && defaults.length_kind_defined {
+    if group_props.length_kind.is_none()
+        && defaults.length_kind_defined
+        && !inherited.length_kind_defined
+    {
         inherited.length_kind = defaults.length_kind;
+        inherited.length_kind_defined = true;
     }
     // Element occurrence limits apply to the particle, not descendants.
     if group_props.occurs_min.is_none() {
