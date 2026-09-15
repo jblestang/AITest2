@@ -1976,10 +1976,23 @@ fn eval_input_value_calc(
             .map(DfdlValue::Boolean)
             .map_err(Into::into);
     }
+    if calc == InputValueCalc::HexBinaryFromSibling {
+        if kind != ValueKind::HexBinary {
+            return Err(VmError::InvalidValue {
+                message: "xs:hexBinary inputValueCalc requires xs:hexBinary element".into(),
+            }
+            .into());
+        }
+        let sib = sibling_state(props, siblings, strings)?;
+        let text = dfdl_value_text(&sib.value);
+        let bytes = super::runtime::decode_hex_binary(text)?;
+        return Ok(crate::value::DfdlValue::HexBinary(bytes));
+    }
     let len = match calc {
         InputValueCalc::Constant(_) => unreachable!("handled above"),
         InputValueCalc::StringLiteral => unreachable!("handled above"),
         InputValueCalc::BooleanFromSibling => unreachable!("handled above"),
+        InputValueCalc::HexBinaryFromSibling => unreachable!("handled above"),
         InputValueCalc::ContentLengthSelf(units) | InputValueCalc::ValueLengthSelf(units) => {
             let byte_len = content_scope_bytes.unwrap_or_else(|| cursor.remaining());
             length_in_units(byte_len, units)?

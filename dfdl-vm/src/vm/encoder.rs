@@ -1,9 +1,9 @@
 use super::runtime::{
-    encoding_name, is_suppressible_empty_representation, nil_unparse_bytes_for_encode,
-    write_alignment, write_alignment_for_kind, write_alignment_with_config, write_byte_aligned,
-    write_framed_payload,
-    write_simple, validate_explicit_decimal_before_encode, trailing_suppressed_count,
-    should_suppress_occurrence_separator, RuntimeConfig, VmContext,
+    decode_hex_binary, encoding_name, hex_binary_from_integer, int_bytes,
+    is_suppressible_empty_representation, nil_unparse_bytes_for_encode, write_alignment,
+    write_alignment_for_kind, write_alignment_with_config, write_byte_aligned,
+    write_framed_payload, write_simple, validate_explicit_decimal_before_encode,
+    trailing_suppressed_count, should_suppress_occurrence_separator, RuntimeConfig, VmContext,
 };
 use super::alignment::write_leading_skip;
 use crate::error::{Error, Result, VmError};
@@ -51,7 +51,12 @@ impl<'a> Encoder<'a> {
         value: &DfdlValue,
         output: &mut Vec<u8>,
     ) -> Result<u8> {
-        let value = unwrap_root_for_encode(value, &self.ctx.program.root_element);
+        let value = unwrap_root_for_encode(
+            value,
+            &self.ctx.program.root_element,
+            self.ctx.program.root,
+            &self.ctx.program,
+        );
         let mut bit_count = 0u8;
         self.encode_node(self.ctx.program.root, value, output, &mut bit_count)?;
         Ok(bit_count)
@@ -552,14 +557,13 @@ impl<'a> Encoder<'a> {
         key: &str,
         map: &BTreeMap<String, DfdlValue>,
     ) -> Result<DfdlValue> {
+        if props.output_value_calc.is_some() {
+            return eval_output_value_calc(self, props, map, &[], props);
+        }
         if let Some(v) = map.get(key) {
             return Ok(v.clone());
         }
-        if props.output_value_calc.is_some() {
-            eval_output_value_calc(self, props, map, &[], props)
-        } else {
-            Err(VmError::MissingField { name: key.into() }.into())
-        }
+        Err(VmError::MissingField { name: key.into() }.into())
     }
 
     fn write_initiator(
@@ -939,6 +943,56 @@ fn eval_output_value_calc(
     let calc = props.output_value_calc.ok_or_else(|| VmError::InvalidValue {
         message: "missing outputValueCalc".into(),
     })?;
+    match calc {
+        OutputValueCalc::HexBinaryFromLexical => {
+            let lit_id = props.output_value_calc_literal.ok_or_else(|| VmError::InvalidValue {
+                message: "missing outputValueCalc hex literal".into(),
+            })?;
+            let text = strings.get(lit_id)?;
+            let bytes = decode_hex_binary(text)?;
+            return Ok(DfdlValue::HexBinary(bytes));
+        }
+        OutputValueCalc::HexBinaryFromInteger(n) => {
+            let width = props.length.map(|l| l as usize);
+            let bytes = if n >= 0 {
+                decode_hex_binary(&dfdl_hex_binary_lexical_from_integer(n))?
+            } else if let Some(w) = width {
+                let min_w = minimal_signed_byte_width(n);
+                if w == min_w {
+                    hex_binary_from_integer(n, Some(w))
+                } else {
+                    decode_hex_binary(&dfdl_hex_binary_lexical_from_integer(n))?
+                }
+            } else {
+                decode_hex_binary(&dfdl_hex_binary_lexical_from_integer(n))?
+            };
+            return Ok(DfdlValue::HexBinary(bytes));
+        }
+        OutputValueCalc::HexBinaryFromShort(v) => {
+            return Ok(DfdlValue::HexBinary(int_bytes(i64::from(v), 2, false)));
+        }
+        OutputValueCalc::HexBinaryFromByteSibling => {
+            let sib = sibling_from_map(props.output_value_calc_sibling, map, strings)?;
+            let byte = match sib {
+                DfdlValue::Byte(v) => *v,
+                DfdlValue::Int(v) => i8::try_from(*v).map_err(|_| VmError::InvalidValue {
+                    message: alloc::format!("value `{v}` out of range for byte"),
+                })?,
+                DfdlValue::String(s) => s.text.parse::<i8>().map_err(|_| VmError::InvalidValue {
+                    message: alloc::format!("invalid byte `{text}`", text = s.text),
+                })?,
+                other => {
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!("dfdl:hexBinary(xs:byte(...)) on `{other:?}`"),
+                    }
+                    .into());
+                }
+            };
+            return Ok(DfdlValue::HexBinary(alloc::vec![byte as u8]));
+        }
+        _ => {}
+    }
+
     let len = match calc {
         OutputValueCalc::Constant(v) => v,
         OutputValueCalc::ContentLengthSelf(units, addend) => {
@@ -998,10 +1052,67 @@ fn eval_output_value_calc(
             let slice: String = text.chars().skip(start0).take(length).collect();
             return Ok(DfdlValue::string(slice));
         }
+        OutputValueCalc::HexBinaryFromLexical
+        | OutputValueCalc::HexBinaryFromInteger(_)
+        | OutputValueCalc::HexBinaryFromShort(_)
+        | OutputValueCalc::HexBinaryFromByteSibling => {
+            unreachable!("handled above")
+        }
     };
     Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {
         message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
     })?))
+}
+
+fn minimal_signed_byte_width(n: i64) -> usize {
+    for w in 1..=8usize {
+        let mask = if w >= 8 {
+            u64::MAX
+        } else {
+            (1u64 << (w * 8)) - 1
+        };
+        let raw = hex_binary_from_integer(n, Some(w));
+        let mut v = 0i64;
+        for &b in &raw {
+            v = (v << 8) | i64::from(b);
+        }
+        if w < 8 {
+            let sign = 1i64 << (w * 8 - 1);
+            if v & sign != 0 {
+                v |= !mask as i64;
+            }
+        }
+        if v == n {
+            return w;
+        }
+    }
+    8
+}
+
+fn dfdl_hex_binary_lexical_from_integer(n: i64) -> String {
+    if n >= 0 {
+        let s = alloc::format!("{n:x}");
+        if s.len() % 2 == 1 {
+            return alloc::format!("0{s}");
+        }
+        return s;
+    }
+    for w in 1..=8usize {
+        let raw = hex_binary_from_integer(n, Some(w));
+        let s: String = raw
+            .iter()
+            .map(|b| alloc::format!("{:02x}", b))
+            .collect();
+        let trimmed = s.trim_start_matches('0');
+        if trimmed.is_empty() {
+            return "00".into();
+        }
+        if trimmed.len() % 2 == 1 {
+            return alloc::format!("0{trimmed}");
+        }
+        return trimmed.to_string();
+    }
+    "00".into()
 }
 
 fn parse_sibling_property_expr(raw: &str) -> Option<String> {
@@ -1202,7 +1313,22 @@ fn needs_length_frame(props: &IrProps) -> bool {
     )
 }
 
-fn unwrap_root_for_encode<'a>(value: &'a DfdlValue, root_element: &str) -> &'a DfdlValue {
+fn unwrap_root_for_encode<'a>(
+    value: &'a DfdlValue,
+    root_element: &str,
+    root_id: u32,
+    program: &IrProgram,
+) -> &'a DfdlValue {
+    let root_is_complex = matches!(
+        program.node(root_id),
+        Ok(IrNode::Element {
+            kind: crate::ir::ValueKind::Complex,
+            ..
+        })
+    );
+    if root_is_complex {
+        return value;
+    }
     if let Some(seq) = value.sequence_value() {
         if seq.fields.len() == 1 {
             if let Some((name, inner)) = seq.fields.iter().next() {

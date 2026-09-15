@@ -2825,6 +2825,12 @@ fn overlay_dfdl_to_ir(
     if let Some(v) = props.output_value_calc {
         base.output_value_calc = Some(v);
     }
+    if props.output_value_calc_literal.is_some() {
+        base.output_value_calc_literal = props
+            .output_value_calc_literal
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
     if props.output_value_calc_conditional {
         base.output_value_calc_conditional = true;
     }
@@ -3178,6 +3184,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
         out.calendar_date_only = true;
     }
     out.output_value_calc = overlay.output_value_calc;
+    out.output_value_calc_literal = overlay.output_value_calc_literal;
     out.output_value_calc_sibling = overlay.output_value_calc_sibling;
     if overlay.output_value_calc_conditional {
         out.output_value_calc_conditional = true;

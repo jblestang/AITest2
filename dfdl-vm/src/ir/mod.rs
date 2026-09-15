@@ -210,6 +210,7 @@ pub struct IrProps {
     /// `dfdl:calendarCheckPolicy="lax"` (lenient field normalization).
     pub calendar_check_policy_lax: bool,
     pub output_value_calc: Option<OutputValueCalc>,
+    pub output_value_calc_literal: Option<StringId>,
     pub output_value_calc_sibling: Option<StringId>,
     pub output_value_calc_conditional: bool,
     pub text_string_justification: TextStringJustification,
@@ -370,6 +371,7 @@ impl Default for IrProps {
             calendar_date_only: false,
             calendar_check_policy_lax: false,
             output_value_calc: None,
+            output_value_calc_literal: None,
             output_value_calc_sibling: None,
             output_value_calc_conditional: false,
             text_string_justification: TextStringJustification::Left,

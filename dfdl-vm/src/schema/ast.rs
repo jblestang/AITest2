@@ -132,6 +132,8 @@ pub struct DfdlProps {
     pub input_value_calc_sibling: Option<String>,
     pub input_value_calc_segments: Option<alloc::vec::Vec<InputValueCalcSegment>>,
     pub output_value_calc: Option<OutputValueCalc>,
+    /// Hex literal from `{ xs:hexBinary('...') }` / `{ dfdl:hexBinary('...') }` outputValueCalc.
+    pub output_value_calc_literal: Option<String>,
     /// Local name of sibling referenced by `../name` in outputValueCalc.
     pub output_value_calc_sibling: Option<String>,
     /// XPath `if`/fn: expression on outputValueCalc (cycle detection for TDML negative tests).
@@ -334,6 +336,8 @@ pub enum InputValueCalc {
     ContentLengthSibling(LengthUnits),
     ValueLengthSibling(LengthUnits),
     BooleanFromSibling,
+    /// `{ xs:hexBinary(../sibling) }` — decode sibling lexical as hexBinary.
+    HexBinaryFromSibling,
     /// `{ xs:string('...') }` — literal lexical value for calendar/text tests.
     StringLiteral,
 }
@@ -349,6 +353,14 @@ pub enum OutputValueCalc {
     StringLengthSibling,
     /// `fn:substring(../sibling, start, length)` — 1-based XPath start index.
     Substring { start: usize, length: usize },
+    /// `{ xs:hexBinary('...') }` / `{ dfdl:hexBinary('...') }` — literal in [`DfdlProps::output_value_calc_literal`].
+    HexBinaryFromLexical,
+    /// `{ dfdl:hexBinary(n) }` for integer `n`.
+    HexBinaryFromInteger(i64),
+    /// `{ dfdl:hexBinary(xs:short(n)) }`.
+    HexBinaryFromShort(i16),
+    /// `{ dfdl:hexBinary(xs:byte(../sibling)) }`.
+    HexBinaryFromByteSibling,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -689,6 +701,8 @@ pub struct SchemaDocument {
     pub named_formats: BTreeMap<String, DfdlProps>,
     /// Named escape schemes from `dfdl:defineEscapeScheme`.
     pub named_escape_schemes: BTreeMap<String, EscapeSchemeDef>,
+    /// `dfdl:defineVariable` name → default lexical value.
+    pub variables: BTreeMap<String, String>,
     pub types: BTreeMap<TypeName, TypeDef>,
     pub global_elements: BTreeMap<String, GlobalElement>,
     /// Named `xs:group` model groups (local name → sequence or choice).

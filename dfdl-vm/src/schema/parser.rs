@@ -325,6 +325,19 @@ impl<'a> XsdParser<'a> {
                         "defineEscapeScheme" => {
                             let _ = self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
                         }
+                        "defineVariable" => {
+                            if let Some(name) = child_attrs.get("name") {
+                                if let Some(default) = child_attrs.get("defaultValue") {
+                                    self.doc.variables.insert(name.clone(), default.clone());
+                                }
+                            }
+                            self.reader.skip_insignificant_ws()?;
+                            if !self.reader.peek_is_end("defineVariable")? {
+                                self.reader.skip_current_subtree()?;
+                            } else {
+                                self.expect_end_local("defineVariable")?;
+                            }
+                        }
                         "annotation" => {
                             let props = self.parse_annotation(child_attrs)?;
                             self.doc.format_defaults.props =
@@ -403,7 +416,12 @@ impl<'a> XsdParser<'a> {
 
     fn parse_global_element_inner(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
         let (xsd_attrs, dfdl_from_attrs) =
-            split_dfdl_attrs("element", &attrs, Some(&mut self.doc.schema_diagnostics))?;
+            split_dfdl_attrs_with_variables(
+                "element",
+                &attrs,
+                Some(&mut self.doc.schema_diagnostics),
+                Some(&self.doc.variables),
+            )?;
         let name = xsd_attrs
             .get("name")
             .cloned()
@@ -817,7 +835,12 @@ impl<'a> XsdParser<'a> {
 
     fn parse_element_decl_inner(&mut self, attrs: BTreeMap<String, String>) -> Result<ElementDecl> {
         let (xsd_attrs, dfdl_from_attrs) =
-            split_dfdl_attrs("element", &attrs, Some(&mut self.doc.schema_diagnostics))?;
+            split_dfdl_attrs_with_variables(
+                "element",
+                &attrs,
+                Some(&mut self.doc.schema_diagnostics),
+                Some(&self.doc.variables),
+            )?;
         let is_ref = xsd_attrs.contains_key("ref");
         let has_element_name_attr = xsd_attrs.contains_key("name");
         let element_ref = xsd_attrs.get("ref").cloned();
@@ -1445,7 +1468,7 @@ impl<'a> XsdParser<'a> {
             return Ok(DfdlProps::default());
         }
 
-        let mut props = props_from_attrs(&attrs)?;
+        let mut props = props_from_attrs_with_variables(&attrs, Some(&self.doc.variables))?;
         if local == "assert" || local == "discriminator" {
             props.has_statement_annotation = true;
             if let Some(msg) = attrs.get("message") {
@@ -2056,6 +2079,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.output_value_calc.is_some() {
         base.output_value_calc = overlay.output_value_calc;
     }
+    if overlay.output_value_calc_literal.is_some() {
+        base.output_value_calc_literal = overlay.output_value_calc_literal.clone();
+    }
     if overlay.output_value_calc_sibling.is_some() {
         base.output_value_calc_sibling = overlay.output_value_calc_sibling;
     }
@@ -2251,6 +2277,16 @@ fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>
         return None;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
+    if inner.starts_with("xs:hexBinary(") && inner.ends_with(')') {
+        let arg = inner["xs:hexBinary(".len()..inner.len() - 1].trim();
+        if let Some(sib) = arg.strip_prefix("../") {
+            return Some((
+                InputValueCalc::HexBinaryFromSibling,
+                Some(local_name_from_qname(sib).to_string()),
+                None,
+            ));
+        }
+    }
     if inner.starts_with("xs:string(") && inner.ends_with(')') {
         let arg = &inner["xs:string(".len()..inner.len() - 1];
         let lit = parse_xs_string_literal_arg(arg)?;
@@ -2305,14 +2341,27 @@ fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>
     }
 }
 
-fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<String>)> {
+fn parse_variable_length_expr(value: &str, vars: &BTreeMap<String, String>) -> Option<u64> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
+    let name = inner.strip_prefix('$')?.trim();
+    vars.get(name)?.parse().ok()
+}
+
+fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<String>, Option<String>)> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    if let Some(hex) = parse_output_value_calc_hex(inner) {
+        return Some(hex);
+    }
     if let Ok(v) = inner.parse::<i64>() {
-        return Some((OutputValueCalc::Constant(v), None));
+        return Some((OutputValueCalc::Constant(v), None, None));
     }
     let (func_part, addend) = if let Some((left, right)) = inner.rsplit_once('+') {
         (left.trim(), right.trim().parse::<i64>().unwrap_or(0))
@@ -2329,13 +2378,16 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
         .trim_matches('"')
         .trim_matches('\'');
     match (func, target) {
-        ("dfdl:contentLength", "..") => Some((OutputValueCalc::ContentLengthSelf(units, addend), None)),
-        ("dfdl:valueLength", "..") => Some((OutputValueCalc::ValueLengthSelf(units, addend), None)),
+        ("dfdl:contentLength", "..") => {
+            Some((OutputValueCalc::ContentLengthSelf(units, addend), None, None))
+        }
+        ("dfdl:valueLength", "..") => Some((OutputValueCalc::ValueLengthSelf(units, addend), None, None)),
         ("dfdl:contentLength", sib) => {
             let name = sib.strip_prefix("../")?;
             Some((
                 OutputValueCalc::ContentLengthSibling(units, addend),
                 Some(local_name_from_qname(name).to_string()),
+                None,
             ))
         }
         ("dfdl:valueLength", sib) => {
@@ -2343,6 +2395,7 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
             Some((
                 OutputValueCalc::ValueLengthSibling(units, addend),
                 Some(local_name_from_qname(name).to_string()),
+                None,
             ))
         }
         ("fn:string-length", sib) => {
@@ -2350,6 +2403,7 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
             Some((
                 OutputValueCalc::StringLengthSibling,
                 Some(local_name_from_qname(name).to_string()),
+                None,
             ))
         }
         ("fn:substring", sib) => {
@@ -2363,10 +2417,43 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
             Some((
                 OutputValueCalc::Substring { start, length },
                 Some(local_name_from_qname(name).to_string()),
+                None,
             ))
         }
         _ => None,
     }
+}
+
+fn parse_output_value_calc_hex(inner: &str) -> Option<(OutputValueCalc, Option<String>, Option<String>)> {
+    if inner.starts_with("xs:hexBinary(") && inner.ends_with(')') {
+        let arg = inner["xs:hexBinary(".len()..inner.len() - 1].trim();
+        let lit = parse_xs_string_literal_arg(arg)?;
+        return Some((OutputValueCalc::HexBinaryFromLexical, None, Some(lit)));
+    }
+    if inner.starts_with("dfdl:hexBinary(") && inner.ends_with(')') {
+        let arg = inner["dfdl:hexBinary(".len()..inner.len() - 1].trim();
+        if let Ok(n) = arg.parse::<i64>() {
+            return Some((OutputValueCalc::HexBinaryFromInteger(n), None, None));
+        }
+        if let Some(lit) = parse_xs_string_literal_arg(arg) {
+            return Some((OutputValueCalc::HexBinaryFromLexical, None, Some(lit)));
+        }
+        if arg.starts_with("xs:short(") && arg.ends_with(')') {
+            let num = arg["xs:short(".len()..arg.len() - 1].trim();
+            let v: i16 = num.parse().ok()?;
+            return Some((OutputValueCalc::HexBinaryFromShort(v), None, None));
+        }
+        if arg.starts_with("xs:byte(") && arg.contains("../") {
+            let inner_arg = arg["xs:byte(".len()..arg.len() - 1].trim();
+            let sib = inner_arg.strip_prefix("../")?;
+            return Some((
+                OutputValueCalc::HexBinaryFromByteSibling,
+                Some(local_name_from_qname(sib).to_string()),
+                None,
+            ));
+        }
+    }
+    None
 }
 
 fn parse_self_string_length_max_expr(value: &str) -> Option<u64> {
@@ -2436,10 +2523,11 @@ fn local_name_from_qname(qname: &str) -> &str {
     qname.rsplit(':').next().unwrap_or(qname)
 }
 
-fn split_dfdl_attrs(
+fn split_dfdl_attrs_with_variables(
     element_local: &str,
     attrs: &BTreeMap<String, String>,
     diagnostics: Option<&mut alloc::vec::Vec<String>>,
+    variables: Option<&BTreeMap<String, String>>,
 ) -> Result<(BTreeMap<String, String>, DfdlProps)> {
     let mut xsd = BTreeMap::new();
     let mut dfdl_map = BTreeMap::new();
@@ -2458,7 +2546,7 @@ fn split_dfdl_attrs(
             xsd.insert(k.clone(), v.clone());
         }
     }
-    let props = match props_from_attrs(&dfdl_map) {
+    let props = match props_from_attrs_with_variables(&dfdl_map, variables) {
         Ok(p) => p,
         Err(e) => {
             if let Some(out) = diagnostics {
@@ -2470,6 +2558,14 @@ fn split_dfdl_attrs(
         }
     };
     Ok((xsd, props))
+}
+
+fn split_dfdl_attrs(
+    element_local: &str,
+    attrs: &BTreeMap<String, String>,
+    diagnostics: Option<&mut alloc::vec::Vec<String>>,
+) -> Result<(BTreeMap<String, String>, DfdlProps)> {
+    split_dfdl_attrs_with_variables(element_local, attrs, diagnostics, None)
 }
 
 fn record_global_element_xsd_diagnostics(
@@ -2601,6 +2697,13 @@ fn is_dfdl_property(name: &str) -> bool {
 }
 
 fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
+    props_from_attrs_with_variables(attrs, None)
+}
+
+fn props_from_attrs_with_variables(
+    attrs: &BTreeMap<String, String>,
+    variables: Option<&BTreeMap<String, String>>,
+) -> Result<DfdlProps> {
     let mut props = DfdlProps::default();
     for (key, value) in attrs {
         let key = local_tag(key);
@@ -2667,6 +2770,11 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 } else if let Some((sibling, cast_long)) = parse_sibling_length_expr(value) {
                     props.length_sibling = Some(sibling);
                     props.length_sibling_cast_long = cast_long;
+                } else if variables
+                    .and_then(|vars| parse_variable_length_expr(value, vars))
+                    .is_some()
+                {
+                    props.length = variables.and_then(|vars| parse_variable_length_expr(value, vars));
                 } else if let Some(cap) = parse_self_string_length_max_expr(value) {
                     props.length_self_string_max_cap = Some(cap);
                     props.length_expr_unparsed = true;
@@ -2891,6 +2999,7 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                 } else if let Some(calc) = parse_output_value_calc(value) {
                     props.output_value_calc = Some(calc.0);
                     props.output_value_calc_sibling = calc.1;
+                    props.output_value_calc_literal = calc.2;
                 }
             }
             "inputValueCalc" => {

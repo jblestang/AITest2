@@ -5167,6 +5167,14 @@ pub(crate) fn write_binary_scalar(
     }
 
     if props.length_kind == LengthKind::Delimited {
+        if matches!(kind, HexBinary | String) {
+            let mut payload = encode_binary_payload_bytes(value, kind, props, strings, field_name)?;
+            if kind == HexBinary {
+                payload = pad_hex_binary_value(payload, props, None);
+            }
+            write_byte_aligned(out, bit_count, &payload)?;
+            return Ok(());
+        }
         if !is_packed_binary_rep(props.binary_number_rep)
             && props.binary_number_rep != BinaryNumberRep::Bcd
             && props.binary_number_rep != BinaryNumberRep::Ibm4690Packed
@@ -5221,7 +5229,17 @@ pub(crate) fn write_binary_scalar(
             validate_signed_one_bit_length_vm(kind, len, LengthUnits::Bytes, tunables)?;
             len as usize
         }
-        LengthKind::Implicit => type_size(kind),
+        LengthKind::Implicit => {
+            if kind == HexBinary {
+                props
+                    .implicit_facet_length
+                    .or(props.min_length)
+                    .map(|n| n as usize)
+                    .unwrap_or_else(|| type_size(kind))
+            } else {
+                type_size(kind)
+            }
+        }
         LengthKind::Explicit => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
@@ -5259,6 +5277,9 @@ pub(crate) fn write_binary_scalar(
         (Long, DfdlValue::Long(v)) => bytes = int_bytes(*v, size, le),
         (Float, DfdlValue::Float(v)) => bytes = int_bytes(v.to_bits() as i64, size, le),
         (Double, DfdlValue::Double(v)) => bytes = int_bytes(v.to_bits() as i64, size, le),
+        (HexBinary, DfdlValue::HexBinary(v)) => {
+            bytes = pad_hex_binary_value(v.clone(), props, Some(size));
+        }
         (Decimal, DfdlValue::Decimal(v)) => {
             let (negative, raw) =
                 parse_virtual_decimal_signed(v, props.binary_decimal_virtual_point)?;
@@ -8265,6 +8286,7 @@ fn encode_binary_payload_bytes(
             }
         }
         (HexBinary, DfdlValue::HexBinary(v)) => Ok(v.clone()),
+        (HexBinary, DfdlValue::String(s)) => decode_hex_binary(&s.text),
         (Boolean, DfdlValue::Boolean(v)) => Ok(alloc::vec![u8::from(*v)]),
         (Byte, DfdlValue::Byte(v)) => {
             encode_integer_binary(*v as i64, kind, props, le, strings)
@@ -8493,7 +8515,7 @@ fn minimal_byte_width(value: u64) -> usize {
     }
 }
 
-fn int_bytes(value: i64, size: usize, le: bool) -> alloc::vec::Vec<u8> {
+pub(crate) fn int_bytes(value: i64, size: usize, le: bool) -> alloc::vec::Vec<u8> {
     let mut bytes = value.to_be_bytes().to_vec();
     if bytes.len() > size {
         bytes = bytes[bytes.len() - size..].to_vec();
@@ -9151,8 +9173,89 @@ pub(crate) fn coerce_value_for_kind(
         (UnsignedInt, v @ DfdlValue::UnsignedInt(_)) => v.clone(),
         (Long, DfdlValue::Int(v)) => DfdlValue::Long(*v as i64),
         (Long, v @ DfdlValue::Long(_)) => v.clone(),
+        (HexBinary, DfdlValue::String(s)) => {
+            decode_hex_binary(&s.text).map(DfdlValue::HexBinary)?
+        }
+        (HexBinary, v @ DfdlValue::HexBinary(_)) => v.clone(),
         (_, v) => v.clone(),
     })
+}
+
+fn pad_hex_binary_value(
+    mut bytes: alloc::vec::Vec<u8>,
+    props: &IrProps,
+    explicit_size: Option<usize>,
+) -> alloc::vec::Vec<u8> {
+    if let Some(size) = explicit_size {
+        if bytes.len() < size {
+            bytes.extend(core::iter::repeat(props.fill_byte).take(size - bytes.len()));
+        } else if bytes.len() > size {
+            bytes.truncate(size);
+        }
+        return bytes;
+    }
+    if let Some(min) = props
+        .min_length
+        .or(props.implicit_facet_length)
+        .map(|n| n as usize)
+    {
+        if bytes.len() < min {
+            bytes.extend(core::iter::repeat(props.fill_byte).take(min - bytes.len()));
+        }
+    }
+    bytes
+}
+
+/// `dfdl:hexBinary(n)` / fixed-width numeric hex for outputValueCalc.
+pub(crate) fn hex_binary_from_integer(value: i64, width: Option<usize>) -> alloc::vec::Vec<u8> {
+    if let Some(w) = width {
+        if w == 0 {
+            return alloc::vec::Vec::new();
+        }
+        if value >= 0 {
+            let mut v = value as u64;
+            let mut out = vec![0u8; w];
+            for i in (0..w).rev() {
+                out[i] = (v & 0xff) as u8;
+                v >>= 8;
+            }
+            return out;
+        }
+        let bits = (w as u32).saturating_mul(8);
+        let mask = if bits >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << bits) - 1
+        };
+        let twos = (value as i128 as u128) & mask;
+        let mut out = vec![0u8; w];
+        for i in 0..w {
+            let shift = ((w - 1 - i) * 8) as u32;
+            out[i] = ((twos >> shift) & 0xff) as u8;
+        }
+        return out;
+    }
+    if value == 0 {
+        return alloc::vec![0];
+    }
+    if value > 0 {
+        let mut v = value as u64;
+        let mut bytes = alloc::vec::Vec::new();
+        while v > 0 {
+            bytes.push((v & 0xff) as u8);
+            v >>= 8;
+        }
+        bytes.reverse();
+        return bytes;
+    }
+    for w in 1..=8usize {
+        let out = hex_binary_from_integer(value, Some(w));
+        let sign = out[0] & 0x80 != 0;
+        if sign {
+            return out;
+        }
+    }
+    hex_binary_from_integer(value, Some(8))
 }
 
 pub(crate) fn write_simple(
