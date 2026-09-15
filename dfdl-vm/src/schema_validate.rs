@@ -72,6 +72,34 @@ pub fn validate_compiled_schema(
     validate_unique_particle_attribution(schema)?;
     validate_sequence_separator_encoding(schema, root)?;
     validate_discriminators_in_reachable_schema(schema, root)?;
+    validate_global_complex_type_model_groups(schema)?;
+    Ok(())
+}
+
+fn validate_global_complex_type_model_groups(schema: &SchemaDocument) -> Result<(), SchemaError> {
+    const NO_MODEL_GROUP: &str = "Schema Definition Error: A complex type must have exactly one model-group element child which is a sequence, choice, or group reference.";
+    for (type_name, td) in &schema.types {
+        let TypeDef::Complex { content, .. } = td else {
+            continue;
+        };
+        match content {
+            ComplexContent::Empty => {
+                return Err(SchemaError::InvalidProperty {
+                    message: NO_MODEL_GROUP.into(),
+                });
+            }
+            ComplexContent::Sequence(seq)
+                if seq.particles.is_empty()
+                    && seq.props.hidden_group_ref.is_none()
+                    && !type_name.as_str().starts_with("__inline_") =>
+            {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error".into(),
+                });
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 

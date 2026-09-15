@@ -28,6 +28,8 @@ struct IrBuilder<'a> {
     strings: StringPool,
     defaults: IrProps,
     tunables: DaffodilTunables,
+    /// Hidden group refs currently being expanded (cycle detection).
+    hidden_group_expand_stack: Vec<String>,
 }
 
 /// Merge global element DFDL props when a particle uses `ref=` (forward refs may leave
@@ -119,6 +121,7 @@ impl<'a> IrBuilder<'a> {
             strings,
             defaults,
             tunables,
+            hidden_group_expand_stack: Vec::new(),
         })
     }
 
@@ -674,14 +677,30 @@ impl<'a> IrBuilder<'a> {
                 let mut children = Vec::new();
                 let mut prior_element_names: Vec<String> = Vec::new();
                 if let Some(ref href) = sequence.props.hidden_group_ref {
+                    let gname = group_local_name(href);
+                    if self
+                        .hidden_group_expand_stack
+                        .iter()
+                        .any(|s| s.as_str() == gname)
+                    {
+                        return Err(SchemaError::InvalidProperty {
+                            message: alloc::format!(
+                                "Schema Definition Error: Model group circular definitions. Group references, or hidden group references form a loop."
+                            ),
+                        }
+                        .into());
+                    }
+                    self.hidden_group_expand_stack.push(gname.to_string());
                     let group = self
                         .schema
                         .groups
-                        .get(group_local_name(href))
+                        .get(gname)
                         .ok_or_else(|| SchemaError::InvalidProperty {
-                            message: alloc::format!("unknown hidden group `{href}`"),
+                            message: alloc::format!(
+                                "Schema Definition Error: Referenced group definition not found: {href}\nSchema context: group reference\n{gname}"
+                            ),
                         })?;
-                    match group {
+                    let expand_result: Result<()> = match group {
                         GroupDecl::Sequence(seq) => {
                             let ir_props = self.merge_props_full(
                                 inherited,
@@ -710,6 +729,7 @@ impl<'a> IrBuilder<'a> {
                                 children: group_children,
                                 props: ir_props,
                             }));
+                            Ok(())
                         }
                         GroupDecl::Choice(ch) => {
                             let ir_props = self.merge_props_full(
@@ -741,8 +761,11 @@ impl<'a> IrBuilder<'a> {
                                 branches,
                                 props: ir_props,
                             }));
+                            Ok(())
                         }
-                    }
+                    };
+                    self.hidden_group_expand_stack.pop();
+                    expand_result?;
                 }
                 validate_implicit_unbounded_in_sequence(
                     &sequence.particles,

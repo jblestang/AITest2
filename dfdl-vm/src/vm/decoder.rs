@@ -874,7 +874,28 @@ impl<'a> Decoder<'a> {
                 {
                     validate_data_length_vm(kind, 0, props.length_units, props.binary_number_rep)?;
                 }
-                break;
+                let v = self.decode_single_element(
+                    node_id,
+                    cursor,
+                    has_following_sibling,
+                    parent_sequence,
+                    siblings,
+                    content_scope_bytes,
+                    pattern_text_frame,
+                    delimiter_stops.as_slice(),
+                )?;
+                items.push(v);
+                if parent_sequence.is_some_and(|p| {
+                    p.separator_position == SeparatorPosition::Postfix
+                }) {
+                    self.consume_occurrence_separator(
+                        parent_sequence,
+                        Some(props),
+                        Some(items.as_slice()),
+                        cursor,
+                    )?;
+                }
+                continue;
             }
             if items.len() as u64 >= min && cursor.is_empty() {
                 break;
@@ -2328,9 +2349,22 @@ fn insert_child(
                 .into())
             }
         }
-        IrNode::Choice { .. } => {
-            if let DfdlValue::Choice { discriminator, value } = value {
-                match *value {
+        IrNode::Choice { branches, .. } => {
+            if let DfdlValue::Choice {
+                discriminator,
+                value: branch_value,
+            } = value
+            {
+                if let Some(branch) = branches.iter().find(|b| {
+                    program
+                        .strings
+                        .get(b.name)
+                        .ok()
+                        .is_some_and(|n| n == discriminator.as_str())
+                }) {
+                    return insert_child(map, branch.node, *branch_value, program);
+                }
+                match *branch_value {
                     DfdlValue::Sequence(seq)
                         if discriminator == "sequence" || discriminator == "choice" =>
                     {
@@ -2422,6 +2456,11 @@ fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
         match inner {
             DfdlValue::Sequence(seq) => {
                 if !seq.fields.contains_key(name) {
+                    if seq.fields.is_empty() {
+                        let mut map = BTreeMap::new();
+                        map.insert(name.into(), DfdlValue::Sequence(seq));
+                        return DfdlValue::sequence(map);
+                    }
                     return DfdlValue::Sequence(seq);
                 }
                 DfdlValue::Sequence(seq)

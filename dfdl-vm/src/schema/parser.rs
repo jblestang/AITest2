@@ -1075,7 +1075,10 @@ impl<'a> XsdParser<'a> {
             });
         }
 
-        props = self.parse_inline_content(props, &["element", "sequence", "choice", "annotation"])?;
+        props = self.parse_inline_content(
+            props,
+            &["element", "sequence", "choice", "group", "annotation"],
+        )?;
         let mut particles = Vec::new();
         loop {
             self.reader.skip_insignificant_ws()?;
@@ -1139,7 +1142,10 @@ impl<'a> XsdParser<'a> {
             });
         }
 
-        props = self.parse_inline_content(props, &["element", "sequence", "choice", "annotation"])?;
+        props = self.parse_inline_content(
+            props,
+            &["element", "sequence", "choice", "group", "annotation"],
+        )?;
         let mut branches = Vec::new();
         loop {
             self.reader.skip_insignificant_ws()?;
