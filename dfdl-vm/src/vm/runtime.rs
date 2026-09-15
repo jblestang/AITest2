@@ -5588,7 +5588,43 @@ pub(crate) fn read_text_scalar(
             expected: "complex".into(),
         }),
     }?;
+    if props.representation == Representation::Text
+        && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
+    {
+        consume_text_field_terminator_after_fixed_length(cursor, props, strings)?;
+    }
     Ok(value)
+}
+
+fn consume_text_field_terminator_after_fixed_length(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    let Some(term_id) = props.terminator else {
+        return Ok(());
+    };
+    let term = strings.get(term_id)?;
+    if term.is_empty() {
+        return Ok(());
+    }
+    let enc = encoding_name(props, strings).ok();
+    if crate::schema::match_delimiter_opts_for_encoding(
+        &cursor.data[cursor.pos..],
+        term,
+        props.ignore_case,
+        enc.as_deref(),
+    )
+    .is_some()
+    {
+        if !cursor.consume_delimiter(term, props.ignore_case, enc.as_deref()) {
+            return Err(VmError::InvalidValue {
+                message: "terminator mismatch".into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn finalize_simple_value(

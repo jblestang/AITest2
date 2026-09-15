@@ -805,7 +805,13 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_sequence(&mut self, attrs: BTreeMap<String, String>) -> Result<SequenceDecl> {
-        let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("sequence", &attrs, None)?;
+        let (_xsd, mut dfdl_from_attrs) = split_dfdl_attrs("sequence", &attrs, None)?;
+        for (k, v) in &attrs {
+            if local_tag(k) == "hiddenGroupRef" {
+                dfdl_from_attrs.hidden_group_ref = Some(normalize_qname(v));
+                break;
+            }
+        }
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);
@@ -829,9 +835,8 @@ impl<'a> XsdParser<'a> {
                     break;
                 }
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
-                XmlEvent::StartElement { name, .. } => {
-                    let local = name.local_name.clone();
-                    let child_attrs = self.reader.take_start_attributes()?;
+                XmlEvent::StartElement { .. } => {
+                    let (local, _, child_attrs) = self.consume_start()?;
                     match local.as_str() {
                         "element" => particles.push(Particle::Element(self.parse_element_decl(child_attrs)?)),
                         "sequence" => {
@@ -4213,6 +4218,45 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("Schema Definition Error"), "{msg}");
         assert!(msg.contains("initiatedContent"), "{msg}");
+    }
+
+    #[test]
+    fn parse_hidden_group_ref_on_empty_sequence() {
+        let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/" xmlns:base="http://baseSchema.com">
+  <xs:group name="aGroup">
+    <xs:sequence dfdl:separator=".">
+      <xs:element name="aMem01" type="xs:string"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence dfdl:separator="|">
+        <xs:sequence dfdl:hiddenGroupRef="base:aGroup"/>
+        <xs:element name="tail" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"#;
+        let doc = parse_schema(xsd).expect("parse");
+        let el = get_global_element(&doc, "root").expect("root");
+        let TypeDef::Complex { content, .. } = doc.resolve_type(&el.type_name).unwrap() else {
+            panic!("complex");
+        };
+        let ComplexContent::Sequence(outer) = content else {
+            panic!("outer sequence");
+        };
+        assert_eq!(outer.props.separator.as_deref(), Some("|"));
+        assert_eq!(outer.particles.len(), 2);
+        let Particle::Sequence(inner) = &outer.particles[0] else {
+            panic!("inner particle");
+        };
+        assert_eq!(
+            inner.props.hidden_group_ref.as_deref(),
+            Some("base:aGroup"),
+            "inner props: {:?}",
+            inner.props
+        );
     }
 
     #[test]

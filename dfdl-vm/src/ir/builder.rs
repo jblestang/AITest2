@@ -576,27 +576,64 @@ impl<'a> IrBuilder<'a> {
                         })?;
                     match group {
                         GroupDecl::Sequence(seq) => {
+                            let ir_props = self.merge_props_full(
+                                inherited,
+                                &seq.props,
+                                &DfdlProps::default(),
+                            )?;
+                            let group_inherited = particle_inherited_for_children(
+                                inherited,
+                                &seq.props,
+                                &self.defaults,
+                            );
+                            let mut group_children = Vec::new();
+                            let mut group_prior: Vec<String> = Vec::new();
                             for particle in &seq.particles {
-                                children.push(self.compile_particle_inner(
+                                group_children.push(self.compile_particle_inner(
                                     particle,
-                                    &child_inherited,
-                                    &prior_element_names,
+                                    &group_inherited,
+                                    &group_prior,
                                     true,
                                 )?);
                                 if let Particle::Element(el) = particle {
-                                    prior_element_names.push(el.name.clone());
+                                    group_prior.push(el.name.clone());
                                 }
                             }
+                            children.push(self.push(IrNode::Sequence {
+                                children: group_children,
+                                props: ir_props,
+                            }));
                         }
                         GroupDecl::Choice(ch) => {
+                            let ir_props = self.merge_props_full(
+                                inherited,
+                                &ch.props,
+                                &DfdlProps::default(),
+                            )?;
+                            let group_inherited = particle_inherited_for_children(
+                                inherited,
+                                &ch.props,
+                                &self.defaults,
+                            );
+                            let mut branches = Vec::new();
                             for branch in &ch.branches {
-                                children.push(self.compile_particle_inner(
+                                let node = self.compile_particle_inner(
                                     branch,
-                                    &child_inherited,
-                                    &prior_element_names,
+                                    &group_inherited,
+                                    &[],
                                     true,
-                                )?);
+                                )?;
+                                branches.push(ChoiceBranch {
+                                    name: self.strings.intern(&branch_name(branch)),
+                                    initiator: branch_initiator(branch, &mut self.strings),
+                                    branch_key: branch_choice_key(branch, &mut self.strings),
+                                    node,
+                                });
                             }
+                            children.push(self.push(IrNode::Choice {
+                                branches,
+                                props: ir_props,
+                            }));
                         }
                     }
                 }

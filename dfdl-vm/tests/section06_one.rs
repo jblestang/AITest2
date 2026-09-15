@@ -58,6 +58,22 @@ fn debug_priority_section06() {
 
 #[test]
 #[ignore]
+fn debug_combinations_and_long_chain() {
+    let path = Path::new(ROOT).join("namespaces/namespaces.tdml");
+    let mut suite = parse_tdml(&fs::read_to_string(&path).unwrap()).unwrap();
+    enrich(&mut suite, &path);
+    for name in ["combinations_02", "combinations_03", "long_chain_06", "long_chain_06b"] {
+        let t = suite.tests.iter().find(|t| t.name == name).expect(name);
+        let r = run_parser_test(&suite, t).unwrap();
+        eprintln!("{name}: {:?}", r.outcome);
+        if let TestOutcome::Fail(m) = r.outcome {
+            eprintln!("  {m}");
+        }
+    }
+}
+
+#[test]
+#[ignore]
 fn debug_default_namespace_in_expression() {
     let path = Path::new(ROOT).join("namespaces/namespaces.tdml");
     let mut suite = parse_tdml(&fs::read_to_string(&path).unwrap()).unwrap();
