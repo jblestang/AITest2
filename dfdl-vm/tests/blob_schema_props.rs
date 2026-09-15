@@ -12,7 +12,7 @@ fn dfdlx_object_kind_attr_parses() {
   <xs:element name="b" type="xs:anyURI" dfdl:lengthKind="explicit" dfdl:length="1" dfdlx:objectKind="bytes"/>
 </xs:schema>"##;
     let schema = parse_schema(xsd).expect("parse");
-    let el = schema.global_elements.get("b").expect("b");
+    let el = dfdl_vm::schema::get_global_element(&schema, "b").expect("b");
     assert_eq!(el.props.object_kind, Some(ObjectKind::Bytes));
 }
 
@@ -24,7 +24,7 @@ fn blob_01_root_has_object_kind_bytes() {
     let suite = parse_tdml(tdml).expect("tdml");
     let xsd = &suite.schemas.get("Blob.dfdl.xsd").expect("schema").xsd;
     let schema = parse_schema(xsd).expect("parse");
-    let el = schema.global_elements.get("blob_01").expect("blob_01");
+    let el = dfdl_vm::schema::get_global_element(&schema, "blob_01").expect("blob_01");
     assert_eq!(el.props.length_kind, Some(dfdl_vm::schema::LengthKind::Explicit));
     assert_eq!(
         el.props.object_kind,

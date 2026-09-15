@@ -103,7 +103,7 @@ pub fn validate_tunable_schema_requirements(
         });
     }
     check_format_props(&schema.format_defaults.props, tunables)?;
-    let Some(g) = schema.global_elements.get(root) else {
+    let Some(g) = crate::schema::get_global_element(schema, root) else {
         return Ok(());
     };
     walk_global(schema, g, tunables)

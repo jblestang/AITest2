@@ -82,10 +82,7 @@ impl<'a> IrBuilder<'a> {
     }
 
     fn build(mut self, root_name: &str) -> Result<IrProgram> {
-        let root_element = self
-            .schema
-            .global_elements
-            .get(root_name)
+        let root_element = crate::schema::get_global_element(&self.schema, root_name)
             .ok_or_else(|| SchemaError::UndefinedType {
                 name: root_name.to_string(),
             })?;

@@ -40,5 +40,8 @@ pub use entities::{
     validate_text_string_pad_character_merged, validate_text_string_pad_character_runtime,
     validate_text_boolean_rep_value,
 };
-pub use parser::{parse_schema, parse_schema_with_options, parse_schema_with_resolver, ParseOptions};
+pub use parser::{
+    get_global_element, parse_schema, parse_schema_with_options, parse_schema_with_resolver,
+    resolve_global_element_storage_key, ParseOptions,
+};
 pub use resolver::SchemaResolver;

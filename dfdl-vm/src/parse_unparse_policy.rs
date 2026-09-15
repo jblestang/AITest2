@@ -1,7 +1,7 @@
 use crate::error::SchemaError;
 use crate::schema::{
-    ComplexContent, ElementDecl, GlobalElement, ParseUnparsePolicy, Particle, SchemaDocument,
-    TypeDef,
+    get_global_element, ComplexContent, ElementDecl, GlobalElement, ParseUnparsePolicy, Particle,
+    SchemaDocument, TypeDef,
 };
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -19,10 +19,11 @@ fn element_policy(el: &ElementDecl, schema: &SchemaDocument) -> ParseUnparsePoli
     el.props
         .parse_unparse_policy
         .or_else(|| {
-            schema
-                .global_elements
-                .get(&el.name)
-                .and_then(|g| g.props.parse_unparse_policy)
+            get_global_element(
+                schema,
+                el.element_ref.as_deref().unwrap_or(el.name.as_str()),
+            )
+            .and_then(|g| g.props.parse_unparse_policy)
         })
         .unwrap_or(ParseUnparsePolicy::Both)
 }
@@ -99,7 +100,7 @@ fn walk_complex(
 }
 
 pub fn validate_parse_unparse_policy(schema: &SchemaDocument, root: &str) -> Result<(), SchemaError> {
-    let Some(root_el) = schema.global_elements.get(root) else {
+    let Some(root_el) = get_global_element(schema, root) else {
         return Ok(());
     };
     let root_policy = global_policy(root_el);
@@ -124,18 +125,14 @@ pub fn unparse_support_error() -> SchemaError {
 }
 
 pub fn root_allows_parse(schema: &SchemaDocument, root: &str) -> bool {
-    schema
-        .global_elements
-        .get(root)
+    get_global_element(schema, root)
         .map(global_policy)
         .map(|p| matches!(p, ParseUnparsePolicy::Both | ParseUnparsePolicy::ParseOnly))
         .unwrap_or(true)
 }
 
 pub fn root_allows_unparse(schema: &SchemaDocument, root: &str) -> bool {
-    schema
-        .global_elements
-        .get(root)
+    get_global_element(schema, root)
         .map(global_policy)
         .map(|p| matches!(p, ParseUnparsePolicy::Both | ParseUnparsePolicy::UnparseOnly))
         .unwrap_or(true)
@@ -176,7 +173,7 @@ pub fn subtree_has_parse_only(schema: &SchemaDocument, root: &str) -> bool {
         false
     }
 
-    let Some(root_el) = schema.global_elements.get(root) else {
+    let Some(root_el) = get_global_element(schema, root) else {
         return false;
     };
     if global_policy(root_el) == ParseUnparsePolicy::ParseOnly {

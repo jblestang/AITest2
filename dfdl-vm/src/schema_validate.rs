@@ -82,17 +82,18 @@ fn validate_particle_list_upa(particles: &[Particle]) -> Result<(), SchemaError>
             continue;
         };
         let fp = element_upa_fingerprint(el);
-        if let Some(prev) = seen.get(el.name.as_str()) {
+        let el_key = el.element_ref.as_deref().unwrap_or(el.name.as_str());
+        if let Some(prev) = seen.get(el_key) {
             if prev != &fp {
                 return Err(SchemaError::InvalidProperty {
                     message: alloc::format!(
                         "Schema Definition Error: Multiple elements with name '{}', with different types, appear in the model group",
-                        el.name
+                        el_key
                     ),
                 });
             }
         } else {
-            seen.insert(el.name.as_str(), fp);
+            seen.insert(el_key, fp);
         }
     }
     Ok(())
@@ -106,7 +107,7 @@ fn validate_max_hex_binary_length(
     let Some(max) = tunables.max_hex_binary_length_in_bytes else {
         return Ok(());
     };
-    let Some(ge) = schema.global_elements.get(root) else {
+    let Some(ge) = crate::schema::get_global_element(schema, root) else {
         return Ok(());
     };
     let t = ge.type_name.as_str();
@@ -238,7 +239,7 @@ fn validate_escape_separator_distinct(schema: &SchemaDocument) -> Result<(), Sch
 
 fn types_reachable_from_root(schema: &SchemaDocument, root: &str) -> BTreeSet<TypeName> {
     let mut seen = BTreeSet::new();
-    let Some(ge) = schema.global_elements.get(root) else {
+    let Some(ge) = crate::schema::get_global_element(schema, root) else {
         return seen;
     };
     let mut queue = VecDeque::new();

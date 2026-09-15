@@ -76,7 +76,7 @@ fn validate_unparse_infoset_nodes_inner(
         ));
     }
     let root_parent = parent_qname(root, tns, qualified);
-    if enforce_element_form && schema.global_elements.contains_key(root) {
+    if enforce_element_form && crate::schema::get_global_element(schema, root).is_some() {
         let local = crate::xml_util::local_name_str(&root_node.name);
         let has_ns = root_node
             .namespace

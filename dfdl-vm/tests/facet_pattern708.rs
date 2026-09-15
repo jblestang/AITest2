@@ -20,7 +20,7 @@ fn dfdl708_orig_stored_pattern_matches_comma() {
   </xs:element>
 </xs:schema>"#;
     let doc = parse_schema(xsd).expect("parse");
-    let el = doc.global_elements.get("dfdl708_orig").expect("element");
+    let el = dfdl_vm::schema::get_global_element(&doc, "dfdl708_orig").expect("element");
     let TypeDef::Simple { base, .. } = doc.resolve_type(&el.type_name).expect("type") else {
         panic!("simple type");
     };

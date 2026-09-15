@@ -131,13 +131,28 @@ impl<'a> XsdParser<'a> {
     }
 
     fn merge_included(&mut self, other: SchemaDocument, kind: SchemaMergeKind) -> Result<()> {
+        let included_target = other.target_namespace.clone();
         for (k, v) in other.types {
             self.doc.types.insert(k, v);
         }
         for (k, v) in other.global_elements {
-            self.doc.global_elements.insert(k, v);
+            let key = if k.contains('|') && !k.starts_with('|') {
+                k
+            } else {
+                let local = format_local_from_storage_key(&k);
+                let ns = match kind {
+                    SchemaMergeKind::Import => included_target.as_deref(),
+                    SchemaMergeKind::Include => included_target
+                        .as_deref()
+                        .or(self.doc.target_namespace.as_deref()),
+                };
+                format_storage_key(local, ns)
+            };
+            self.doc.global_elements.insert(key, v);
         }
-        let included_target = other.target_namespace.clone();
+        for (prefix, uri) in other.namespace_prefixes {
+            self.doc.namespace_prefixes.entry(prefix).or_insert(uri);
+        }
         for (k, v) in other.named_formats {
             let local = format_local_from_storage_key(&k);
             let ns = match kind {
@@ -258,6 +273,9 @@ impl<'a> XsdParser<'a> {
                     .into());
                 }
             }
+        }
+        if let Some(text) = self.doc.schema_source_text.as_deref() {
+            supplement_namespace_prefixes_from_text(text, &mut self.doc.namespace_prefixes);
         }
         Ok(core::mem::take(&mut self.doc))
     }
@@ -497,6 +515,11 @@ impl<'a> XsdParser<'a> {
         parse_result
     }
 
+    fn insert_global_element(&mut self, element: GlobalElement) {
+        let key = format_storage_key(&element.name, self.doc.target_namespace.as_deref());
+        self.doc.global_elements.insert(key, element);
+    }
+
     fn parse_global_element_inner(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
         let (xsd_attrs, dfdl_from_attrs) =
             split_dfdl_attrs_with_variables(
@@ -529,43 +552,34 @@ impl<'a> XsdParser<'a> {
             self.reader.skip_insignificant_ws()?;
             if self.reader.peek_is_end("element")? {
                 self.expect_end_local("element")?;
-                self.doc.global_elements.insert(
-                    name.clone(),
-                    GlobalElement {
-                        name,
-                        type_qname_prefixed: false,
-                        type_name: TypeName::new("xs:string"),
-                        props: self.finalize_props(props),
-                    },
-                );
+                self.insert_global_element(GlobalElement {
+                    name,
+                    type_qname_prefixed: false,
+                    type_name: TypeName::new("xs:string"),
+                    props: self.finalize_props(props),
+                });
                 return Ok(());
             }
             props = self.parse_inline_content(props, &["complexType", "simpleType", "annotation"])?;
             if self.reader.peek_is_end("element")? {
                 self.expect_end_local("element")?;
-                self.doc.global_elements.insert(
-                    name.clone(),
-                    GlobalElement {
-                        name,
-                        type_qname_prefixed: true,
-                        type_name: TypeName::new("xs:string"),
-                        props: self.finalize_props(props),
-                    },
-                );
+                self.insert_global_element(GlobalElement {
+                    name,
+                    type_qname_prefixed: true,
+                    type_name: TypeName::new("xs:string"),
+                    props: self.finalize_props(props),
+                });
                 return Ok(());
             }
             let inline = self.parse_inline_type()?;
             props = merge_dfdl_props(props, inline.1);
             self.expect_end_local("element")?;
-            self.doc.global_elements.insert(
-                name.clone(),
-                GlobalElement {
-                    name,
-                    type_qname_prefixed: true,
-                    type_name: inline.0,
-                    props: self.finalize_props(props),
-                },
-            );
+            self.insert_global_element(GlobalElement {
+                name,
+                type_qname_prefixed: true,
+                type_name: inline.0,
+                props: self.finalize_props(props),
+            });
             return Ok(());
         };
 
@@ -587,15 +601,12 @@ impl<'a> XsdParser<'a> {
         let type_qname_prefixed = xsd_attrs
             .get("type")
             .is_some_and(|t| t.contains(':'));
-        self.doc.global_elements.insert(
-            name.clone(),
-            GlobalElement {
-                name,
-                type_qname_prefixed,
-                type_name: resolved_type,
-                props: self.finalize_props(props),
-            },
-        );
+        self.insert_global_element(GlobalElement {
+            name,
+            type_qname_prefixed,
+            type_name: resolved_type,
+            props: self.finalize_props(props),
+        });
         Ok(())
     }
 
@@ -957,7 +968,10 @@ impl<'a> XsdParser<'a> {
         let type_name = if let Some(t) = xsd_attrs.get("type") {
             TypeName::new(normalize_qname(t))
         } else if is_ref {
-            let global = if let Some(g) = self.doc.global_elements.get(&name) {
+            let ref_qname = element_ref.as_deref().unwrap_or(name.as_str());
+            let global = if let Some(g) = get_global_element(&self.doc, ref_qname) {
+                g.clone()
+            } else if let Some(g) = unique_global_element_by_local(&self.doc, &name) {
                 g.clone()
             } else {
                 let stub = GlobalElement {
@@ -966,9 +980,8 @@ impl<'a> XsdParser<'a> {
                     type_name: TypeName::new("xs:string"),
                     props: DfdlProps::default(),
                 };
-                self.doc
-                    .global_elements
-                    .insert(name.clone(), stub.clone());
+                let key = resolve_global_element_storage_key(&self.doc, ref_qname);
+                self.doc.global_elements.insert(key, stub.clone());
                 stub
             };
             props = merge_dfdl_props(global.props.clone(), props);
@@ -3639,6 +3652,132 @@ fn normalize_qname(name: &str) -> String {
     name.rsplit(':').next().unwrap_or(name).to_string()
 }
 
+/// Storage key for a global element QName (namespace URI + local name).
+pub fn resolve_global_element_storage_key(schema: &SchemaDocument, qname: &str) -> String {
+    if let Some((prefix, local)) = qname.split_once(':') {
+        if let Some(uri) = schema.namespace_prefixes.get(prefix) {
+            return format_storage_key(local, Some(uri.as_str()));
+        }
+        return format_storage_key(local, None);
+    }
+    format_storage_key(qname, schema.target_namespace.as_deref())
+}
+
+fn unique_global_element_by_local<'a>(
+    schema: &'a SchemaDocument,
+    local: &str,
+) -> Option<&'a GlobalElement> {
+    let mut matches = schema
+        .global_elements
+        .iter()
+        .filter(|(k, _)| format_local_from_storage_key(k) == local);
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(first.1)
+}
+
+fn namespace_uri_matches_prefix(ns: &str, prefix: &str) -> bool {
+    if ns == prefix {
+        return true;
+    }
+    let host = ns
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or(ns);
+    let host = host.split(':').next().unwrap_or(host);
+    let host_label = host.split('.').next().unwrap_or(host);
+    host == prefix
+        || host_label == prefix
+        || host_label.starts_with(prefix)
+        || prefix.starts_with(host_label)
+        || host.strip_prefix(&format!("{prefix}.")).is_some()
+        || host.strip_suffix(&format!(".{prefix}")).is_some()
+}
+
+fn supplement_namespace_prefixes_from_text(text: &str, out: &mut BTreeMap<String, String>) {
+    let mut rest = text;
+    while let Some(idx) = rest.find("xmlns:") {
+        rest = &rest[idx + 6..];
+        let Some(eq) = rest.find('=') else { break; };
+        let prefix = rest[..eq].trim();
+        if prefix.is_empty() {
+            continue;
+        }
+        let after = rest[eq + 1..].trim_start();
+        let Some(q) = after.chars().next() else { continue; };
+        if q != '"' && q != '\'' {
+            continue;
+        }
+        let value = after[1..]
+            .split(q)
+            .next()
+            .unwrap_or("")
+            .trim();
+        if !value.is_empty() {
+            out.entry(prefix.to_string()).or_insert(value.to_string());
+        }
+    }
+}
+
+fn global_element_by_prefixed_name<'a>(
+    schema: &'a SchemaDocument,
+    prefix: &str,
+    local: &str,
+) -> Option<&'a GlobalElement> {
+    let mut matches = schema.global_elements.iter().filter(|(k, _)| {
+        format_local_from_storage_key(k) == local
+            && k.contains('|')
+            && !k.starts_with('|')
+            && k.split_once('|')
+                .map(|(ns, _)| namespace_uri_matches_prefix(ns, prefix))
+                .unwrap_or(false)
+    });
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(first.1)
+}
+
+/// Resolve a global element by TDML root name or `ref="prefix:local"` QName.
+pub fn get_global_element<'a>(schema: &'a SchemaDocument, qname: &str) -> Option<&'a GlobalElement> {
+    let local = normalize_qname(qname);
+    if let Some((prefix, _)) = qname.split_once(':') {
+        let key = resolve_global_element_storage_key(schema, qname);
+        if let Some(g) = schema.global_elements.get(&key) {
+            if g.type_name.as_str() != "xs:string" {
+                return Some(g);
+            }
+        }
+        if let Some(g) = global_element_by_prefixed_name(schema, prefix, &local) {
+            return Some(g);
+        }
+    }
+    let key = resolve_global_element_storage_key(schema, qname);
+    if let Some(g) = schema.global_elements.get(&key) {
+        return Some(g);
+    }
+    if !qname.contains(':') {
+        if let Some(g) = unique_global_element_by_local(schema, qname) {
+            return Some(g);
+        }
+    }
+    let fallback = format_storage_key(&local, None);
+    if fallback != key {
+        if let Some(g) = schema.global_elements.get(&fallback) {
+            return Some(g);
+        }
+    }
+    schema
+        .global_elements
+        .get(qname)
+        .or_else(|| schema.global_elements.get(&local))
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum SchemaMergeKind {
     Include,
@@ -3856,7 +3995,7 @@ mod tests {
         let def_key = format_storage_key("def", Some("http://example.com"));
         let def = doc.named_formats.get(&def_key).expect("def format");
         assert_eq!(def.separator.as_deref(), Some(","));
-        let item = doc.global_elements.get("Item").expect("Item");
+        let item = get_global_element(&doc, "Item").expect("Item");
         if let TypeDef::Complex { content, .. } = doc.resolve_type(&item.type_name).unwrap() {
             if let ComplexContent::Sequence(seq) = content {
                 if let Particle::GroupRef(gr) = &seq.particles[0] {
@@ -3973,7 +4112,7 @@ mod tests {
   </xs:element>
 </xs:schema>"#;
         let doc = parse_schema(xsd).expect("parse");
-        let wrap = doc.global_elements.get("wrap").expect("wrap");
+        let wrap = get_global_element(&doc, "wrap").expect("wrap");
         if let TypeDef::Complex { content, .. } = doc.resolve_type(&wrap.type_name).unwrap() {
             if let ComplexContent::Sequence(seq) = content {
                 if let Particle::Element(el) = &seq.particles[0] {
@@ -3993,7 +4132,7 @@ mod tests {
     #[test]
     fn parse_sample_schema() {
         let doc = parse_schema(SAMPLE).expect("schema should parse");
-        assert!(doc.global_elements.contains_key("Record"));
+        assert!(get_global_element(&doc, "Record").is_some());
         assert!(doc.types.contains_key(&TypeName::new("RecordType")));
     }
 
@@ -4041,7 +4180,7 @@ mod tests {
   </xs:element>
 </xs:schema>"#;
         let doc = parse_schema(xsd).expect("parse");
-        let el = doc.global_elements.get("zeroLengthString").expect("element");
+        let el = get_global_element(&doc, "zeroLengthString").expect("element");
         if let TypeDef::Complex { content, .. } = doc.resolve_type(&el.type_name).unwrap() {
             if let ComplexContent::Sequence(seq) = content {
                 assert_eq!(
@@ -4097,7 +4236,7 @@ mod tests {
   </xs:element>
 </xs:schema>"#;
         let doc = parse_schema(xsd).expect("parse");
-        let el = doc.global_elements.get("root").expect("root");
+        let el = get_global_element(&doc, "root").expect("root");
         let TypeDef::Complex { content, .. } = doc.resolve_type(&el.type_name).unwrap() else {
             panic!("complex type");
         };

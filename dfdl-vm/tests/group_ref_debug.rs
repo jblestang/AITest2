@@ -77,7 +77,7 @@ fn group_ref_ir_shape() {
     let base = path.parent().unwrap().to_string_lossy().into_owned();
     let resolver = SchemaResolver::new().with_base_dir(base);
     let schema = parse_schema_with_resolver(&xsd, resolver).expect("parse xsd");
-    let item = schema.global_elements.get("Item").expect("Item");
+    let item = dfdl_vm::schema::get_global_element(&schema, "Item").expect("Item");
     eprintln!("Item type {:?}", item.type_name);
     if let Some(dfdl_vm::schema::TypeDef::Complex { content, .. }) =
         schema.resolve_type(&item.type_name)
