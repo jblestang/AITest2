@@ -23,6 +23,7 @@ use crate::schema::{
 };
 use crate::value::{DfdlValue, StringValue};
 use alloc::collections::BTreeMap;
+use core::cell::Cell;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -182,6 +183,10 @@ pub struct Decoder<'a> {
     seq_bit_order: RefCell<Option<BitOrder>>,
     /// Parent postfix separator already consumed by separator-bounded implicit complex decode.
     parent_postfix_sep_consumed: RefCell<bool>,
+    /// Nesting depth of [`Self::decode_element_occurrences`] (for postfix-sep flag lifetime).
+    occurrence_decode_depth: Cell<u32>,
+    /// Parent postfix separator consumed by the most recent separator-bounded complex decode.
+    postfix_bounded_parent_sep_consumed: Cell<bool>,
     /// Runtime DFDL variable values (`defineVariable` + `setVariable`).
     runtime_variables: RefCell<BTreeMap<String, String>>,
     /// XPath sibling context for the active sequence decode (includes hidden elements).
@@ -201,6 +206,8 @@ impl<'a> Decoder<'a> {
             field_delimiters: RefCell::new(BTreeMap::new()),
             seq_bit_order: RefCell::new(None),
             parent_postfix_sep_consumed: RefCell::new(false),
+            occurrence_decode_depth: Cell::new(0),
+            postfix_bounded_parent_sep_consumed: Cell::new(false),
             runtime_variables: RefCell::new(BTreeMap::new()),
             xpath_siblings: RefCell::new(BTreeMap::new()),
         }
@@ -1241,7 +1248,19 @@ impl<'a> Decoder<'a> {
         stop_sequences: &[&IrProps],
     ) -> Result<DfdlValue> {
         validate_unbounded_wsp_star_terminator(props, self.ctx.strings())?;
-        *self.parent_postfix_sep_consumed.borrow_mut() = false;
+        struct OccurrenceDecodeDepthGuard<'a>(&'a Cell<u32>);
+        impl Drop for OccurrenceDecodeDepthGuard<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.0.get().saturating_sub(1));
+            }
+        }
+        let depth = self.occurrence_decode_depth.get().saturating_add(1);
+        self.occurrence_decode_depth.set(depth);
+        if depth == 1 {
+            *self.parent_postfix_sep_consumed.borrow_mut() = false;
+        }
+        let _occurrence_depth =
+            OccurrenceDecodeDepthGuard(&self.occurrence_decode_depth);
 
         let mut min = props.occurs_min;
         let mut max = props.occurs_max.unwrap_or(u64::MAX);
@@ -1368,12 +1387,23 @@ impl<'a> Decoder<'a> {
                 {
                     break;
                 }
-                if self.at_enclosing_separator_stop(
+                let at_sep_stop = self.at_enclosing_separator_stop(
                     cursor,
                     stop_sequences,
                     parent_sequence,
-                )? {
-                    break;
+                )?;
+                if at_sep_stop {
+                    // Postfix occurrence separators (e.g. CSV rows terminated by %NL) mark the
+                    // boundary before the next occurrence, not end of an unbounded array — blank
+                    // lines must still decode as empty records (SequenceGroupNestedArray csv_nohang_1).
+                    let postfix_unbounded = max == u64::MAX
+                        && parent_sequence.is_some_and(|p| {
+                            p.separator_position == SeparatorPosition::Postfix
+                                && p.separator.is_some()
+                        });
+                    if !postfix_unbounded {
+                        break;
+                    }
                 }
             }
             if let Some(limit) = self.ctx.program.tunables.max_occurs_bounds {
@@ -1418,18 +1448,17 @@ impl<'a> Decoder<'a> {
                     never_infix_separators_consumed += 1;
                 }
             }
-            if min == 0
-                && (would_read_empty_delimited_field(
-                    cursor,
-                    props,
-                    self.ctx.strings(),
-                    delimiter_stops.as_slice(),
-                )? || cursor_at_parent_infix_separator(
-                    cursor,
-                    parent_sequence,
-                    self.ctx.strings(),
-                )?)
-            {
+            let at_empty_slot = would_read_empty_delimited_field(
+                cursor,
+                props,
+                self.ctx.strings(),
+                delimiter_stops.as_slice(),
+            )? || cursor_at_parent_infix_separator(
+                cursor,
+                parent_sequence,
+                self.ctx.strings(),
+            )?;
+            if min == 0 && at_empty_slot {
                 let sep_pos = cursor.pos;
                 self.consume_occurrence_separator(
                     parent_sequence,
@@ -1441,6 +1470,55 @@ impl<'a> Decoder<'a> {
                     never_infix_separators_consumed += 1;
                 }
                 continue;
+            }
+            if min > 0
+                && (items.len() as u64) < min
+                && at_empty_slot
+                && props.representation == Representation::Text
+            {
+                let sep_pos = cursor.pos;
+                self.consume_occurrence_separator(
+                    parent_sequence,
+                    Some(props),
+                    Some(items.as_slice()),
+                    cursor,
+                )?;
+                if never_optional_array.is_some() && cursor.pos > sep_pos {
+                    never_infix_separators_consumed += 1;
+                }
+                items.push(DfdlValue::string(""));
+                continue;
+            }
+            if min > 0
+                && (items.len() as u64) >= min
+                && max == u64::MAX
+                && at_empty_slot
+                && parent_sequence.is_some_and(|p| p.separator.is_some())
+            {
+                let Some(sep_id) = parent_sequence.and_then(|p| p.separator) else {
+                    unreachable!();
+                };
+                let pat = self.ctx.strings().get(sep_id)?;
+                let enc = parent_sequence
+                    .and_then(|p| encoding_name(p, self.ctx.strings()).ok());
+                if Self::suffix_is_only_infix_separators(
+                    cursor,
+                    pat,
+                    parent_sequence.unwrap().ignore_case,
+                    enc.as_deref(),
+                ) {
+                    let sep_pos = cursor.pos;
+                    self.consume_occurrence_separator(
+                        parent_sequence,
+                        Some(props),
+                        Some(items.as_slice()),
+                        cursor,
+                    )?;
+                    if never_optional_array.is_some() && cursor.pos > sep_pos {
+                        never_infix_separators_consumed += 1;
+                    }
+                    continue;
+                }
             }
             let require_delimiter = has_following_sibling;
             let saved = cursor.clone();
@@ -2034,36 +2112,61 @@ impl<'a> Decoder<'a> {
                                         enc.as_deref(),
                                         None,
                                     )?;
-                                    if crate::schema::match_delimiter_opts_for_encoding(
+                                    let mut consumed_parent_postfix_sep = false;
+                                    let sep_pos_before = cursor.pos;
+                                    if let Some(n) = crate::schema::match_delimiter_opts_for_encoding(
                                         &cursor.data[cursor.pos..],
                                         sep,
                                         parent.ignore_case,
                                         enc.as_deref(),
-                                    )
-                                    .is_some()
-                                    {
-                                        let _ = cursor.consume_delimiter(
-                                            sep,
-                                            parent.ignore_case,
-                                            enc.as_deref(),
-                                        );
-                                        if parent.separator_position
-                                            == SeparatorPosition::Postfix
-                                        {
-                                            *self.parent_postfix_sep_consumed.borrow_mut() =
-                                                true;
+                                    ) {
+                                        if n > 0 {
+                                            let _ = cursor.consume_delimiter(
+                                                sep,
+                                                parent.ignore_case,
+                                                enc.as_deref(),
+                                            );
+                                            consumed_parent_postfix_sep =
+                                                parent.separator_position
+                                                    == SeparatorPosition::Postfix
+                                                    && cursor.pos > sep_pos_before;
                                         }
                                     }
                                     let mut sub = Cursor::new(&bytes);
                                     let scope = bytes.len();
                                     let inner = self.decode_node(*child_id, &mut sub, false, None, None, Some(scope), pattern_text_frame, &[])?;
+                                    if consumed_parent_postfix_sep {
+                                        self.postfix_bounded_parent_sep_consumed.set(true);
+                                    }
                                     if !sub.is_empty() {
-                                        return Err(VmError::InvalidValue {
-                                            message:
-                                                "unconsumed bytes in separator-bounded complex element"
-                                                    .into(),
+                                        if let Ok(Some(inner_sep)) =
+                                            self.inner_sequence_separator(*child_id)
+                                        {
+                                            let enc =
+                                                encoding_name(&props, self.ctx.strings()).ok();
+                                            if Self::cursor_only_consumes_infix_separators(
+                                                &mut sub,
+                                                inner_sep.as_str(),
+                                                props.ignore_case,
+                                                enc.as_deref(),
+                                            )? {
+                                                // Trailing excess separators (e.g. CSV commas).
+                                            } else if !sub.is_empty() {
+                                                return Err(VmError::InvalidValue {
+                                                    message:
+                                                        "unconsumed bytes in separator-bounded complex element"
+                                                            .into(),
+                                                }
+                                                .into());
+                                            }
+                                        } else {
+                                            return Err(VmError::InvalidValue {
+                                                message:
+                                                    "unconsumed bytes in separator-bounded complex element"
+                                                        .into(),
+                                            }
+                                            .into());
                                         }
-                                        .into());
                                     }
                                     return Ok(wrap_named(
                                         self.ctx.strings().get(*name)?,
@@ -2511,6 +2614,10 @@ impl<'a> Decoder<'a> {
         items: Option<&[DfdlValue]>,
         cursor: &mut Cursor<'_>,
     ) -> Result<()> {
+        if self.postfix_bounded_parent_sep_consumed.get() {
+            self.postfix_bounded_parent_sep_consumed.set(false);
+            return Ok(());
+        }
         if *self.parent_postfix_sep_consumed.borrow() {
             *self.parent_postfix_sep_consumed.borrow_mut() = false;
             return Ok(());
@@ -2892,6 +2999,54 @@ impl<'a> Decoder<'a> {
                 .any(|branch| self.particle_consumes_input(branch.node)),
             Err(_) => true,
         }
+    }
+
+    fn cursor_only_consumes_infix_separators(
+        cursor: &mut Cursor<'_>,
+        separator: &str,
+        ignore_case: bool,
+        enc: Option<&str>,
+    ) -> Result<bool> {
+        while crate::schema::match_delimiter_opts_for_encoding(
+            &cursor.data[cursor.pos..],
+            separator,
+            ignore_case,
+            enc,
+        )
+        .is_some()
+        {
+            if !cursor.consume_delimiter(separator, ignore_case, enc) {
+                break;
+            }
+        }
+        Ok(cursor.is_empty())
+    }
+
+    fn suffix_is_only_infix_separators(
+        cursor: &Cursor<'_>,
+        separator: &str,
+        ignore_case: bool,
+        enc: Option<&str>,
+    ) -> bool {
+        let mut pos = cursor.pos;
+        while pos <= cursor.data.len() {
+            if pos == cursor.data.len() {
+                return true;
+            }
+            let Some(n) = crate::schema::match_delimiter_opts_for_encoding(
+                &cursor.data[pos..],
+                separator,
+                ignore_case,
+                enc,
+            ) else {
+                return false;
+            };
+            if n == 0 {
+                return false;
+            }
+            pos += n;
+        }
+        true
     }
 
     fn inner_sequence_separator(&self, child_id: u32) -> Result<Option<String>> {
