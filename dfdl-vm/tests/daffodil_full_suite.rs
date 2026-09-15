@@ -402,16 +402,16 @@ fn daffodil_section05_regression_gate() {
         stats.parse_fail, 0,
         "section05 TDML load errors: {stats:?}"
     );
-    // Baseline (2026-03): XSD pattern full-match; union/pattern validation messages; insufficient-bits errors.
+    // Baseline (2026-03): calendar compile/parse, hexBinary delimited encoding SDE, blob insufficient bits.
     assert!(
-        stats.pass >= 799,
-        "section05: expected at least 799 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 811,
+        "section05: expected at least 811 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 12,
+        stats.fail <= 0,
         "section05 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,

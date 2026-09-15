@@ -110,6 +110,7 @@ impl<'a> IrBuilder<'a> {
                 &mut self.strings,
                 &root_element.props,
             );
+            validate_binary_calendar_compile(kind, &props, &self.strings)?;
             validate_implicit_text_length(kind, &props)?;
             props.xsd_type = Some(self.strings.intern(root_element.type_name.as_str()));
             let name = self.strings.intern(root_name);
@@ -153,6 +154,7 @@ impl<'a> IrBuilder<'a> {
                     &mut self.strings,
                     &root_element.props,
                 );
+                validate_binary_calendar_compile(kind, &ir_props, &self.strings)?;
                 validate_implicit_text_length(kind, &ir_props)?;
                 ir_props.xsd_type = Some(self.strings.intern(root_element.type_name.as_str()));
                 let name = self.strings.intern(root_name);
@@ -253,6 +255,7 @@ impl<'a> IrBuilder<'a> {
                     &mut self.strings,
                     element_props,
                 );
+                validate_binary_calendar_compile(kind, &ir_props, &self.strings)?;
                 validate_length_facets_for_type(&self.schema, base, kind, &ir_props)?;
                 validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern("__value");
@@ -313,6 +316,7 @@ impl<'a> IrBuilder<'a> {
                     &mut self.strings,
                     &element.props,
                 );
+                validate_binary_calendar_compile(kind, &ir_props, &self.strings)?;
                 validate_fixed_occurs_count(&ir_props)?;
                 ir_props.hidden = hidden;
                 validate_implicit_text_length(kind, &ir_props)?;
@@ -428,6 +432,7 @@ impl<'a> IrBuilder<'a> {
                                         &mut self.strings,
                                         &element.props,
                                     );
+                                    validate_binary_calendar_compile(kind, &merged, &self.strings)?;
                                     if let Some(signed) = type_props.decimal_signed {
                                         merged.decimal_signed = signed;
                                     }
@@ -1199,6 +1204,7 @@ fn finalize_element_props(
         ir.nil_kind = Some(NilKind::LiteralValue);
     }
     validate_binary_delimited(kind, &ir)?;
+    validate_hex_binary_delimited_encoding(kind, &ir, strings)?;
     crate::length_validate::validate_binary_decimal_virtual_point_schema(kind, &ir)?;
     crate::vm::calendar_binary::validate_implicit_binary_length_schema(kind, &ir, strings)?;
     validate_trailing_skip_delimited(&ir)?;
@@ -1498,7 +1504,6 @@ fn finalize_element_props(
             }
         })?;
     }
-    validate_binary_calendar_compile(kind, &ir, strings)?;
     validate_bit_order_byte_order(kind, &ir)?;
     Ok(ir)
 }
@@ -1816,6 +1821,30 @@ fn validate_trailing_skip_delimited(props: &IrProps) -> Result<()> {
         ),
     }
     .into())
+}
+
+fn validate_hex_binary_delimited_encoding(
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<()> {
+    if kind != ValueKind::HexBinary {
+        return Ok(());
+    }
+    if !matches!(props.length_kind, LengthKind::Delimited | LengthKind::Pattern) {
+        return Ok(());
+    }
+    let enc = strings.get(props.encoding).unwrap_or("US-ASCII");
+    if !enc.eq_ignore_ascii_case("ISO-8859-1") {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: xs:hexBinary with dfdl:lengthKind=\"{}\" must have dfdl:encoding=\"ISO-8859-1\", but was \"{enc}\"",
+                length_kind_label(props.length_kind)
+            ),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
@@ -3017,8 +3046,16 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.decimal_signed = overlay.decimal_signed;
     if overlay.calendar_pattern.is_some() {
         out.calendar_pattern = overlay.calendar_pattern;
+        if base.calendar_pattern_kind == crate::schema::CalendarPatternKind::Explicit
+            || overlay.calendar_pattern_kind == crate::schema::CalendarPatternKind::Explicit
+        {
+            out.calendar_pattern_kind = crate::schema::CalendarPatternKind::Explicit;
+        } else {
+            out.calendar_pattern_kind = overlay.calendar_pattern_kind;
+        }
+    } else {
+        out.calendar_pattern_kind = overlay.calendar_pattern_kind;
     }
-    out.calendar_pattern_kind = overlay.calendar_pattern_kind;
     if overlay.calendar_time_zone.is_some() {
         out.calendar_time_zone = overlay.calendar_time_zone;
     }

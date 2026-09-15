@@ -191,8 +191,17 @@ impl<'a> Cursor<'a> {
         n: usize,
         bit_order: BitOrder,
     ) -> Result<(), crate::error::VmError> {
+        let start = self.absolute_bit_index();
         for _ in 0..n {
-            let _ = self.read_stream_bit(bit_order)?;
+            self.read_stream_bit(bit_order).map_err(|e| {
+                use crate::error::VmError;
+                if e == VmError::UnexpectedEof {
+                    let found = self.absolute_bit_index().saturating_sub(start);
+                    insufficient_data_bits_error(n, found)
+                } else {
+                    e
+                }
+            })?;
         }
         Ok(())
     }
@@ -2734,7 +2743,10 @@ fn read_calendar_field(
             message: "calendar text mismatch".into(),
         });
     }
-    if width > 1 && out.len() != width && !matches!(letters, 'H' | 'h' | 'k' | 'K' | 'm' | 's' | 'S') {
+    if width > 1
+        && out.len() != width
+        && !matches!(letters, 'H' | 'h' | 'k' | 'K' | 'm' | 's' | 'S' | 'd' | 'M')
+    {
         return Err(VmError::InvalidValue {
             message: "calendar text mismatch".into(),
         });
@@ -3311,10 +3323,19 @@ fn format_calendar_text(
         let hour = fields.hour.ok_or_else(|| VmError::InvalidValue {
             message: alloc::format!("calendar `{pattern}` missing hour"),
         })?;
-        let minute = fields.minute.ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("calendar `{pattern}` missing minute"),
-        })?;
-        let second = fields.second.unwrap_or(0);
+        let letters = crate::vm::calendar_binary::calendar_pattern_letters_only(pattern);
+        let minute = if letters.contains('m') {
+            fields.minute.ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!("calendar `{pattern}` missing minute"),
+            })?
+        } else {
+            fields.minute.unwrap_or(0)
+        };
+        let second = if letters.contains('s') {
+            fields.second.unwrap_or(0)
+        } else {
+            fields.second.unwrap_or(0)
+        };
         let (hour, minute, second, day_carry) = if lax {
             crate::vm::calendar_binary::normalize_lenient_hms_with_day_carry(
                 hour,
@@ -3984,6 +4005,49 @@ fn text_number_for_parse<'a>(
         return Ok(special.into());
     }
     parse_field_text_number(trimmed, kind, props, strings)
+}
+
+fn calendar_explicit_pattern_extends_year_beyond_length(pattern: &str) -> bool {
+    const FIELD: &str = "EMdDFwWmyYHhsekKS";
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    let mut last_y_width = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        let c = chars[i];
+        if c == 'y' || c == 'Y' {
+            let mut w = 1usize;
+            while i + w < chars.len() && chars[i + w] == c {
+                w += 1;
+            }
+            last_y_width = w;
+            i += w;
+        } else if FIELD.contains(c) {
+            let mut w = 1usize;
+            while i + w < chars.len() && chars[i + w] == c {
+                w += 1;
+            }
+            i += w;
+        } else {
+            i += 1;
+        }
+    }
+    last_y_width == 1
 }
 
 fn expand_calendar_year(
@@ -5083,7 +5147,7 @@ pub(crate) fn read_text_scalar(
     }
 
     let enc = encoding_name(props, strings)?;
-    let raw = match props.length_kind {
+    let mut raw = match props.length_kind {
         LengthKind::Fixed => {
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "fixed text missing length".into(),
@@ -5165,6 +5229,28 @@ pub(crate) fn read_text_scalar(
             rest
         }
     };
+
+    if matches!(kind, DateTime | Time)
+        && props.calendar_pattern.is_some()
+        && matches!(
+            props.length_kind,
+            LengthKind::Explicit | LengthKind::Fixed
+        )
+        && props.length_units == LengthUnits::Bytes
+    {
+        if let Some(pat_id) = props.calendar_pattern {
+            if let Ok(pat) = strings.get(pat_id) {
+                if calendar_explicit_pattern_extends_year_beyond_length(pat) {
+                    while cursor.pos < cursor.data.len()
+                        && cursor.data[cursor.pos].is_ascii_digit()
+                    {
+                        raw.push(cursor.data[cursor.pos]);
+                        cursor.pos += 1;
+                    }
+                }
+            }
+        }
+    }
 
     let trailing_input = cursor.pos < cursor.data.len();
 
@@ -5363,8 +5449,7 @@ pub(crate) fn read_text_scalar(
             Ok(DfdlValue::Decimal(canon.into()))
         }
         DateTime | Time => {
-            if props.calendar_pattern.is_none()
-                && props.calendar_pattern_kind == crate::schema::CalendarPatternKind::Implicit
+            if props.calendar_pattern_kind == crate::schema::CalendarPatternKind::Implicit
             {
                 let processed = crate::vm::calendar_binary::process_implicit_calendar_text(
                     kind,
@@ -5373,7 +5458,16 @@ pub(crate) fn read_text_scalar(
                     trimmed,
                     tunables,
                 )?;
-                return Ok(DfdlValue::DateTime(processed));
+                let with_tz = append_packed_calendar_timezone(
+                    props,
+                    strings,
+                    kind,
+                    props.calendar_date_only,
+                    &processed,
+                    false,
+                    true,
+                )?;
+                return Ok(DfdlValue::DateTime(with_tz));
             }
             if let Some(pat_id) = props.calendar_pattern {
                 let pattern = strings.get(pat_id)?;
@@ -5418,13 +5512,16 @@ pub(crate) fn read_text_scalar(
                 use crate::schema::{CalendarPatternKind, Representation};
                 let inherit_format_tz = props.representation == Representation::Text
                     && props.calendar_pattern_kind == CalendarPatternKind::Explicit;
+                let default_utc = kind == crate::ir::ValueKind::DateTime
+                    && parsed.contains('T')
+                    && !lexical_has_xsd_timezone(&parsed);
                 let with_tz = append_packed_calendar_timezone(
                     props,
                     strings,
                     kind,
                     props.calendar_date_only,
                     &parsed,
-                    false,
+                    default_utc,
                     inherit_format_tz,
                 )?;
                 Ok(DfdlValue::DateTime(with_tz))
@@ -10319,6 +10416,34 @@ mod delimited_stop_tests {
             format_calendar_text("Friday 05 2013 - 03:30:30", "EEEE MM yyyy - hh:mm:ss", false, 53, default_cal_cfg(), true, false).unwrap(),
             "2013-05-03T03:30:30"
         );
+    }
+
+    #[test]
+    #[test]
+    fn format_calendar_text_date_pattern_choice() {
+        let pat = "'It is day 'dd' of 'MMM, yyyy";
+        let text = "It is day 25 of March, 2013";
+        let out = format_calendar_text(text, pat, false, 53, default_cal_cfg(), false, true)
+            .unwrap_or_else(|e| panic!("choice: {e}"));
+        assert_eq!(out, "2013-03-25");
+    }
+
+    #[test]
+    fn format_calendar_text_date_pattern01() {
+        let pat = "'Today is the 'dd'th day of 'MMMM', year 'yyyy";
+        let text = "Today is the 25th day of January, year 2013";
+        let out = format_calendar_text(text, pat, false, 53, default_cal_cfg(), false, true)
+            .unwrap_or_else(|e| panic!("date01: {e}"));
+        assert_eq!(out, "2013-01-25");
+    }
+
+    #[test]
+    fn format_calendar_text_date_time_pattern01() {
+        let pat = "'It is 'hh:mmaa' on the 'dd'st of 'MMM', year 'yyyy";
+        let text = "It is 11:53AM on the 1st of April, year 2013";
+        let out = format_calendar_text(text, pat, false, 53, default_cal_cfg(), true, false)
+            .unwrap_or_else(|e| panic!("dt1: {e}"));
+        assert_eq!(out, "2013-04-01T11:53:00");
     }
 
     #[test]

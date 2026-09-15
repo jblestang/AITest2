@@ -638,7 +638,7 @@ impl<'a> Decoder<'a> {
                         if is_element_absent(&e) {
                             return Err(VmError::ElementAbsent.into());
                         }
-                        return Err(e);
+                        break;
                     }
                     if (items.len() as u64) >= min {
                         if self.try_consume_treat_as_absent_separator_on_error(
@@ -865,6 +865,13 @@ impl<'a> Decoder<'a> {
                             LengthUnits::Bytes => len.saturating_mul(8),
                             LengthUnits::Characters => unreachable!("handled above"),
                         };
+                        let available = crate::vm::runtime::bits_available_in_cursor(cursor);
+                        if available < bit_len {
+                            return Err(crate::vm::runtime::insufficient_data_bits_error(
+                                bit_len, available,
+                            )
+                            .into());
+                        }
                         let frame_start = cursor.absolute_bit_index();
                         let prev_limit = cursor
                             .frame_bit_limit
