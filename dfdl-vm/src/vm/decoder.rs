@@ -104,6 +104,8 @@ pub struct Decoder<'a> {
     seq_bit_order: RefCell<Option<BitOrder>>,
     /// Parent postfix separator already consumed by separator-bounded implicit complex decode.
     parent_postfix_sep_consumed: RefCell<bool>,
+    /// Runtime DFDL variable values (`defineVariable` + `setVariable`).
+    runtime_variables: RefCell<BTreeMap<String, String>>,
 }
 
 impl<'a> Decoder<'a> {
@@ -119,6 +121,7 @@ impl<'a> Decoder<'a> {
             field_delimiters: RefCell::new(BTreeMap::new()),
             seq_bit_order: RefCell::new(None),
             parent_postfix_sep_consumed: RefCell::new(false),
+            runtime_variables: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -183,6 +186,7 @@ impl<'a> Decoder<'a> {
             }
         };
         cursor.tdml_bit_order_regions = tdml_bit_order_regions;
+        *self.runtime_variables.borrow_mut() = self.ctx.program.variables.clone();
         let value = self.decode_node(
             self.ctx.program.root,
             &mut cursor,
@@ -235,6 +239,13 @@ impl<'a> Decoder<'a> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
                 *self.seq_bit_order.borrow_mut() = None;
+                for (name_id, val_id) in &props.set_variables {
+                    let name = self.ctx.strings().get(*name_id)?;
+                    let val = self.ctx.strings().get(*val_id)?;
+                    self.runtime_variables
+                        .borrow_mut()
+                        .insert(name.to_string(), val.to_string());
+                }
                 let mut initiator_alt = None;
                 if let Some(id) = props.initiator {
                     let pat = self.ctx.strings().get(id)?;
@@ -1253,7 +1264,7 @@ impl<'a> Decoder<'a> {
                         cursor,
                         false,
                         parent_sequence,
-                        None,
+                        siblings,
                         content_scope_bytes,
                         pattern_text_frame,
                         &element_stops,
@@ -1287,6 +1298,7 @@ impl<'a> Decoder<'a> {
                         siblings,
                         self.ctx.strings(),
                         content_scope_bytes,
+                        &self.runtime_variables.borrow(),
                     )?;
                     self.finalize_ivc_value(value, *kind, &props)
                 } else {
@@ -2216,10 +2228,40 @@ fn eval_input_value_calc(
     siblings: Option<&BTreeMap<String, SiblingState>>,
     strings: &crate::ir::StringPool,
     content_scope_bytes: Option<usize>,
+    runtime_variables: &BTreeMap<String, String>,
 ) -> Result<DfdlValue> {
     let calc = props.input_value_calc.ok_or_else(|| VmError::InvalidValue {
         message: "missing inputValueCalc".into(),
     })?;
+    if calc == InputValueCalc::SchemaVariable {
+        let name_id = props.input_value_calc_literal.ok_or_else(|| VmError::InvalidValue {
+            message: "missing inputValueCalc variable name".into(),
+        })?;
+        let name = strings.get(name_id)?;
+        let text = runtime_variables.get(name).cloned().ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("Schema Definition Error: variable `{name}` is not defined"),
+        })?;
+        if kind == ValueKind::String {
+            return Ok(DfdlValue::String(StringValue::new(text)));
+        }
+        if kind == ValueKind::HexBinary {
+            let bytes = super::runtime::decode_hex_binary(&text)?;
+            return Ok(crate::value::DfdlValue::HexBinary(bytes));
+        }
+        let mut sub = Cursor::new(text.as_bytes());
+        return super::runtime::read_text_scalar(
+            &mut sub,
+            kind,
+            props,
+            strings,
+            false,
+            &[],
+            None,
+            None,
+            &crate::length_validate::DaffodilTunables::default(),
+        )
+        .map_err(Into::into);
+    }
     if calc == InputValueCalc::StringLiteral {
         let lit_id = props.input_value_calc_literal.ok_or_else(|| VmError::InvalidValue {
             message: "missing inputValueCalc string literal".into(),
@@ -2293,6 +2335,7 @@ fn eval_input_value_calc(
     let len = match calc {
         InputValueCalc::Constant(_) => unreachable!("handled above"),
         InputValueCalc::StringLiteral => unreachable!("handled above"),
+        InputValueCalc::SchemaVariable => unreachable!("handled above"),
         InputValueCalc::BooleanFromSibling => unreachable!("handled above"),
         InputValueCalc::HexBinaryFromSibling => unreachable!("handled above"),
         InputValueCalc::ContentLengthSelf(units) | InputValueCalc::ValueLengthSelf(units) => {

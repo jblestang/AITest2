@@ -1662,6 +1662,28 @@ impl<'a> XsdParser<'a> {
             }
             return Ok(DfdlProps::default());
         }
+        if local == "setVariable" {
+            let var_ref = attrs
+                .iter()
+                .find(|(k, _)| local_tag(k) == "ref")
+                .map(|(_, v)| v.as_str());
+            let value = attrs
+                .iter()
+                .find(|(k, _)| local_tag(k) == "value")
+                .map(|(_, v)| v.clone());
+            let mut props = DfdlProps::default();
+            if let (Some(var_ref), Some(value)) = (var_ref, value) {
+                let name = variable_local_name_from_ref(var_ref);
+                props.set_variables.push((name, value));
+            }
+            self.reader.skip_insignificant_ws()?;
+            if !self.reader.peek_is_end("setVariable")? {
+                self.reader.skip_current_subtree()?;
+            } else {
+                self.expect_end_local("setVariable")?;
+            }
+            return Ok(props);
+        }
 
         let mut props = props_from_attrs_with_variables(
             &attrs,
@@ -2497,6 +2519,7 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.suppress_schema_definition_warnings.is_some() {
         base.suppress_schema_definition_warnings = overlay.suppress_schema_definition_warnings;
     }
+    base.set_variables.extend(overlay.set_variables);
     base
 }
 
@@ -2766,8 +2789,10 @@ fn parse_variable_input_value_calc(
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
     let name = inner.strip_prefix('$')?.trim();
-    let lit = vars.get(name)?.clone();
-    Some((InputValueCalc::StringLiteral, Some(lit)))
+    if vars.contains_key(name) {
+        return Some((InputValueCalc::SchemaVariable, Some(name.to_string())));
+    }
+    None
 }
 
 fn parse_variable_length_expr(value: &str, vars: &BTreeMap<String, String>) -> Option<u64> {
@@ -2982,6 +3007,10 @@ fn parse_constant_length_expr(value: &str) -> Option<u64> {
 
 fn local_name_from_qname(qname: &str) -> &str {
     qname.rsplit(':').next().unwrap_or(qname)
+}
+
+fn variable_local_name_from_ref(qname: &str) -> alloc::string::String {
+    local_name_from_qname(&normalize_qname(qname)).to_string()
 }
 
 fn split_dfdl_attrs_with_variables(

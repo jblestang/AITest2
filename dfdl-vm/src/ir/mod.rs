@@ -20,6 +20,8 @@ pub struct IrProgram {
     pub nodes: Vec<IrNode>,
     pub strings: StringPool,
     pub tunables: crate::length_validate::DaffodilTunables,
+    /// `dfdl:defineVariable` defaults (runtime `setVariable` may override during parse).
+    pub variables: alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -276,6 +278,8 @@ pub struct IrProps {
     pub choice_dispatch_path: Option<Vec<IrInputPathStep>>,
     /// Literal choice dispatch key (`{ xs:string('…') }`).
     pub choice_dispatch_literal: Option<StringId>,
+    /// `dfdl:setVariable` pairs applied when this sequence node is entered.
+    pub set_variables: alloc::vec::Vec<(StringId, StringId)>,
 }
 
 impl Default for IrProps {
@@ -434,6 +438,7 @@ impl Default for IrProps {
             choice_dispatch_sibling: None,
             choice_dispatch_path: None,
             choice_dispatch_literal: None,
+            set_variables: alloc::vec::Vec::new(),
         }
     }
 }

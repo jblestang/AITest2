@@ -189,6 +189,8 @@ pub struct DfdlProps {
     pub escape_scheme_ref: Option<String>,
     /// `daf:suppressSchemaDefinitionWarnings` on this construct.
     pub suppress_schema_definition_warnings: Option<String>,
+    /// `dfdl:setVariable` ref → value pairs from annotations on this construct.
+    pub set_variables: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -363,6 +365,8 @@ pub enum InputValueCalc {
     HexBinaryFromSibling,
     /// `{ xs:string('...') }` — literal lexical value for calendar/text tests.
     StringLiteral,
+    /// `{ $varName }` — resolved from defineVariable / setVariable at runtime.
+    SchemaVariable,
 }
 
 /// Narrow support for `dfdl:outputValueCalc` used on encode/unparse.

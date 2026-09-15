@@ -219,6 +219,7 @@ impl<'a> IrBuilder<'a> {
             nodes: self.nodes,
             strings: self.strings,
             tunables: self.tunables,
+            variables: self.schema.variables.clone(),
         };
         validate_program_sequence_bit_orders(&program)?;
         Ok(program)
@@ -3120,6 +3121,12 @@ fn overlay_dfdl_to_ir(
             .choice_dispatch_literal
             .as_ref()
             .map(|s| strings.intern(s.clone()));
+    }
+    for (name, val) in &props.set_variables {
+        base.set_variables.push((
+            strings.intern(name.clone()),
+            strings.intern(val.clone()),
+        ));
     }
     if let Some(v) = props.output_value_calc {
         base.output_value_calc = Some(v);
