@@ -365,7 +365,9 @@ impl<'a> Decoder<'a> {
                     }
                     self.field_delimiters.borrow_mut().clear();
                     if let Ok(IrNode::Element { props: cp, .. }) = self.ctx.program.node(child) {
-                        if element_discriminator_always_false(cp, self.ctx.strings()) {
+                        if cp.occurs_min == 0
+                            && element_discriminator_always_false(cp, self.ctx.strings())
+                        {
                             prev_absent_or_empty = true;
                             continue;
                         }
@@ -2580,6 +2582,20 @@ fn wrap_root(name: &str, value: DfdlValue) -> DfdlValue {
     }
 }
 
+fn choice_branch_fields(discriminator: String, value: DfdlValue) -> BTreeMap<String, DfdlValue> {
+    match (discriminator.as_str(), value) {
+        ("choice", DfdlValue::Choice { discriminator, value }) => {
+            choice_branch_fields(discriminator, *value)
+        }
+        ("sequence", DfdlValue::Sequence(seq)) => seq.fields,
+        (name, v) => {
+            let mut map = BTreeMap::new();
+            map.insert(name.to_string(), v);
+            map
+        }
+    }
+}
+
 fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
     if kind == ValueKind::Complex {
         if matches!(inner, DfdlValue::Null) {
@@ -2593,27 +2609,7 @@ fn wrap_named(name: &str, inner: DfdlValue, kind: ValueKind) -> DfdlValue {
                 DfdlValue::Sequence(seq)
             }
             DfdlValue::Choice { discriminator, value } => {
-                let mut map = BTreeMap::new();
-                let key = discriminator.clone();
-                if let DfdlValue::Sequence(inner) = *value {
-                    if inner.fields.is_empty() && key == "sequence" {
-                        return DfdlValue::sequence(BTreeMap::new());
-                    }
-                    if inner.fields.len() == 1 {
-                        if let Some(v) = inner.fields.get(&key) {
-                            map.insert(key, v.clone());
-                        } else if let Some((only_key, only_val)) = inner.fields.iter().next() {
-                            map.insert(only_key.clone(), only_val.clone());
-                        } else {
-                            map.insert(key, DfdlValue::Sequence(inner));
-                        }
-                    } else {
-                        map.insert(key, DfdlValue::Sequence(inner));
-                    }
-                } else {
-                    map.insert(key, *value);
-                }
-                DfdlValue::sequence(map)
+                DfdlValue::sequence(choice_branch_fields(discriminator, *value))
             }
             other => {
                 let mut map = BTreeMap::new();
