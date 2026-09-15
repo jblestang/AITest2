@@ -2085,6 +2085,9 @@ impl<'a> XsdParser<'a> {
                     props.discriminator_test = Some(trimmed);
                 }
                 apply_dfdl_assert_test(&mut props, test.trim());
+                if local == "assert" && props.assert_int_eq.is_none() {
+                    props.discriminator_test = Some(test.trim().to_string());
+                }
             }
             return Ok(props);
         }

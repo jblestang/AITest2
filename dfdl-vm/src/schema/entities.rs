@@ -763,6 +763,9 @@ pub fn eval_discriminator_expression(expr: &str, dot: &str) -> Option<bool> {
         .and_then(|s| s.strip_suffix('}'))
         .unwrap_or(expr)
         .trim();
+    if let Some(b) = parse_discriminator_bool(inner) {
+        return Some(b);
+    }
     let lower = inner.to_ascii_lowercase();
     if lower.starts_with("if") {
         let then_idx = lower.find(" then ")?;

@@ -677,7 +677,21 @@ impl<'a> IrBuilder<'a> {
                 let mut children = Vec::new();
                 let mut prior_element_names: Vec<String> = Vec::new();
                 if let Some(ref href) = sequence.props.hidden_group_ref {
+                    if href.is_empty() {
+                        return Err(SchemaError::InvalidProperty {
+                            message: "Schema Definition Error: dfdl:hiddenGroupRef must be a valid QName"
+                                .into(),
+                        }
+                        .into());
+                    }
                     let gname = group_local_name(href);
+                    if gname.is_empty() {
+                        return Err(SchemaError::InvalidProperty {
+                            message: "Schema Definition Error: dfdl:hiddenGroupRef must be a valid QName"
+                                .into(),
+                        }
+                        .into());
+                    }
                     if self
                         .hidden_group_expand_stack
                         .iter()
@@ -816,6 +830,20 @@ impl<'a> IrBuilder<'a> {
     fn compile_complex(&mut self, content: &ComplexContent, type_base: &IrProps) -> Result<u32> {
         match content {
             ComplexContent::Sequence(sequence) => {
+                if let Some(ref href) = sequence.props.hidden_group_ref {
+                    if href.is_empty() {
+                        return Err(SchemaError::InvalidProperty {
+                            message: "Schema Definition Error: dfdl:hiddenGroupRef must be a valid QName"
+                                .into(),
+                        }
+                        .into());
+                    }
+                    return Err(SchemaError::InvalidProperty {
+                        message: "Schema Definition Error: complex type cannot have sequence with a hiddenGroupRef model group"
+                            .into(),
+                    }
+                    .into());
+                }
                 validate_model_group_occurs("sequence", &sequence.props)?;
                 validate_implicit_unbounded_in_sequence(&sequence.particles, false)?;
                 let mut ir_props = self.merge_props_full(

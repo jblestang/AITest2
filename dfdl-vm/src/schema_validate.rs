@@ -682,6 +682,15 @@ pub fn validate_discriminator_xpath_prefixes(
     test: &str,
     prefix_map: &alloc::collections::BTreeMap<String, String>,
 ) -> Result<(), SchemaError> {
+    let inner = test
+        .trim()
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(test)
+        .trim();
+    if matches!(inner, "fn:true()" | "true()" | "fn:false()" | "false()") {
+        return Ok(());
+    }
     if !test.contains("fn:") {
         return Ok(());
     }

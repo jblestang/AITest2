@@ -656,6 +656,7 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 consume_element_trailing_framing(cursor, props)?;
+                self.validate_particle_discriminator(props)?;
                 Ok(DfdlValue::Sequence(crate::value::SequenceValue {
                     fields: map,
                     meta: crate::value::SequenceMeta {
@@ -1628,6 +1629,7 @@ impl<'a> Decoder<'a> {
                             .borrow_mut()
                             .insert(field_name, delim_meta);
                     }
+                    self.validate_particle_discriminator(&props)?;
                     Ok(value)
                 }
             }
@@ -2063,6 +2065,20 @@ impl<'a> Decoder<'a> {
             }
         }
         Ok(())
+    }
+
+    fn validate_particle_discriminator(&self, props: &IrProps) -> Result<()> {
+        let Some(id) = props.discriminator_test else {
+            return Ok(());
+        };
+        let expr = self.ctx.strings().get(id)?;
+        if crate::schema::eval_discriminator_expression(expr, "").unwrap_or(false) {
+            return Ok(());
+        }
+        Err(VmError::InvalidValue {
+            message: "Assertion test failed".into(),
+        }
+        .into())
     }
 
     fn consume_initiator(&self, props: &IrProps, cursor: &mut Cursor<'_>) -> Result<()> {
