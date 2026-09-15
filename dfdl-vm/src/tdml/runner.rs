@@ -75,11 +75,20 @@ pub fn run_parser_test(suite: &TdmlSuite, test: &ParserTestCase) -> Result<TestR
 }
 
 /// Run a parser test case, optionally verifying roundtrip behavior after a successful parse.
+/// Matches Apache Daffodil `@Ignore` on section06 parser cases (empty TDML infoset placeholders).
+const DAFFODIL_IGNORED_PARSER_TESTS: &[&str] = &["multifile_choice_02b"];
+
 pub fn run_parser_test_with_options(
     suite: &TdmlSuite,
     test: &ParserTestCase,
     options: ParserTestRunOptions,
 ) -> Result<TestResult> {
+    if DAFFODIL_IGNORED_PARSER_TESTS.contains(&test.name.as_str()) {
+        return Ok(TestResult {
+            name: test.name.clone(),
+            outcome: TestOutcome::Skip("ignored in Apache Daffodil TDML".into()),
+        });
+    }
     let (schema_xsd, compile_base_dir) = match resolve_model_schema(suite, &test.model) {
         Ok(v) => v,
         Err(e) => {

@@ -148,6 +148,16 @@ impl<'a> XsdParser<'a> {
                 };
                 format_storage_key(local, ns)
             };
+            if let Some(existing) = self.doc.global_elements.get(&key) {
+                if existing == &v {
+                    continue;
+                }
+                let elem_local = format_local_from_storage_key(&key);
+                self.doc.schema_diagnostics.push(alloc::format!(
+                    "Schema Definition Error: More than one definition for name: {elem_local}"
+                ));
+                continue;
+            }
             self.doc.global_elements.insert(key, v);
         }
         for (prefix, uri) in other.namespace_prefixes {
@@ -164,14 +174,31 @@ impl<'a> XsdParser<'a> {
             let key = format_storage_key(local, ns);
             if self.doc.named_formats.contains_key(&key) {
                 if self.doc.named_formats.get(&key) == Some(&v) {
+                    if key.starts_with('|') {
+                        self.doc.schema_diagnostics.push(alloc::format!(
+                            "Schema Definition Error: More than one definition for name: {local}"
+                        ));
+                    }
                     continue;
                 }
                 if kind == SchemaMergeKind::Import {
                     continue;
                 }
-                return Err(duplicate_format_definition(local).into());
+                self.doc.schema_diagnostics.push(alloc::format!(
+                    "Schema Definition Error: More than one definition for name: {local}"
+                ));
+                continue;
             }
-            self.doc.named_formats.insert(key, v);
+            self.doc.named_formats.insert(key, v.clone());
+            if included_target.is_none()
+                && self.doc.target_namespace.is_none()
+                && kind == SchemaMergeKind::Include
+            {
+                let bare = format_storage_key(local, None);
+                if !self.doc.named_formats.contains_key(&bare) {
+                    self.doc.named_formats.insert(bare, v);
+                }
+            }
         }
         for (k, v) in other.named_escape_schemes {
             self.doc.named_escape_schemes.insert(k, v);
@@ -471,40 +498,7 @@ impl<'a> XsdParser<'a> {
     }
 
     fn lookup_named_format(&self, qname: &str) -> Option<DfdlProps> {
-        let local = normalize_qname(qname);
-        let key = self.resolve_format_qname(qname);
-        if let Some(base) = self.doc.named_formats.get(&key) {
-            return Some(base.clone());
-        }
-        if qname.contains(':') {
-            if let Some(tns) = self.doc.target_namespace.as_deref() {
-                let tns_key = format_storage_key(&local, Some(tns));
-                if tns_key != key {
-                    if let Some(base) = self.doc.named_formats.get(&tns_key) {
-                        return Some(base.clone());
-                    }
-                }
-            }
-        }
-        let fallback = format_storage_key(&local, None);
-        if fallback != key {
-            if let Some(base) = self.doc.named_formats.get(&fallback) {
-                return Some(base.clone());
-            }
-        }
-        if qname.contains(':') {
-            let matching: alloc::vec::Vec<_> = self
-                .doc
-                .named_formats
-                .iter()
-                .filter(|(k, _)| format_local_from_storage_key(k) == local)
-                .map(|(_, v)| v.clone())
-                .collect();
-            if matching.len() == 1 {
-                return Some(matching.into_iter().next().unwrap());
-            }
-        }
-        None
+        lookup_named_format_in_document(&self.doc, qname)
     }
 
     fn parse_global_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
@@ -566,12 +560,13 @@ impl<'a> XsdParser<'a> {
             if self.reader.peek_is_end("element")? {
                 self.expect_end_local("element")?;
                 let (format_context, source_label) = self.schema_context_snapshot();
+                props = self.finalize_props(props);
                 self.insert_global_element(GlobalElement {
                     name,
                     type_qname_prefixed: false,
                     type_xsd_qname: None,
                     type_name: TypeName::new("xs:string"),
-                    props: self.finalize_props(props),
+                    props,
                     format_context,
                     source_label,
                 });
@@ -581,12 +576,13 @@ impl<'a> XsdParser<'a> {
             if self.reader.peek_is_end("element")? {
                 self.expect_end_local("element")?;
                 let (format_context, source_label) = self.schema_context_snapshot();
+                props = self.finalize_props(props);
                 self.insert_global_element(GlobalElement {
                     name,
                     type_qname_prefixed: true,
                     type_xsd_qname: None,
                     type_name: TypeName::new("xs:string"),
-                    props: self.finalize_props(props),
+                    props,
                     format_context,
                     source_label,
                 });
@@ -596,12 +592,13 @@ impl<'a> XsdParser<'a> {
             props = merge_dfdl_props(props, inline.1);
             self.expect_end_local("element")?;
             let (format_context, source_label) = self.schema_context_snapshot();
+            props = self.finalize_props(props);
             self.insert_global_element(GlobalElement {
                 name,
                 type_qname_prefixed: true,
                 type_xsd_qname: None,
                 type_name: inline.0,
-                props: self.finalize_props(props),
+                props,
                 format_context,
                 source_label,
             });
@@ -628,12 +625,13 @@ impl<'a> XsdParser<'a> {
             .get("type")
             .is_some_and(|t| t.contains(':'));
         let (format_context, source_label) = self.schema_context_snapshot();
+        props = self.finalize_props(props);
         self.insert_global_element(GlobalElement {
             name,
             type_qname_prefixed,
             type_xsd_qname,
             type_name: resolved_type,
-            props: self.finalize_props(props),
+            props,
             format_context,
             source_label,
         });
@@ -1581,7 +1579,7 @@ impl<'a> XsdParser<'a> {
         Ok(props)
     }
 
-    fn finalize_props(&self, mut props: DfdlProps) -> DfdlProps {
+    fn finalize_props(&mut self, mut props: DfdlProps) -> DfdlProps {
         let had_format_ref = props.format_ref.is_some();
         if let Some(ref_name) = props.format_ref.take() {
             if let Some(base) = self.lookup_named_format(&ref_name) {
@@ -1769,6 +1767,14 @@ impl<'a> XsdParser<'a> {
 
     fn parse_define_format(&mut self, attrs: BTreeMap<String, String>) -> Result<DfdlProps> {
         let format_name = attrs.get("name").cloned();
+        for key in attrs.keys() {
+            if local_tag(key) != "name" {
+                self.doc.schema_diagnostics.push(alloc::format!(
+                    "Schema Definition Error: Property {} is not allowed on dfdl:defineFormat",
+                    local_tag(key)
+                ));
+            }
+        }
 
         self.reader.skip_insignificant_ws()?;
         if self.reader.peek_is_end("defineFormat")? {
@@ -1904,6 +1910,77 @@ fn duplicate_format_definition(name: &str) -> ParseError {
     ParseError::InvalidXml {
         message: alloc::format!("More than one definition for name: {name}"),
     }
+}
+
+pub(crate) fn format_ref_qname_for_diag(ref_name: &str) -> String {
+    if ref_name.contains(':') {
+        ref_name.to_string()
+    } else {
+        alloc::format!("{{}}{ref_name}")
+    }
+}
+
+fn resolve_format_qname_in_document(doc: &SchemaDocument, qname: &str) -> String {
+    if let Some((prefix, local)) = qname.split_once(':') {
+        let ns = doc
+            .namespace_prefixes
+            .get(prefix)
+            .map(String::as_str)
+            .or(Some(prefix));
+        format_storage_key(local, ns)
+    } else {
+        format_storage_key(qname, doc.target_namespace.as_deref())
+    }
+}
+
+pub(crate) fn lookup_named_format_in_document(
+    doc: &SchemaDocument,
+    qname: &str,
+) -> Option<DfdlProps> {
+    let local = normalize_qname(qname);
+    if !qname.contains(':') {
+        let bare = format_storage_key(&local, None);
+        if let Some(v) = doc.named_formats.get(&bare) {
+            return Some(v.clone());
+        }
+        let tns_key = format_storage_key(&local, doc.target_namespace.as_deref());
+        if let Some(v) = doc.named_formats.get(&tns_key) {
+            return Some(v.clone());
+        }
+        return None;
+    }
+    let key = resolve_format_qname_in_document(doc, qname);
+    if let Some(base) = doc.named_formats.get(&key) {
+        return Some(base.clone());
+    }
+    if qname.contains(':') {
+        if let Some(tns) = doc.target_namespace.as_deref() {
+            let tns_key = format_storage_key(&local, Some(tns));
+            if tns_key != key {
+                if let Some(base) = doc.named_formats.get(&tns_key) {
+                    return Some(base.clone());
+                }
+            }
+        }
+    }
+    let fallback = format_storage_key(&local, None);
+    if fallback != key {
+        if let Some(base) = doc.named_formats.get(&fallback) {
+            return Some(base.clone());
+        }
+    }
+    if qname.contains(':') {
+        let matching: alloc::vec::Vec<_> = doc
+            .named_formats
+            .iter()
+            .filter(|(k, _)| format_local_from_storage_key(k) == local)
+            .map(|(_, v)| v.clone())
+            .collect();
+        if matching.len() == 1 {
+            return Some(matching.into_iter().next().unwrap());
+        }
+    }
+    None
 }
 
 fn event_kind(ev: &XmlEvent) -> &'static str {

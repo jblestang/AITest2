@@ -6,6 +6,8 @@ mod union_validate;
 mod parser;
 mod resolver;
 
+pub(crate) use parser::{format_ref_qname_for_diag, lookup_named_format_in_document};
+
 pub use ast::*;
 pub use union_validate::validate_union_membership;
 pub use facets::{

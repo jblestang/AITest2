@@ -442,6 +442,18 @@ fn validate_short_range_facet(name: &str, value: i64) -> Result<(), SchemaError>
 }
 
 fn validate_facet_range_order(eff: &EffectiveFacets) -> Result<(), SchemaError> {
+    if eff.max_inclusive.is_some() && eff.max_exclusive.is_some() {
+        return Err(SchemaError::InvalidProperty {
+            message: "MaxInclusive and MaxExclusive cannot be specified for the same simple type"
+                .into(),
+        });
+    }
+    if eff.min_inclusive.is_some() && eff.min_exclusive.is_some() {
+        return Err(SchemaError::InvalidProperty {
+            message: "MinInclusive and MinExclusive cannot be specified for the same simple type"
+                .into(),
+        });
+    }
     if let (Some(min), Some(max)) = (eff.min_exclusive, eff.max_inclusive) {
         if min > max {
             return Err(SchemaError::InvalidProperty {
