@@ -78,9 +78,37 @@ impl<'a> Encoder<'a> {
     ) -> Result<()> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
-                let seq = value
-                    .sequence_value()
-                    .ok_or_else(|| VmError::TypeMismatch { expected: "sequence".into() })?;
+                let empty_seq = crate::value::SequenceValue::new(BTreeMap::new());
+                let seq = match value {
+                    DfdlValue::Sequence(s) => s,
+                    DfdlValue::String(text) if text.text.is_empty() => &empty_seq,
+                    DfdlValue::Choice { value: inner, .. } => {
+                        if let Some(s) = inner.sequence_value() {
+                            s
+                        } else {
+                            return Err(VmError::TypeMismatch {
+                                expected: "sequence".into(),
+                            }
+                            .into());
+                        }
+                    }
+                    DfdlValue::Array(items) if items.len() == 1 => {
+                        if let Some(s) = items[0].sequence_value() {
+                            s
+                        } else {
+                            return Err(VmError::TypeMismatch {
+                                expected: "sequence".into(),
+                            }
+                            .into());
+                        }
+                    }
+                    _ => {
+                        return Err(VmError::TypeMismatch {
+                            expected: "sequence".into(),
+                        }
+                        .into())
+                    }
+                };
                 let map = &seq.fields;
                 let effective = precompute_output_values(self, children, map, props)?;
                 self.write_initiator(props, out, bit_count, seq.meta.initiator_alt)?;
@@ -460,12 +488,29 @@ impl<'a> Encoder<'a> {
                     )
                 }
             }
-            IrNode::Sequence { .. } => self.encode_node(
-                node_id,
-                &DfdlValue::sequence(map.clone()),
-                out,
-                bit_count,
-            ),
+            IrNode::Sequence {
+                children,
+                props: inner_props,
+            } => {
+                let effective =
+                    precompute_output_values(self, children, map, inner_props)?;
+                self.write_initiator(inner_props, out, bit_count, None)?;
+                for &child in children.iter() {
+                    if child_skips_encode(self, child)? {
+                        continue;
+                    }
+                    self.encode_sequence_particle(
+                        child,
+                        &effective,
+                        inner_props,
+                        out,
+                        bit_count,
+                        seq_meta,
+                    )?;
+                }
+                self.write_terminator(inner_props, out, bit_count, None)?;
+                Ok(())
+            }
             IrNode::Choice { .. } => {
                 for (discriminator, value) in map {
                     if branches_contain(self.ctx.program, node_id, discriminator) {

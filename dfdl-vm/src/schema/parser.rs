@@ -1248,14 +1248,31 @@ impl<'a> XsdParser<'a> {
         let has_element_name_attr = xsd_attrs.contains_key("name");
         let element_ref = xsd_attrs.get("ref").cloned();
         let _ = (is_ref, has_element_name_attr);
-        let name = xsd_attrs
-            .get("name")
-            .cloned()
-            .or_else(|| xsd_attrs.get("ref").cloned().map(|r| normalize_qname(&r)))
-            .ok_or_else(|| ParseError::MissingAttribute {
-                element: "element".into(),
-                attribute: "name".into(),
-            })?;
+        let name = match xsd_attrs.get("name").cloned() {
+            Some(n) => n,
+            None if is_ref => xsd_attrs
+                .get("ref")
+                .cloned()
+                .map(|r| normalize_qname(&r))
+                .ok_or_else(|| ParseError::MissingAttribute {
+                    element: "element".into(),
+                    attribute: "ref".into(),
+                })?,
+            None => {
+                self.doc.schema_diagnostics.push(
+                    "Schema Definition Error: Local element declaration must have a name attribute"
+                        .into(),
+                );
+                self.doc.schema_diagnostics.push("'name'".into());
+                self.doc.schema_diagnostics.push("element".into());
+                return Err(crate::error::SchemaError::InvalidProperty {
+                    message:
+                        "Schema Definition Error: Local element declaration must have a name attribute"
+                            .into(),
+                }
+                .into());
+            }
+        };
         let default_value = xsd_attrs.get("default").cloned();
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
@@ -2106,12 +2123,53 @@ impl<'a> XsdParser<'a> {
                 self.expect_end_local("sequence")?;
                 return Ok(props);
             }
-            return Err(crate::error::SchemaError::InvalidProperty {
-                message:
-                    "Schema Definition Error: A sequence with hiddenGroupRef cannot have children."
-                        .into(),
+            loop {
+                self.reader.skip_insignificant_ws()?;
+                match self.reader.peek()? {
+                    XmlEvent::EndElement { name } if name.local_name == "sequence" => {
+                        let _ = self.reader.next_event()?;
+                        break;
+                    }
+                    XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
+                    XmlEvent::StartElement { name, .. } => {
+                        let child_local = name.local_name.clone();
+                        let child_prefix = name.prefix.clone();
+                        let child_ns = name.namespace.clone();
+                        let child_attrs = self.reader.take_start_attributes()?;
+                        if Self::is_dfdl_element(
+                            child_prefix.as_deref(),
+                            &child_local,
+                            child_ns.as_deref(),
+                        ) && child_local == "property"
+                        {
+                            let prop_name = child_attrs.get("name").cloned().ok_or_else(|| {
+                                ParseError::InvalidXml {
+                                    message: "dfdl:property missing name".into(),
+                                }
+                            })?;
+                            let value = self.read_simple_element_text("property")?;
+                            let mut map = BTreeMap::new();
+                            map.insert(prop_name.clone(), value);
+                            props = merge_dfdl_props(props, props_from_attrs(&map)?);
+                        } else {
+                            self.skip_element_body(&child_local)?;
+                        }
+                    }
+                    XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
+                        let _ = self.reader.next_event()?;
+                    }
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!(
+                                "expected dfdl:sequence child, found {:?}",
+                                event_kind(other)
+                            ),
+                        }
+                        .into());
+                    }
+                }
             }
-            .into());
+            return Ok(props);
         }
         if self.reader.peek_is_end(local)? {
             self.expect_end_local(local)?;

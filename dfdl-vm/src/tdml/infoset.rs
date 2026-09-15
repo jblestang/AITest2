@@ -161,7 +161,14 @@ fn infoset_sequence_children_to_value(
                         .map(|t| t.is_empty())
                         .unwrap_or(true);
                 if empty_present {
-                    map.insert(elem_name.to_string(), DfdlValue::string(""));
+                    let empty_val = match program.node(child_id) {
+                        Ok(IrNode::Element {
+                            kind: crate::ir::ValueKind::Complex,
+                            ..
+                        }) => DfdlValue::sequence(BTreeMap::new()),
+                        _ => DfdlValue::string(""),
+                    };
+                    map.insert(elem_name.to_string(), empty_val);
                     continue;
                 }
                 let value = if infoset_children.len() == 1 {
