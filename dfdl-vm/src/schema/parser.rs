@@ -1522,6 +1522,7 @@ impl<'a> XsdParser<'a> {
     fn finalize_props(&self, mut props: DfdlProps) -> DfdlProps {
         if let Some(ref_name) = props.format_ref.take() {
             if let Some(base) = self.lookup_named_format(&ref_name) {
+                strip_empty_initiator_for_format_ref(&mut props);
                 props = merge_dfdl_props(base, props);
             }
         }
@@ -1856,6 +1857,13 @@ fn merge_occurs(props: &mut DfdlProps, attrs: &BTreeMap<String, String>) {
         } else if let Ok(v) = max.parse() {
             props.occurs_max = Some(v);
         }
+    }
+}
+
+/// When resolving `dfdl:ref`, inherited `initiator=""` must not clobber the named format.
+fn strip_empty_initiator_for_format_ref(props: &mut DfdlProps) {
+    if props.initiator.as_deref().is_some_and(str::is_empty) {
+        props.initiator = None;
     }
 }
 
