@@ -479,6 +479,19 @@ impl<'a> XsdParser<'a> {
         } else {
             SchemaMergeKind::Include
         };
+        if kind == SchemaMergeKind::Import {
+            if let Some(expected_ns) = attrs.get("namespace") {
+                let actual_ns = included.target_namespace.as_deref().unwrap_or("");
+                if expected_ns.as_str() != actual_ns {
+                    return Err(crate::error::SchemaError::InvalidProperty {
+                        message: alloc::format!(
+                            "Schema Definition Error: Import element specifies namespace {expected_ns} but namespace {actual_ns} of imported schema does not match"
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
         self.merge_included(included, kind)?;
         Ok(())
     }
