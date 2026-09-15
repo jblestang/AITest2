@@ -2633,6 +2633,13 @@ mod tests {
     }
 
     #[test]
+    fn shi_field_terminator_longer_than_infix_separator() {
+        let data = b"shi,shishi";
+        assert_eq!(super::match_delimiter_opts(data, "shi", false), Some(3));
+        assert_eq!(super::match_delimiter_opts(data, "shi,shi", false), Some(7));
+    }
+
+    #[test]
     fn double_comma_occurrence_separator() {
         let data = b",,((66))";
         assert_eq!(super::match_delimiter_opts(data, ",,", false), Some(2));

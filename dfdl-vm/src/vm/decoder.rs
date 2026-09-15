@@ -280,11 +280,12 @@ impl<'a> Decoder<'a> {
                         _ => None,
                     };
                     if idx > 0 {
-                        if let Ok(IrNode::Element {
-                            props: prev_props, ..
-                        }) = self.ctx.program.node(children[idx - 1])
-                        {
-                            if prev_props.representation == Representation::Text {
+                        if let Some(sep_id) = props.separator {
+                            let pat = self.ctx.strings().get(sep_id)?;
+                            if let Ok(IrNode::Element {
+                                props: prev_props, ..
+                            }) = self.ctx.program.node(children[idx - 1])
+                            {
                                 let _ = crate::vm::runtime::consume_text_field_terminator_after_fixed_length(
                                     cursor,
                                     prev_props,
@@ -295,23 +296,29 @@ impl<'a> Decoder<'a> {
                                         if !term.is_empty() {
                                             let enc =
                                                 encoding_name(prev_props, self.ctx.strings()).ok();
-                                            if crate::schema::match_delimiter_opts_for_encoding(
+                                            let sep_enc =
+                                                encoding_name(props, self.ctx.strings()).ok();
+                                            let sep_n = crate::schema::match_delimiter_opts_for_encoding(
+                                                &cursor.data[cursor.pos..],
+                                                pat,
+                                                props.ignore_case,
+                                                sep_enc.as_deref(),
+                                            )
+                                            .unwrap_or(0);
+                                            let term_n = crate::schema::match_delimiter_opts_for_encoding(
                                                 &cursor.data[cursor.pos..],
                                                 term,
                                                 prev_props.ignore_case,
                                                 enc.as_deref(),
                                             )
-                                            .is_some()
-                                            {
+                                            .unwrap_or(0);
+                                            if term_n > sep_n {
                                                 self.consume_terminator(prev_props, cursor)?;
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
-                        if let Some(sep_id) = props.separator {
-                            let pat = self.ctx.strings().get(sep_id)?;
                             if let Some(err) = self.separator_enclosing_delimiter_conflict(
                                 props,
                                 pat,
@@ -1751,8 +1758,12 @@ impl<'a> Decoder<'a> {
     fn consume_root_delimited_suffix(&self, cursor: &mut Cursor<'_>) -> Result<()> {
         let node = self.ctx.program.node(self.ctx.program.root)?;
         if let IrNode::Element { props, child, .. } = node {
-            if child.is_none() && props.length_kind == LengthKind::Delimited && !cursor.is_empty() {
-                consume_enclosing_delimiter(cursor, props, self.ctx.strings(), &[])?;
+            if !cursor.is_empty() {
+                if child.is_none() && props.length_kind == LengthKind::Delimited {
+                    consume_enclosing_delimiter(cursor, props, self.ctx.strings(), &[])?;
+                } else if child.is_some() && props.terminator.is_some() {
+                    let _ = self.consume_terminator(props, cursor);
+                }
             }
         }
         Ok(())
@@ -1871,33 +1882,6 @@ impl<'a> Decoder<'a> {
             .last()
             .map(|n| alloc::format!(" ex:{n}"))
             .unwrap_or_default();
-        let mut scans: Vec<&IrProps> = stop_sequences.to_vec();
-        scans.extend(enclosing.iter());
-        for enc in scans.iter().copied() {
-            if core::ptr::eq(enc, sep_props) {
-                continue;
-            }
-            let Some(term_id) = enc.terminator else {
-                continue;
-            };
-            let term = self.ctx.strings().get(term_id).ok()?;
-            if term.len() > separator.len()
-                && term.starts_with(separator)
-                && crate::schema::match_delimiter_opts(
-                    &cursor.data[cursor.pos..],
-                    term,
-                    enc.ignore_case,
-                )
-                .is_some()
-            {
-                return Some(VmError::InvalidValue {
-                    message: alloc::format!(
-                        "Parse Error. {position} separator. Found enclosing delimiter: '{term}'. during scan for local delimiter(s): '{separator}'. Separator '{separator}' from{source}"
-                    ),
-                }
-                .into());
-            }
-        }
         let text_enc = encoding_name(sep_props, self.ctx.strings()).ok();
         let sep_n = crate::schema::match_delimiter_opts_for_encoding(
             &cursor.data[cursor.pos..],
@@ -1908,6 +1892,8 @@ impl<'a> Decoder<'a> {
         if sep_n == 0 {
             return None;
         }
+        let mut scans: Vec<&IrProps> = stop_sequences.to_vec();
+        scans.extend(enclosing.iter());
         for enc_props in scans.iter().copied() {
             if core::ptr::eq(enc_props, sep_props) {
                 continue;
@@ -1916,6 +1902,9 @@ impl<'a> Decoder<'a> {
                 continue;
             };
             let term = self.ctx.strings().get(term_id).ok()?;
+            if term.len() <= separator.len() || !term.starts_with(separator) {
+                continue;
+            }
             let enc_name = encoding_name(enc_props, self.ctx.strings()).ok();
             let term_n = crate::schema::match_delimiter_opts_for_encoding(
                 &cursor.data[cursor.pos..],

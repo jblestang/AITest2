@@ -32,6 +32,17 @@ struct IrBuilder<'a> {
 
 /// Merge global element DFDL props when a particle uses `ref=` (forward refs may leave
 /// particle props empty at parse time — noTargetNamespace_01).
+/// Schema-wide `dfdl:format` defaults apply to element particles when not overridden;
+/// `particle_inherited_for_children` clears group delimiters from inheritance.
+fn apply_format_default_delimiters(ir: &mut IrProps, defaults: &IrProps) {
+    if ir.initiator.is_none() {
+        ir.initiator = defaults.initiator;
+    }
+    if ir.terminator.is_none() {
+        ir.terminator = defaults.terminator;
+    }
+}
+
 fn dfdl_props_for_element_ref(schema: &SchemaDocument, element: &ElementDecl) -> DfdlProps {
     use crate::schema::merge_dfdl_props;
     let mut props = element.props.clone();
@@ -354,8 +365,9 @@ impl<'a> IrBuilder<'a> {
         match particle {
             Particle::Element(element) => {
                 let element_props = dfdl_props_for_element_ref(self.schema, element);
-                let merged =
+                let mut merged =
                     self.merge_props_full(inherited, &DfdlProps::default(), &element_props)?;
+                apply_format_default_delimiters(&mut merged, &self.defaults);
                 validate_text_standard_sibling_order(&merged, prior_element_names, &self.strings)?;
                 let name = self.strings.intern(&element.name);
                 if let Some(builtin) =
@@ -491,10 +503,14 @@ impl<'a> IrBuilder<'a> {
                                 merged_ir.length = child_props.length;
                             }
                             if merged_ir.terminator.is_none() {
-                                merged_ir.terminator = child_props.terminator;
+                                merged_ir.terminator = child_props
+                                    .terminator
+                                    .or(self.defaults.terminator);
                             }
                             if merged_ir.initiator.is_none() {
-                                merged_ir.initiator = child_props.initiator;
+                                merged_ir.initiator = child_props
+                                    .initiator
+                                    .or(self.defaults.initiator);
                             }
                             if element_props.alignment.is_none() {
                                 merged_ir.alignment = child_props.alignment;

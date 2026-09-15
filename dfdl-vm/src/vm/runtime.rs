@@ -5610,21 +5610,15 @@ pub(crate) fn consume_text_field_terminator_after_fixed_length(
         return Ok(());
     }
     let enc = encoding_name(props, strings).ok();
-    if crate::schema::match_delimiter_opts_for_encoding(
-        &cursor.data[cursor.pos..],
-        term,
-        props.ignore_case,
-        enc.as_deref(),
-    )
-    .is_some()
-    {
-        if !cursor.consume_delimiter(term, props.ignore_case, enc.as_deref()) {
-            return Err(VmError::InvalidValue {
-                message: "terminator mismatch".into(),
-            });
-        }
+    if cursor.consume_delimiter(term, props.ignore_case, enc.as_deref()) {
+        return Ok(());
     }
-    Ok(())
+    if cursor.is_empty() {
+        return Ok(());
+    }
+    Err(VmError::InvalidValue {
+        message: alloc::format!("terminator mismatch: expected `{term}`"),
+    })
 }
 
 pub(crate) fn finalize_simple_value(
