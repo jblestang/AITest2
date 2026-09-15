@@ -246,6 +246,8 @@ pub struct IrProps {
     pub facet_check_constraints: bool,
     /// `{ xs:int(.) eq N }` element assert (always evaluated at parse).
     pub assert_int_eq: Option<i64>,
+    /// `dfdl:discriminator` body for choice branch filtering.
+    pub discriminator_test: Option<StringId>,
     pub facet_assert_message: Option<StringId>,
     /// Prepend Daffodil `Assertion failed: ` to custom assert messages (derived simple types).
     pub facet_assert_daffodil_prefix: bool,
@@ -416,6 +418,7 @@ impl Default for IrProps {
             fraction_digits: None,
             facet_check_constraints: false,
             assert_int_eq: None,
+            discriminator_test: None,
             facet_assert_message: None,
             facet_assert_daffodil_prefix: false,
             prefix_length: None,

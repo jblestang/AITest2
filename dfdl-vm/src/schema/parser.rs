@@ -284,8 +284,19 @@ impl<'a> XsdParser<'a> {
         }
     }
 
-    fn is_dfdl_element(prefix: Option<&str>, local: &str) -> bool {
-        prefix == Some("dfdl") || is_dfdl_local(local)
+    fn is_dfdl_element(prefix: Option<&str>, local: &str, namespace: Option<&str>) -> bool {
+        const DFDL_LEGACY: &str = "http://www.ogf.org/dfdl/dfdl-1.0/";
+        if matches!(namespace, Some(DFDL_NS) | Some(DFDL_LEGACY)) {
+            return true;
+        }
+        if namespace.is_some_and(|ns| !ns.is_empty()) {
+            return false;
+        }
+        match prefix {
+            Some("dfdl") | Some("dfdlx") => true,
+            None if is_dfdl_local(local) => true,
+            _ => false,
+        }
     }
 
     fn parse_document(&mut self) -> Result<SchemaDocument> {
@@ -1620,8 +1631,9 @@ impl<'a> XsdParser<'a> {
                     XmlEvent::StartElement { name, .. } => {
                         let local = name.local_name.clone();
                         let prefix = name.prefix.clone();
+                        let ns = name.namespace.clone();
                         let child_attrs = self.reader.take_start_attributes()?;
-                        if Self::is_dfdl_element(prefix.as_deref(), &local) {
+                        if Self::is_dfdl_element(prefix.as_deref(), &local, ns.as_deref()) {
                             if source.is_none() {
                                 self.push_schema_warning(
                                     "appinfoNoSource",
@@ -1639,6 +1651,19 @@ impl<'a> XsdParser<'a> {
                             {
                                 props = merge_dfdl_props(props, dfdl_props);
                             }
+                        } else if source == Some(DFDL_NS) || source == Some(LEGACY_APPINFO) {
+                            let qname = match prefix.as_deref() {
+                                Some(p) => alloc::format!("{p}:{local}"),
+                                None => local.clone(),
+                            };
+                            let mut message = alloc::format!(
+                                "Schema Definition Error: Invalid dfdl annotation found: {qname}"
+                            );
+                            if let Some(label) = self.doc.schema_source_label.as_deref() {
+                                message.push('\n');
+                                message.push_str(label);
+                            }
+                            return Err(crate::error::SchemaError::InvalidProperty { message }.into());
                         } else {
                             self.skip_element_body(&local)?;
                         }
@@ -1812,9 +1837,13 @@ impl<'a> XsdParser<'a> {
                         XmlEvent::StartElement { name, .. } => {
                             let child_local = name.local_name.clone();
                             let child_prefix = name.prefix.clone();
+                            let child_ns = name.namespace.clone();
                             let child_attrs = self.reader.take_start_attributes()?;
-                            if Self::is_dfdl_element(child_prefix.as_deref(), &child_local)
-                                && child_local == "property"
+                            if Self::is_dfdl_element(
+                                child_prefix.as_deref(),
+                                &child_local,
+                                child_ns.as_deref(),
+                            ) && child_local == "property"
                             {
                                 let prop_name = child_attrs.get("name").cloned().ok_or_else(|| {
                                     ParseError::InvalidXml {
@@ -1857,6 +1886,9 @@ impl<'a> XsdParser<'a> {
                 self.expect_end_local(local)?;
             } else {
                 let test = self.read_simple_element_text(local)?;
+                if local == "discriminator" {
+                    props.discriminator_test = Some(test.trim().to_string());
+                }
                 apply_dfdl_assert_test(&mut props, test.trim());
             }
             return Ok(props);
@@ -1925,8 +1957,9 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::StartElement { name, .. } => {
                     let local = name.local_name.clone();
                     let prefix = name.prefix.clone();
+                    let ns = name.namespace.clone();
                     let child_attrs = self.reader.take_start_attributes()?;
-                    if Self::is_dfdl_element(prefix.as_deref(), &local) {
+                    if Self::is_dfdl_element(prefix.as_deref(), &local, ns.as_deref()) {
                         let child_props =
                             self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
                         props = merge_dfdl_props(props, child_props);
@@ -2621,6 +2654,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.assert_int_eq.is_some() {
         base.assert_int_eq = overlay.assert_int_eq;
+    }
+    if overlay.discriminator_test.is_some() {
+        base.discriminator_test = overlay.discriminator_test.clone();
     }
     if overlay.object_kind.is_some() {
         base.object_kind = overlay.object_kind;
@@ -4315,6 +4351,22 @@ mod tests {
     fn parse_minimal_schema() {
         let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="A" type="xs:int"/></xs:schema>"#;
         parse_schema(xsd).expect("minimal");
+    }
+
+    #[test]
+    fn junk_xs_format_in_appinfo_is_sde() {
+        let xsd = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/" targetNamespace="http://example.com">
+  <xs:annotation>
+    <xs:appinfo source="http://www.ogf.org/dfdl/">
+      <xs:format separator="" initiator="" terminator="" representation="text"/>
+    </xs:appinfo>
+  </xs:annotation>
+  <xs:element name="x" type="xs:int" />
+</xs:schema>"#;
+        let err = parse_schema(xsd).unwrap_err().to_string();
+        assert!(err.contains("Invalid dfdl annotation"), "{err}");
     }
 
     #[test]

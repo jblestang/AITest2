@@ -177,6 +177,8 @@ pub struct DfdlProps {
     pub facet_check_constraints: bool,
     /// `{ xs:int(.) eq N }` on `dfdl:assert` (section 02 assert tests).
     pub assert_int_eq: Option<i64>,
+    /// `dfdl:discriminator` body text for choice branch selection.
+    pub discriminator_test: Option<String>,
     /// Daffodil extension `dfdlx:objectKind` (`bytes` / `chars`).
     pub object_kind: Option<ObjectKind>,
     /// `dfdlx:parseUnparsePolicy` (`both` / `parseOnly` / `unparseOnly`).

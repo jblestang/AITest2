@@ -3127,6 +3127,12 @@ fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if props.discriminator_test.is_some() {
+        base.discriminator_test = props
+            .discriminator_test
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
     for (name, val) in &props.set_variables {
         base.set_variables.push((
             strings.intern(name.clone()),
@@ -3577,6 +3583,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.assert_int_eq.is_some() {
         out.assert_int_eq = overlay.assert_int_eq;
+    }
+    if overlay.discriminator_test.is_some() {
+        out.discriminator_test = overlay.discriminator_test;
     }
     if overlay.facet_assert_message.is_some() {
         out.facet_assert_message = overlay.facet_assert_message;

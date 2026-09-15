@@ -521,7 +521,25 @@ impl<'a> Decoder<'a> {
                     }
                     matched
                 } else {
-                    branches.iter().collect()
+                    let dot_peek = peek_choice_discriminator_dot(
+                        self.ctx.program,
+                        branches,
+                        cursor,
+                        self.ctx.strings(),
+                        &self.ctx.program.tunables,
+                    );
+                    let mut list: alloc::vec::Vec<&ChoiceBranch> = branches.iter().collect();
+                    if let Some(ref dot) = dot_peek {
+                        list.retain(|b| {
+                            choice_branch_discriminator_matches(
+                                self.ctx.program,
+                                b.node,
+                                dot,
+                                self.ctx.strings(),
+                            )
+                        });
+                    }
+                    list
                 };
                 let mut branch_errors = Vec::new();
                 for branch in branches_iter {
@@ -2421,6 +2439,70 @@ fn dfdl_value_text(value: &DfdlValue) -> &str {
         }
         _ => "",
     }
+}
+
+fn choice_branch_discriminator_matches(
+    program: &IrProgram,
+    branch_node: u32,
+    dot: &str,
+    strings: &StringPool,
+) -> bool {
+    let Some(props) = choice_branch_element_props(program, branch_node) else {
+        return true;
+    };
+    let Some(id) = props.discriminator_test else {
+        return true;
+    };
+    let Ok(expr) = strings.get(id) else {
+        return false;
+    };
+    crate::schema::eval_discriminator_expression(expr, dot).unwrap_or(false)
+}
+
+fn choice_branch_element_props(program: &IrProgram, node: u32) -> Option<&IrProps> {
+    match &program.nodes[node as usize] {
+        IrNode::Element { props, .. } => Some(props),
+        _ => None,
+    }
+}
+
+fn peek_choice_discriminator_dot(
+    program: &IrProgram,
+    branches: &[ChoiceBranch],
+    cursor: &Cursor,
+    strings: &StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
+) -> Option<String> {
+    for branch in branches {
+        let IrNode::Element { props, kind, .. } = &program.nodes[branch.node as usize] else {
+            continue;
+        };
+        if props.discriminator_test.is_none() {
+            continue;
+        }
+        if props.length_kind != LengthKind::Explicit {
+            continue;
+        }
+        let mut c = cursor.clone();
+        if let Ok(DfdlValue::String(s)) = read_simple(
+            &mut c,
+            *kind,
+            props,
+            strings,
+            false,
+            &[],
+            None,
+            tunables,
+            false,
+            None,
+            None,
+            false,
+            false,
+        ) {
+            return Some(s.text);
+        }
+    }
+    None
 }
 
 fn choice_dispatch_key_string(

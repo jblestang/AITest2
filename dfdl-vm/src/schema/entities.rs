@@ -738,6 +738,60 @@ fn eval_delimiter_if_condition(
 }
 
 /// Evaluate a runtime `{ if ... then 'a' else 'b' }` delimiter property using decoded siblings.
+/// Evaluate `dfdl:discriminator` XPath subset using look-ahead item value (`.`).
+pub fn eval_discriminator_expression(expr: &str, dot: &str) -> Option<bool> {
+    let inner = expr
+        .trim()
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(expr)
+        .trim();
+    let lower = inner.to_ascii_lowercase();
+    if lower.starts_with("if") {
+        let then_idx = lower.find(" then ")?;
+        let cond = inner[..then_idx]
+            .trim()
+            .strip_prefix("if")
+            .unwrap_or(inner)
+            .trim()
+            .trim_start_matches('(')
+            .trim_end_matches(')')
+            .trim();
+        let tail = inner[then_idx + " then ".len()..].trim();
+        let else_idx = tail.to_ascii_lowercase().find(" else ")?;
+        let then_part = tail[..else_idx].trim();
+        let else_part = tail[else_idx + " else ".len()..].trim();
+        let cond_ok = eval_discriminator_dot_eq(cond, dot)?;
+        let then_b = parse_discriminator_bool(then_part)?;
+        let else_b = parse_discriminator_bool(else_part)?;
+        return Some(if cond_ok { then_b } else { else_b });
+    }
+    eval_discriminator_dot_eq(inner, dot)
+}
+
+fn eval_discriminator_dot_eq(cond: &str, dot: &str) -> Option<bool> {
+    let cond = cond.trim();
+    if let Some((_, right)) = cond.split_once(". eq ") {
+        let lit = unquote_xpath_string_literal(right.trim());
+        return Some(dot == lit);
+    }
+    if let Some((left, right)) = cond.split_once(" eq ") {
+        if left.trim() == "." {
+            let lit = unquote_xpath_string_literal(right.trim());
+            return Some(dot == lit);
+        }
+    }
+    None
+}
+
+fn parse_discriminator_bool(s: &str) -> Option<bool> {
+    match s.trim() {
+        "fn:true()" | "true()" => Some(true),
+        "fn:false()" | "false()" => Some(false),
+        _ => None,
+    }
+}
+
 pub fn eval_runtime_delimiter_expression(
     expr: &str,
     siblings: &alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>,
