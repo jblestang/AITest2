@@ -339,7 +339,10 @@ impl<'a> Cursor<'a> {
                 }
             };
             for b in 0..take {
-                let bit = (chunk >> b) & 1;
+                let bit = match field_order {
+                    BitOrder::LeastSignificantBitFirst => (chunk >> b) & 1,
+                    BitOrder::MostSignificantBitFirst => (chunk >> (take - 1 - b)) & 1,
+                };
                 match field_order {
                     BitOrder::LeastSignificantBitFirst => {
                         array[out_bit / 8] |= (bit as u8) << (out_bit % 8);
@@ -9409,5 +9412,24 @@ mod bitorder_sub_byte_tests {
             normalize_bit_field_raw(stream_raw, 3, ByteOrder::LittleEndian, BitOrder::LeastSignificantBitFirst),
             2
         );
+    }
+
+    #[test]
+    fn msbf_hex_binary_fill_byte_array_after_partial_byte() {
+        let data = vec![0xde, 0xad, 0xbe, 0xef];
+        let mut cursor =
+            Cursor::with_frame_bits_and_transmission(&data, 32, BitOrder::MostSignificantBitFirst);
+        let hb1 = cursor
+            .read_hex_binary_bits(5, BitOrder::MostSignificantBitFirst)
+            .unwrap();
+        let hb2 = cursor
+            .read_hex_binary_bits(22, BitOrder::MostSignificantBitFirst)
+            .unwrap();
+        let hb3 = cursor
+            .read_hex_binary_bits(5, BitOrder::MostSignificantBitFirst)
+            .unwrap();
+        assert_eq!(hb1, [0xd8]);
+        assert_eq!(hb2, [0xd5, 0xb7, 0xdc]);
+        assert_eq!(hb3, [0x78]);
     }
 }

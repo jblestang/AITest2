@@ -489,6 +489,8 @@ pub enum SimpleBase {
     },
     Restriction {
         base: RestrictionBase,
+        /// True when this restriction's `base="xs:date"` (not `xs:dateTime`).
+        restriction_base_is_xs_date: bool,
         length: Option<u64>,
         min_length: Option<u64>,
         max_length: Option<u64>,
@@ -516,6 +518,31 @@ pub enum SimpleBase {
 
 impl SchemaDocument {
     /// Resolve a simple type base to its builtin XSD type (follows `restriction base="ex:…"` chains).
+    /// True when the simple type chain derives from `xs:date` (not `xs:dateTime`).
+    pub fn simple_base_is_xs_date(&self, base: &SimpleBase) -> bool {
+        match base {
+            SimpleBase::Restriction {
+                restriction_base_is_xs_date: true,
+                ..
+            } => true,
+            SimpleBase::Restriction {
+                base: RestrictionBase::Named(name),
+                ..
+            } => self
+                .types
+                .get(name)
+                .and_then(|def| {
+                    if let TypeDef::Simple { base: inner, .. } = def {
+                        Some(self.simple_base_is_xs_date(inner))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
     pub fn builtin_for_simple_base(&self, base: &SimpleBase) -> Option<BuiltinType> {
         match base {
             SimpleBase::Builtin(b) => Some(*b),

@@ -2285,6 +2285,9 @@ fn apply_restriction_facets(
             props.non_negative_integer = true;
         }
     }
+    if schema.simple_base_is_xs_date(base) {
+        props.calendar_date_only = true;
+    }
     if element_props.facet_check_constraints {
         props.facet_check_constraints = true;
     }

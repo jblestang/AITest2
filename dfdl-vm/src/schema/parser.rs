@@ -988,9 +988,17 @@ impl<'a> XsdParser<'a> {
                         } else {
                             RestrictionBase::Builtin(BuiltinType::String)
                         };
+                        let restriction_base_is_xs_date = child_attrs
+                            .get("base")
+                            .map(|base_name| {
+                                let normalized = normalize_qname(base_name);
+                                matches!(normalized.as_str(), "xs:date" | "date")
+                            })
+                            .unwrap_or(false);
                         let facets = self.parse_restriction_body()?;
                         return Ok(SimpleBase::Restriction {
                             base,
+                            restriction_base_is_xs_date,
                             length: facets.length,
                             min_length: facets.min_length,
                             max_length: facets.max_length,

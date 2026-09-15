@@ -63,6 +63,7 @@ impl SchemaDocument {
                 invalid_length,
                 invalid_total_digits,
                 invalid_fraction_digits,
+                ..
             } => {
                 match parent {
                     RestrictionBase::Named(name) => {
