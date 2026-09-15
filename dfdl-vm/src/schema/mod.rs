@@ -24,7 +24,7 @@ pub use entities::{
     validate_delimiter_es_restriction,
     expand_entities_for_encoding, expand_entities_str, is_nl_comma_space_pattern, match_delimiter,
     match_delimiter_opts,
-    match_delimiter_opts_for_encoding, match_delimiter_with_alt_for_encoding,
+    delimiter_match_len_at, match_delimiter_opts_for_encoding, match_delimiter_with_alt_for_encoding,
     match_pattern_opts_for_encoding,
     parse_text_standard_separator_list,
     parse_text_standard_zero_rep_list,

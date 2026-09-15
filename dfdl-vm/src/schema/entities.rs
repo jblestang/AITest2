@@ -1321,7 +1321,7 @@ fn should_split_whitespace_alternatives(pattern: &str) -> bool {
         && !pattern.contains('(')
 }
 
-fn delimiter_has_top_level_comma(pattern: &str) -> bool {
+pub(crate) fn delimiter_has_top_level_comma(pattern: &str) -> bool {
     let bytes = pattern.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -1341,6 +1341,23 @@ fn delimiter_has_top_level_comma(pattern: &str) -> bool {
         i += 1;
     }
     false
+}
+
+/// Match a delimiter at `input` start. Comma-containing patterns require a full compound match
+/// (not a shorter comma-separated alternative) so `shi,shi` does not match as bare `shi`.
+pub fn delimiter_match_len_at(
+    input: &[u8],
+    pattern: &str,
+    ignore_case: bool,
+    encoding: Option<&str>,
+) -> Option<usize> {
+    if pattern.is_empty() {
+        return Some(0);
+    }
+    if delimiter_has_top_level_comma(pattern) {
+        return match_delimiter_compound(input, pattern, ignore_case, encoding).filter(|&n| n > 0);
+    }
+    match_delimiter_opts_for_encoding(input, pattern, ignore_case, encoding)
 }
 
 fn match_delimiter_compound(

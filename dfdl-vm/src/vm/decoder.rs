@@ -286,11 +286,17 @@ impl<'a> Decoder<'a> {
                                 props: prev_props, ..
                             }) = self.ctx.program.node(children[idx - 1])
                             {
-                                let _ = crate::vm::runtime::consume_text_field_terminator_after_fixed_length(
+                                if crate::vm::runtime::field_terminator_pending_at_cursor(
                                     cursor,
                                     prev_props,
                                     self.ctx.strings(),
-                                );
+                                ) {
+                                    let _ = crate::vm::runtime::consume_text_field_terminator_after_fixed_length(
+                                        cursor,
+                                        prev_props,
+                                        self.ctx.strings(),
+                                    );
+                                }
                                 if let Some(term_id) = prev_props.terminator {
                                     if let Ok(term) = self.ctx.strings().get(term_id) {
                                         if !term.is_empty() {
@@ -305,7 +311,7 @@ impl<'a> Decoder<'a> {
                                                 sep_enc.as_deref(),
                                             )
                                             .unwrap_or(0);
-                                            let term_n = crate::schema::match_delimiter_opts_for_encoding(
+                                            let term_n = crate::schema::delimiter_match_len_at(
                                                 &cursor.data[cursor.pos..],
                                                 term,
                                                 prev_props.ignore_case,
@@ -357,6 +363,26 @@ impl<'a> Decoder<'a> {
                     separator_alts.push(sep_alt);
                     let saved = cursor.clone();
                     let start = cursor.pos;
+                    let saved_frame_limit = cursor.frame_bit_limit;
+                    if let Ok(IrNode::Element { props: cur_p, .. }) = self.ctx.program.node(child) {
+                        if idx + 1 < children.len() {
+                            if let Ok(IrNode::Element { props: next_p, .. }) =
+                                self.ctx.program.node(children[idx + 1])
+                            {
+                                if let Some(add) =
+                                    crate::vm::runtime::sibling_mixed_utf8_utf16_delimited_limit(
+                                        cursor,
+                                        cur_p,
+                                        next_p,
+                                        self.ctx.strings(),
+                                    )
+                                {
+                                    cursor.frame_bit_limit =
+                                        Some(cursor.pos.saturating_add(add).saturating_mul(8));
+                                }
+                            }
+                        }
+                    }
                     match self.decode_particle(
                         child,
                         cursor,
@@ -368,6 +394,7 @@ impl<'a> Decoder<'a> {
                         child_stops,
                     ) {
                         Ok(child_value) => {
+                            cursor.frame_bit_limit = saved_frame_limit;
                             if let Ok(IrNode::Element { props: cp, .. }) =
                                 self.ctx.program.node(child)
                             {
@@ -429,6 +456,7 @@ impl<'a> Decoder<'a> {
                             }
                         }
                         Err(e) if is_element_absent(&e) => {
+                            cursor.frame_bit_limit = saved_frame_limit;
                             if let Ok(IrNode::Element { name, props, .. }) =
                                 self.ctx.program.node(child)
                             {
@@ -457,6 +485,7 @@ impl<'a> Decoder<'a> {
                             }
                         }
                         Err(e) => {
+                            cursor.frame_bit_limit = saved_frame_limit;
                             if let Ok(IrNode::Element { props: cp, .. }) =
                                 self.ctx.program.node(child)
                             {

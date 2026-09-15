@@ -523,8 +523,12 @@ impl<'a> XsdParser<'a> {
                                 local_tag(k) == "encodingErrorPolicy"
                                     || k.ends_with(":encodingErrorPolicy")
                             });
-                            let props =
-                                self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
+                            let props = self.parse_dfdl_element(
+                                &local,
+                                prefix.as_deref(),
+                                child_attrs,
+                                Some(child_namespace),
+                            )?;
                             if enc_explicit {
                                 self.doc.explicit_encoding_error_policy_on_format = true;
                             }
@@ -532,10 +536,20 @@ impl<'a> XsdParser<'a> {
                                 merge_dfdl_props(self.doc.format_defaults.props.clone(), props);
                         }
                         "defineFormat" => {
-                            let _ = self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
+                            let _ = self.parse_dfdl_element(
+                                &local,
+                                prefix.as_deref(),
+                                child_attrs,
+                                Some(child_namespace),
+                            )?;
                         }
                         "defineEscapeScheme" => {
-                            let _ = self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
+                            let _ = self.parse_dfdl_element(
+                                &local,
+                                prefix.as_deref(),
+                                child_attrs,
+                                Some(child_namespace),
+                            )?;
                         }
                         "defineVariable" => {
                             let name = child_attrs
@@ -1785,7 +1799,7 @@ impl<'a> XsdParser<'a> {
                         let local = name.local_name.clone();
                         let prefix = name.prefix.clone();
                         let ns = name.namespace.clone();
-                        let child_attrs = self.reader.take_start_attributes()?;
+                        let (child_attrs, child_namespace) = self.reader.take_start_element()?;
                         if Self::is_dfdl_element(prefix.as_deref(), &local, ns.as_deref()) {
                             if source.is_none() {
                                 self.push_schema_warning(
@@ -1796,8 +1810,12 @@ impl<'a> XsdParser<'a> {
                                     ],
                                 );
                             }
-                            let dfdl_props =
-                                self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
+                            let dfdl_props = self.parse_dfdl_element(
+                                &local,
+                                prefix.as_deref(),
+                                child_attrs,
+                                Some(child_namespace),
+                            )?;
                             if local != "defineFormat"
                                 && local != "defineEscapeScheme"
                                 && local != "defineVariable"
@@ -1861,6 +1879,7 @@ impl<'a> XsdParser<'a> {
         local: &str,
         _prefix: Option<&str>,
         attrs: BTreeMap<String, String>,
+        element_namespace: Option<xml_no_std::namespace::Namespace>,
     ) -> Result<DfdlProps> {
         self.doc.dfdl_annotations_seen = true;
         record_foreign_attrs_on_dfdl_element(local, &attrs, &mut self.doc.schema_diagnostics);
@@ -2039,12 +2058,8 @@ impl<'a> XsdParser<'a> {
             if self.reader.peek_is_end(local)? {
                 self.expect_end_local(local)?;
             } else {
-                let mut scoped = self
-                    .annotation_prefix_overrides
-                    .last()
-                    .cloned()
-                    .unwrap_or_default();
-                collect_namespace_prefixes(&attrs, &mut scoped);
+                let scoped =
+                    discriminator_xpath_prefix_scope(&attrs, element_namespace.as_ref());
                 let test = self.read_simple_element_text(local)?;
                 if local == "discriminator" {
                     let trimmed = test.trim().to_string();
@@ -2120,10 +2135,14 @@ impl<'a> XsdParser<'a> {
                     let local = name.local_name.clone();
                     let prefix = name.prefix.clone();
                     let ns = name.namespace.clone();
-                    let child_attrs = self.reader.take_start_attributes()?;
+                    let (child_attrs, child_namespace) = self.reader.take_start_element()?;
                     if Self::is_dfdl_element(prefix.as_deref(), &local, ns.as_deref()) {
-                        let child_props =
-                            self.parse_dfdl_element(&local, prefix.as_deref(), child_attrs)?;
+                        let child_props = self.parse_dfdl_element(
+                            &local,
+                            prefix.as_deref(),
+                            child_attrs,
+                            Some(child_namespace),
+                        )?;
                         props = merge_dfdl_props(props, child_props);
                     } else {
                         self.skip_element_body(&local)?;
@@ -4491,6 +4510,20 @@ pub fn get_global_element<'a>(schema: &'a SchemaDocument, qname: &str) -> Option
 enum SchemaMergeKind {
     Include,
     Import,
+}
+
+fn discriminator_xpath_prefix_scope(
+    attrs: &BTreeMap<String, String>,
+    element_namespace: Option<&xml_no_std::namespace::Namespace>,
+) -> alloc::collections::BTreeMap<String, String> {
+    let mut scoped = alloc::collections::BTreeMap::new();
+    if let Some(ns) = element_namespace {
+        for (prefix, uri) in crate::xml_util::namespace_prefix_map(ns) {
+            scoped.insert(prefix, uri);
+        }
+    }
+    collect_namespace_prefixes(attrs, &mut scoped);
+    scoped
 }
 
 fn collect_namespace_prefixes(attrs: &BTreeMap<String, String>, out: &mut BTreeMap<String, String>) {

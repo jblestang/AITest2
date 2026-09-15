@@ -891,6 +891,28 @@ fn validate_one_sequence_separator_encoding(
                 }
             }
         }
+        if !has_non_empty_delimiter(&prev, "terminator")
+            && pair[1].element_ref.is_some()
+            && effective_length_kind(&prev, &group_props) == crate::schema::LengthKind::Delimited
+        {
+            if let (Some(prev_enc), Some(next_enc)) = (
+                effective_encoding_name(&prev),
+                effective_encoding_name(&next),
+            ) {
+                if !encodings_compatible_for_delimiter_scan(prev_enc, next_enc) {
+                    let seq_encoding_explicit = seq_props.encoding.is_some();
+                    if !seq_encoding_explicit
+                        || !encodings_compatible_for_delimiter_scan(seq_enc, prev_enc)
+                    {
+                        return Err(SchemaError::InvalidProperty {
+                            message: alloc::format!(
+                                "Schema Definition Error: The separator of the enclosing group must be in the same encoding as the delimited element that precedes it. encoding separator"
+                            ),
+                        });
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }

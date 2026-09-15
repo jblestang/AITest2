@@ -5596,6 +5596,75 @@ pub(crate) fn read_text_scalar(
     Ok(value)
 }
 
+pub(crate) fn field_terminator_pending_at_cursor(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+) -> bool {
+    let Some(term_id) = props.terminator else {
+        return false;
+    };
+    let Ok(term) = strings.get(term_id) else {
+        return false;
+    };
+    if term.is_empty() {
+        return false;
+    }
+    let enc = encoding_name(props, strings).ok();
+    crate::schema::delimiter_match_len_at(
+        &cursor.data[cursor.pos..],
+        term,
+        props.ignore_case,
+        enc.as_deref(),
+    )
+    .is_some()
+}
+
+pub(crate) fn encodings_compatible_for_delimiter_scan(a: &str, b: &str) -> bool {
+    use crate::vm::encoding::normalize_encoding_name;
+    match (
+        normalize_encoding_name(a),
+        normalize_encoding_name(b),
+    ) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.eq_ignore_ascii_case(b),
+    }
+}
+
+/// When a UTF-8 delimited field is immediately followed by a UTF-16 sibling (no separator),
+/// stop the payload before the UTF-16 byte run (DFDL-6-007R runtime).
+pub(crate) fn sibling_mixed_utf8_utf16_delimited_limit(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    next: &IrProps,
+    strings: &StringPool,
+) -> Option<usize> {
+    if props.representation != Representation::Text || props.length_kind != LengthKind::Delimited {
+        return None;
+    }
+    let pe = encoding_name(props, strings).ok()?;
+    let ne = encoding_name(next, strings).ok()?;
+    if encodings_compatible_for_delimiter_scan(&pe, &ne) {
+        return None;
+    }
+    use crate::vm::encoding::normalize_encoding_name;
+    let utf8 = matches!(
+        normalize_encoding_name(&pe),
+        Some("utf-8") | Some("us-ascii") | Some("iso-8859-1")
+    );
+    let utf16 = normalize_encoding_name(&ne).is_some_and(|n| n.starts_with("utf-16"));
+    if !utf8 || !utf16 {
+        return None;
+    }
+    let data = &cursor.data[cursor.pos..];
+    for i in 0..data.len() {
+        if data.len().saturating_sub(i) >= 2 && data[i] == 0 && data[i + 1] != 0 {
+            return Some(i);
+        }
+    }
+    None
+}
+
 pub(crate) fn consume_text_field_terminator_after_fixed_length(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
@@ -5610,7 +5679,13 @@ pub(crate) fn consume_text_field_terminator_after_fixed_length(
         return Ok(());
     }
     let enc = encoding_name(props, strings).ok();
-    if cursor.consume_delimiter(term, props.ignore_case, enc.as_deref()) {
+    if let Some(n) = crate::schema::delimiter_match_len_at(
+        &cursor.data[cursor.pos..],
+        term,
+        props.ignore_case,
+        enc.as_deref(),
+    ) {
+        cursor.advance(n);
         return Ok(());
     }
     if cursor.is_empty() {
