@@ -5023,6 +5023,9 @@ pub(crate) fn try_consume_nillable_element_nil(
                 return Ok(true);
             }
         }
+        if props.nil_kind == Some(NilKind::LiteralValue) && nil_len > 0 {
+            return Ok(true);
+        }
         if empty_nil && nil_len == 0 {
             // fall through to parent-separator / EOS empty-nil checks below
         } else {
@@ -5095,9 +5098,19 @@ fn match_nil_literal_prefix(
         return Ok(None);
     };
     let mut best: Option<usize> = None;
+    let data = &cursor.data[cursor.pos..];
     for alt in alts {
         let bytes = crate::schema::expand_entities(&alt);
-        if cursor.data[cursor.pos..].starts_with(&bytes) {
+        let matched = if props.ignore_case && !bytes.is_empty() {
+            data.len() >= bytes.len()
+                && data[..bytes.len()]
+                    .iter()
+                    .zip(bytes.iter())
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        } else {
+            data.starts_with(&bytes)
+        };
+        if matched {
             let len = bytes.len();
             if best.map(|prev| len > prev).unwrap_or(true) {
                 best = Some(len);

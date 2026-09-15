@@ -257,6 +257,13 @@ fn reject_byte_entities_text_standard(raw: &str) -> Result<(), String> {
                 }
                 i += rel + 1;
             } else {
+                let tail = &raw[i..];
+                if tail.len() > 1 {
+                    let body = &tail[1..];
+                    if body.starts_with("#r") || body.starts_with("#R") {
+                        return Err(invalid_dfdl_entity_error(tail, raw));
+                    }
+                }
                 return Ok(());
             }
         } else {
@@ -312,6 +319,7 @@ pub fn validate_text_standard_special_value_literal(
     raw: &str,
 ) -> Result<(), String> {
     validate_dfdl_entities_in_property(raw)?;
+    reject_byte_entities_text_standard(raw)?;
     validate_disallowed_char_class_tokens(prop, raw, &[])?;
     Ok(())
 }
