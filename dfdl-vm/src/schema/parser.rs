@@ -525,6 +525,13 @@ impl<'a> XsdParser<'a> {
         self.doc.global_elements.insert(key, element);
     }
 
+    fn schema_context_snapshot(&self) -> (DfdlProps, Option<String>) {
+        (
+            self.doc.format_defaults.props.clone(),
+            self.doc.schema_source_label.clone(),
+        )
+    }
+
     fn parse_global_element_inner(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
         let (xsd_attrs, dfdl_from_attrs) =
             split_dfdl_attrs_with_variables(
@@ -558,36 +565,45 @@ impl<'a> XsdParser<'a> {
             self.reader.skip_insignificant_ws()?;
             if self.reader.peek_is_end("element")? {
                 self.expect_end_local("element")?;
+                let (format_context, source_label) = self.schema_context_snapshot();
                 self.insert_global_element(GlobalElement {
                     name,
                     type_qname_prefixed: false,
                     type_xsd_qname: None,
                     type_name: TypeName::new("xs:string"),
                     props: self.finalize_props(props),
+                    format_context,
+                    source_label,
                 });
                 return Ok(());
             }
             props = self.parse_inline_content(props, &["complexType", "simpleType", "annotation"])?;
             if self.reader.peek_is_end("element")? {
                 self.expect_end_local("element")?;
+                let (format_context, source_label) = self.schema_context_snapshot();
                 self.insert_global_element(GlobalElement {
                     name,
                     type_qname_prefixed: true,
                     type_xsd_qname: None,
                     type_name: TypeName::new("xs:string"),
                     props: self.finalize_props(props),
+                    format_context,
+                    source_label,
                 });
                 return Ok(());
             }
             let inline = self.parse_inline_type()?;
             props = merge_dfdl_props(props, inline.1);
             self.expect_end_local("element")?;
+            let (format_context, source_label) = self.schema_context_snapshot();
             self.insert_global_element(GlobalElement {
                 name,
                 type_qname_prefixed: true,
                 type_xsd_qname: None,
                 type_name: inline.0,
                 props: self.finalize_props(props),
+                format_context,
+                source_label,
             });
             return Ok(());
         };
@@ -611,12 +627,15 @@ impl<'a> XsdParser<'a> {
         let type_qname_prefixed = xsd_attrs
             .get("type")
             .is_some_and(|t| t.contains(':'));
+        let (format_context, source_label) = self.schema_context_snapshot();
         self.insert_global_element(GlobalElement {
             name,
             type_qname_prefixed,
             type_xsd_qname,
             type_name: resolved_type,
             props: self.finalize_props(props),
+            format_context,
+            source_label,
         });
         Ok(())
     }
@@ -633,12 +652,15 @@ impl<'a> XsdParser<'a> {
         if self.reader.peek_is_end("complexType")? {
             self.expect_end_local("complexType")?;
             if let Some(type_name) = name {
+                let (format_context, source_label) = self.schema_context_snapshot();
                 self.doc.types.insert(
                     TypeName::new(type_name.clone()),
                     TypeDef::Complex {
                         name: TypeName::new(type_name),
                         content: ComplexContent::Empty,
                         props,
+                        format_context,
+                        source_label,
                     },
                 );
             }
@@ -650,12 +672,15 @@ impl<'a> XsdParser<'a> {
         self.expect_end_local("complexType")?;
 
         if let Some(type_name) = name {
+            let (format_context, source_label) = self.schema_context_snapshot();
             self.doc.types.insert(
                 TypeName::new(type_name.clone()),
                 TypeDef::Complex {
                     name: TypeName::new(type_name),
                     content,
                     props,
+                    format_context,
+                    source_label,
                 },
             );
         }
@@ -686,12 +711,15 @@ impl<'a> XsdParser<'a> {
             if props.length.is_none() {
                 props.length = self.doc.format_defaults.props.length;
             }
+            let (format_context, source_label) = self.schema_context_snapshot();
             self.doc.types.insert(
                 TypeName::new(type_name.clone()),
                 TypeDef::Simple {
                     name: TypeName::new(type_name),
                     base,
                     props,
+                    format_context,
+                    source_label,
                 },
             );
         }
@@ -997,6 +1025,8 @@ impl<'a> XsdParser<'a> {
                     type_xsd_qname: None,
                     type_name: TypeName::new("xs:string"),
                     props: DfdlProps::default(),
+                    format_context: DfdlProps::default(),
+                    source_label: None,
                 };
                 let key = resolve_global_element_storage_key(&self.doc, ref_qname);
                 self.doc.global_elements.insert(key, stub.clone());
@@ -1612,10 +1642,11 @@ impl<'a> XsdParser<'a> {
             let enc_policy_explicit = attrs.keys().any(|k| {
                 local_tag(k) == "encodingErrorPolicy" || k.ends_with(":encodingErrorPolicy")
             });
+            let format_ref_from_props = props.format_ref.clone();
             let format_ref_name = attrs
                 .get("ref")
-                .map(String::as_str)
-                .or(props.format_ref.as_deref());
+                .map(|s| s.as_str())
+                .or_else(|| format_ref_from_props.as_deref());
             if let Some(ref_name) = format_ref_name {
                 if let Some(base) = self.lookup_named_format(ref_name) {
                     props = merge_dfdl_props(base, props);
@@ -1627,8 +1658,14 @@ impl<'a> XsdParser<'a> {
             if !self.in_define_format {
                 let mut format_props = props.clone();
                 format_props.calendar_time_zone_defined = false;
-                self.doc.format_defaults.props =
-                    merge_dfdl_props(self.doc.format_defaults.props.clone(), format_props);
+                if format_ref_name.is_some() {
+                    self.doc.format_defaults.props =
+                        merge_dfdl_props(self.doc.format_defaults.props.clone(), format_props);
+                } else {
+                    // Explicit schema `dfdl:format` without ref defines only listed properties
+                    // (multi_A_03: lengthKind intentionally absent).
+                    self.doc.format_defaults.props = format_props;
+                }
                 // Returned `props` must not carry format-level TZ as element-defined.
                 props.calendar_time_zone_defined = false;
             }
@@ -1947,6 +1984,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.length_kind.is_some() {
         base.length_kind = overlay.length_kind;
+    }
+    if overlay.length_kind_defined {
+        base.length_kind_defined = true;
     }
     if overlay.length.is_some() {
         base.length = overlay.length;
@@ -3020,6 +3060,7 @@ fn props_from_attrs_with_variables(
                         .into())
                     }
                 });
+                props.length_kind_defined = true;
             }
             "lengthPattern" => props.length_pattern = Some(value.clone()),
             "length" => {

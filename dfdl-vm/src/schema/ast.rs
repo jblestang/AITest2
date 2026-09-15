@@ -24,6 +24,8 @@ pub struct DfdlProps {
     pub byte_order: Option<ByteOrder>,
     pub bit_order: Option<BitOrder>,
     pub length_kind: Option<LengthKind>,
+    /// True when `dfdl:lengthKind` was set on this construct or merged format ref.
+    pub length_kind_defined: bool,
     pub length: Option<u64>,
     /// Parsed sibling element name from `{ ../ex:name }` length expressions.
     pub length_sibling: Option<String>,
@@ -681,11 +683,16 @@ pub enum TypeDef {
         name: TypeName,
         base: SimpleBase,
         props: DfdlProps,
+        /// Schema-level `dfdl:format` in effect when this type was declared.
+        format_context: DfdlProps,
+        source_label: Option<String>,
     },
     Complex {
         name: TypeName,
         content: ComplexContent,
         props: DfdlProps,
+        format_context: DfdlProps,
+        source_label: Option<String>,
     },
 }
 
@@ -698,6 +705,8 @@ pub struct GlobalElement {
     /// Raw `type="..."` attribute when present (e.g. `c03:nestType`).
     pub type_xsd_qname: Option<String>,
     pub props: DfdlProps,
+    pub format_context: DfdlProps,
+    pub source_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -804,6 +813,104 @@ impl SchemaDocument {
                 out.length = Some(len);
             }
         }
+        if props.length_kind_defined {
+            out.length_kind_defined = true;
+        }
         Some(out)
+    }
+
+    /// Schema file labels along a simple-type restriction chain (for lengthKind SDEs).
+    pub fn type_chain_source_labels(&self, name: &TypeName) -> alloc::vec::Vec<String> {
+        use alloc::collections::BTreeSet;
+        let mut labels = BTreeSet::new();
+        self.collect_type_chain_labels(name, &mut labels);
+        labels.into_iter().collect()
+    }
+
+    /// Schema file labels for lengthKind SDEs (type chain + declaring elements/groups).
+    pub fn length_kind_missing_diag_labels(&self, type_name: &TypeName) -> alloc::vec::Vec<String> {
+        use alloc::collections::BTreeSet;
+        let mut labels = BTreeSet::new();
+        self.collect_type_chain_labels(type_name, &mut labels);
+        for ge in self.global_elements.values() {
+            if ge.type_name == *type_name {
+                if let Some(label) = &ge.source_label {
+                    labels.insert(label.clone());
+                }
+            }
+        }
+        for td in self.types.values() {
+            if let TypeDef::Complex { content, source_label, .. } = td {
+                if self.complex_content_uses_type(content, type_name) {
+                    if let Some(label) = source_label {
+                        labels.insert(label.clone());
+                    }
+                }
+            }
+        }
+        labels.into_iter().collect()
+    }
+
+    fn complex_content_uses_type(&self, content: &ComplexContent, type_name: &TypeName) -> bool {
+        match content {
+            ComplexContent::Empty => false,
+            ComplexContent::Sequence(seq) => self.particles_use_type(&seq.particles, type_name),
+            ComplexContent::Choice(ch) => self.particles_use_type(&ch.branches, type_name),
+        }
+    }
+
+    fn particles_use_type(&self, particles: &[Particle], type_name: &TypeName) -> bool {
+        particles.iter().any(|p| match p {
+            Particle::Element(el) => {
+                el.type_name == *type_name
+                    || el
+                        .element_ref
+                        .as_ref()
+                        .and_then(|r| crate::schema::get_global_element(self, r))
+                        .is_some_and(|g| g.type_name == *type_name)
+            }
+            Particle::GroupRef(gr) => self
+                .groups
+                .get(gr.name.rsplit(':').next().unwrap_or(gr.name.as_str()))
+                .is_some_and(|g| match g {
+                    GroupDecl::Sequence(s) => self.particles_use_type(&s.particles, type_name),
+                    GroupDecl::Choice(c) => self.particles_use_type(&c.branches, type_name),
+                }),
+            Particle::Sequence(seq) => self.particles_use_type(&seq.particles, type_name),
+            Particle::Choice(ch) => self.particles_use_type(&ch.branches, type_name),
+        })
+    }
+
+    fn collect_type_chain_labels(
+        &self,
+        name: &TypeName,
+        out: &mut alloc::collections::BTreeSet<String>,
+    ) {
+        let Some(td) = self.types.get(name) else {
+            return;
+        };
+        match td {
+            TypeDef::Simple {
+                base,
+                source_label,
+                ..
+            } => {
+                if let Some(label) = source_label {
+                    out.insert(label.clone());
+                }
+                if let SimpleBase::Restriction {
+                    base: RestrictionBase::Named(parent),
+                    ..
+                } = base
+                {
+                    self.collect_type_chain_labels(parent, out);
+                }
+            }
+            TypeDef::Complex { source_label, .. } => {
+                if let Some(label) = source_label {
+                    out.insert(label.clone());
+                }
+            }
+        }
     }
 }

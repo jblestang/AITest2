@@ -105,6 +105,7 @@ pub struct IrProps {
     /// True when `dfdl:bitOrder` was present on merged DFDL props.
     pub bit_order_defined: bool,
     pub length_kind: LengthKind,
+    pub length_kind_defined: bool,
     pub length: Option<u64>,
     pub length_sibling: Option<StringId>,
     pub length_sibling_cast_long: bool,
@@ -284,6 +285,7 @@ impl Default for IrProps {
             bit_order: BitOrder::MostSignificantBitFirst,
             bit_order_defined: false,
             length_kind: LengthKind::Implicit,
+            length_kind_defined: false,
             length: None,
             length_sibling: None,
             length_sibling_cast_long: false,

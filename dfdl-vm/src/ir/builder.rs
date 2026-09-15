@@ -61,6 +61,9 @@ impl<'a> IrBuilder<'a> {
         {
             defaults.text_standard_exponent_rep_defined = true;
         }
+        if schema.format_defaults.props.length_kind_defined {
+            defaults.length_kind_defined = true;
+        }
         if defaults.text_standard_infinity_rep == StringId(0) {
             defaults.text_standard_infinity_rep = strings.intern("Inf");
         }
@@ -145,6 +148,12 @@ impl<'a> IrBuilder<'a> {
                     Some(self.schema),
                     Some(root_name),
                 )?;
+                validate_length_kind_defined(
+                    kind,
+                    &ir_props,
+                    self.schema,
+                    Some(&root_element.type_name),
+                )?;
                 apply_restriction_facets(
                     &self.schema,
                     &mut ir_props,
@@ -170,8 +179,8 @@ impl<'a> IrBuilder<'a> {
                     &DfdlProps::default(),
                     &root_element.props,
                 )?;
-                if root_element.props.length_kind.is_none() {
-                    ir_props.length_kind = LengthKind::Implicit;
+                if root_element.props.length_kind.is_none() && self.defaults.length_kind_defined {
+                    ir_props.length_kind = self.defaults.length_kind;
                 }
                 let ir_props = finalize_element_props(
                     ValueKind::Complex,
@@ -227,16 +236,25 @@ impl<'a> IrBuilder<'a> {
             })?;
 
         match type_def {
-            TypeDef::Simple { base, props: _, .. } => {
-                let defaults = self.defaults.clone();
+            TypeDef::Simple {
+                base,
+                props: _,
+                format_context,
+                ..
+            } => {
                 let kind = value_kind_from_simple(&self.schema, base);
                 let type_props = self
                     .schema
                     .effective_simple_type_props(type_name)
                     .unwrap_or_default();
                 validate_dfdl_prop_overlap(element_props, &type_props)?;
-                let mut merged =
-                    self.merge_props_full(&defaults, &type_props, element_props)?;
+                let mut base_ir = self.defaults.clone();
+                if !format_context.length_kind_defined {
+                    base_ir.length_kind = LengthKind::Implicit;
+                    base_ir.length_kind_defined = false;
+                }
+                base_ir = overlay_dfdl_to_ir(base_ir, format_context, &mut self.strings)?;
+                let mut merged = self.merge_props_full(&base_ir, &type_props, element_props)?;
                 apply_type_name_ir_flags(type_name, &mut merged);
                 let mut ir_props = finalize_element_props(
                     kind,
@@ -245,6 +263,12 @@ impl<'a> IrBuilder<'a> {
                     self.tunables,
                     Some(self.schema),
                     None,
+                )?;
+                validate_length_kind_defined(
+                    kind,
+                    &ir_props,
+                    self.schema,
+                    Some(type_name),
                 )?;
                 apply_restriction_facets(
                     &self.schema,
@@ -468,8 +492,8 @@ impl<'a> IrBuilder<'a> {
                         }
                     }
                     let mut ir_props = props;
-                    if element.props.length_kind.is_none() {
-                        ir_props.length_kind = LengthKind::Implicit;
+                    if element.props.length_kind.is_none() && inherited.length_kind_defined {
+                        ir_props.length_kind = inherited.length_kind;
                     }
                     let mut ir_props = finalize_element_props(
                         ValueKind::Complex,
@@ -2123,6 +2147,39 @@ fn validate_dfdl_prop_overlap(element: &DfdlProps, type_props: &DfdlProps) -> Re
     Ok(())
 }
 
+fn validate_length_kind_defined(
+    kind: ValueKind,
+    ir: &IrProps,
+    schema: &SchemaDocument,
+    type_name: Option<&TypeName>,
+) -> Result<()> {
+    if matches!(kind, ValueKind::Complex) {
+        return Ok(());
+    }
+    if ir.length_kind_defined {
+        return Ok(());
+    }
+    let Some(type_name) = type_name else {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Property lengthKind is not defined.".into(),
+        }
+        .into());
+    };
+    let mut labels = schema.length_kind_missing_diag_labels(type_name);
+    labels.sort();
+    labels.dedup();
+    let nd_list = labels
+        .into_iter()
+        .map(|l| alloc::format!("\n{l}"))
+        .collect::<alloc::string::String>();
+    Err(SchemaError::InvalidProperty {
+        message: alloc::format!(
+            "Schema Definition Error: Property lengthKind is not defined.\nNon-default properties were combined from these locations:{nd_list}\n"
+        ),
+    }
+    .into())
+}
+
 fn validate_implicit_text_length(kind: ValueKind, props: &IrProps) -> Result<()> {
     if props.length_kind != LengthKind::Implicit {
         return Ok(());
@@ -2557,7 +2614,7 @@ fn particle_inherited_for_children(
 ) -> IrProps {
     // Group-level delimiter and ignoreCase properties apply to the group node, not descendants.
     let mut inherited = parent_inherited.clone();
-    if group_props.length_kind.is_none() {
+    if group_props.length_kind.is_none() && defaults.length_kind_defined {
         inherited.length_kind = defaults.length_kind;
     }
     // Element occurrence limits apply to the particle, not descendants.
@@ -2609,6 +2666,9 @@ fn overlay_dfdl_to_ir(
     }
     if let Some(v) = props.length_kind {
         base.length_kind = v;
+        base.length_kind_defined = true;
+    } else if props.length_kind_defined {
+        base.length_kind_defined = true;
     }
     if props.length.is_some() {
         base.length = props.length;
@@ -3170,6 +3230,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
         // (including when the overlay adds a runtime length expression via length_sibling).
     } else {
         out.length_kind = overlay.length_kind;
+    }
+    if overlay.length_kind_defined {
+        out.length_kind_defined = true;
     }
     if overlay.length.is_some() {
         out.length = overlay.length;
