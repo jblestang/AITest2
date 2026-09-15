@@ -1634,9 +1634,14 @@ impl<'a> Decoder<'a> {
             } else {
                 alloc::format!("\\x{b:02x}", b = cursor.data.get(cursor.pos).copied().unwrap_or(0))
             };
+            let position_label = match props.separator_position {
+                SeparatorPosition::Prefix => "prefix separator",
+                SeparatorPosition::Infix => "infix separator",
+                SeparatorPosition::Postfix => "postfix separator",
+            };
             return Err(VmError::InvalidValue {
                 message: alloc::format!(
-                    "Parse Error. Delimiter not found!  Was looking for ({pat}) but found \"{found_display}\" instead"
+                    "Parse Error. {position_label}. Delimiter not found!  Was looking for ({pat}) but found \"{found_display}\" instead"
                 ),
             }
             .into());

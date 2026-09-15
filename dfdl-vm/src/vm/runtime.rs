@@ -8880,6 +8880,27 @@ fn cursor_at_deferred_sequence_terminator(
     Ok(false)
 }
 
+fn field_terminator_matches_at_cursor(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<Option<usize>, crate::error::VmError> {
+    let Some(tid) = props.terminator else {
+        return Ok(None);
+    };
+    let pat = strings.get(tid)?;
+    if pat.is_empty() {
+        return Ok(None);
+    }
+    let enc = encoding_name(props, strings).ok();
+    Ok(crate::schema::match_delimiter_opts_for_encoding(
+        &cursor.data[cursor.pos..],
+        pat,
+        props.ignore_case,
+        enc.as_deref(),
+    ))
+}
+
 fn defer_delimited_enclosing_consume(
     cursor: &Cursor<'_>,
     props: &IrProps,
@@ -8900,6 +8921,11 @@ fn defer_delimited_enclosing_consume(
         return Ok(true);
     }
     if ambiguous_delimiter_prefix_at_cursor(cursor, props, strings, stop_sequences)? {
+        // When the field terminator fully matches at the cursor (e.g. pipes2 `|||` after `||`
+        // initiator), consume it even if a shorter sibling delimiter (separator `|`) is a prefix.
+        if field_terminator_matches_at_cursor(cursor, props, strings)?.is_some_and(|n| n > 0) {
+            return Ok(false);
+        }
         return Ok(true);
     }
     for id in delimiter_pattern_ids(props) {
