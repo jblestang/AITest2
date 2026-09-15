@@ -13,6 +13,11 @@ pub fn expand_entities(input: &str) -> Vec<u8> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'%' {
+                out.push(b'%');
+                i += 2;
+                continue;
+            }
             if let Some((entity, consumed)) = parse_entity(&input[i..]) {
                 out.extend_from_slice(&entity);
                 i += consumed;
@@ -31,6 +36,59 @@ pub fn expand_entities_str(input: &str) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+fn unicode_codepoint_to_utf8(cp: u32) -> Option<Vec<u8>> {
+    char::from_u32(cp).map(|c| {
+        let mut buf = [0u8; 4];
+        let s = c.encode_utf8(&mut buf);
+        s.as_bytes().to_vec()
+    })
+}
+
+fn named_entity_bytes(name: &str) -> Option<Vec<u8>> {
+    let value: u32 = match name {
+        "NUL" => 0,
+        "SOH" => 1,
+        "STX" => 2,
+        "ETX" => 3,
+        "EOT" => 4,
+        "ENQ" => 5,
+        "ACK" => 6,
+        "BEL" => 7,
+        "BS" => 8,
+        "HT" => 9,
+        "LF" => 10,
+        "VT" => 11,
+        "FF" => 12,
+        "CR" => 13,
+        "SO" => 14,
+        "SI" => 15,
+        "DLE" => 16,
+        "DC1" => 17,
+        "DC2" => 18,
+        "DC3" => 19,
+        "DC4" => 20,
+        "NAK" => 21,
+        "SYN" => 22,
+        "ETB" => 23,
+        "CAN" => 24,
+        "EM" => 25,
+        "SUB" => 26,
+        "ESC" => 27,
+        "FS" => 28,
+        "GS" => 29,
+        "RS" => 30,
+        "US" => 31,
+        "SP" => 32,
+        "DEL" => 127,
+        "NBSP" => 0x00A0,
+        "NEL" => 0x0085,
+        "LS" => 0x2028,
+        "NL" => 0x0A,
+        _ => return None,
+    };
+    unicode_codepoint_to_utf8(value)
+}
+
 fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
     if !input.starts_with('%') {
         return None;
@@ -46,27 +104,25 @@ fn parse_entity(input: &str) -> Option<(Vec<u8>, usize)> {
         };
         let value = match entity_name {
             "ES" => vec![],
-            "NUL" => vec![0],
-            "NL" => vec![b'\n'],
-            "CR" => vec![b'\r'],
-            "LF" => vec![b'\n'],
-            "SP" => vec![b' '],
-            "HT" => vec![b'\t'],
-            "DEL" => vec![0x7f],
-            "NAK" => vec![0x15],
             "WSP" | "WS" => match quantifier {
                 Some('*') | Some('?') => vec![],
                 _ => vec![b' '],
             },
             other if other.starts_with("#x") || other.starts_with("#X") => {
                 let hex = &other[2..];
-                u8::from_str_radix(hex, 16).ok().map(|b| vec![b])?
+                let cp = u32::from_str_radix(hex, 16).ok()?;
+                unicode_codepoint_to_utf8(cp)?
             }
             other if other.starts_with("#r") || other.starts_with("#R") => {
                 let hex = &other[2..];
                 u8::from_str_radix(hex, 16).ok().map(|b| vec![b])?
             }
-            _ => return None,
+            other if other.starts_with('#') => {
+                let dec = &other[1..];
+                let cp = dec.parse::<u32>().ok()?;
+                unicode_codepoint_to_utf8(cp)?
+            }
+            other => named_entity_bytes(other)?,
         };
         return Some((value, consumed));
     }
@@ -87,6 +143,10 @@ pub fn validate_dfdl_entities_in_property(raw: &str) -> Result<(), String> {
     let mut i = 0usize;
     while i < bytes.len() {
         if bytes[i] == b'%' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'%' {
+                i += 2;
+                continue;
+            }
             if let Some(rel) = raw[i..].find(';') {
                 let entity = &raw[i + 1..i + rel];
                 let entity_name = entity.trim_end_matches(['+', '*', '?']);
@@ -556,6 +616,10 @@ pub fn validate_delimiter_property_value(raw: &str) -> Result<(), String> {
     let mut i = 0usize;
     while i < raw.len() {
         if raw.as_bytes()[i] == b'%' {
+            if i + 1 < raw.len() && raw.as_bytes()[i + 1] == b'%' {
+                i += 2;
+                continue;
+            }
             if let Some(rel) = raw[i..].find(';') {
                 let entity_slice = &raw[i..i + rel + 1];
                 let entity = &raw[i + 1..i + rel];

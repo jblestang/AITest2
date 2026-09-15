@@ -166,6 +166,9 @@ impl SchemaResolver {
                     }
                 }
             }
+            if let Some(content) = read_daffodil_test_resource(loc) {
+                return Ok(content);
+            }
         }
         Err(ParseError::InvalidXml {
             message: alloc::format!(
@@ -180,4 +183,21 @@ impl Default for SchemaResolver {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[cfg(feature = "std")]
+fn daffodil_test_resources_root() -> String {
+    alloc::format!(
+        "{}/../third_party/daffodil/daffodil-test/src/test/resources",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[cfg(feature = "std")]
+fn read_daffodil_test_resource(loc: &str) -> Option<String> {
+    use std::path::Path;
+    let root = daffodil_test_resources_root();
+    let normalized = loc.trim_start_matches('/');
+    let path = Path::new(&root).join(normalized);
+    std::fs::read_to_string(&path).ok()
 }

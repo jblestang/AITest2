@@ -100,6 +100,10 @@ const SECTION00_BASELINE_FAIL_MAX: usize = 0;
 const SECTION02_BASELINE_PASS_MIN: usize = 96;
 const SECTION02_BASELINE_FAIL_MAX: usize = 0;
 
+/// Baseline for all `section06/**` TDML (namespaces + entities).
+const SECTION06_BASELINE_PASS_MIN: usize = 64;
+const SECTION06_BASELINE_FAIL_MAX: usize = 115;
+
 fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
     let Ok(tdml) = fs::read_to_string(path) else {
         stats.parse_fail += 1;
@@ -376,6 +380,43 @@ fn daffodil_section12_length_properties_regression_gate() {
     assert!(
         stats.pass >= 60,
         "length_properties: expected at least 60 passing cases, got pass={} fail={} skip={}",
+        stats.pass,
+        stats.fail,
+        stats.skip
+    );
+}
+
+/// CI gate: Section 06 namespaces and entities (full TDML scan baseline).
+#[test]
+fn daffodil_section06_regression_gate() {
+    let root = assert_tdml_root().join("section06");
+    let mut files = Vec::new();
+    collect_tdml_files(&root, &mut files);
+    assert!(!files.is_empty(), "section06 TDML missing");
+
+    let mut stats = SectionStats::default();
+    for path in files {
+        run_tdml_file(&path, &mut stats);
+    }
+    eprintln!(
+        "section06: pass={} fail={} skip={} parse_fail={}",
+        stats.pass, stats.fail, stats.skip, stats.parse_fail
+    );
+    assert_eq!(
+        stats.parse_fail, 0,
+        "section06 TDML load errors: {stats:?}"
+    );
+    assert!(
+        stats.pass >= SECTION06_BASELINE_PASS_MIN,
+        "section06: expected at least {} passing cases, got pass={} fail={} skip={}",
+        SECTION06_BASELINE_PASS_MIN,
+        stats.pass,
+        stats.fail,
+        stats.skip
+    );
+    assert!(
+        stats.fail <= SECTION06_BASELINE_FAIL_MAX,
+        "section06 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
