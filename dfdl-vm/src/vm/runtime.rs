@@ -7992,7 +7992,7 @@ pub(crate) fn should_suppress_occurrence_separator(
             SeparatorPosition::Infix => {
                 let previous_empty = index > 0
                     && is_suppressible_empty_representation(&items[index - 1], item_props, strings)?;
-                Ok(current_empty || previous_empty)
+                Ok(previous_empty && current_empty)
             }
         }
     } else {
@@ -10520,8 +10520,21 @@ pub(crate) fn validate_unparse_scalar_lexical(
                 DfdlValue::String(s) => s.text.as_str(),
                 _ => unreachable!(),
             };
-            parse_unbounded_integer_decimal(text, base, props.non_negative_integer)
-                .map_err(|_| unparse_not_valid_xs(type_name))?;
+            if props.non_negative_integer && text.trim().starts_with('-') {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Unparse Error: value `{text}` out of range for type xs:nonNegativeInteger"
+                    ),
+                });
+            }
+            parse_unbounded_integer_decimal(text, base, props.non_negative_integer).map_err(|e| {
+                if let VmError::InvalidValue { ref message } = e {
+                    if message.contains("out of range") {
+                        return e;
+                    }
+                }
+                unparse_not_valid_xs(type_name)
+            })?;
         }
         (ValueKind::Float, DfdlValue::String(s)) => {
             parse_float(&s.text).map_err(|_| unparse_not_valid_xs(type_name))?;
@@ -10538,12 +10551,18 @@ pub(crate) fn validate_unparse_scalar_lexical(
             if text.trim().is_empty() {
                 return Err(unparse_not_valid_xs(type_name));
             }
-            let _ = split_sign_digits(text).map_err(|_| unparse_not_valid_xs(type_name))?;
             if props.non_negative_integer && text.trim().starts_with('-') {
                 return Err(unparse_not_valid_xs(type_name));
             }
-            if text.chars().any(|c| c.is_ascii_alphabetic()) {
-                return Err(unparse_not_valid_xs(type_name));
+            let trimmed = text.trim();
+            if trimmed.contains('E') || trimmed.contains('e') {
+                crate::vm::text_number_format::decimal_lexical_valid_for_unparse(trimmed)
+                    .map_err(|_| unparse_not_valid_xs(type_name))?;
+            } else {
+                let _ = split_sign_digits(text).map_err(|_| unparse_not_valid_xs(type_name))?;
+                if text.chars().any(|c| c.is_ascii_alphabetic()) {
+                    return Err(unparse_not_valid_xs(type_name));
+                }
             }
         }
         (ValueKind::HexBinary, val @ (DfdlValue::HexBinary(_) | DfdlValue::String(_))) => {

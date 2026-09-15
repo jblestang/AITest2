@@ -163,6 +163,9 @@ fn validate_infoset_particle(
                     "Unparse Error: Expected element start event for {elem_name}, but received element end event for {parent_name}"
                 ));
             }
+            if node.nil && props.nillable {
+                return Ok(());
+            }
             if *kind != crate::ir::ValueKind::Complex {
                 return Ok(());
             }

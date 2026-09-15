@@ -126,6 +126,10 @@ fn parse_mantissa_decimal(raw: &str) -> Result<Decimal, VmError> {
     Ok(d)
 }
 
+pub(crate) fn decimal_lexical_valid_for_unparse(raw: &str) -> Result<(), VmError> {
+    parse_decimal_value(raw).map(|_| ())
+}
+
 fn parse_decimal_value(raw: &str) -> Result<Decimal, VmError> {
     let s = raw.trim();
     if s.is_empty() {
