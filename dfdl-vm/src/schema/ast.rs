@@ -785,7 +785,18 @@ impl SchemaDocument {
             | SimpleBase::Union { .. }
             | SimpleBase::Builtin(_) => DfdlProps::default(),
         };
+        let format_default_len = self.format_defaults.props.length;
+        let overlay_only_default_length = props.length.is_some()
+            && props.length == format_default_len
+            && props.length_kind.is_none()
+            && props.format_ref.is_none();
+        let base_length = out.length;
         out = crate::schema::parser::merge_dfdl_props(out, props.clone());
+        if overlay_only_default_length {
+            if let Some(len) = base_length {
+                out.length = Some(len);
+            }
+        }
         Some(out)
     }
 }

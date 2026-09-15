@@ -370,6 +370,9 @@ impl<'a> IrBuilder<'a> {
                         if nested.is_none() && kind != ValueKind::Complex {
                             let overlay = props;
                             let mut merged_ir = merge_ir_props(&child_props, &overlay);
+                            if element.props.representation.is_none() {
+                                merged_ir.representation = child_props.representation;
+                            }
                             if element.props.encoding.is_none() {
                                 merged_ir.encoding = child_props.encoding;
                             }
@@ -402,34 +405,21 @@ impl<'a> IrBuilder<'a> {
                             if element.props.length_units.is_none() {
                                 merged_ir.length_units = child_props.length_units;
                             }
-                            if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
-                                if let TypeDef::Simple { props: type_props, .. } = type_def {
-                                    if element.props.leading_skip.is_none() {
-                                        if let Some(v) = type_props.leading_skip {
-                                            merged_ir.leading_skip = v;
-                                        }
-                                    }
-                                    if element.props.trailing_skip.is_none() {
-                                        if let Some(v) = type_props.trailing_skip {
-                                            merged_ir.trailing_skip = v;
-                                        }
-                                    }
-                                    if element.props.length_kind.is_none() {
-                                        if let Some(v) = type_props.length_kind {
-                                            merged_ir.length_kind = v;
-                                        }
-                                    }
-                                    if element.props.length.is_none() {
-                                        if let Some(v) = type_props.length {
-                                            merged_ir.length = Some(v);
-                                        }
-                                    }
-                                    if element.props.length_units.is_none() {
-                                        if let Some(v) = type_props.length_units {
-                                            merged_ir.length_units = v;
-                                        }
-                                    }
-                                }
+                            if element.props.leading_skip.is_none() {
+                                merged_ir.leading_skip = child_props.leading_skip;
+                            }
+                            if element.props.trailing_skip.is_none() {
+                                merged_ir.trailing_skip = child_props.trailing_skip;
+                            }
+                            if element.props.length_kind.is_none() {
+                                merged_ir.length_kind = child_props.length_kind;
+                            }
+                            if element.props.length.is_none() {
+                                merged_ir.length = child_props.length;
+                            }
+                            if element.props.alignment.is_none() {
+                                merged_ir.alignment = child_props.alignment;
+                                merged_ir.alignment_implicit = child_props.alignment_implicit;
                             }
                             if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
                                 if let TypeDef::Simple { base, .. } = type_def {

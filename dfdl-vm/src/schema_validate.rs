@@ -65,12 +65,8 @@ fn validate_unique_particle_attribution(schema: &SchemaDocument) -> Result<(), S
 }
 
 fn element_upa_fingerprint(el: &ElementDecl) -> alloc::string::String {
-    alloc::format!(
-        "{}|len={:?}|{}",
-        el.type_name.as_str(),
-        el.props.length_kind,
-        el.props.length.unwrap_or(0)
-    )
+    // Particle-local DFDL overrides (e.g. dfdl:length on repeated refs) do not change element identity.
+    el.type_name.as_str().to_string()
 }
 
 fn validate_particle_list_upa(particles: &[Particle]) -> Result<(), SchemaError> {

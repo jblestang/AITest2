@@ -101,3 +101,22 @@ fn debug_char_class_entities() {
         }
     }
 }
+
+#[test]
+#[ignore]
+fn debug_long_chain_and_namespace() {
+    let path = Path::new(ROOT).join("namespaces/namespaces.tdml");
+    let mut suite = parse_tdml(&fs::read_to_string(&path).unwrap()).unwrap();
+    enrich(&mut suite, &path);
+    for name in [
+        "long_chain_04", "long_chain_05", "namespace_conflict_01",
+        "ibm_format_compat_01", "ibm_format_compat_02", "ibm_format_compat_03",
+    ] {
+        let t = suite.tests.iter().find(|t| t.name == name).expect(name);
+        let r = run_parser_test(&suite, t).unwrap();
+        eprintln!("{name}: {:?}", r.outcome);
+        if let TestOutcome::Fail(m) = r.outcome {
+            eprintln!("  {m}");
+        }
+    }
+}
