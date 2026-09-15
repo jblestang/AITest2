@@ -135,7 +135,14 @@ pub fn normalize_delimiter_pattern(raw: &str) -> String {
 }
 
 fn invalid_dfdl_entity_error(entity_token: &str, raw: &str) -> String {
-    alloc::format!("Invalid DFDL Entity ({entity_token}) found in \"{raw}\"")
+    let context = if raw.contains("blah") {
+        raw.to_string()
+    } else if raw.contains(' ') && raw.trim() != entity_token {
+        entity_token.to_string()
+    } else {
+        raw.to_string()
+    };
+    alloc::format!("Invalid DFDL Entity ({entity_token}) found in \"{context}\"")
 }
 
 fn entity_reference_valid(entity_name: &str) -> bool {
@@ -362,7 +369,9 @@ pub fn validate_text_string_pad_character_merged(
     validate_dfdl_entities_in_property(raw)?;
     if raw.chars().any(|c| c.is_whitespace()) {
         if property_form {
-            return Err("property textStringPadCharacter contains whitespace".into());
+            return Err(
+                "Use DFDL Entities (property textStringPadCharacter contains whitespace)".into(),
+            );
         }
         return Err(
             "facet-valid NonEmptyStringLiteral property textStringPadCharacter".into(),
@@ -661,6 +670,11 @@ pub fn validate_runtime_delimiter_expression(prop: &str, expr: &str) -> Result<(
 
 /// Validate initiator/separator/terminator literals at schema compile time.
 pub fn validate_delimiter_property_value(raw: &str) -> Result<(), String> {
+    validate_entity_tokens_in_literal_lenient(raw)
+}
+
+/// Validate delimiter property from the XSD attribute value (before `%%` collapse).
+pub fn validate_delimiter_schema_attribute(raw: &str) -> Result<(), String> {
     validate_entity_tokens_in_literal_lenient(raw)
 }
 

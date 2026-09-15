@@ -91,6 +91,8 @@ pub struct DfdlProps {
     pub text_number_rounding_increment: Option<String>,
     pub text_number_rounding_mode: Option<TextNumberRoundingMode>,
     pub initiator: Option<String>,
+    /// Initiator XSD value contained `%%` (literal percent, not entity syntax).
+    pub initiator_percent_escaped: bool,
     pub terminator: Option<String>,
     pub separator: Option<String>,
     pub output_new_line: Option<String>,

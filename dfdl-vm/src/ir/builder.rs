@@ -731,8 +731,8 @@ impl<'a> IrBuilder<'a> {
         type_props: &DfdlProps,
         element_props: &DfdlProps,
     ) -> Result<IrProps> {
-        validate_delimiter_props(type_props)?;
-        validate_delimiter_props(element_props)?;
+        validate_delimiter_props(type_props, &DfdlProps::default())?;
+        validate_delimiter_props(element_props, element_props)?;
         validate_text_string_pad_props(type_props)?;
         validate_text_string_pad_props(element_props)?;
         let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings)?;
@@ -1642,7 +1642,7 @@ fn apply_type_name_ir_flags(type_name: &TypeName, props: &mut IrProps) {
     apply_calendar_type_flags(type_name, props);
 }
 
-fn validate_delimiter_at_compile(prop: &str, raw: &str) -> Result<()> {
+fn validate_delimiter_at_compile(prop: &str, raw: &str, props: &DfdlProps) -> Result<()> {
     let trimmed = raw.trim();
     if trimmed.starts_with('{') && trimmed.ends_with('}') {
         if let Err(msg) = crate::schema::validate_runtime_delimiter_expression(prop, trimmed) {
@@ -1653,16 +1653,19 @@ fn validate_delimiter_at_compile(prop: &str, raw: &str) -> Result<()> {
         }
         return Ok(());
     }
-    if let Err(msg) = crate::schema::validate_delimiter_property_value(raw) {
-        let msg = if raw.trim() == "%" && prop == "terminator" {
-            alloc::format!("{msg}\n%%")
-        } else {
-            msg
-        };
-        return Err(SchemaError::InvalidProperty {
-            message: alloc::format!("Schema Definition Error. {msg}"),
+    let skip_entity_check = prop == "initiator" && props.initiator_percent_escaped;
+    if !skip_entity_check {
+        if let Err(msg) = crate::schema::validate_delimiter_property_value(raw) {
+            let msg = if raw.trim() == "%" && prop == "terminator" {
+                alloc::format!("{msg}\n%%")
+            } else {
+                msg
+            };
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error. {msg}"),
+            }
+            .into());
         }
-        .into());
     }
     if let Err(msg) = crate::schema::validate_delimiter_es_restriction(prop, raw) {
         return Err(SchemaError::InvalidProperty {
@@ -1673,7 +1676,7 @@ fn validate_delimiter_at_compile(prop: &str, raw: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_delimiter_props(props: &DfdlProps) -> Result<()> {
+fn validate_delimiter_props(props: &DfdlProps, escape_ctx: &DfdlProps) -> Result<()> {
     for (prop, s) in [
         ("initiator", props.initiator.as_deref()),
         ("separator", props.separator.as_deref()),
@@ -1681,7 +1684,7 @@ fn validate_delimiter_props(props: &DfdlProps) -> Result<()> {
     ] {
         if let Some(v) = s {
             if !v.is_empty() {
-                validate_delimiter_at_compile(prop, v)?;
+                validate_delimiter_at_compile(prop, v, escape_ctx)?;
             }
         }
     }

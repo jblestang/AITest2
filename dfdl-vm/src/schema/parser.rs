@@ -2021,6 +2021,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.initiator.is_some() {
         base.initiator = overlay.initiator;
     }
+    if overlay.initiator_percent_escaped {
+        base.initiator_percent_escaped = true;
+    }
     if overlay.terminator.is_some() {
         base.terminator = overlay.terminator;
     }
@@ -3342,6 +3345,9 @@ fn props_from_attrs_with_variables(
                 });
             }
             "initiator" => {
+                if value.contains("%%") {
+                    props.initiator_percent_escaped = true;
+                }
                 let lit = parse_delimiter_literal(value)?;
                 props.initiator = Some(lit);
             }
