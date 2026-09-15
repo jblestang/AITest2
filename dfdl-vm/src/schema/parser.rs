@@ -148,6 +148,12 @@ impl<'a> XsdParser<'a> {
             };
             let key = format_storage_key(local, ns);
             if self.doc.named_formats.contains_key(&key) {
+                if self.doc.named_formats.get(&key) == Some(&v) {
+                    continue;
+                }
+                if kind == SchemaMergeKind::Import {
+                    continue;
+                }
                 return Err(duplicate_format_definition(local).into());
             }
             self.doc.named_formats.insert(key, v);

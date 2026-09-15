@@ -1,5 +1,8 @@
 //! List section06 failures (ignored).
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlSchema, TdmlSuite};
+use dfdl_vm::tdml::{
+    parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
+    TdmlSuite,
+};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -78,6 +81,7 @@ fn list_section06_failures() {
         let rel = path.strip_prefix(TDML_ROOT).unwrap().to_string_lossy();
         let tdml = fs::read_to_string(&path).expect("read");
         let mut suite = parse_tdml(&tdml).expect("parse");
+        suite.resource_context = TdmlResourceContext::from_tdml_path(&path.to_string_lossy());
         enrich(&mut suite, &path);
         for t in &suite.tests {
             let Ok(r) = run_parser_test(&suite, t) else {

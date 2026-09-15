@@ -166,6 +166,11 @@ fn validate_entity_tokens_in_literal(raw: &str) -> Result<(), String> {
     if raw == "%" {
         return Err("Invalid DFDL Entity (%) found".into());
     }
+    validate_entity_tokens_in_literal_lenient(raw)
+}
+
+/// Like [`validate_entity_tokens_in_literal`] but allows literal `%` (delimiter properties).
+fn validate_entity_tokens_in_literal_lenient(raw: &str) -> Result<(), String> {
     let bytes = raw.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -183,11 +188,7 @@ fn validate_entity_tokens_in_literal(raw: &str) -> Result<(), String> {
                 }
                 i += rel + 1;
             } else {
-                let tail = &raw[i + 1..];
-                if tail.is_empty() {
-                    return Err("Invalid DFDL Entity (%) found".into());
-                }
-                return Err(format!("Invalid DFDL Entity ({tail}) found"));
+                i += 1;
             }
         } else {
             i += 1;
@@ -537,23 +538,40 @@ fn delimiter_alt_is_es(alt: &str) -> bool {
     alt.trim() == "%ES;"
 }
 
-/// Reject `%ES;` in separator/terminator alternative lists (DFDL-6-046R).
+/// Reject `%ES;` as the sole delimiter alternative (DFDL-6-046R).
 pub fn validate_delimiter_es_restriction(prop: &str, raw: &str) -> Result<(), String> {
-    if prop == "initiator" {
-        return Ok(());
-    }
-    let has_es = delimiter_alternatives(raw)
-        .iter()
-        .any(|alt| delimiter_alt_is_es(alt));
+    let alts = delimiter_alternatives(raw);
+    let has_es = alts.iter().any(|alt| delimiter_alt_is_es(alt));
     if !has_es {
         return Ok(());
     }
-    Err(match prop {
-        "terminator" => {
+    if prop == "separator" {
+        return Err("Separator contains disallowed ES".into());
+    }
+    validate_es_not_sole_delimiter_alternative(prop, &alts)
+}
+
+fn validate_es_not_sole_delimiter_alternative(
+    prop: &str,
+    alts: &[String],
+) -> Result<(), String> {
+    if alts.is_empty() {
+        return Ok(());
+    }
+    if alts.len() == 1 && delimiter_alt_is_es(&alts[0]) {
+        return Err(if prop == "terminator" {
             "dfdl:terminator cannot own ES".into()
-        }
-        "separator" => "Separator contains disallowed ES".into(),
-        _ => "delimiter contains disallowed ES".into(),
+        } else {
+            "ES entity cannot appear on its own".into()
+        });
+    }
+    if alts.iter().any(|a| !delimiter_alt_is_es(a)) {
+        return Ok(());
+    }
+    Err(if prop == "terminator" {
+        "dfdl:terminator cannot own ES".into()
+    } else {
+        "ES entity cannot appear on its own".into()
     })
 }
 
@@ -643,7 +661,7 @@ pub fn validate_runtime_delimiter_expression(prop: &str, expr: &str) -> Result<(
 
 /// Validate initiator/separator/terminator literals at schema compile time.
 pub fn validate_delimiter_property_value(raw: &str) -> Result<(), String> {
-    validate_entity_tokens_in_literal(raw)
+    validate_entity_tokens_in_literal_lenient(raw)
 }
 
 /// True when a delimiter pattern is zero-length after entity expansion.
@@ -1795,6 +1813,16 @@ mod tests {
         assert_eq!(match_delimiter(b"\nrest", "\n"), Some(1));
         // Newline must not be treated as an empty trimmable pattern.
         assert_ne!(match_pattern(b"x", "\n"), Some(0));
+    }
+
+    #[test]
+    fn validate_percent_escape_in_delimiter() {
+        assert!(validate_delimiter_property_value("%%").is_ok());
+        assert!(validate_delimiter_property_value("%").is_ok());
+        assert!(validate_delimiter_property_value("%SP").is_ok());
+        assert!(validate_delimiter_property_value("%%%SP;").is_ok());
+        assert!(validate_delimiter_es_restriction("terminator", "%ES; END").is_ok());
+        assert!(validate_delimiter_es_restriction("terminator", "%ES;").is_err());
     }
 
     #[test]
