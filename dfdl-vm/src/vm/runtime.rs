@@ -441,8 +441,13 @@ impl<'a> Cursor<'a> {
         Ok(bit as u64)
     }
 
-    pub fn consume_delimiter(&mut self, pattern: &str, ignore_case: bool) -> bool {
-        self.consume_delimiter_with_alt(pattern, ignore_case)
+    pub fn consume_delimiter(
+        &mut self,
+        pattern: &str,
+        ignore_case: bool,
+        encoding: Option<&str>,
+    ) -> bool {
+        self.consume_delimiter_with_alt(pattern, ignore_case, encoding)
             .is_some()
     }
 
@@ -450,12 +455,17 @@ impl<'a> Cursor<'a> {
         &mut self,
         pattern: &str,
         ignore_case: bool,
+        encoding: Option<&str>,
     ) -> Option<(usize, u8)> {
         if pattern.is_empty() {
             return Some((0, 0));
         }
-        let (n, alt) =
-            crate::schema::match_delimiter_with_alt(&self.data[self.pos..], pattern, ignore_case)?;
+        let (n, alt) = crate::schema::match_delimiter_with_alt_for_encoding(
+            &self.data[self.pos..],
+            pattern,
+            ignore_case,
+            encoding,
+        )?;
         if n > 0 {
             self.advance(n);
         }
@@ -757,7 +767,11 @@ pub(crate) fn encoding_name<'a>(
     props: &IrProps,
     strings: &'a StringPool,
 ) -> Result<&'a str, crate::error::VmError> {
-    strings.get(props.encoding)
+    let raw = strings.get(props.encoding)?;
+    Ok(crate::vm::encoding::resolve_encoding_with_byte_order(
+        raw,
+        props.byte_order,
+    ))
 }
 
 pub(crate) struct VmContext<'a> {
@@ -4999,7 +5013,8 @@ pub(crate) fn try_consume_nillable_element_nil(
                 )
                 .is_some()
             {
-                let _ = cursor.consume_delimiter(term, props.ignore_case);
+                let enc = encoding_name(props, strings).ok();
+                let _ = cursor.consume_delimiter(term, props.ignore_case, enc.as_deref());
                 return Ok(true);
             }
         }
@@ -5026,7 +5041,8 @@ pub(crate) fn try_consume_nillable_element_nil(
                 if parent_owns {
                     return Ok(true);
                 }
-                let _ = cursor.consume_delimiter(term, props.ignore_case);
+                let enc = encoding_name(props, strings).ok();
+                let _ = cursor.consume_delimiter(term, props.ignore_case, enc.as_deref());
                 return Ok(true);
             }
         }
@@ -7170,7 +7186,7 @@ fn read_until_delimiters(
         cursor.bit_count = 0;
         return Ok(rest);
     }
-    read_until_any_delimiter(cursor, &patterns, require_delimiter)
+    read_until_any_delimiter(cursor, &patterns, require_delimiter, encoding)
 }
 
 pub(crate) fn read_until_separator(
@@ -7183,7 +7199,7 @@ pub(crate) fn read_until_separator(
         pat: separator.to_string(),
         ignore_case,
     }];
-    read_until_any_delimiter(cursor, &patterns, require_delimiter)
+    read_until_any_delimiter(cursor, &patterns, require_delimiter, None)
 }
 
 pub(crate) fn bits_available_in_cursor(cursor: &Cursor<'_>) -> usize {
@@ -7354,15 +7370,22 @@ fn read_until_any_delimiter(
     cursor: &mut Cursor<'_>,
     delimiters: &[DelimScanPattern],
     require_delimiter: bool,
+    encoding: Option<&str>,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let start = cursor.pos;
+    let step = if utf16_little_endian_from_encoding(encoding).is_some() {
+        2usize
+    } else {
+        1
+    };
     while cursor.remaining() > 0 {
         for entry in delimiters {
-            if let Some(n) = crate::schema::match_delimiter_opts(
+            if let Some(n) = crate::schema::match_delimiter_opts_for_encoding(
                 &cursor.data[cursor.pos..],
                 &entry.pat,
                 entry.ignore_case,
+                encoding,
             ) {
                 // Ignore zero-width delimiter matches while scanning (prevents infinite
                 // empty reads on binary delimited fields); empty fields still work via n > 0.
@@ -7374,7 +7397,7 @@ fn read_until_any_delimiter(
                 }
             }
         }
-        cursor.advance(1);
+        cursor.advance(step);
     }
     if cursor.pos == start {
         return Ok(Vec::new());
@@ -7390,6 +7413,16 @@ fn read_until_any_delimiter(
         });
     }
     Ok(cursor.data[start..].to_vec())
+}
+
+fn utf16_little_endian_from_encoding(encoding: Option<&str>) -> Option<bool> {
+    encoding.and_then(|enc| {
+        match normalize_encoding_name(enc)? {
+            "utf-16le" => Some(true),
+            "utf-16be" => Some(false),
+            _ => None,
+        }
+    })
 }
 
 fn consume_bits_charset_delimiter(
@@ -7464,11 +7497,13 @@ pub(crate) fn consume_enclosing_delimiter(
             return Ok(());
         }
     }
+    let enc = encoding_name(props, strings).ok();
     for entry in &field_patterns {
-        if let Some(n) = crate::schema::match_delimiter_opts(
+        if let Some(n) = crate::schema::match_delimiter_opts_for_encoding(
             &cursor.data[cursor.pos..],
             &entry.pat,
             entry.ignore_case,
+            enc.as_deref(),
         ) {
             if n > 0 {
                 cursor.advance(n);
@@ -7481,10 +7516,11 @@ pub(crate) fn consume_enclosing_delimiter(
             for id in delimiter_pattern_ids(seq) {
                 let pat = strings.get(id)?;
                 if !pat.is_empty() {
-                    if let Some(n) = crate::schema::match_delimiter_opts(
+                    if let Some(n) = crate::schema::match_delimiter_opts_for_encoding(
                         &cursor.data[cursor.pos..],
                         pat,
                         seq.ignore_case,
+                        enc.as_deref(),
                     ) {
                         if n == 0 {
                             continue;
@@ -8897,7 +8933,9 @@ pub(crate) fn read_simple(
         let pat = strings.get(id)?;
         if !pat.is_empty() {
             crate::vm::alignment::align_cursor_to_text_encoding(cursor, props, encoding)?;
-            let Some((_n, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) else {
+            let Some((_n, alt)) =
+                cursor.consume_delimiter_with_alt(pat, props.ignore_case, Some(encoding))
+            else {
                 let found = cursor
                     .data
                     .get(cursor.pos)
@@ -8962,7 +9000,9 @@ pub(crate) fn read_simple(
         let pat = strings.get(id)?;
         if !pat.is_empty() {
             crate::vm::alignment::align_cursor_to_text_encoding(cursor, props, encoding)?;
-            if let Some((n, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) {
+            if let Some((n, alt)) =
+                cursor.consume_delimiter_with_alt(pat, props.ignore_case, Some(encoding))
+            {
                 if n == 0
                     && !cursor.is_empty()
                     && !crate::schema::delimiter_alt_allows_trailing_input(pat, alt)

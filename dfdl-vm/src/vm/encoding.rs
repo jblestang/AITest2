@@ -1,5 +1,5 @@
 use crate::error::VmError;
-use crate::schema::{BitOrder, EncodingErrorPolicy};
+use crate::schema::{BitOrder, ByteOrder, EncodingErrorPolicy};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -246,6 +246,23 @@ pub(crate) fn decode_bits_charset_payload(
         out.push(ch);
     }
     Ok(out)
+}
+
+/// Map DFDL `encoding` values that depend on `byteOrder` to concrete charset names used by the VM.
+pub(crate) fn resolve_encoding_with_byte_order(name: &str, byte_order: ByteOrder) -> &str {
+    if eq_ascii_ignore_case(name, "utf-16") || eq_ascii_ignore_case(name, "utf_16") {
+        match byte_order {
+            ByteOrder::LittleEndian => "utf-16le",
+            ByteOrder::BigEndian => "utf-16be",
+        }
+    } else if eq_ascii_ignore_case(name, "utf-32") || eq_ascii_ignore_case(name, "utf_32") {
+        match byte_order {
+            ByteOrder::LittleEndian => "utf-32le",
+            ByteOrder::BigEndian => "utf-32be",
+        }
+    } else {
+        name
+    }
 }
 
 pub(crate) fn normalize_encoding_name(name: &str) -> Option<&'static str> {
@@ -809,6 +826,26 @@ fn encode_utf16le(text: &str) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::schema::EncodingErrorPolicy;
+
+    #[test]
+    fn resolve_utf16_encoding_uses_byte_order() {
+        use crate::schema::ByteOrder;
+        assert_eq!(
+            resolve_encoding_with_byte_order("utf-16", ByteOrder::BigEndian),
+            "utf-16be"
+        );
+        assert_eq!(
+            resolve_encoding_with_byte_order("UTF-16", ByteOrder::LittleEndian),
+            "utf-16le"
+        );
+        let be = decode_text_bytes(
+            &[0x00, b'A', 0x00, b'B'],
+            resolve_encoding_with_byte_order("utf-16", ByteOrder::BigEndian),
+            EncodingErrorPolicy::Error,
+        )
+        .unwrap();
+        assert_eq!(be, "AB");
+    }
 
     #[test]
     fn delimited_payload_byte_length_utf16_excludes_orphan_byte() {

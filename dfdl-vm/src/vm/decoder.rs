@@ -214,8 +214,13 @@ impl<'a> Decoder<'a> {
                 if let Some(id) = props.initiator {
                     let pat = self.ctx.strings().get(id)?;
                     if !pat.is_empty() {
+                        let enc = encoding_name(props, self.ctx.strings()).ok();
                         let alt = cursor
-                            .consume_delimiter_with_alt(pat, props.ignore_case)
+                            .consume_delimiter_with_alt(
+                                pat,
+                                props.ignore_case,
+                                enc.as_deref(),
+                            )
                             .ok_or(VmError::InvalidValue {
                                 message: "initiator mismatch".into(),
                             })?;
@@ -360,18 +365,21 @@ impl<'a> Decoder<'a> {
                 if let Some(id) = props.terminator {
                     let pat = self.ctx.strings().get(id)?;
                     if !pat.is_empty() {
-                        if let Some((n, alt)) =
-                            cursor.consume_delimiter_with_alt(pat, props.ignore_case)
-                        {
+                        let enc = encoding_name(props, self.ctx.strings()).ok();
+                        if let Some((n, alt)) = cursor.consume_delimiter_with_alt(
+                            pat,
+                            props.ignore_case,
+                            enc.as_deref(),
+                        ) {
                             if n == 0
                                 && !cursor.is_empty()
                                 && !crate::schema::delimiter_alt_allows_trailing_input(pat, alt)
-                            {
-                                return Err(VmError::InvalidValue {
-                                    message: alloc::format!("terminator mismatch: expected `{pat}`"),
+                                {
+                                    return Err(VmError::InvalidValue {
+                                        message: alloc::format!("terminator mismatch: expected `{pat}`"),
+                                    }
+                                    .into());
                                 }
-                                .into());
-                            }
                             terminator_alt = Some(alt);
                         } else if !cursor.is_empty() {
                             return Err(VmError::InvalidValue {
@@ -1020,14 +1028,20 @@ impl<'a> Decoder<'a> {
                                     // can detect enclosing terminators (e.g. `$` vs `$$`).
                                 } else {
                                 let bytes = read_until_separator(cursor, term, false, props.ignore_case)?;
-                                if crate::schema::match_delimiter_opts(
+                                let enc = encoding_name(&props, self.ctx.strings()).ok();
+                                if crate::schema::match_delimiter_opts_for_encoding(
                                     &cursor.data[cursor.pos..],
                                     term,
                                     props.ignore_case,
+                                    enc.as_deref(),
                                 )
                                 .is_some()
                                 {
-                                    let _ = cursor.consume_delimiter(term, props.ignore_case);
+                                    let _ = cursor.consume_delimiter(
+                                        term,
+                                        props.ignore_case,
+                                        enc.as_deref(),
+                                    );
                                 }
                                 let mut sub = Cursor::new(&bytes);
                                 let scope = bytes.len();
@@ -1067,14 +1081,20 @@ impl<'a> Decoder<'a> {
                                 {
                                     let bytes =
                                         read_until_separator(cursor, sep, false, parent.ignore_case)?;
-                                    if crate::schema::match_delimiter_opts(
+                                    let enc = encoding_name(parent, self.ctx.strings()).ok();
+                                    if crate::schema::match_delimiter_opts_for_encoding(
                                         &cursor.data[cursor.pos..],
                                         sep,
                                         parent.ignore_case,
+                                        enc.as_deref(),
                                     )
                                     .is_some()
                                     {
-                                        let _ = cursor.consume_delimiter(sep, parent.ignore_case);
+                                        let _ = cursor.consume_delimiter(
+                                            sep,
+                                            parent.ignore_case,
+                                            enc.as_deref(),
+                                        );
                                     }
                                     let mut sub = Cursor::new(&bytes);
                                     let scope = bytes.len();
@@ -1447,14 +1467,16 @@ impl<'a> Decoder<'a> {
             return Ok(());
         };
         let pat = self.ctx.strings().get(id)?;
-        if crate::schema::match_delimiter_opts(
+        let enc = encoding_name(props, self.ctx.strings()).ok();
+        if crate::schema::match_delimiter_opts_for_encoding(
             &cursor.data[cursor.pos..],
             pat,
             props.ignore_case,
+            enc.as_deref(),
         )
         .is_some()
         {
-            if !cursor.consume_delimiter(pat, props.ignore_case) {
+            if !cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
                 return Err(VmError::InvalidValue {
                     message: "separator mismatch".into(),
                 }
@@ -1477,7 +1499,10 @@ impl<'a> Decoder<'a> {
     fn consume_initiator(&self, props: &IrProps, cursor: &mut Cursor<'_>) -> Result<()> {
         if let Some(id) = props.initiator {
             let pat = self.ctx.strings().get(id)?;
-            if !pat.is_empty() && !cursor.consume_delimiter(pat, props.ignore_case) {
+            let enc = encoding_name(props, self.ctx.strings()).ok();
+            if !pat.is_empty()
+                && !cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref())
+            {
                 return Err(VmError::InvalidValue {
                     message: "initiator mismatch".into(),
                 }
@@ -1493,7 +1518,8 @@ impl<'a> Decoder<'a> {
             if pat.is_empty() {
                 return Ok(());
             }
-            if !cursor.consume_delimiter(pat, props.ignore_case) {
+            let enc = encoding_name(props, self.ctx.strings()).ok();
+            if !cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
                 if cursor.is_empty() {
                     return Ok(());
                 }
@@ -1540,7 +1566,10 @@ impl<'a> Decoder<'a> {
                     return Ok(None);
                 }
             }
-            if let Some((_, alt)) = cursor.consume_delimiter_with_alt(pat, props.ignore_case) {
+            let enc = encoding_name(props, self.ctx.strings()).ok();
+            if let Some((_, alt)) =
+                cursor.consume_delimiter_with_alt(pat, props.ignore_case, enc.as_deref())
+            {
                 return Ok(Some(alt));
             }
             let found = cursor
@@ -1607,23 +1636,27 @@ impl<'a> Decoder<'a> {
                 .into());
             }
         }
-        let sep_n = crate::schema::match_delimiter_opts(
+        let text_enc = encoding_name(sep_props, self.ctx.strings()).ok();
+        let sep_n = crate::schema::match_delimiter_opts_for_encoding(
             &cursor.data[cursor.pos..],
             separator,
             sep_props.ignore_case,
+            text_enc.as_deref(),
         )?;
         if sep_n == 0 {
             return None;
         }
-        for enc in scans.iter().copied() {
-            let Some(term_id) = enc.terminator else {
+        for enc_props in scans.iter().copied() {
+            let Some(term_id) = enc_props.terminator else {
                 continue;
             };
             let term = self.ctx.strings().get(term_id).ok()?;
-            let term_n = crate::schema::match_delimiter_opts(
+            let enc_name = encoding_name(enc_props, self.ctx.strings()).ok();
+            let term_n = crate::schema::match_delimiter_opts_for_encoding(
                 &cursor.data[cursor.pos..],
                 term,
-                enc.ignore_case,
+                enc_props.ignore_case,
+                enc_name.as_deref(),
             )?;
             if term_n > sep_n {
                 return Some(VmError::InvalidValue {

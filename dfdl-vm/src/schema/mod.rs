@@ -17,6 +17,8 @@ pub use entities::{
     encode_property_delimiter, encode_sequence_separator, expand_entities, match_delimiter_with_alt,
     validate_delimiter_es_restriction,
     expand_entities_str, is_nl_comma_space_pattern, match_delimiter, match_delimiter_opts,
+    match_delimiter_opts_for_encoding, match_delimiter_with_alt_for_encoding,
+    match_pattern_opts_for_encoding,
     parse_text_standard_separator_list,
     parse_text_standard_zero_rep_list,
     match_length_pattern, match_nl_comma_space_separator_with_flag, match_pattern,

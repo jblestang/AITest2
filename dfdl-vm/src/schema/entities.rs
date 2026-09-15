@@ -723,6 +723,170 @@ fn bytes_startswith_ic(input: &[u8], prefix: &[u8], ignore_case: bool) -> bool {
         .all(|(a, b)| ascii_eq_ic(*a, *b, true))
 }
 
+fn utf16_little_endian_from_encoding(encoding: Option<&str>) -> Option<bool> {
+    encoding.and_then(|enc| {
+        use crate::vm::encoding::normalize_encoding_name;
+        match normalize_encoding_name(enc)? {
+            "utf-16le" => Some(true),
+            "utf-16be" => Some(false),
+            _ => None,
+        }
+    })
+}
+
+fn wire_delimiter_logical_bytes(logical: &[u8], le: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(logical.len().saturating_mul(2));
+    for &b in logical {
+        if le {
+            out.push(b);
+            out.push(0);
+        } else {
+            out.push(0);
+            out.push(b);
+        }
+    }
+    out
+}
+
+fn match_one_newline_utf16(input: &[u8], le: bool) -> Option<usize> {
+    let (hi, lo) = if le { (1, 0) } else { (0, 1) };
+    if input.len() >= 4
+        && input[hi] == 0
+        && input[lo] == b'\r'
+        && input[2 + hi] == 0
+        && input[2 + lo] == b'\n'
+    {
+        return Some(4);
+    }
+    if input.len() >= 2 && input[hi] == 0 && matches!(input[lo], b'\n' | b'\r') {
+        return Some(2);
+    }
+    None
+}
+
+fn match_nl_entity_utf16(input: &[u8], pattern: &str, le: bool) -> Option<usize> {
+    let pat = pattern.trim();
+    let quantifier = pat.chars().last().filter(|c| matches!(c, '+' | '*' | '?'));
+    let base = if quantifier.is_some() {
+        &pat[..pat.len().saturating_sub(1)]
+    } else {
+        pat
+    };
+    if base != "%NL;" {
+        return None;
+    }
+    match quantifier {
+        Some('+') => {
+            let mut pos = 0usize;
+            while let Some(n) = match_one_newline_utf16(&input[pos..], le) {
+                pos += n;
+            }
+            if pos > 0 { Some(pos) } else { None }
+        }
+        Some('*') => {
+            let mut pos = 0usize;
+            while let Some(n) = match_one_newline_utf16(&input[pos..], le) {
+                pos += n;
+            }
+            Some(pos)
+        }
+        Some('?') => Some(match_one_newline_utf16(input, le).unwrap_or(0)),
+        _ => match_one_newline_utf16(input, le),
+    }
+}
+
+fn match_pattern_opts_utf16(input: &[u8], pattern: &str, ignore_case: bool, le: bool) -> Option<usize> {
+    if pattern.is_empty() {
+        return Some(0);
+    }
+    if pattern.len() == 1 {
+        let b = pattern.as_bytes()[0];
+        if b == b'\n' {
+            return match_one_newline_utf16(input, le);
+        }
+        let wire = wire_delimiter_logical_bytes(&[b], le);
+        return if bytes_startswith_ic(input, &wire, ignore_case) {
+            Some(wire.len())
+        } else {
+            None
+        };
+    }
+    if pattern.starts_with('[') && pattern.contains(']') {
+        return match_char_class(input, pattern);
+    }
+    if pattern.starts_with("%NL") {
+        return match_nl_entity_utf16(input, pattern, le);
+    }
+    if pattern.starts_with("%WSP") || pattern.starts_with("%WS") {
+        return match_wsp_entity(input, pattern);
+    }
+    let expanded = expand_entities(pattern);
+    if expanded.is_empty() {
+        return Some(0);
+    }
+    let last = pattern.as_bytes().last().copied();
+    let quantifier = match last {
+        Some(b'+') | Some(b'*') | Some(b'?') if expanded.len() > 1 => last,
+        _ => None,
+    };
+    let base = if quantifier.is_some() {
+        &expanded[..expanded.len().saturating_sub(1)]
+    } else {
+        &expanded[..]
+    };
+    let wire = wire_delimiter_logical_bytes(base, le);
+    match quantifier {
+        None => {
+            if base == b"\n" {
+                return match_one_newline_utf16(input, le);
+            }
+            if bytes_startswith_ic(input, &wire, ignore_case) {
+                Some(wire.len())
+            } else {
+                None
+            }
+        }
+        Some(b'+') => {
+            let mut pos = 0;
+            while input.len() >= pos + wire.len()
+                && bytes_startswith_ic(&input[pos..], &wire, ignore_case)
+            {
+                pos += wire.len();
+            }
+            if pos > 0 { Some(pos) } else { None }
+        }
+        Some(b'*') => {
+            let mut pos = 0;
+            while input.len() >= pos + wire.len()
+                && bytes_startswith_ic(&input[pos..], &wire, ignore_case)
+            {
+                pos += wire.len();
+            }
+            Some(pos)
+        }
+        Some(b'?') => {
+            if bytes_startswith_ic(input, &wire, ignore_case) {
+                Some(wire.len())
+            } else {
+                Some(0)
+            }
+        }
+        _ => None,
+    }
+}
+
+pub fn match_pattern_opts_for_encoding(
+    input: &[u8],
+    pattern: &str,
+    ignore_case: bool,
+    encoding: Option<&str>,
+) -> Option<usize> {
+    if let Some(le) = utf16_little_endian_from_encoding(encoding) {
+        return match_pattern_opts_utf16(input, pattern, ignore_case, le);
+    }
+    match_pattern_opts_legacy(input, pattern, ignore_case)
+}
+
 /// Match input against a DFDL delimiter/initiator/terminator pattern.
 /// Supports literal bytes (after entity expansion) plus simple regex suffixes: `+`, `*`, `?`.
 /// Compound patterns like `%NL;%WSP*;` are matched segment-by-segment.
@@ -731,6 +895,10 @@ pub fn match_pattern(input: &[u8], pattern: &str) -> Option<usize> {
 }
 
 pub fn match_pattern_opts(input: &[u8], pattern: &str, ignore_case: bool) -> Option<usize> {
+    match_pattern_opts_for_encoding(input, pattern, ignore_case, None)
+}
+
+fn match_pattern_opts_legacy(input: &[u8], pattern: &str, ignore_case: bool) -> Option<usize> {
     if pattern.is_empty() {
         return Some(0);
     }
@@ -831,17 +999,26 @@ pub fn match_delimiter_with_alt(
     pattern: &str,
     ignore_case: bool,
 ) -> Option<(usize, u8)> {
+    match_delimiter_with_alt_for_encoding(input, pattern, ignore_case, None)
+}
+
+pub fn match_delimiter_with_alt_for_encoding(
+    input: &[u8],
+    pattern: &str,
+    ignore_case: bool,
+    encoding: Option<&str>,
+) -> Option<(usize, u8)> {
     if pattern.is_empty() {
         return Some((0, 0));
     }
     if pattern.len() == 1 {
-        return match_pattern_opts(input, pattern, ignore_case).map(|n| (n, 0));
+        return match_pattern_opts_for_encoding(input, pattern, ignore_case, encoding).map(|n| (n, 0));
     }
     if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
         return match_nl_comma_space_separator(input).map(|n| (n, 0));
     }
     if delimiter_has_top_level_comma(pattern) {
-        if let Some(n) = match_delimiter_compound(input, pattern, ignore_case) {
+        if let Some(n) = match_delimiter_compound(input, pattern, ignore_case, encoding) {
             if n > 0 {
                 return Some((n, 0));
             }
@@ -851,7 +1028,7 @@ pub fn match_delimiter_with_alt(
     if alts.len() > 1 {
         let mut best: Option<(usize, u8)> = None;
         for (idx, alt) in alts.iter().enumerate() {
-            if let Some(n) = match_delimiter_compound(input, alt, ignore_case) {
+            if let Some(n) = match_delimiter_compound(input, alt, ignore_case, encoding) {
                 match best {
                     None => best = Some((n, idx as u8)),
                     Some((best_n, _)) if n > best_n => best = Some((n, idx as u8)),
@@ -861,21 +1038,30 @@ pub fn match_delimiter_with_alt(
         }
         return best;
     }
-    match_delimiter_compound(input, pattern, ignore_case).map(|n| (n, 0))
+    match_delimiter_compound(input, pattern, ignore_case, encoding).map(|n| (n, 0))
 }
 
 pub fn match_delimiter_opts(input: &[u8], pattern: &str, ignore_case: bool) -> Option<usize> {
+    match_delimiter_opts_for_encoding(input, pattern, ignore_case, None)
+}
+
+pub fn match_delimiter_opts_for_encoding(
+    input: &[u8],
+    pattern: &str,
+    ignore_case: bool,
+    encoding: Option<&str>,
+) -> Option<usize> {
     if pattern.is_empty() {
         return Some(0);
     }
     if pattern.len() == 1 {
-        return match_pattern_opts(input, pattern, ignore_case);
+        return match_pattern_opts_for_encoding(input, pattern, ignore_case, encoding);
     }
     if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
         return match_nl_comma_space_separator(input);
     }
     if delimiter_has_top_level_comma(pattern) {
-        if let Some(n) = match_delimiter_compound(input, pattern, ignore_case) {
+        if let Some(n) = match_delimiter_compound(input, pattern, ignore_case, encoding) {
             if n > 0 {
                 return Some(n);
             }
@@ -885,7 +1071,7 @@ pub fn match_delimiter_opts(input: &[u8], pattern: &str, ignore_case: bool) -> O
     if alts.len() > 1 {
         let mut best: Option<usize> = None;
         for alt in &alts {
-            if let Some(n) = match_delimiter_compound(input, alt, ignore_case) {
+            if let Some(n) = match_delimiter_compound(input, alt, ignore_case, encoding) {
                 match best {
                     None => best = Some(n),
                     Some(best_n) if n > best_n => best = Some(n),
@@ -895,7 +1081,7 @@ pub fn match_delimiter_opts(input: &[u8], pattern: &str, ignore_case: bool) -> O
         }
         return best;
     }
-    match_delimiter_compound(input, pattern, ignore_case)
+    match_delimiter_compound(input, pattern, ignore_case, encoding)
 }
 
 /// All delimiter/initiator/terminator alternatives for a property value.
@@ -972,16 +1158,22 @@ fn delimiter_has_top_level_comma(pattern: &str) -> bool {
     false
 }
 
-fn match_delimiter_compound(input: &[u8], pattern: &str, ignore_case: bool) -> Option<usize> {
+fn match_delimiter_compound(
+    input: &[u8],
+    pattern: &str,
+    ignore_case: bool,
+    encoding: Option<&str>,
+) -> Option<usize> {
     if pattern.is_empty() {
         return Some(0);
     }
     if pattern.len() == 1 {
-        return match_pattern_opts(input, pattern, ignore_case);
+        return match_pattern_opts_for_encoding(input, pattern, ignore_case, encoding);
     }
     let mut pos = 0;
     for segment in split_delimiter_segments(pattern) {
-        let matched = match_pattern_opts(&input[pos..], segment, ignore_case)?;
+        let matched =
+            match_pattern_opts_for_encoding(&input[pos..], segment, ignore_case, encoding)?;
         pos += matched;
     }
     Some(pos)
@@ -2025,6 +2217,19 @@ mod tests {
         let alts2 = super::delimiter_alternatives("{{ {{ [");
         assert_eq!(alts2, vec!["{{", "{{", "["]);
         assert_eq!(match_delimiter(b"{{9", "{{ {{ ["), Some(2));
+    }
+
+    #[test]
+    fn utf16_be_separator_slash() {
+        let data = [0x00, b'1', 0x00, b'2', 0x00, b'/', 0x00, b'3'];
+        assert_eq!(
+            match_delimiter_opts_for_encoding(&data[4..], "/", false, Some("utf-16be")),
+            Some(2)
+        );
+        assert_eq!(
+            match_delimiter_opts_for_encoding(&data[0..], "/", false, Some("utf-16be")),
+            None
+        );
     }
 
     #[test]
