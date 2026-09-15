@@ -1304,6 +1304,7 @@ impl<'a> Decoder<'a> {
         }
         let populate_path = element_prefixed_name(self.ctx.program, node_id).ok();
         let populate_errors = should_populate_array_errors(props);
+        let item_value_kind = element_kind(self.ctx.program, node_id)?;
         let mut items = Vec::new();
         let mut implicit_empty_probe = false;
         let never_optional_array = parent_sequence.and_then(|p| {
@@ -1475,6 +1476,7 @@ impl<'a> Decoder<'a> {
                 && (items.len() as u64) < min
                 && at_empty_slot
                 && props.representation == Representation::Text
+                && item_value_kind == ValueKind::String
             {
                 let sep_pos = cursor.pos;
                 self.consume_occurrence_separator(
