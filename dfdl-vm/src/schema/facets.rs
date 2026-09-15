@@ -441,7 +441,14 @@ fn validate_short_range_facet(name: &str, value: i64) -> Result<(), SchemaError>
     Ok(())
 }
 
-fn validate_facet_range_order(eff: &EffectiveFacets) -> Result<(), SchemaError> {
+fn validate_facet_range_order(
+    eff: &EffectiveFacets,
+    diagnostic: Option<&str>,
+) -> Result<(), SchemaError> {
+    let suffix = diagnostic
+        .filter(|s| !s.is_empty())
+        .map(|s| alloc::format!("\n{s}"))
+        .unwrap_or_default();
     if eff.max_inclusive.is_some() && eff.max_exclusive.is_some() {
         return Err(SchemaError::InvalidProperty {
             message: "MaxInclusive and MaxExclusive cannot be specified for the same simple type"
@@ -467,7 +474,7 @@ fn validate_facet_range_order(eff: &EffectiveFacets) -> Result<(), SchemaError> 
         if min > max {
             return Err(SchemaError::InvalidProperty {
                 message: alloc::format!(
-                    "MinInclusive({min}) must be less than or equal to MaxInclusive({max})"
+                    "MinInclusive({min}) must be less than or equal to MaxInclusive({max}){suffix}"
                 ),
             });
         }
@@ -536,10 +543,11 @@ fn parent_restriction_enumerations(
 pub fn validate_value_space_facets(
     schema: &SchemaDocument,
     base: &SimpleBase,
+    diagnostic: Option<&str>,
 ) -> Result<(), SchemaError> {
     validate_restriction_chain(schema, base)?;
     let eff = schema.effective_facets(base);
-    validate_facet_range_order(&eff)?;
+    validate_facet_range_order(&eff, diagnostic)?;
     validate_fraction_total_digits(&eff)?;
 
     let Some(builtin) = schema.builtin_for_simple_base(base) else {
@@ -584,6 +592,7 @@ pub fn validate_length_facets_for_type(
     base: &SimpleBase,
     kind: ValueKind,
     props: &IrProps,
+    diagnostic: Option<&str>,
 ) -> Result<(), SchemaError> {
     if let SimpleBase::Restriction {
         base: crate::schema::RestrictionBase::Named(base_name),
@@ -610,7 +619,7 @@ pub fn validate_length_facets_for_type(
 
     let eff = schema.effective_facets(base);
     validate_facet_literals(&eff)?;
-    validate_value_space_facets(schema, base)?;
+    validate_value_space_facets(schema, base, diagnostic)?;
 
     let builtin = schema.builtin_for_simple_base(base);
     let prim_name = builtin

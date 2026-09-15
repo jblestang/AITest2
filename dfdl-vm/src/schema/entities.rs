@@ -1014,11 +1014,7 @@ fn match_pattern_opts_utf16(
     } else {
         &expanded[..]
     };
-    let wire = if encoding.is_some() {
-        base.to_vec()
-    } else {
-        wire_delimiter_logical_bytes(base, le)
-    };
+    let wire = wire_delimiter_logical_bytes(base, le);
     match quantifier {
         None => {
             if base == b"\n" {

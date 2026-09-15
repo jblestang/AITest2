@@ -284,17 +284,30 @@ impl<'a> Decoder<'a> {
                             props: prev_props, ..
                         }) = self.ctx.program.node(children[idx - 1])
                         {
-                            if prev_props.representation == Representation::Text
-                                && matches!(
-                                    prev_props.length_kind,
-                                    LengthKind::Explicit | LengthKind::Fixed
-                                )
-                            {
+                            if prev_props.representation == Representation::Text {
                                 let _ = crate::vm::runtime::consume_text_field_terminator_after_fixed_length(
                                     cursor,
                                     prev_props,
                                     self.ctx.strings(),
                                 );
+                                if let Some(term_id) = prev_props.terminator {
+                                    if let Ok(term) = self.ctx.strings().get(term_id) {
+                                        if !term.is_empty() {
+                                            let enc =
+                                                encoding_name(prev_props, self.ctx.strings()).ok();
+                                            if crate::schema::match_delimiter_opts_for_encoding(
+                                                &cursor.data[cursor.pos..],
+                                                term,
+                                                prev_props.ignore_case,
+                                                enc.as_deref(),
+                                            )
+                                            .is_some()
+                                            {
+                                                self.consume_terminator(prev_props, cursor)?;
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                         if let Some(sep_id) = props.separator {
@@ -1861,6 +1874,9 @@ impl<'a> Decoder<'a> {
         let mut scans: Vec<&IrProps> = stop_sequences.to_vec();
         scans.extend(enclosing.iter());
         for enc in scans.iter().copied() {
+            if core::ptr::eq(enc, sep_props) {
+                continue;
+            }
             let Some(term_id) = enc.terminator else {
                 continue;
             };
@@ -1893,6 +1909,9 @@ impl<'a> Decoder<'a> {
             return None;
         }
         for enc_props in scans.iter().copied() {
+            if core::ptr::eq(enc_props, sep_props) {
+                continue;
+            }
             let Some(term_id) = enc_props.terminator else {
                 continue;
             };

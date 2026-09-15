@@ -155,7 +155,7 @@ impl<'a> IrBuilder<'a> {
                 validate_dfdl_prop_overlap(&root_element.props, &type_props)?;
                 let mut merged = self.merge_props_full(&defaults, &type_props, &root_element.props)?;
                 apply_type_name_ir_flags(&root_element.type_name, &mut merged);
-                validate_length_facets_for_type(&self.schema, base, kind, &merged)?;
+                validate_length_facets_for_type(&self.schema, base, kind, &merged, None)?;
                 let mut ir_props = finalize_element_props(
                     kind,
                     merged,
@@ -188,7 +188,11 @@ impl<'a> IrBuilder<'a> {
                     child: None,
                 })
             } else {
-                let child = self.compile_type(&root_element.type_name, &root_element.props)?;
+                let child = self.compile_type(
+                    &root_element.type_name,
+                    &root_element.props,
+                    Some(root_name),
+                )?;
                 let defaults = self.defaults.clone();
                 let mut ir_props = self.merge_props_full(
                     &defaults,
@@ -227,7 +231,12 @@ impl<'a> IrBuilder<'a> {
         Ok(program)
     }
 
-    fn compile_type(&mut self, type_name: &TypeName, element_props: &DfdlProps) -> Result<u32> {
+    fn compile_type(
+        &mut self,
+        type_name: &TypeName,
+        element_props: &DfdlProps,
+        facet_diagnostic: Option<&str>,
+    ) -> Result<u32> {
         if !self.schema.types.contains_key(type_name) {
             if let Some(BuiltinType::String | BuiltinType::HexBinary) =
                 BuiltinType::from_xsd(type_name.as_str())
@@ -301,7 +310,13 @@ impl<'a> IrBuilder<'a> {
                     element_props,
                 );
                 validate_binary_calendar_compile(kind, &ir_props, &self.strings)?;
-                validate_length_facets_for_type(&self.schema, base, kind, &ir_props)?;
+                validate_length_facets_for_type(
+                    &self.schema,
+                    base,
+                    kind,
+                    &ir_props,
+                    facet_diagnostic,
+                )?;
                 validate_implicit_text_length(kind, &ir_props)?;
                 let name = self.strings.intern("__value");
                 Ok(self.push(IrNode::Element {
@@ -404,7 +419,11 @@ impl<'a> IrBuilder<'a> {
                             }
                             _ => element_props.clone(),
                         };
-                    let child = self.compile_type(&element.type_name, &compile_element_props_owned)?;
+                    let child = self.compile_type(
+                        &element.type_name,
+                        &compile_element_props_owned,
+                        Some(element.name.as_str()),
+                    )?;
                     let child_node = self.nodes.get(child as usize).ok_or_else(|| {
                         SchemaError::InvalidProperty {
                             message: alloc::format!("invalid child node id {child}"),
@@ -461,10 +480,14 @@ impl<'a> IrBuilder<'a> {
                             if element_props.trailing_skip.is_none() {
                                 merged_ir.trailing_skip = child_props.trailing_skip;
                             }
-                            if element_props.length_kind.is_none() {
+                            if let Some(lk) = element_props.length_kind {
+                                merged_ir.length_kind = lk;
+                            } else if element_props.length_kind.is_none() {
                                 merged_ir.length_kind = child_props.length_kind;
                             }
-                            if element_props.length.is_none() {
+                            if let Some(len) = element_props.length {
+                                merged_ir.length = Some(len);
+                            } else if element_props.length.is_none() {
                                 merged_ir.length = child_props.length;
                             }
                             if merged_ir.terminator.is_none() {
@@ -484,6 +507,7 @@ impl<'a> IrBuilder<'a> {
                                         base,
                                         kind,
                                         &merged_ir,
+                                        Some(element.name.as_str()),
                                     )?;
                                 }
                             }
