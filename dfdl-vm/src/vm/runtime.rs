@@ -5565,6 +5565,13 @@ pub(crate) fn read_text_scalar(
             reject_internal_whitespace_explicit_field(
                 trimmed, "xs:int", props, base, trailing_input,
             )?;
+            if props.length_kind == LengthKind::Delimited
+                && trimmed
+                    .chars()
+                    .any(|c| c.is_ascii_alphabetic() || c == ':')
+            {
+                return Err(unable_parse_from_text("xs:int", trimmed));
+            }
             let num = if base == 10 {
                 parse_field_text_number(trimmed, kind, props, strings)?
             } else {

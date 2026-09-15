@@ -100,6 +100,30 @@ fn props_contribute_delimiter_stops(props: &IrProps, strings: &StringPool) -> Re
     Ok(false)
 }
 
+fn cursor_at_own_sequence_terminator(
+    cursor: &Cursor<'_>,
+    seq_props: &IrProps,
+    strings: &StringPool,
+) -> Result<bool> {
+    let Some(id) = seq_props.terminator else {
+        return Ok(false);
+    };
+    let pat = strings.get(id)?;
+    if pat.is_empty() {
+        return Ok(false);
+    }
+    let enc = encoding_name(seq_props, strings).ok();
+    Ok(
+        crate::schema::match_delimiter_opts_for_encoding(
+            &cursor.data[cursor.pos..],
+            pat,
+            seq_props.ignore_case,
+            enc.as_deref(),
+        )
+        .is_some_and(|n| n > 0),
+    )
+}
+
 fn cursor_at_parent_infix_separator(
     cursor: &Cursor<'_>,
     parent_sequence: Option<&IrProps>,
@@ -160,6 +184,8 @@ pub struct Decoder<'a> {
     parent_postfix_sep_consumed: RefCell<bool>,
     /// Runtime DFDL variable values (`defineVariable` + `setVariable`).
     runtime_variables: RefCell<BTreeMap<String, String>>,
+    /// XPath sibling context for the active sequence decode (includes hidden elements).
+    xpath_siblings: RefCell<BTreeMap<String, SiblingState>>,
 }
 
 impl<'a> Decoder<'a> {
@@ -176,7 +202,24 @@ impl<'a> Decoder<'a> {
             seq_bit_order: RefCell::new(None),
             parent_postfix_sep_consumed: RefCell::new(false),
             runtime_variables: RefCell::new(BTreeMap::new()),
+            xpath_siblings: RefCell::new(BTreeMap::new()),
         }
+    }
+
+    fn seed_xpath_siblings(&self, seed: Option<&BTreeMap<String, SiblingState>>) {
+        let mut map = self.xpath_siblings.borrow_mut();
+        map.clear();
+        if let Some(s) = seed {
+            map.extend(s.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+    }
+
+    fn insert_xpath_sibling(&self, key: String, state: SiblingState) {
+        self.xpath_siblings.borrow_mut().insert(key, state);
+    }
+
+    fn xpath_siblings_snapshot(&self) -> BTreeMap<String, SiblingState> {
+        self.xpath_siblings.borrow().clone()
     }
 
     fn runtime_check_bit_order_change(
@@ -241,6 +284,7 @@ impl<'a> Decoder<'a> {
         };
         cursor.tdml_bit_order_regions = tdml_bit_order_regions;
         *self.runtime_variables.borrow_mut() = self.ctx.program.variables.clone();
+        self.xpath_siblings.borrow_mut().clear();
         let value = self.decode_node(
             self.ctx.program.root,
             &mut cursor,
@@ -292,6 +336,7 @@ impl<'a> Decoder<'a> {
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
+                self.seed_xpath_siblings(siblings);
                 *self.seq_bit_order.borrow_mut() = None;
                 for (name_id, val_id) in &props.set_variables {
                     let name = self.ctx.strings().get(*name_id)?;
@@ -321,7 +366,7 @@ impl<'a> Decoder<'a> {
                 extended.push(props);
                 let child_stops = extended.as_slice();
                 let mut map = BTreeMap::new();
-                let mut seq_siblings = siblings.cloned().unwrap_or_default();
+                let mut seq_siblings = self.xpath_siblings_snapshot();
                 let mut infix_sep_newline_prefix = Vec::new();
                 let mut separator_alts = Vec::new();
                 let mut field_delim_meta = BTreeMap::new();
@@ -421,6 +466,15 @@ impl<'a> Decoder<'a> {
                             should_suppress_decode_infix_separator(props, cp, prev_absent_or_empty)
                         })
                         .unwrap_or(false);
+                    let skip_sep_at_term = child_element_props.is_some_and(|cp| cp.occurs_min == 0)
+                        && cursor_at_own_sequence_terminator(
+                            cursor,
+                            props,
+                            self.ctx.strings(),
+                        )?;
+                    if skip_sep_at_term {
+                        break;
+                    }
                     let sep_alt = if inter_child_sep_consumed_by_prev {
                         inter_child_sep_consumed_by_prev = false;
                         None
@@ -483,16 +537,74 @@ impl<'a> Decoder<'a> {
                             }
                         }
                     }
-                    match self.decode_particle(
-                        child,
-                        cursor,
-                        child_has_following,
-                        Some(props),
-                        Some(&seq_siblings),
-                        content_scope_bytes,
-                        pattern_text_frame,
-                        &particle_stops,
-                    ) {
+                    let decode_result = if let Ok(IrNode::Sequence { children: hc, .. }) =
+                        self.ctx.program.node(child)
+                    {
+                        if self.is_hidden_group_carrier(hc) {
+                            let mut map = BTreeMap::new();
+                            for &gc in hc {
+                                let gc_has_following = true;
+                                let gc_start = cursor.pos;
+                                let gc_value = self.decode_particle(
+                                    gc,
+                                    cursor,
+                                    gc_has_following,
+                                    Some(props),
+                                    Some(&seq_siblings),
+                                    content_scope_bytes,
+                                    pattern_text_frame,
+                                    &particle_stops,
+                                )?;
+                                if let IrNode::Element { name, props: gp, .. } =
+                                    self.ctx.program.node(gc)?
+                                {
+                                    let key = self.ctx.strings().get(*name)?.to_string();
+                                    let consumed = cursor.pos.saturating_sub(gc_start);
+                                    let state = SiblingState {
+                                        value: gc_value.clone(),
+                                        content_bytes: consumed,
+                                    };
+                                    seq_siblings.insert(key.clone(), state.clone());
+                                    self.insert_xpath_sibling(key, state);
+                                    let _ = gp;
+                                }
+                                insert_child(&mut map, gc, gc_value, self.ctx.program)?;
+                            }
+                            Ok(DfdlValue::Sequence(crate::value::SequenceValue {
+                                fields: map,
+                                meta: crate::value::SequenceMeta {
+                                    infix_sep_newline_prefix: Vec::new(),
+                                    initiator_alt: None,
+                                    terminator_alt: None,
+                                    separator_alts: Vec::new(),
+                                    field_delimiters: BTreeMap::new(),
+                                },
+                            }))
+                        } else {
+                            self.decode_particle(
+                                child,
+                                cursor,
+                                child_has_following,
+                                Some(props),
+                                Some(&seq_siblings),
+                                content_scope_bytes,
+                                pattern_text_frame,
+                                &particle_stops,
+                            )
+                        }
+                    } else {
+                        self.decode_particle(
+                            child,
+                            cursor,
+                            child_has_following,
+                            Some(props),
+                            Some(&seq_siblings),
+                            content_scope_bytes,
+                            pattern_text_frame,
+                            &particle_stops,
+                        )
+                    };
+                    match decode_result {
                         Ok(child_value) => {
                             cursor.frame_bit_limit = saved_frame_limit;
                             if let Ok(IrNode::Element { props: cp, .. }) =
@@ -536,13 +648,12 @@ impl<'a> Decoder<'a> {
                                 } else {
                                     consumed
                                 };
-                                seq_siblings.insert(
-                                    key,
-                                    SiblingState {
-                                        value: child_value.clone(),
-                                        content_bytes,
-                                    },
-                                );
+                                let state = SiblingState {
+                                    value: child_value.clone(),
+                                    content_bytes,
+                                };
+                                seq_siblings.insert(key.clone(), state.clone());
+                                self.insert_xpath_sibling(key, state);
                             }
                             insert_child(&mut map, child, child_value, self.ctx.program)?;
                             if idx + 1 < children.len() {
@@ -1041,6 +1152,18 @@ impl<'a> Decoder<'a> {
         }))
     }
 
+    fn is_hidden_group_carrier(&self, children: &[u32]) -> bool {
+        if children.is_empty() {
+            return false;
+        }
+        children.iter().all(|&id| {
+            matches!(
+                self.ctx.program.node(id),
+                Ok(IrNode::Element { props, .. }) if props.hidden
+            )
+        })
+    }
+
     fn decode_particle(
         &self,
         node_id: u32,
@@ -1052,6 +1175,34 @@ impl<'a> Decoder<'a> {
         pattern_text_frame: bool,
         stop_sequences: &[&IrProps],
     ) -> Result<DfdlValue> {
+        if let Ok(IrNode::Sequence { children, .. }) = self.ctx.program.node(node_id) {
+            if self.is_hidden_group_carrier(children) {
+                let mut map = BTreeMap::new();
+                for &child in children {
+                    let value = self.decode_particle(
+                        child,
+                        cursor,
+                        has_following_sibling,
+                        parent_sequence,
+                        siblings,
+                        content_scope_bytes,
+                        pattern_text_frame,
+                        stop_sequences,
+                    )?;
+                    insert_child(&mut map, child, value, self.ctx.program)?;
+                }
+                return Ok(DfdlValue::Sequence(crate::value::SequenceValue {
+                    fields: map,
+                    meta: crate::value::SequenceMeta {
+                        infix_sep_newline_prefix: Vec::new(),
+                        initiator_alt: None,
+                        terminator_alt: None,
+                        separator_alts: Vec::new(),
+                        field_delimiters: BTreeMap::new(),
+                    },
+                }));
+            }
+        }
         match self.ctx.program.node(node_id)? {
             IrNode::Element { props, .. } => self.decode_element_occurrences(
                 node_id,
@@ -1097,9 +1248,10 @@ impl<'a> Decoder<'a> {
         let mut occurs_from_expression = false;
         if props.occurs_count_kind == OccursCountKind::Expression {
             if let Some(steps) = props.occurs_count_fn_path.as_ref() {
+                let sib_snap = self.xpath_siblings_snapshot();
                 let n = eval_occurs_count_expression(
                     steps,
-                    siblings,
+                    Some(&sib_snap),
                     self.ctx.strings(),
                     &self.ctx.program.tunables,
                 )?;

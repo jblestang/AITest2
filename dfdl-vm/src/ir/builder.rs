@@ -404,6 +404,12 @@ impl<'a> IrBuilder<'a> {
                 let mut merged =
                     self.merge_props_full(inherited, &DfdlProps::default(), &element_props)?;
                 apply_format_default_delimiters(&mut merged, &self.defaults);
+                if element_props.length_kind.is_none()
+                    && self.defaults.length_kind == LengthKind::Delimited
+                {
+                    merged.length_kind = LengthKind::Delimited;
+                    merged.length_kind_defined = true;
+                }
                 validate_text_standard_sibling_order(&merged, prior_element_names, &self.strings)?;
                 let name = self.strings.intern(&element.name);
                 if let Some(builtin) =
@@ -420,6 +426,12 @@ impl<'a> IrBuilder<'a> {
                     Some(self.schema),
                     Some(element.name.as_str()),
                 )?;
+                if element_props.length_kind.is_none()
+                    && self.defaults.length_kind == LengthKind::Delimited
+                {
+                    ir_props.length_kind = LengthKind::Delimited;
+                    ir_props.length_kind_defined = true;
+                }
                 apply_restriction_facets(
                     &self.schema,
                     &mut ir_props,
@@ -762,10 +774,8 @@ impl<'a> IrBuilder<'a> {
                                     group_prior.push(el.name.clone());
                                 }
                             }
-                            children.push(self.push(IrNode::Sequence {
-                                children: group_children,
-                                props: ir_props,
-                            }));
+                            children.extend(group_children);
+                            let _ = ir_props;
                             Ok(())
                         }
                         GroupDecl::Choice(ch) => {
@@ -2847,10 +2857,7 @@ fn particle_inherited_for_children(
 ) -> IrProps {
     // Group-level delimiter and ignoreCase properties apply to the group node, not descendants.
     let mut inherited = parent_inherited.clone();
-    if group_props.length_kind.is_none()
-        && defaults.length_kind_defined
-        && !inherited.length_kind_defined
-    {
+    if group_props.length_kind.is_none() && defaults.length_kind_defined {
         inherited.length_kind = defaults.length_kind;
         inherited.length_kind_defined = true;
     }
