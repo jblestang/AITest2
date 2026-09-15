@@ -288,7 +288,8 @@ impl<'a> Cursor<'a> {
         }
         let field_order = self.effective_field_bit_order(bit_order);
         let bytes_to_fill = n.div_ceil(8);
-        if self.bit_count == 0 {
+        // LSBF fields must read stream bits in transmission order; byte-aligned fast path is MSBF-only.
+        if self.bit_count == 0 && field_order == BitOrder::MostSignificantBitFirst {
             let end_byte = self.pos + bytes_to_fill;
             if end_byte <= self.data.len() {
                 let start = self.absolute_bit_index();
@@ -850,8 +851,13 @@ pub(crate) fn read_binary_scalar(
             let bytes = cursor.read_stream_bits_as_bytes(len, props.bit_order)?;
             return decode_binary_scalar(kind, &bytes, props, strings, None, tunables);
         }
-        if len >= 8 && props.byte_order == ByteOrder::LittleEndian {
-            let bytes = if cursor.bit_count != 0 {
+        if props.byte_order == ByteOrder::LittleEndian
+            && kind != ValueKind::String
+            && kind != ValueKind::HexBinary
+        {
+            let bytes = if props.bit_order == BitOrder::LeastSignificantBitFirst {
+                cursor.read_hex_binary_bits(len, props.bit_order)?
+            } else if cursor.bit_count != 0 {
                 cursor.read_stream_bits_as_bytes(len, props.bit_order)?
             } else {
                 cursor.read_hex_binary_bits(len, props.bit_order)?
@@ -4501,6 +4507,11 @@ pub(crate) fn read_text_scalar(
         if let Some(nil_len) = match_nil_literal_prefix(cursor, props, strings)? {
             cursor.advance(nil_len);
             return Ok(DfdlValue::Null);
+        }
+        if props.empty_element_parse_policy == crate::schema::EmptyElementParsePolicy::TreatAsAbsent
+            && pattern_allows_zero_length_match(cursor, props, strings)?
+        {
+            return Err(crate::error::VmError::ElementAbsent.into());
         }
         if nil_value_includes_empty(props, strings)?
             && pattern_allows_zero_length_match(cursor, props, strings)?
@@ -9351,5 +9362,52 @@ mod tdml_encode_bit_index_tests {
         );
         assert_eq!(out, [0xff]);
         assert_eq!(bc, 0);
+    }
+}
+
+#[cfg(test)]
+mod bitorder_sub_byte_tests {
+    use super::*;
+    use crate::schema::BitOrder;
+
+    #[test]
+    fn lsbf_three_bits_from_least_first_document_bytes() {
+        let data = vec![0x4b, 0x54];
+        let mut cursor =
+            Cursor::with_frame_bits_and_transmission(&data, 16, BitOrder::MostSignificantBitFirst);
+        let hex = cursor
+            .read_hex_binary_bits(3, BitOrder::LeastSignificantBitFirst)
+            .unwrap();
+        let mut cursor2 =
+            Cursor::with_frame_bits_and_transmission(&data, 16, BitOrder::MostSignificantBitFirst);
+        let stream_bytes = cursor2
+            .read_stream_bits_as_bytes(3, BitOrder::LeastSignificantBitFirst)
+            .unwrap();
+        let mut cursor3 =
+            Cursor::with_frame_bits_and_transmission(&data, 16, BitOrder::MostSignificantBitFirst);
+        let stream_raw = cursor3
+            .read_stream_bits(3, BitOrder::LeastSignificantBitFirst)
+            .unwrap();
+        let packed_hex = decode_packed_bit_field_u64(
+            &hex,
+            3,
+            ByteOrder::LittleEndian,
+            BitOrder::LeastSignificantBitFirst,
+        );
+        let packed_stream = decode_packed_bit_field_u64(
+            &stream_bytes,
+            3,
+            ByteOrder::LittleEndian,
+            BitOrder::LeastSignificantBitFirst,
+        );
+        assert_eq!(hex, [3], "fillByteArray-style read");
+        assert_eq!(stream_bytes, [2], "stream_bits_as_bytes differs for LSBF fragments");
+        assert_eq!(packed_hex, 3);
+        assert_eq!(packed_stream, 2);
+        assert_eq!(stream_raw, 2);
+        assert_eq!(
+            normalize_bit_field_raw(stream_raw, 3, ByteOrder::LittleEndian, BitOrder::LeastSignificantBitFirst),
+            2
+        );
     }
 }

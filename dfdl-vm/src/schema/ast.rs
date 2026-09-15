@@ -144,6 +144,7 @@ pub struct DfdlProps {
     /// Expanded nil literal (e.g. `%ES;` → empty string, or `nil`).
     pub nil_value: Option<String>,
     pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
+    pub empty_element_parse_policy: Option<EmptyElementParsePolicy>,
     pub occurs_count_kind: Option<OccursCountKind>,
     /// `dfdl:hiddenGroupRef` on a sequence (inline hidden model group).
     pub hidden_group_ref: Option<String>,
@@ -263,6 +264,13 @@ pub enum EncodingErrorPolicy {
 pub enum NilKind {
     LiteralValue,
     LiteralCharacter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmptyElementParsePolicy {
+    #[default]
+    TreatAsEmpty,
+    TreatAsAbsent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

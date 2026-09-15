@@ -1756,6 +1756,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.separator_suppression_policy.is_some() {
         base.separator_suppression_policy = overlay.separator_suppression_policy;
     }
+    if overlay.empty_element_parse_policy.is_some() {
+        base.empty_element_parse_policy = overlay.empty_element_parse_policy;
+    }
     if overlay.occurs_count_kind.is_some() {
         base.occurs_count_kind = overlay.occurs_count_kind;
     }
@@ -2496,6 +2499,7 @@ fn is_dfdl_property(name: &str) -> bool {
             | "nilKind"
             | "nilValue"
             | "separatorSuppressionPolicy"
+            | "emptyElementParsePolicy"
             | "occursCountKind"
             | "escapeSchemeRef"
             | "hiddenGroupRef"
@@ -2699,6 +2703,20 @@ fn props_from_attrs(attrs: &BTreeMap<String, String>) -> Result<DfdlProps> {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!(
                                 "unknown separatorSuppressionPolicy `{other}`"
+                            ),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "emptyElementParsePolicy" => {
+                props.empty_element_parse_policy = Some(match value.as_str() {
+                    "treatAsEmpty" => EmptyElementParsePolicy::TreatAsEmpty,
+                    "treatAsAbsent" | "treatAsMissing" => EmptyElementParsePolicy::TreatAsAbsent,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!(
+                                "unknown emptyElementParsePolicy `{other}`"
                             ),
                         }
                         .into())

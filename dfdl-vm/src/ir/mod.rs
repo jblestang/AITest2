@@ -246,6 +246,7 @@ pub struct IrProps {
     pub nil_kind: Option<NilKind>,
     pub nil_value: Option<StringId>,
     pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
+    pub empty_element_parse_policy: crate::schema::EmptyElementParsePolicy,
     pub occurs_count_kind: OccursCountKind,
     /// When true, parsed value is not placed in the infoset (hidden model group member).
     pub hidden: bool,
@@ -400,6 +401,7 @@ impl Default for IrProps {
             nil_kind: None,
             nil_value: None,
             separator_suppression_policy: None,
+            empty_element_parse_policy: crate::schema::EmptyElementParsePolicy::TreatAsEmpty,
             occurs_count_kind: OccursCountKind::Parsed,
             hidden: false,
             ignore_case: false,

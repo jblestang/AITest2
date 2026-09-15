@@ -13,8 +13,8 @@ use crate::length_validate::{binary_length_validation_applies, validate_data_len
 use crate::error::{Error, Result, VmError};
 use crate::ir::{ChoiceBranch, IrNode, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
-    match_length_pattern, BitOrder, InputValueCalc, LengthKind, LengthUnits, OccursCountKind,
-    Representation, SeparatorPosition,
+    match_length_pattern, BitOrder, EmptyElementParsePolicy, InputValueCalc, LengthKind,
+    LengthUnits, OccursCountKind, Representation, SeparatorPosition,
 };
 use crate::value::{DfdlValue, StringValue};
 use alloc::collections::BTreeMap;
@@ -345,7 +345,10 @@ impl<'a> Decoder<'a> {
                                 }
                             }
                             prev_absent_or_empty = true;
-                            *cursor = saved;
+                            // Optional absent: retain parse progress (e.g. NUL padding consumed).
+                            if cursor.pos == saved.pos {
+                                *cursor = saved;
+                            }
                         }
                         Err(e) => return Err(e),
                     }
@@ -496,7 +499,10 @@ impl<'a> Decoder<'a> {
         }
         let mut max = props.occurs_max.unwrap_or(u64::MAX);
         if props.occurs_count_kind == OccursCountKind::Parsed {
-            if max != u64::MAX && min == max {
+            if props.occurs_max == Some(0) && min == 0 {
+                // maxOccurs=0 with parsed count: scan padding (e.g. NUL-separated) without infoset items.
+                max = u64::MAX;
+            } else if max != u64::MAX && min == max {
                 match self.framing_extra_occurrence(node_id, props, parent_sequence) {
                     FramingExtraOccurrences::One => max = max.saturating_add(1),
                     FramingExtraOccurrences::Double => max = max.saturating_mul(2),
@@ -510,7 +516,23 @@ impl<'a> Decoder<'a> {
         let populate_path = element_prefixed_name(self.ctx.program, node_id).ok();
         let populate_errors = should_populate_array_errors(props);
         let mut items = Vec::new();
-
+        if props.empty_element_parse_policy == EmptyElementParsePolicy::TreatAsAbsent
+            && min == 0
+            && props.occurs_max == Some(0)
+            && parent_sequence.is_some_and(|p| p.separator.is_some())
+        {
+            self.consume_treat_as_absent_separated_padding(
+                props,
+                node_id,
+                parent_sequence,
+                cursor,
+                has_following_sibling,
+                siblings,
+                content_scope_bytes,
+                pattern_text_frame,
+                stop_sequences,
+            )?;
+        }
         while (items.len() as u64) < max {
             if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
                 if items.is_empty() {
@@ -557,6 +579,25 @@ impl<'a> Decoder<'a> {
                         && !cursor.is_frame_consumed()
                     {
                         if matches!(v, DfdlValue::Null) {
+                            if props.empty_element_parse_policy
+                                == EmptyElementParsePolicy::TreatAsAbsent
+                            {
+                                *cursor = saved;
+                                if self.try_consume_treat_as_absent_separator(
+                                    props,
+                                    parent_sequence,
+                                    cursor,
+                                )? {
+                                    if cursor.is_empty() {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                if (items.len() as u64) >= min {
+                                    *cursor = before_occurrence_sep;
+                                    break;
+                                }
+                            }
                             items.push(v);
                             continue;
                         }
@@ -580,7 +621,34 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 Err(e) => {
+                    if min == 0 && items.is_empty() {
+                        *cursor = saved;
+                        let consumed = self.try_consume_treat_as_absent_separator_on_error(
+                            props,
+                            parent_sequence,
+                            cursor,
+                            &e,
+                        )?;
+                        if consumed {
+                            if cursor.is_empty() {
+                                break;
+                            }
+                            continue;
+                        }
+                        if is_element_absent(&e) {
+                            return Err(VmError::ElementAbsent.into());
+                        }
+                        return Err(e);
+                    }
                     if (items.len() as u64) >= min {
+                        if self.try_consume_treat_as_absent_separator_on_error(
+                            props,
+                            parent_sequence,
+                            cursor,
+                            &e,
+                        )? {
+                            continue;
+                        }
                         // Unbounded repetition: failed attempt may have consumed an
                         // occurrence separator that belongs to following content.
                         *cursor = if max == u64::MAX {
@@ -589,10 +657,6 @@ impl<'a> Decoder<'a> {
                             saved
                         };
                         break;
-                    }
-                    if min == 0 && items.is_empty() {
-                        *cursor = saved;
-                        return Err(VmError::ElementAbsent.into());
                     }
                     if let Some(default) = default_value_for(
                         element_kind(self.ctx.program, node_id)?,
@@ -1237,6 +1301,98 @@ impl<'a> Decoder<'a> {
             .map_err(Into::into)
     }
 
+    fn try_consume_treat_as_absent_separator_on_error(
+        &self,
+        props: &IrProps,
+        parent_sequence: Option<&IrProps>,
+        cursor: &mut Cursor<'_>,
+        err: &Error,
+    ) -> Result<bool> {
+        if props.empty_element_parse_policy != EmptyElementParsePolicy::TreatAsAbsent {
+            return Ok(false);
+        }
+        if parent_sequence.and_then(|p| p.separator).is_none() {
+            return Ok(false);
+        }
+        if !is_element_absent(err) && !is_pattern_length_mismatch(err) {
+            return Ok(false);
+        }
+        self.try_consume_treat_as_absent_separator(props, parent_sequence, cursor)
+    }
+
+    /// Scan separator-only bytes before/ between treatAsAbsent zero-length occurrences.
+    fn consume_treat_as_absent_separated_padding(
+        &self,
+        props: &IrProps,
+        node_id: u32,
+        parent_sequence: Option<&IrProps>,
+        cursor: &mut Cursor<'_>,
+        has_following_sibling: bool,
+        siblings: Option<&BTreeMap<String, SiblingState>>,
+        content_scope_bytes: Option<usize>,
+        pattern_text_frame: bool,
+        stop_sequences: &[&IrProps],
+    ) -> Result<()> {
+        let Some(parent) = parent_sequence else {
+            return Ok(());
+        };
+        if parent.separator.is_none() {
+            return Ok(());
+        }
+        if props.empty_element_parse_policy != EmptyElementParsePolicy::TreatAsAbsent {
+            return Ok(());
+        }
+        while !cursor.is_empty() {
+            let saved = cursor.clone();
+            match self.decode_single_element(
+                node_id,
+                cursor,
+                has_following_sibling,
+                parent_sequence,
+                siblings,
+                content_scope_bytes,
+                pattern_text_frame,
+                stop_sequences,
+            ) {
+                Ok(_) => {
+                    return Err(VmError::InvalidValue {
+                        message: "Parse Error: element with maxOccurs 0 matched non-empty data"
+                            .into(),
+                    }
+                    .into());
+                }
+                Err(e)
+                    if is_element_absent(&e) || is_pattern_length_mismatch(&e) =>
+                {
+                    *cursor = saved;
+                    if !self.try_consume_treat_as_absent_separator(props, parent_sequence, cursor)? {
+                        break;
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    fn try_consume_treat_as_absent_separator(
+        &self,
+        props: &IrProps,
+        parent_sequence: Option<&IrProps>,
+        cursor: &mut Cursor<'_>,
+    ) -> Result<bool> {
+        let _ = props;
+        let Some(parent) = parent_sequence else {
+            return Ok(false);
+        };
+        if parent.separator.is_none() {
+            return Ok(false);
+        }
+        let before = cursor.pos;
+        self.consume_occurrence_separator(Some(parent), cursor)?;
+        Ok(cursor.pos > before)
+    }
+
     fn consume_occurrence_separator(
         &self,
         parent_sequence: Option<&IrProps>,
@@ -1513,6 +1669,14 @@ impl<'a> Decoder<'a> {
 
 fn is_element_absent(err: &Error) -> bool {
     matches!(err, Error::Vm(VmError::ElementAbsent))
+}
+
+fn is_pattern_length_mismatch(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::Vm(VmError::InvalidValue { message })
+            if message.starts_with("pattern `") && message.ends_with(" mismatch")
+    )
 }
 
 fn should_populate_array_errors(props: &IrProps) -> bool {

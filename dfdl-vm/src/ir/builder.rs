@@ -2459,6 +2459,9 @@ fn overlay_dfdl_to_ir(
     if let Some(v) = props.separator_suppression_policy {
         base.separator_suppression_policy = Some(v);
     }
+    if let Some(v) = props.empty_element_parse_policy {
+        base.empty_element_parse_policy = v;
+    }
     if let Some(v) = props.occurs_count_kind {
         base.occurs_count_kind = v;
     }
@@ -2987,6 +2990,7 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.separator_suppression_policy.is_some() {
         out.separator_suppression_policy = overlay.separator_suppression_policy;
     }
+    out.empty_element_parse_policy = overlay.empty_element_parse_policy;
     out.occurs_count_kind = overlay.occurs_count_kind;
     out.ignore_case = overlay.ignore_case;
     out.text_trim_kind = overlay.text_trim_kind;
