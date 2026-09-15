@@ -85,6 +85,33 @@ fn sibling_maps_for_boolean(
     (text, bytes)
 }
 
+fn props_contribute_delimiter_stops(props: &IrProps, strings: &StringPool) -> Result<bool> {
+    if let Some(id) = props.terminator {
+        if !strings.get(id)?.is_empty() {
+            return Ok(true);
+        }
+    }
+    if let Some(id) = props.separator {
+        if !strings.get(id)?.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn filter_delimiter_stop_sequences<'a>(
+    stop_sequences: &'a [&'a IrProps],
+    strings: &StringPool,
+) -> Result<Vec<&'a IrProps>> {
+    let mut out = Vec::new();
+    for props in stop_sequences {
+        if props_contribute_delimiter_stops(props, strings)? {
+            out.push(*props);
+        }
+    }
+    Ok(out)
+}
+
 enum FramingExtraOccurrences {
     None,
     One,
@@ -384,10 +411,15 @@ impl<'a> Decoder<'a> {
                         }
                     }
                     let mut particle_stops = child_stops.to_vec();
+                    // Sibling stop sequences apply to repeating scalar particles (e.g. NumSeq),
+                    // not complex containers whose inner fields have their own terminators.
                     let extend_following_stops = matches!(
                         self.ctx.program.node(child),
-                        Ok(IrNode::Element { props: cp, .. })
-                            if cp.occurs_max.map(|m| m > 1).unwrap_or(true)
+                        Ok(IrNode::Element {
+                            props: cp,
+                            child: None,
+                            ..
+                        }) if cp.occurs_max.map(|m| m > 1).unwrap_or(true)
                     );
                     if extend_following_stops {
                         for &sib in &children[idx + 1..] {
@@ -809,6 +841,8 @@ impl<'a> Decoder<'a> {
         let populate_path = element_prefixed_name(self.ctx.program, node_id).ok();
         let populate_errors = should_populate_array_errors(props);
         let mut items = Vec::new();
+        let delimiter_stops =
+            filter_delimiter_stop_sequences(stop_sequences, self.ctx.strings())?;
         if props.empty_element_parse_policy == EmptyElementParsePolicy::TreatAsAbsent
             && min == 0
             && props.occurs_max == Some(0)
@@ -897,7 +931,7 @@ impl<'a> Decoder<'a> {
                 siblings,
                 content_scope_bytes,
                 pattern_text_frame,
-                stop_sequences,
+                delimiter_stops.as_slice(),
             ) {
                 Ok(v) => {
                     if max == u64::MAX

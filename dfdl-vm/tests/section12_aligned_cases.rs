@@ -54,3 +54,4 @@ fn implicit_alignment_date_time_t() {
 fn left_and_right_framing_choice05() {
     assert_passes("leftAndRightFramingChoice05");
 }
+
