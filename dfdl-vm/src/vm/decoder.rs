@@ -19,7 +19,7 @@ use crate::error::{Error, Result, VmError};
 use crate::ir::{ChoiceBranch, IrNode, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
     match_length_pattern, BitOrder, EmptyElementParsePolicy, InputValueCalc, LengthKind,
-    LengthUnits, OccursCountKind, Representation, SeparatorPosition,
+    LengthUnits, OccursCountKind, Representation, SeparatorPosition, SequenceKind,
 };
 use crate::value::{DfdlValue, StringValue};
 use alloc::collections::BTreeMap;
@@ -395,6 +395,39 @@ impl<'a> Decoder<'a> {
                         infix_sep_newline_prefix,
                         separator_alts,
                         field_delim_meta,
+                    );
+                }
+                if props.sequence_kind == SequenceKind::Unordered {
+                    if props.separator.is_some() {
+                        return self.decode_sequence_initiated_content(
+                            node_id,
+                            children,
+                            props,
+                            cursor,
+                            has_following_sibling,
+                            parent_sequence,
+                            siblings,
+                            content_scope_bytes,
+                            pattern_text_frame,
+                            child_stops,
+                            initiator_alt,
+                            infix_sep_newline_prefix,
+                            separator_alts,
+                            field_delim_meta,
+                        );
+                    }
+                    return self.decode_unordered_unseparated_sequence(
+                        node_id,
+                        children,
+                        props,
+                        cursor,
+                        has_following_sibling,
+                        parent_sequence,
+                        siblings,
+                        content_scope_bytes,
+                        pattern_text_frame,
+                        child_stops,
+                        initiator_alt,
                     );
                 }
                 for (idx, &child) in children.iter().enumerate() {
@@ -994,6 +1027,232 @@ impl<'a> Decoder<'a> {
         )
     }
 
+    fn decode_unordered_unseparated_sequence(
+        &self,
+        _node_id: u32,
+        children: &[u32],
+        props: &IrProps,
+        cursor: &mut Cursor<'_>,
+        has_following_sibling: bool,
+        parent_sequence: Option<&IrProps>,
+        siblings: Option<&BTreeMap<String, SiblingState>>,
+        content_scope_bytes: Option<usize>,
+        pattern_text_frame: bool,
+        child_stops: &[&IrProps],
+        initiator_alt: Option<u8>,
+    ) -> Result<DfdlValue> {
+        self.seed_xpath_siblings(siblings);
+        let mut map = BTreeMap::new();
+        let mut seq_siblings = self.xpath_siblings_snapshot();
+        let remaining: alloc::vec::Vec<usize> = (0..children.len()).collect();
+        self.unordered_unseparated_backtrack(
+            children,
+            props,
+            cursor,
+            has_following_sibling,
+            parent_sequence,
+            &mut seq_siblings,
+            content_scope_bytes,
+            pattern_text_frame,
+            child_stops,
+            &remaining,
+            &mut map,
+        )?;
+        self.validate_particle_discriminator(props)?;
+        Ok(DfdlValue::Sequence(crate::value::SequenceValue {
+            fields: map,
+            meta: crate::value::SequenceMeta {
+                infix_sep_newline_prefix: Vec::new(),
+                initiator_alt,
+                terminator_alt: None,
+                separator_alts: Vec::new(),
+                field_delimiters: BTreeMap::new(),
+            },
+        }))
+    }
+
+    fn unordered_unseparated_backtrack(
+        &self,
+        children: &[u32],
+        props: &IrProps,
+        cursor: &mut Cursor<'_>,
+        has_following_sibling: bool,
+        parent_sequence: Option<&IrProps>,
+        seq_siblings: &mut BTreeMap<String, SiblingState>,
+        content_scope_bytes: Option<usize>,
+        pattern_text_frame: bool,
+        child_stops: &[&IrProps],
+        remaining: &[usize],
+        map: &mut BTreeMap<String, DfdlValue>,
+    ) -> Result<()> {
+        if remaining.is_empty() {
+            if !cursor.is_empty() {
+                return Err(VmError::InvalidValue {
+                    message: "unordered sequence: unconsumed input".into(),
+                }
+                .into());
+            }
+            return Ok(());
+        }
+        for (pick, &child_idx) in remaining.iter().enumerate() {
+            let child = children[child_idx];
+            let rewind = cursor.clone();
+            let child_has_following = remaining.len() > 1;
+            let start = cursor.pos;
+            match self.decode_particle(
+                child,
+                cursor,
+                child_has_following,
+                Some(props),
+                Some(seq_siblings),
+                content_scope_bytes,
+                pattern_text_frame,
+                child_stops,
+            ) {
+                Ok(child_value) => {
+                    if let Ok(IrNode::Element { kind, props: cp, .. }) =
+                        self.ctx.program.node(child)
+                    {
+                        if cp.occurs_min == 0
+                            && is_suppressible_empty_representation(
+                                &child_value,
+                                cp,
+                                self.ctx.strings(),
+                            )?
+                        {
+                            *cursor = rewind.clone();
+                            let mut rest = remaining.to_vec();
+                            rest.remove(pick);
+                            if self
+                                .unordered_unseparated_backtrack(
+                                    children,
+                                    props,
+                                    cursor,
+                                    has_following_sibling,
+                                    parent_sequence,
+                                    seq_siblings,
+                                    content_scope_bytes,
+                                    pattern_text_frame,
+                                    child_stops,
+                                    &rest,
+                                    map,
+                                )
+                                .is_ok()
+                            {
+                                return Ok(());
+                            }
+                            *cursor = rewind.clone();
+                            continue;
+                        }
+                        if needs_facet_validation(cp) {
+                            if validate_decoded_facets_tdml(
+                                &child_value,
+                                *kind,
+                                cp,
+                                self.ctx.strings(),
+                                &self.ctx.program.tunables,
+                                false,
+                            )
+                            .is_err()
+                            {
+                                *cursor = rewind;
+                                continue;
+                            }
+                        }
+                    }
+                    let consumed = cursor.pos.saturating_sub(start);
+                    let (key, state) = if let IrNode::Element { name, props: el_props, .. } =
+                        self.ctx.program.node(child)?
+                    {
+                        let key = self.ctx.strings().get(*name)?.to_string();
+                        let content_bytes = if el_props.length_kind == LengthKind::Prefixed {
+                            prefixed_payload_byte_length(
+                                &cursor.data[start..cursor.pos],
+                                el_props,
+                                self.ctx.strings(),
+                            )?
+                        } else {
+                            consumed
+                        };
+                        (
+                            key.clone(),
+                            SiblingState {
+                                value: child_value.clone(),
+                                content_bytes,
+                            },
+                        )
+                    } else {
+                        return Err(VmError::InvalidValue {
+                            message: "unordered sequence: expected element particle".into(),
+                        }
+                        .into());
+                    };
+                    let saved_map = map.clone();
+                    let saved_siblings = seq_siblings.clone();
+                    insert_child(map, child, child_value, self.ctx.program)?;
+                    seq_siblings.insert(key.clone(), state.clone());
+                    self.insert_xpath_sibling(key, state);
+                    let mut rest = remaining.to_vec();
+                    rest.remove(pick);
+                    match self.unordered_unseparated_backtrack(
+                        children,
+                        props,
+                        cursor,
+                        has_following_sibling,
+                        parent_sequence,
+                        seq_siblings,
+                        content_scope_bytes,
+                        pattern_text_frame,
+                        child_stops,
+                        &rest,
+                        map,
+                    ) {
+                        Ok(()) => return Ok(()),
+                        Err(_) => {
+                            *map = saved_map;
+                            *seq_siblings = saved_siblings;
+                            *cursor = rewind.clone();
+                        }
+                    }
+                }
+                Err(e) if is_element_absent(&e) => {
+                    if let Ok(IrNode::Element { props: cp, .. }) = self.ctx.program.node(child) {
+                        if cp.occurs_min == 0 {
+                            let mut rest = remaining.to_vec();
+                            rest.remove(pick);
+                            if self
+                                .unordered_unseparated_backtrack(
+                                    children,
+                                    props,
+                                    cursor,
+                                    has_following_sibling,
+                                    parent_sequence,
+                                    seq_siblings,
+                                    content_scope_bytes,
+                                    pattern_text_frame,
+                                    child_stops,
+                                    &rest,
+                                    map,
+                                )
+                                .is_ok()
+                            {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    *cursor = rewind.clone();
+                }
+                Err(_) => {
+                    *cursor = rewind;
+                }
+            }
+        }
+        Err(VmError::InvalidValue {
+            message: "unordered sequence: no valid particle order".into(),
+        }
+        .into())
+    }
+
     fn decode_sequence_initiated_content(
         &self,
         node_id: u32,
@@ -1007,7 +1266,7 @@ impl<'a> Decoder<'a> {
         pattern_text_frame: bool,
         child_stops: &[&IrProps],
         initiator_alt: Option<u8>,
-        infix_sep_newline_prefix: Vec<bool>,
+        mut infix_sep_newline_prefix: Vec<bool>,
         separator_alts: Vec<Option<u8>>,
         mut field_delim_meta: BTreeMap<String, FieldDelimiterMeta>,
     ) -> Result<DfdlValue> {
@@ -1017,6 +1276,18 @@ impl<'a> Decoder<'a> {
         loop {
             if cursor.is_empty() {
                 break;
+            }
+            if props.separator.is_some()
+                && props.separator_position == SeparatorPosition::Prefix
+            {
+                let _ = self.consume_separator(
+                    props,
+                    cursor,
+                    0,
+                    children.len(),
+                    &mut infix_sep_newline_prefix,
+                    child_stops,
+                );
             }
             let round_start = cursor.pos;
             let mut round_progress = false;
@@ -1100,6 +1371,19 @@ impl<'a> Decoder<'a> {
                                 committed_child = Some(child);
                             }
                         }
+                        if props.separator.is_some()
+                            && !cursor.is_empty()
+                            && props.separator_position == SeparatorPosition::Infix
+                        {
+                            let _ = self.consume_separator(
+                                props,
+                                cursor,
+                                idx.saturating_add(1),
+                                children.len(),
+                                &mut infix_sep_newline_prefix,
+                                child_stops,
+                            )?;
+                        }
                         round_progress = true;
                         break;
                     }
@@ -1108,11 +1392,18 @@ impl<'a> Decoder<'a> {
                         continue;
                     }
                     Err(e) => {
+                        *cursor = saved;
                         if let Ok(IrNode::Element { props: cp, .. }) =
                             self.ctx.program.node(child)
                         {
                             if cp.occurs_min == 0 {
-                                *cursor = saved;
+                                continue;
+                            }
+                            let msg = e.to_string();
+                            if msg.contains("Init('")
+                                || msg.contains("initiator mismatch")
+                                || msg.contains("Delimiter not found")
+                            {
                                 continue;
                             }
                         }

@@ -2,7 +2,7 @@ use crate::error::SchemaError;
 use crate::length_validate::{DaffodilTunables, InvalidRestrictionPolicy};
 use crate::schema::{
     BuiltinType, ComplexContent, ElementDecl, GroupDecl, LengthKind, Particle, RestrictionBase,
-    SchemaDocument, SimpleBase, TypeDef, TypeName,
+    SchemaDocument, SequenceKind, SimpleBase, TypeDef, TypeName,
 };
 use alloc::collections::{BTreeSet, VecDeque};
 
@@ -74,6 +74,9 @@ pub fn validate_compiled_schema(
     validate_discriminators_in_reachable_schema(schema, root)?;
     validate_reachable_complex_type_model_groups(schema, root)?;
     validate_group_definitions_no_hidden_group_ref(schema)?;
+    if let Err(msg) = crate::unparse_validate::validate_hidden_groups_unparse(schema, root) {
+        return Err(SchemaError::InvalidProperty { message: msg });
+    }
     Ok(())
 }
 
@@ -124,14 +127,19 @@ fn validate_reachable_complex_type_model_groups(
                 });
             }
             ComplexContent::Sequence(seq)
-                if seq.particles.is_empty()
-                    && seq.props.hidden_group_ref.is_none()
-                    && !tn.as_str().starts_with("__inline_")
-                    && !root_implicit_length =>
+                if seq.particles.is_empty() && seq.props.hidden_group_ref.is_none() =>
             {
-                return Err(SchemaError::InvalidProperty {
-                    message: "Schema Definition Error".into(),
-                });
+                if seq.props.sequence_kind == Some(SequenceKind::Unordered) {
+                    return Err(SchemaError::InvalidProperty {
+                        message: "Schema Definition Error: Unordered sequences must not be empty"
+                            .into(),
+                    });
+                }
+                if !tn.as_str().starts_with("__inline_") && !root_implicit_length {
+                    return Err(SchemaError::InvalidProperty {
+                        message: "Schema Definition Error".into(),
+                    });
+                }
             }
             _ => {}
         }

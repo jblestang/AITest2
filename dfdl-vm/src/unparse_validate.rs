@@ -131,7 +131,8 @@ pub fn validate_hidden_groups_unparse(schema: &SchemaDocument, root: &str) -> Re
         return Ok(());
     };
     let mut hidden_targets = BTreeSet::new();
-    collect_hidden_group_refs_in_content(schema, content, &mut hidden_targets);
+    let mut collect_visited = BTreeSet::new();
+    collect_hidden_group_refs_in_content(schema, content, &mut hidden_targets, &mut collect_visited);
     for target in hidden_targets {
         let local = group_local_name(&target);
         if local.is_empty() {
@@ -146,35 +147,49 @@ fn collect_hidden_group_refs_in_content(
     schema: &SchemaDocument,
     content: &ComplexContent,
     out: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<String>,
 ) {
     match content {
         ComplexContent::Sequence(seq) => {
             if let Some(ref href) = seq.props.hidden_group_ref {
                 out.insert(href.clone());
-                let local = group_local_name(href);
-                if let Some(GroupDecl::Sequence(gseq)) = schema.groups.get(local) {
-                    for p in &gseq.particles {
-                        collect_hidden_group_refs_in_particle(schema, p, out);
-                    }
-                }
+                collect_hidden_group_particles(schema, group_local_name(href), out, visited);
             }
             for p in &seq.particles {
-                collect_hidden_group_refs_in_particle(schema, p, out);
+                collect_hidden_group_refs_in_particle(schema, p, out, visited);
             }
         }
         ComplexContent::Choice(ch) => {
             for p in &ch.branches {
-                collect_hidden_group_refs_in_particle(schema, p, out);
+                collect_hidden_group_refs_in_particle(schema, p, out, visited);
             }
         }
         ComplexContent::Empty => {}
     }
 }
 
+fn collect_hidden_group_particles(
+    schema: &SchemaDocument,
+    local: &str,
+    out: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<String>,
+) {
+    if local.is_empty() || !visited.insert(local.to_string()) {
+        return;
+    }
+    if let Some(GroupDecl::Sequence(gseq)) = schema.groups.get(local) {
+        for p in &gseq.particles {
+            collect_hidden_group_refs_in_particle(schema, p, out, visited);
+        }
+    }
+    visited.remove(local);
+}
+
 fn collect_hidden_group_refs_in_particle(
     schema: &SchemaDocument,
     particle: &Particle,
     out: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<String>,
 ) {
     match particle {
         Particle::Element(el) => {
@@ -182,26 +197,21 @@ fn collect_hidden_group_refs_in_particle(
                 return;
             }
             if let Some(TypeDef::Complex { content, .. }) = schema.resolve_type(&el.type_name) {
-                collect_hidden_group_refs_in_content(schema, content, out);
+                collect_hidden_group_refs_in_content(schema, content, out, visited);
             }
         }
         Particle::Sequence(s) => {
             if let Some(ref href) = s.props.hidden_group_ref {
                 out.insert(href.clone());
-                let local = group_local_name(href);
-                if let Some(GroupDecl::Sequence(gseq)) = schema.groups.get(local) {
-                    for p in &gseq.particles {
-                        collect_hidden_group_refs_in_particle(schema, p, out);
-                    }
-                }
+                collect_hidden_group_particles(schema, group_local_name(href), out, visited);
             }
             for p in &s.particles {
-                collect_hidden_group_refs_in_particle(schema, p, out);
+                collect_hidden_group_refs_in_particle(schema, p, out, visited);
             }
         }
         Particle::Choice(c) => {
             for p in &c.branches {
-                collect_hidden_group_refs_in_particle(schema, p, out);
+                collect_hidden_group_refs_in_particle(schema, p, out, visited);
             }
         }
         Particle::GroupRef(gr) => {
@@ -210,12 +220,12 @@ fn collect_hidden_group_refs_in_particle(
                 match group {
                     GroupDecl::Sequence(s) => {
                         for p in &s.particles {
-                            collect_hidden_group_refs_in_particle(schema, p, out);
+                            collect_hidden_group_refs_in_particle(schema, p, out, visited);
                         }
                     }
                     GroupDecl::Choice(c) => {
                         for p in &c.branches {
-                            collect_hidden_group_refs_in_particle(schema, p, out);
+                            collect_hidden_group_refs_in_particle(schema, p, out, visited);
                         }
                     }
                 }
@@ -230,7 +240,9 @@ fn validate_hidden_group_model(
     stack: &mut Vec<String>,
 ) -> Result<(), String> {
     if stack.iter().any(|s| s == group_name) {
-        return Ok(());
+        return Err(
+            "Schema Definition Error: Model group circular definitions. Group references, or hidden group references form a loop.".into(),
+        );
     }
     stack.push(group_name.to_string());
     let group = schema
@@ -239,9 +251,24 @@ fn validate_hidden_group_model(
         .ok_or_else(|| format!("Schema Definition Error: hidden group `{group_name}` not found"))?;
     let particles = match group {
         GroupDecl::Sequence(s) => s.particles.as_slice(),
-        GroupDecl::Choice(_) => {
+        GroupDecl::Choice(c) => {
+            let any_ok = c
+                .branches
+                .iter()
+                .any(|p| particle_can_unparse_if_no_events(schema, p));
             stack.pop();
-            return Ok(());
+            if any_ok {
+                return Ok(());
+            }
+            let labels: Vec<String> = c
+                .branches
+                .iter()
+                .filter_map(|p| particle_display(schema, p))
+                .collect();
+            return Err(format!(
+                "Schema Definition Error: At least one branch of hidden choice must be fully defaultable or define dfdl:outputValueCalc:\n{}",
+                labels.join("\n")
+            ));
         }
     };
     let mut failures = Vec::new();
