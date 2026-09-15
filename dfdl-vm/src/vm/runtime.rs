@@ -5483,6 +5483,9 @@ pub(crate) fn read_text_scalar(
                 LengthKind::Delimited | LengthKind::Implicit
             )
         {
+            if props.occurs_min == 0 {
+                return Err(crate::error::VmError::ElementAbsent.into());
+            }
             let type_name = value_kind_type_name(kind, Some(props));
             return Err(VmError::InvalidValue {
                 message: alloc::format!("Parse Error. Unable to parse {type_name} from empty string"),

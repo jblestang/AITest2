@@ -100,6 +100,32 @@ fn props_contribute_delimiter_stops(props: &IrProps, strings: &StringPool) -> Re
     Ok(false)
 }
 
+fn cursor_at_parent_infix_separator(
+    cursor: &Cursor<'_>,
+    parent_sequence: Option<&IrProps>,
+    strings: &StringPool,
+) -> Result<bool> {
+    let Some(parent) = parent_sequence else {
+        return Ok(false);
+    };
+    if parent.separator_position != SeparatorPosition::Infix {
+        return Ok(false);
+    }
+    let Some(id) = parent.separator else {
+        return Ok(false);
+    };
+    let pat = strings.get(id)?;
+    Ok(
+        crate::schema::match_delimiter_opts_for_encoding(
+            &cursor.data[cursor.pos..],
+            pat,
+            parent.ignore_case,
+            None,
+        )
+        .is_some_and(|n| n > 0),
+    )
+}
+
 fn filter_delimiter_stop_sequences<'a>(
     stop_sequences: &'a [&'a IrProps],
     strings: &StringPool,
@@ -1109,6 +1135,15 @@ impl<'a> Decoder<'a> {
         let populate_errors = should_populate_array_errors(props);
         let mut items = Vec::new();
         let mut implicit_empty_probe = false;
+        let never_optional_array = parent_sequence.and_then(|p| {
+            if p.separator_suppression_policy == Some(crate::schema::SeparatorSuppressionPolicy::Never)
+            {
+                props.occurs_max.filter(|&m| m > 1)
+            } else {
+                None
+            }
+        });
+        let mut never_infix_separators_consumed = 0u64;
         let delimiter_stops =
             filter_delimiter_stop_sequences(stop_sequences, self.ctx.strings())?;
         if props.empty_element_parse_policy == EmptyElementParsePolicy::TreatAsAbsent
@@ -1210,6 +1245,7 @@ impl<'a> Decoder<'a> {
                 // Always try: delimited fields may defer enclosing consume, leaving the
                 // occurrence separator at the cursor; if already consumed, this is a no-op.
                 // Postfix separators are consumed after each occurrence (below), not before the next.
+                let sep_pos = cursor.pos;
                 if let Err(e) = self.consume_occurrence_separator(
                     parent_sequence,
                     Some(props),
@@ -1226,6 +1262,33 @@ impl<'a> Decoder<'a> {
                     }
                     return Err(e);
                 }
+                if never_optional_array.is_some() && cursor.pos > sep_pos {
+                    never_infix_separators_consumed += 1;
+                }
+            }
+            if min == 0
+                && (would_read_empty_delimited_field(
+                    cursor,
+                    props,
+                    self.ctx.strings(),
+                    delimiter_stops.as_slice(),
+                )? || cursor_at_parent_infix_separator(
+                    cursor,
+                    parent_sequence,
+                    self.ctx.strings(),
+                )?)
+            {
+                let sep_pos = cursor.pos;
+                self.consume_occurrence_separator(
+                    parent_sequence,
+                    Some(props),
+                    Some(items.as_slice()),
+                    cursor,
+                )?;
+                if never_optional_array.is_some() && cursor.pos > sep_pos {
+                    never_infix_separators_consumed += 1;
+                }
+                continue;
             }
             let require_delimiter = has_following_sibling;
             let saved = cursor.clone();
@@ -1279,24 +1342,69 @@ impl<'a> Decoder<'a> {
                         }
                         .into());
                     }
-                    items.push(v);
-                    if parent_sequence.is_some_and(|p| {
-                        p.separator_position == SeparatorPosition::Postfix
-                    }) {
+                    if min == 0
+                        && is_suppressible_empty_representation(
+                            &v,
+                            props,
+                            self.ctx.strings(),
+                        )?
+                    {
+                        let sep_pos = cursor.pos;
                         self.consume_occurrence_separator(
                             parent_sequence,
                             Some(props),
                             Some(items.as_slice()),
                             cursor,
                         )?;
+                        if never_optional_array.is_some() && cursor.pos > sep_pos {
+                            never_infix_separators_consumed += 1;
+                        }
+                        continue;
+                    }
+                    items.push(v);
+                    if parent_sequence.is_some_and(|p| {
+                        p.separator_position == SeparatorPosition::Postfix
+                    }) {
+                        let sep_pos = cursor.pos;
+                        self.consume_occurrence_separator(
+                            parent_sequence,
+                            Some(props),
+                            Some(items.as_slice()),
+                            cursor,
+                        )?;
+                        if never_optional_array.is_some() && cursor.pos > sep_pos {
+                            never_infix_separators_consumed += 1;
+                        }
                     }
                 }
                 Err(e) => {
                     if implicit_empty_probe {
                         return Err(e);
                     }
+                    let rewind = saved.clone();
+                    {
+                        let err_msg = e.to_string();
+                        if never_optional_array.is_some()
+                            && (err_msg.contains("empty string")
+                                || err_msg.contains("Unable to parse xs:int from empty"))
+                        {
+                            let track_never_sep = true;
+                            *cursor = rewind.clone();
+                            let sep_pos = cursor.pos;
+                            self.consume_occurrence_separator(
+                                parent_sequence,
+                                Some(props),
+                                Some(items.as_slice()),
+                                cursor,
+                            )?;
+                            if track_never_sep && cursor.pos > sep_pos {
+                                never_infix_separators_consumed += 1;
+                            }
+                            continue;
+                        }
+                    }
                     if min == 0 && items.is_empty() {
-                        *cursor = saved;
+                        *cursor = rewind.clone();
                         let consumed = self.try_consume_treat_as_absent_separator_on_error(
                             props,
                             parent_sequence,
@@ -1310,6 +1418,20 @@ impl<'a> Decoder<'a> {
                             continue;
                         }
                         if is_element_absent(&e) {
+                            if never_optional_array.is_some() {
+                                *cursor = rewind.clone();
+                                let sep_pos = cursor.pos;
+                                self.consume_occurrence_separator(
+                                    parent_sequence,
+                                    Some(props),
+                                    Some(items.as_slice()),
+                                    cursor,
+                                )?;
+                                if cursor.pos > sep_pos {
+                                    never_infix_separators_consumed += 1;
+                                }
+                                continue;
+                            }
                             return Err(VmError::ElementAbsent.into());
                         }
                         break;
@@ -1330,7 +1452,7 @@ impl<'a> Decoder<'a> {
                         {
                             before_occurrence_sep
                         } else {
-                            saved
+                            rewind
                         };
                         break;
                     }
@@ -1378,7 +1500,31 @@ impl<'a> Decoder<'a> {
             .into());
         }
 
+        if let Some(m) = never_optional_array {
+            let n = items.len() as u64;
+            if n == 0 {
+                if never_infix_separators_consumed != m.saturating_sub(1) {
+                    return Err(VmError::InvalidValue {
+                        message: "Parse Error: maxOccurs required with separatorSuppressionPolicy never"
+                            .into(),
+                    }
+                    .into());
+                }
+            } else if n < m {
+                return Err(VmError::InvalidValue {
+                    message: "Parse Error: maxOccurs required with separatorSuppressionPolicy never"
+                        .into(),
+                }
+                .into());
+            }
+        }
+
         if items.is_empty() {
+            if min == 0
+                && props.occurs_max.map(|m| m > 1).unwrap_or(false)
+            {
+                return Ok(DfdlValue::Array(Vec::new()));
+            }
             return Err(VmError::ElementAbsent.into());
         }
 

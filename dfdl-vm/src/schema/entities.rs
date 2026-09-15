@@ -1253,7 +1253,7 @@ pub fn match_delimiter_with_alt_for_encoding(
     if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
         return match_nl_comma_space_separator(input).map(|n| (n, 0));
     }
-    if delimiter_has_top_level_comma(pattern) {
+    if delimiter_has_top_level_comma(pattern) && !should_split_whitespace_alternatives(pattern) {
         if let Some(n) = match_delimiter_compound(input, pattern, ignore_case, encoding) {
             if n > 0 {
                 return Some((n, 0));
@@ -1296,7 +1296,7 @@ pub fn match_delimiter_opts_for_encoding(
     if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
         return match_nl_comma_space_separator(input);
     }
-    if delimiter_has_top_level_comma(pattern) {
+    if delimiter_has_top_level_comma(pattern) && !should_split_whitespace_alternatives(pattern) {
         if let Some(n) = match_delimiter_compound(input, pattern, ignore_case, encoding) {
             if n > 0 {
                 return Some(n);
@@ -1325,6 +1325,9 @@ pub fn delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::S
     if pattern.chars().all(|c| c == ',') && pattern.len() > 1 {
         return alloc::vec![pattern.to_string()];
     }
+    if should_split_whitespace_alternatives(pattern) {
+        return split_whitespace_delimiter_alternatives(pattern);
+    }
     if delimiter_has_top_level_comma(pattern) {
         return split_delimiter_alternatives_comma(pattern);
     }
@@ -1340,9 +1343,6 @@ pub fn delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::S
     }
     if let Some(alts) = split_entity_and_literal_alternatives(pattern) {
         return alts;
-    }
-    if should_split_whitespace_alternatives(pattern) {
-        return split_whitespace_delimiter_alternatives(pattern);
     }
     alloc::vec![unescape_dfdl_delimiter_alt(pattern)]
 }
@@ -2702,6 +2702,14 @@ mod tests {
     fn encode_delimiter_alternatives_prefers_comma() {
         assert_eq!(encode_delimiter("%NL;, ,"), vec![b',']);
         assert_eq!(encode_delimiter("\n, ,"), vec![b',']);
+    }
+
+    #[test]
+    fn whitespace_separated_separator_alternatives() {
+        let pat = ", ,, ,,,";
+        assert_eq!(delimiter_alternatives(pat), vec![",", ",,", ",,,"]);
+        assert_eq!(match_delimiter_opts(b",,2", pat, false), Some(2));
+        assert_eq!(match_delimiter_opts(b",,,3", pat, false), Some(3));
     }
 
     #[test]
