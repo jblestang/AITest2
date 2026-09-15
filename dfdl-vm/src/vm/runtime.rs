@@ -9173,6 +9173,10 @@ pub(crate) fn read_simple(
         if consume_delimited_enclosing || !defer {
             consume_enclosing_delimiter(cursor, props, strings, stop_sequences)?;
         }
+    } else if props.representation == Representation::Text
+        && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
+    {
+        // Terminator consumed in read_text_scalar for fixed/explicit text fields.
     } else if let Some(id) = props.terminator {
         let pat = strings.get(id)?;
         if !pat.is_empty() {

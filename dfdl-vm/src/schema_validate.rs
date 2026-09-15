@@ -124,16 +124,37 @@ fn validate_max_hex_binary_length(
     Ok(())
 }
 
+const XSD_NS: &str = "http://www.w3.org/2001/XMLSchema";
+
+fn type_qname_uses_xsd_namespace(
+    schema: &SchemaDocument,
+    type_attr: &str,
+    scope: Option<&alloc::collections::BTreeMap<String, String>>,
+) -> bool {
+    let Some((prefix, _)) = type_attr.split_once(':') else {
+        return false;
+    };
+    let mut prefix_map = schema.namespace_prefixes.clone();
+    if let Some(s) = scope {
+        for (k, v) in s {
+            prefix_map.insert(k.clone(), v.clone());
+        }
+    }
+    prefix_map.get(prefix).is_some_and(|uri| uri == XSD_NS)
+}
+
 fn validate_element_type_qnames(schema: &SchemaDocument, root: &str) -> Result<(), SchemaError> {
     let Some(ge) = crate::schema::get_global_element(schema, root) else {
         return Ok(());
     };
     if let Some(ref q) = ge.type_xsd_qname {
-        crate::schema::resolve_type_qname_in_schema(
-            schema,
-            q,
-            ge.type_qname_scope.as_ref(),
-        )?;
+        if type_qname_uses_xsd_namespace(schema, q, ge.type_qname_scope.as_ref()) {
+            crate::schema::resolve_type_qname_in_schema(
+                schema,
+                q,
+                ge.type_qname_scope.as_ref(),
+            )?;
+        }
     }
     let mut queue = VecDeque::new();
     if BuiltinType::from_xsd(ge.type_name.as_str()).is_none() {
@@ -196,7 +217,9 @@ fn validate_particle_type_qnames(
                 })
             };
             if let Some(q) = type_qname {
-                crate::schema::resolve_type_qname_in_schema(schema, q, type_scope)?;
+                if type_qname_uses_xsd_namespace(schema, q, type_scope) {
+                    crate::schema::resolve_type_qname_in_schema(schema, q, type_scope)?;
+                }
             }
             if BuiltinType::from_xsd(el.type_name.as_str()).is_none() {
                 queue.push_back(el.type_name.clone());

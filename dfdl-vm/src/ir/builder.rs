@@ -2018,6 +2018,20 @@ fn validate_hex_binary_delimited_encoding(
 
 fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
     if props.representation == Representation::Binary
+        && matches!(
+            props.length_kind,
+            LengthKind::Explicit | LengthKind::Fixed | LengthKind::Prefixed
+        )
+    {
+        return Ok(());
+    }
+    if props.representation == Representation::Binary
+        && props.length_kind == LengthKind::Delimited
+        && props.length.is_some()
+    {
+        return Ok(());
+    }
+    if props.representation == Representation::Binary
         && props.length_kind == LengthKind::Delimited
     {
         if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {

@@ -1100,6 +1100,7 @@ impl<'a> XsdParser<'a> {
                 Some(&self.doc.variables),
                 self.doc.schema_source_label.as_deref(),
             )?;
+        record_local_element_xsd_diagnostics(&xsd_attrs, &mut self.doc.schema_diagnostics);
         let is_ref = xsd_attrs.contains_key("ref");
         let has_element_name_attr = xsd_attrs.contains_key("name");
         let element_ref = xsd_attrs.get("ref").cloned();
@@ -3227,10 +3228,13 @@ fn split_dfdl_attrs_with_variables(
         if k.starts_with("daf:") {
             continue;
         }
+        let allow_unprefixed_dfdl = element_local != "element";
         if k.starts_with("dfdl:")
             || k.starts_with("dfdlx:")
             || k.contains("dfdl-1.0/extensions}")
-            || (is_dfdl_property(local) && !is_xsd_local_attr(element_local, local))
+            || (allow_unprefixed_dfdl
+                && is_dfdl_property(local)
+                && !is_xsd_local_attr(element_local, local))
         {
             dfdl_map.insert(local.to_string(), v.clone());
         } else {
@@ -3268,9 +3272,23 @@ fn record_global_element_xsd_diagnostics(
     xsd_attrs: &BTreeMap<String, String>,
     diagnostics: &mut alloc::vec::Vec<String>,
 ) {
+    record_local_element_xsd_diagnostics(xsd_attrs, diagnostics);
+    if name.contains(':') {
+        diagnostics.push(alloc::format!(
+            "Schema Definition Error: The value '{name}' is not a valid NCName"
+        ));
+        diagnostics.push("NCName".into());
+    }
+}
+
+fn record_local_element_xsd_diagnostics(
+    xsd_attrs: &BTreeMap<String, String>,
+    diagnostics: &mut alloc::vec::Vec<String>,
+) {
     const ALLOWED: &[&str] = &[
         "name",
         "type",
+        "ref",
         "default",
         "fixed",
         "nillable",
@@ -3279,6 +3297,9 @@ fn record_global_element_xsd_diagnostics(
         "block",
         "final",
         "id",
+        "minOccurs",
+        "maxOccurs",
+        "form",
     ];
     for k in xsd_attrs.keys() {
         if k.contains(':') && !k.starts_with("xs:") {
@@ -3291,11 +3312,13 @@ fn record_global_element_xsd_diagnostics(
             ));
         }
     }
-    if name.contains(':') {
-        diagnostics.push(alloc::format!(
-            "Schema Definition Error: The value '{name}' is not a valid NCName"
-        ));
-        diagnostics.push("NCName".into());
+    if let Some(name) = xsd_attrs.get("name") {
+        if name.contains(':') {
+            diagnostics.push(alloc::format!(
+                "Schema Definition Error: The value '{name}' is not a valid NCName"
+            ));
+            diagnostics.push("NCName".into());
+        }
     }
 }
 
