@@ -24,7 +24,7 @@ fn enrich(suite: &mut dfdl_vm::tdml::TdmlSuite, path: &Path) {
             continue;
         }
         let p = dir.join(&model);
-        if let Ok(xsd) = fs::read_to_string(&p) {
+        if let Ok(xsd) = dfdl_vm::schema::read_schema_text_file(&p) {
             suite.schemas.insert(
                 model.clone(),
                 TdmlSchema {
