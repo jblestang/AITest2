@@ -195,6 +195,17 @@ fn find_infoset_children<'a>(node: &'a InfosetNode, local_name: &str) -> Vec<&'a
         .collect()
 }
 
+/// When infoset lexical is invalid for the schema type, keep the text so unparse can report
+/// `Unparse Error` / `not a valid xs:…` (Daffodil section 5 unparseError tests).
+fn infoset_lexical_fallback(trimmed: &str, kind: ValueKind) -> DfdlValue {
+    match kind {
+        ValueKind::Integer => DfdlValue::Integer(trimmed.to_string()),
+        ValueKind::Decimal => DfdlValue::Decimal(trimmed.to_string()),
+        ValueKind::DateTime | ValueKind::Time => DfdlValue::DateTime(trimmed.to_string()),
+        _ => DfdlValue::string(trimmed),
+    }
+}
+
 fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, String> {
     let trimmed = text.trim();
     match kind {
@@ -207,7 +218,7 @@ fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, Strin
                 _ => Err(()),
             })
             .map(DfdlValue::Boolean)
-            .map_err(|_| alloc::format!("invalid boolean `{trimmed}`")),
+            .or_else(|_| Ok(infoset_lexical_fallback(trimmed, kind))),
         ValueKind::Byte => trimmed
             .parse::<i64>()
             .map(|v| {
@@ -215,43 +226,45 @@ fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, Strin
                     .map(DfdlValue::Byte)
                     .unwrap_or(DfdlValue::Long(v))
             })
-            .map_err(|e| e.to_string()),
+            .or_else(|_| Ok(infoset_lexical_fallback(trimmed, kind))),
         ValueKind::Short => trimmed
             .parse::<i16>()
             .map(DfdlValue::Short)
-            .map_err(|e| e.to_string()),
+            .or_else(|_| Ok(infoset_lexical_fallback(trimmed, kind))),
         ValueKind::Int => trimmed
             .parse::<i32>()
             .map(DfdlValue::Int)
-            .map_err(|e| e.to_string()),
+            .or_else(|_| Ok(infoset_lexical_fallback(trimmed, kind))),
         ValueKind::Integer => Ok(DfdlValue::Integer(trimmed.to_string())),
         ValueKind::Long => trimmed
             .parse::<i64>()
             .map(DfdlValue::Long)
-            .map_err(|e| e.to_string()),
+            .or_else(|_| Ok(infoset_lexical_fallback(trimmed, kind))),
         ValueKind::UnsignedByte => trimmed
             .parse::<u8>()
             .map(DfdlValue::UnsignedByte)
-            .map_err(|e| e.to_string()),
+            .or_else(|_| Ok(infoset_lexical_fallback(trimmed, kind))),
         ValueKind::UnsignedShort => trimmed
             .parse::<u16>()
             .map(DfdlValue::UnsignedShort)
-            .map_err(|e| e.to_string()),
+            .or_else(|_| Ok(infoset_lexical_fallback(trimmed, kind))),
         ValueKind::UnsignedInt => trimmed
             .parse::<u32>()
             .map(DfdlValue::UnsignedInt)
-            .map_err(|e| e.to_string()),
+            .or_else(|_| Ok(infoset_lexical_fallback(trimmed, kind))),
         ValueKind::Float => trimmed
             .parse::<f32>()
             .map(DfdlValue::Float)
-            .map_err(|e| e.to_string()),
+            .or_else(|_| Ok(infoset_lexical_fallback(trimmed, kind))),
         ValueKind::Double => trimmed
             .parse::<f64>()
             .map(DfdlValue::Double)
-            .map_err(|e| e.to_string()),
+            .or_else(|_| Ok(infoset_lexical_fallback(trimmed, kind))),
         ValueKind::Decimal => Ok(DfdlValue::Decimal(trimmed.to_string())),
         ValueKind::DateTime | ValueKind::Time => Ok(DfdlValue::DateTime(trimmed.to_string())),
-        ValueKind::HexBinary => decode_hex(trimmed).map(DfdlValue::HexBinary),
+        ValueKind::HexBinary => decode_hex(trimmed)
+            .map(DfdlValue::HexBinary)
+            .or_else(|_| Ok(infoset_lexical_fallback(trimmed, kind))),
         ValueKind::Complex => {
             if trimmed.is_empty() {
                 Ok(DfdlValue::sequence(BTreeMap::new()))

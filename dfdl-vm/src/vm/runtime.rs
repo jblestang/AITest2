@@ -2439,6 +2439,209 @@ fn calendar_text_strict_time_error(text: &str) -> crate::error::VmError {
     }
 }
 
+fn xsd_tz_to_offset_secs(tz: &str) -> Option<i64> {
+    let (normalized, _) = parse_calendar_tz_offset(tz)?;
+    let sign = if normalized.starts_with('-') { -1i64 } else { 1i64 };
+    let body = normalized.trim_start_matches(['+', '-']);
+    let (hh, mm) = body.split_once(':').unwrap_or((body, "0"));
+    let hh: i64 = hh.parse().ok()?;
+    let mm: i64 = mm.parse().ok()?;
+    Some(sign * (hh * 3600 + mm * 60))
+}
+
+fn parse_iso_time_hms(iso: &str) -> Result<(u32, u32, u32, Option<i64>), crate::error::VmError> {
+    use crate::error::VmError;
+    let iso = iso.trim();
+    let (core, tz_secs) = if iso.ends_with('Z') {
+        (&iso[..iso.len().saturating_sub(1)], Some(0i64))
+    } else if let Some(i) = iso.rfind('+').filter(|&i| i >= 5) {
+        (
+            &iso[..i],
+            xsd_tz_to_offset_secs(&iso[i..]),
+        )
+    } else if let Some(rel) = iso.get(8..) {
+        if let Some(i) = rel.find('-') {
+            let idx = 8 + i;
+            (
+                &iso[..idx],
+                xsd_tz_to_offset_secs(&iso[idx..]),
+            )
+        } else {
+            (iso, None)
+        }
+    } else {
+        (iso, None)
+    };
+    let parts: alloc::vec::Vec<&str> = core.split(':').collect();
+    if parts.len() < 2 {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("invalid xs:time `{iso}`"),
+        });
+    }
+    let hh: u32 = parts[0].parse().map_err(|_| VmError::InvalidValue {
+        message: alloc::format!("invalid xs:time `{iso}`"),
+    })?;
+    let mm: u32 = parts[1].parse().map_err(|_| VmError::InvalidValue {
+        message: alloc::format!("invalid xs:time `{iso}`"),
+    })?;
+    let ss = if parts.len() > 2 {
+        parts[2]
+            .split('.')
+            .next()
+            .unwrap_or(parts[2])
+            .parse()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    Ok((hh, mm, ss, tz_secs))
+}
+
+fn emit_calendar_tz_unparse(offset_secs: i64, kind: char, width: usize) -> alloc::string::String {
+    let sign = if offset_secs >= 0 { '+' } else { '-' };
+    let abs = offset_secs.abs();
+    let oh = abs / 3600;
+    let om = (abs % 3600) / 60;
+    let xsd = alloc::format!("{sign}{oh:02}:{om:02}");
+    match kind {
+        'z' => {
+            if width >= 4 {
+                alloc::format!("GMT{xsd}")
+            } else {
+                alloc::format!("GMT{sign}{oh}")
+            }
+        }
+        'Z' => alloc::format!("{sign}{oh:02}{om:02}"),
+        'v' => {
+            if width >= 4 {
+                alloc::format!("GMT{xsd}")
+            } else {
+                alloc::format!("GMT{sign}{oh}")
+            }
+        }
+        'V' => {
+            if offset_secs == 0 {
+                "gmt".into()
+            } else if width >= 4 {
+                alloc::format!("GMT{xsd}")
+            } else {
+                "unk".into()
+            }
+        }
+        _ => alloc::string::String::new(),
+    }
+}
+
+fn unparse_iso_time_to_calendar_pattern(
+    iso: &str,
+    pattern: &str,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+    let (hour, minute, second, tz_secs) = parse_iso_time_hms(iso)?;
+    let mut out = alloc::string::String::new();
+    let chars: alloc::vec::Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            i += 1;
+            if i < chars.len() && chars[i] == '\'' {
+                out.push('\'');
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < chars.len() {
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        i += 2;
+                    } else {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            if i >= chars.len() {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("invalid calendarPattern `{pattern}`"),
+                });
+            }
+            let lit: alloc::string::String = chars[start..i]
+                .iter()
+                .collect::<alloc::string::String>()
+                .replace("''", "'");
+            out.push_str(&lit);
+            i += 1;
+            continue;
+        }
+        let c = chars[i];
+        if c.is_whitespace() {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if matches!(c, 'z' | 'Z' | 'v' | 'V') {
+            let mut w = 1usize;
+            while i + w < chars.len() && chars[i + w] == c {
+                w += 1;
+            }
+            if let Some(secs) = tz_secs {
+                out.push_str(&emit_calendar_tz_unparse(secs, c, w));
+            }
+            i += w;
+            continue;
+        }
+        if c.is_ascii_alphabetic() {
+            let mut w = 1usize;
+            while i + w < chars.len() && chars[i + w] == c {
+                w += 1;
+            }
+            let field = match c {
+                'h' | 'H' | 'k' | 'K' => {
+                    let h = if matches!(c, 'H' | 'k') {
+                        hour
+                    } else if hour == 0 || hour > 12 {
+                        hour % 12
+                    } else {
+                        hour
+                    };
+                    if w >= 2 {
+                        alloc::format!("{h:02}")
+                    } else {
+                        alloc::format!("{h}")
+                    }
+                }
+                'm' => {
+                    if w >= 2 {
+                        alloc::format!("{minute:02}")
+                    } else {
+                        alloc::format!("{minute}")
+                    }
+                }
+                's' => {
+                    if w >= 2 {
+                        alloc::format!("{second:02}")
+                    } else {
+                        alloc::format!("{second}")
+                    }
+                }
+                'S' => "0".repeat(w.min(9)),
+                _ => {
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!("unsupported calendar field `{c}` in unparse"),
+                    });
+                }
+            };
+            out.push_str(&field);
+            i += w;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    Ok(out)
+}
+
 fn format_calendar_text(
     text: &str,
     pattern: &str,
@@ -4950,6 +5153,27 @@ pub(crate) fn finalize_simple_value(
     Ok(value)
 }
 
+fn encode_binary_boolean_sl(v: bool, props: &IrProps) -> u64 {
+    let false_rep = props.binary_boolean_false_rep.unwrap_or(0);
+    let true_empty =
+        props.binary_boolean_true_rep_defined && props.binary_boolean_true_rep.is_none();
+    if v {
+        if true_empty {
+            let width = implicit_binary_scalar_byte_length(crate::ir::ValueKind::Boolean, props) * 8;
+            let mask = if width >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << width) - 1
+            };
+            ((!false_rep) as u32 as u64) & mask
+        } else {
+            props.binary_boolean_true_rep.unwrap_or(1)
+        }
+    } else {
+        false_rep
+    }
+}
+
 fn decode_binary_boolean_sl(
     sl: u64,
     props: &IrProps,
@@ -5237,7 +5461,7 @@ pub(crate) fn write_binary_scalar(
                     .map(|n| n as usize)
                     .unwrap_or_else(|| type_size(kind))
             } else {
-                type_size(kind)
+                implicit_binary_scalar_byte_length(kind, props)
             }
         }
         LengthKind::Explicit => {
@@ -5261,7 +5485,9 @@ pub(crate) fn write_binary_scalar(
 
     let mut bytes = alloc::vec::Vec::new();
     match (kind, value) {
-        (Boolean, DfdlValue::Boolean(v)) => bytes.push(u8::from(*v)),
+        (Boolean, DfdlValue::Boolean(v)) => {
+            bytes = int_bytes(encode_binary_boolean_sl(*v, props) as i64, size, le)
+        }
         (Byte, DfdlValue::Byte(v)) => bytes = int_bytes(*v as i64, size, le),
         (UnsignedByte, DfdlValue::UnsignedByte(v)) => {
             bytes = int_bytes(*v as i64, size, le)
@@ -5368,7 +5594,7 @@ fn scalar_to_raw_bits(
     }
 
     match (kind, value) {
-        (Boolean, DfdlValue::Boolean(v)) => Ok(u64::from(*v)),
+        (Boolean, DfdlValue::Boolean(v)) => Ok(encode_binary_boolean_sl(*v, props)),
         (Byte, DfdlValue::Byte(v)) => Ok(signed_raw(*v as i64, bit_width)),
         (UnsignedByte, DfdlValue::UnsignedByte(v)) => Ok(*v as u64),
         (Short, DfdlValue::Short(v)) => Ok(signed_raw(*v as i64, bit_width)),
@@ -5708,7 +5934,20 @@ pub(crate) fn write_text_scalar(
         (Float, DfdlValue::Float(v)) => alloc::format!("{v}"),
         (Double, DfdlValue::Double(v)) => alloc::format!("{v}"),
         (Decimal, DfdlValue::Decimal(v)) => v.clone(),
-        (DateTime, DfdlValue::DateTime(v)) => v.clone(),
+        (DateTime, DfdlValue::DateTime(v)) | (Time, DfdlValue::DateTime(v)) => {
+            if let Some(pat_id) = props.calendar_pattern {
+                let pattern = strings.get(pat_id)?;
+                if crate::vm::calendar_binary::calendar_pattern_time_only(pattern)
+                    || kind == crate::ir::ValueKind::Time
+                {
+                    unparse_iso_time_to_calendar_pattern(v, pattern)?
+                } else {
+                    v.clone()
+                }
+            } else {
+                v.clone()
+            }
+        }
         (String, DfdlValue::String(v)) => {
             if config.encode_pua_codepoints_as_utf8 {
                 v.text.clone()
@@ -9177,8 +9416,123 @@ pub(crate) fn coerce_value_for_kind(
             decode_hex_binary(&s.text).map(DfdlValue::HexBinary)?
         }
         (HexBinary, v @ DfdlValue::HexBinary(_)) => v.clone(),
+        (Time, v @ DfdlValue::DateTime(_)) => v.clone(),
         (_, v) => v.clone(),
     })
+}
+
+fn unparse_not_valid_xs(type_name: &str) -> crate::error::VmError {
+    crate::error::VmError::InvalidValue {
+        message: alloc::format!("Unparse Error: not a valid {type_name}"),
+    }
+}
+
+fn unparse_not_calendar() -> crate::error::VmError {
+    crate::error::VmError::InvalidValue {
+        message: "Unparse Error: not a calendar".into(),
+    }
+}
+
+pub(crate) fn validate_unparse_scalar_lexical(
+    value: &crate::value::DfdlValue,
+    kind: crate::ir::ValueKind,
+    props: &IrProps,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    use crate::ir::ValueKind;
+    use crate::value::DfdlValue;
+
+    let base = props.text_standard_base;
+    let type_name = value_kind_type_name(kind, Some(props));
+
+    match (kind, value) {
+        (ValueKind::Byte, DfdlValue::String(s)) => {
+            parse_int_with_base::<i8>(&s.text, type_name, base).map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::Short, DfdlValue::String(s)) => {
+            parse_int_with_base::<i16>(&s.text, type_name, base).map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::Int, DfdlValue::String(s)) => {
+            parse_int_with_base::<i32>(&s.text, type_name, base).map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::Long, DfdlValue::String(s)) => {
+            parse_int_with_base::<i64>(&s.text, type_name, base).map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::Int, DfdlValue::Long(v)) => {
+            i32::try_from(*v).map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::UnsignedByte, DfdlValue::String(s)) => {
+            parse_unsigned_radix::<u8>(&s.text, base).map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::UnsignedShort, DfdlValue::String(s)) => {
+            parse_unsigned_radix::<u16>(&s.text, base).map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::UnsignedInt, DfdlValue::String(s)) => {
+            parse_unsigned_radix::<u32>(&s.text, base).map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::Integer, val @ (DfdlValue::Integer(_) | DfdlValue::String(_))) => {
+            let text = match val {
+                DfdlValue::Integer(s) => s.as_str(),
+                DfdlValue::String(s) => s.text.as_str(),
+                _ => unreachable!(),
+            };
+            parse_unbounded_integer_decimal(text, base, props.non_negative_integer)
+                .map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::Float, DfdlValue::String(s)) => {
+            parse_float(&s.text).map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::Double, DfdlValue::String(s)) => {
+            parse_float(&s.text).map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::Decimal, val @ (DfdlValue::Decimal(_) | DfdlValue::String(_))) => {
+            let text = match val {
+                DfdlValue::Decimal(s) => s.as_str(),
+                DfdlValue::String(s) => s.text.as_str(),
+                _ => unreachable!(),
+            };
+            if text.trim().is_empty() {
+                return Err(unparse_not_valid_xs(type_name));
+            }
+            let _ = split_sign_digits(text).map_err(|_| unparse_not_valid_xs(type_name))?;
+            if props.non_negative_integer && text.trim().starts_with('-') {
+                return Err(unparse_not_valid_xs(type_name));
+            }
+            if text.chars().any(|c| c.is_ascii_alphabetic()) {
+                return Err(unparse_not_valid_xs(type_name));
+            }
+        }
+        (ValueKind::HexBinary, DfdlValue::String(s)) => {
+            let t = s.text.trim();
+            if t.len() % 2 != 0 {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Unparse Error: Hex string must have an even number of characters, but was {} for {t}",
+                        t.len()
+                    ),
+                });
+            }
+            decode_hex_binary(t).map_err(|_| unparse_not_valid_xs("xs:hexBinary"))?;
+        }
+        (ValueKind::DateTime, DfdlValue::DateTime(s)) | (ValueKind::Time, DfdlValue::DateTime(s)) => {
+            if props.calendar_date_only {
+                crate::vm::calendar_binary::parse_xs_calendar_lexical(kind, true, s)
+                    .map_err(|_| unparse_not_calendar())?;
+            } else {
+                crate::vm::calendar_binary::parse_xs_calendar_lexical(kind, false, s).map_err(
+                    |_| {
+                        unparse_not_valid_xs(if kind == ValueKind::Time {
+                            "xs:time"
+                        } else {
+                            "xs:dateTime"
+                        })
+                    },
+                )?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn pad_hex_binary_value(
@@ -9270,6 +9624,7 @@ pub(crate) fn write_simple(
     field_name: Option<&str>,
     delim_meta: Option<&crate::value::FieldDelimiterMeta>,
 ) -> Result<(), crate::error::VmError> {
+    validate_unparse_scalar_lexical(value, kind, props)?;
     let value = coerce_value_for_kind(value, kind)?;
     if let Some(id) = props.initiator {
         let pat = strings.get(id)?;

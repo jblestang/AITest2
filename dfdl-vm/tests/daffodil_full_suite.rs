@@ -402,16 +402,16 @@ fn daffodil_section05_regression_gate() {
         stats.parse_fail, 0,
         "section05 TDML load errors: {stats:?}"
     );
-    // Baseline (2026-03): deferred facet validation for `<tdml:errors>`; root-scoped pattern SDEs; decimal digit facets.
+    // Baseline (2026-03): unparseError infoset lexicals; binary boolean reps; calendar time unparse patterns.
     assert!(
-        stats.pass >= 751,
-        "section05: expected at least 751 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 779,
+        "section05: expected at least 779 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
     );
     assert!(
-        stats.fail <= 61,
+        stats.fail <= 32,
         "section05 regression: too many failures pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
