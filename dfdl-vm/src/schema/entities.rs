@@ -1366,10 +1366,23 @@ fn has_regex_char_class(pattern: &str) -> bool {
 }
 
 fn should_split_whitespace_alternatives(pattern: &str) -> bool {
-    pattern.contains(' ')
-        && !pattern.contains('%')
-        && !has_regex_char_class(pattern)
-        && !pattern.contains('(')
+    if !pattern.contains(' ') || pattern.contains('%') || has_regex_char_class(pattern) {
+        return false;
+    }
+    if !pattern.contains('(') {
+        return true;
+    }
+    // Whitespace-separated literal tokens like "( [" or ") ]" — not regex groups.
+    pattern.split_whitespace().all(|tok| {
+        let t = tok.trim();
+        if t.is_empty() {
+            return false;
+        }
+        if t.len() == 1 {
+            return true;
+        }
+        !t.contains('(') && !t.contains(')') && t.len() <= 2
+    })
 }
 
 pub(crate) fn delimiter_has_top_level_comma(pattern: &str) -> bool {
@@ -2579,6 +2592,9 @@ mod tests {
 
     #[test]
     fn match_or_and_whitespace_delimiter_alternatives() {
+        assert_eq!(delimiter_alternatives("( ["), vec!["(", "["]);
+        assert_eq!(match_delimiter(b"(abc)", "( ["), Some(1));
+        assert_eq!(match_delimiter(b"[123]", "( ["), Some(1));
         assert_eq!(match_delimiter(b"]2", "} ] )"), Some(1));
         assert_eq!(match_delimiter(b")3", "} ] )"), Some(1));
         assert_eq!(match_delimiter(b":-5", ":: || : $"), Some(1));

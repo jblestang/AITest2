@@ -301,6 +301,24 @@ impl<'a> Decoder<'a> {
                 let mut field_delim_meta = BTreeMap::new();
                 let mut prev_absent_or_empty = false;
                 let mut inter_child_sep_consumed_by_prev = false;
+                if props.initiated_content {
+                    return self.decode_sequence_initiated_content(
+                        node_id,
+                        children,
+                        props,
+                        cursor,
+                        has_following_sibling,
+                        parent_sequence,
+                        siblings,
+                        content_scope_bytes,
+                        pattern_text_frame,
+                        child_stops,
+                        initiator_alt,
+                        infix_sep_newline_prefix,
+                        separator_alts,
+                        field_delim_meta,
+                    );
+                }
                 for (idx, &child) in children.iter().enumerate() {
                     let child_has_following = self.following_sibling_consumes_input(children, idx);
                     let child_element_props = match self.ctx.program.node(child) {
@@ -773,6 +791,230 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    fn initiated_content_uses_initiator_discriminator(&self, props: &IrProps) -> bool {
+        props.occurs_min == 0 && props.occurs_max != Some(1)
+    }
+
+    fn skip_initiated_content_sibling(
+        &self,
+        cursor: &Cursor<'_>,
+        child: u32,
+        committed: u32,
+        children: &[u32],
+    ) -> Result<bool> {
+        let committed_idx = children.iter().position(|&c| c == committed);
+        let child_idx = children.iter().position(|&c| c == child);
+        let (Some(ci), Some(fi)) = (committed_idx, child_idx) else {
+            return Ok(false);
+        };
+        if fi >= ci {
+            return Ok(false);
+        }
+        let IrNode::Element { props: committed_props, .. } =
+            self.ctx.program.node(committed)?
+        else {
+            return Ok(false);
+        };
+        let IrNode::Element { props: child_props, .. } = self.ctx.program.node(child)? else {
+            return Ok(false);
+        };
+        if !self.initiator_present_at_cursor(cursor, child_props)?
+            || !self.initiator_present_at_cursor(cursor, committed_props)?
+        {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn initiator_present_at_cursor(
+        &self,
+        cursor: &Cursor<'_>,
+        props: &IrProps,
+    ) -> Result<bool> {
+        let Some(id) = props.initiator else {
+            return Ok(true);
+        };
+        let pat = self.ctx.strings().get(id)?;
+        if pat.is_empty() {
+            return Ok(true);
+        }
+        let enc = encoding_name(props, self.ctx.strings()).ok();
+        Ok(
+            crate::schema::match_delimiter_opts_for_encoding(
+                &cursor.data[cursor.pos..],
+                pat,
+                props.ignore_case,
+                enc.as_deref(),
+            )
+            .is_some_and(|n| n > 0),
+        )
+    }
+
+    fn decode_sequence_initiated_content(
+        &self,
+        node_id: u32,
+        children: &[u32],
+        props: &IrProps,
+        cursor: &mut Cursor<'_>,
+        has_following_sibling: bool,
+        parent_sequence: Option<&IrProps>,
+        siblings: Option<&BTreeMap<String, SiblingState>>,
+        content_scope_bytes: Option<usize>,
+        pattern_text_frame: bool,
+        child_stops: &[&IrProps],
+        initiator_alt: Option<u8>,
+        infix_sep_newline_prefix: Vec<bool>,
+        separator_alts: Vec<Option<u8>>,
+        mut field_delim_meta: BTreeMap<String, FieldDelimiterMeta>,
+    ) -> Result<DfdlValue> {
+        let mut map = BTreeMap::new();
+        let mut seq_siblings = siblings.cloned().unwrap_or_default();
+        let mut committed_child: Option<u32> = None;
+        loop {
+            if cursor.is_empty() {
+                break;
+            }
+            let round_start = cursor.pos;
+            let mut round_progress = false;
+            for (idx, &child) in children.iter().enumerate() {
+                if let Some(committed) = committed_child {
+                    if self.skip_initiated_content_sibling(cursor, child, committed, children)? {
+                        continue;
+                    }
+                }
+                let child_has_following = self.following_sibling_consumes_input(children, idx);
+                if let Ok(IrNode::Element { props: cp, .. }) = self.ctx.program.node(child) {
+                    if cp.occurs_min == 0 && !self.initiator_present_at_cursor(cursor, cp)? {
+                        continue;
+                    }
+                    if cp.occurs_min == 0
+                        && element_discriminator_always_false(cp, self.ctx.strings())
+                    {
+                        continue;
+                    }
+                }
+                let saved = cursor.clone();
+                let start = cursor.pos;
+                match self.decode_particle(
+                    child,
+                    cursor,
+                    child_has_following,
+                    Some(props),
+                    Some(&seq_siblings),
+                    content_scope_bytes,
+                    pattern_text_frame,
+                    child_stops,
+                ) {
+                    Ok(child_value) => {
+                        if let Ok(IrNode::Element { props: cp, .. }) =
+                            self.ctx.program.node(child)
+                        {
+                            if cp.occurs_min == 0
+                                && is_suppressible_empty_representation(
+                                    &child_value,
+                                    cp,
+                                    self.ctx.strings(),
+                                )?
+                            {
+                                *cursor = saved;
+                                continue;
+                            }
+                        }
+                        let consumed = cursor.pos.saturating_sub(start);
+                        if let IrNode::Element { name, props: el_props, .. } =
+                            self.ctx.program.node(child)?
+                        {
+                            let key = self.ctx.strings().get(*name)?.to_string();
+                            let content_bytes = if el_props.length_kind == LengthKind::Prefixed {
+                                prefixed_payload_byte_length(
+                                    &cursor.data[start..cursor.pos],
+                                    el_props,
+                                    self.ctx.strings(),
+                                )?
+                            } else {
+                                consumed
+                            };
+                            seq_siblings.insert(
+                                key,
+                                SiblingState {
+                                    value: child_value.clone(),
+                                    content_bytes,
+                                },
+                            );
+                        }
+                        insert_child(&mut map, child, child_value, self.ctx.program)?;
+                        if let IrNode::Element { name, .. } = self.ctx.program.node(child)? {
+                            let key = self.ctx.strings().get(*name)?.to_string();
+                            if let Some(meta) = self.field_delimiters.borrow_mut().remove(&key) {
+                                field_delim_meta.insert(key, meta);
+                            }
+                        }
+                        if let Ok(IrNode::Element { props: cp, .. }) =
+                            self.ctx.program.node(child)
+                        {
+                            if self.initiated_content_uses_initiator_discriminator(cp) {
+                                committed_child = Some(child);
+                            }
+                        }
+                        round_progress = true;
+                        break;
+                    }
+                    Err(e) if is_element_absent(&e) => {
+                        *cursor = saved;
+                        continue;
+                    }
+                    Err(e) => {
+                        if let Ok(IrNode::Element { props: cp, .. }) =
+                            self.ctx.program.node(child)
+                        {
+                            if cp.occurs_min == 0 {
+                                *cursor = saved;
+                                continue;
+                            }
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+            if !round_progress || cursor.pos == round_start {
+                break;
+            }
+        }
+        if map.is_empty() && !cursor.is_empty() {
+            return Err(VmError::InvalidValue {
+                message: "initiated content sequence did not match any child initiator".into(),
+            }
+            .into());
+        }
+        let _ = (node_id, has_following_sibling, parent_sequence);
+        let mut terminator_alt = None;
+        if let Some(id) = props.terminator {
+            let pat = self.ctx.strings().get(id)?;
+            if !pat.is_empty() {
+                let enc = encoding_name(props, self.ctx.strings()).ok();
+                if let Some((_n, alt)) = cursor.consume_delimiter_with_alt(
+                    pat,
+                    props.ignore_case,
+                    enc.as_deref(),
+                ) {
+                    terminator_alt = Some(alt);
+                }
+            }
+        }
+        consume_element_trailing_framing(cursor, props)?;
+        self.validate_particle_discriminator(props)?;
+        Ok(DfdlValue::Sequence(crate::value::SequenceValue {
+            fields: map,
+            meta: crate::value::SequenceMeta {
+                infix_sep_newline_prefix,
+                initiator_alt,
+                terminator_alt,
+                separator_alts,
+                field_delimiters: field_delim_meta,
+            },
+        }))
+    }
+
     fn decode_particle(
         &self,
         node_id: u32,
@@ -1106,7 +1348,9 @@ impl<'a> Decoder<'a> {
                             return Err(populate_failed_error(path, index, &e.to_string()).into());
                         }
                     }
-                    return Err(e);
+                    return Err(
+                        element_parse_error(node_id, self.ctx.program, self.ctx.strings(), e).into(),
+                    );
                 }
             }
         }
@@ -2858,6 +3102,24 @@ fn dfdl_value_text(value: &DfdlValue) -> &str {
         }
         _ => "",
     }
+}
+
+fn element_parse_error(
+    node_id: u32,
+    program: &IrProgram,
+    strings: &StringPool,
+    err: impl core::fmt::Display,
+) -> crate::error::VmError {
+    let msg = if let Ok(IrNode::Element { name, .. }) = program.node(node_id) {
+        if let Ok(local) = strings.get(*name) {
+            alloc::format!("{err} {local}")
+        } else {
+            err.to_string()
+        }
+    } else {
+        err.to_string()
+    };
+    crate::error::VmError::InvalidValue { message: msg }
 }
 
 fn element_discriminator_always_false(props: &IrProps, strings: &StringPool) -> bool {
