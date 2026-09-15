@@ -565,6 +565,10 @@ pub fn parse_delimiter_literal_value(raw: &str) -> String {
     if is_compound_dfdl_entity_delimiter(&unescaped) || has_quantified_dfdl_entity(&unescaped) {
         return unescaped.trim().to_string();
     }
+    let expanded = expand_entities(&unescaped);
+    if core::str::from_utf8(&expanded).is_err() {
+        return unescaped.trim().to_string();
+    }
     let normalized = normalize_delimiter_pattern(&unescaped);
     if normalized.is_empty() && unescaped.contains('%') {
         return unescaped.trim().to_string();
@@ -690,6 +694,80 @@ pub fn runtime_delimiter_expression_may_be_zero_length(expr: &str) -> bool {
         }
     }
     false
+}
+
+fn unquote_xpath_string_literal(raw: &str) -> String {
+    let t = raw.trim();
+    if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
+        return t[1..t.len() - 1].replace("''", "'");
+    }
+    t.to_string()
+}
+
+fn xpath_relative_element_local_name(path: &str) -> Option<&str> {
+    let p = path.trim();
+    let p = p
+        .strip_prefix("./")
+        .or_else(|| p.strip_prefix("../"))
+        .unwrap_or(p);
+    Some(p.rsplit(':').next().unwrap_or(p).trim())
+}
+
+fn eval_delimiter_if_condition(
+    cond: &str,
+    siblings: &alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>,
+) -> Option<bool> {
+    let cond = cond.trim();
+    if let Some(idx) = cond.find("fn:string-length(") {
+        let after = &cond[idx + "fn:string-length(".len()..];
+        let end = after.find(')')?;
+        let path = after[..end].trim();
+        let name = xpath_relative_element_local_name(path)?;
+        let len = siblings.get(name)?.chars().count();
+        let rest = after[end + 1..].trim();
+        let rest = rest.strip_prefix("eq").unwrap_or(rest).trim();
+        let n: usize = rest.parse().ok()?;
+        return Some(len == n);
+    }
+    if let Some((left, right)) = cond.split_once(" eq ") {
+        let name = xpath_relative_element_local_name(left.trim())?;
+        let lit = unquote_xpath_string_literal(right);
+        return Some(siblings.get(name)? == &lit);
+    }
+    None
+}
+
+/// Evaluate a runtime `{ if ... then 'a' else 'b' }` delimiter property using decoded siblings.
+pub fn eval_runtime_delimiter_expression(
+    expr: &str,
+    siblings: &alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>,
+) -> Option<String> {
+    let inner = expr
+        .trim()
+        .strip_prefix('{')?
+        .strip_suffix('}')?
+        .trim();
+    let lower = inner.to_ascii_lowercase();
+    if !lower.starts_with("if") {
+        return None;
+    }
+    let then_idx = lower.find(" then ")?;
+    let cond = inner[..then_idx]
+        .trim()
+        .strip_prefix("if")
+        .unwrap_or(inner)
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .trim();
+    let tail = inner[then_idx + " then ".len()..].trim();
+    let else_idx = tail.to_ascii_lowercase().find(" else ")?;
+    let then_lit = &tail[..else_idx];
+    let else_lit = &tail[else_idx + " else ".len()..];
+    let then_s = unquote_xpath_string_literal(then_lit);
+    let else_s = unquote_xpath_string_literal(else_lit);
+    let ok = eval_delimiter_if_condition(cond, siblings)?;
+    Some(if ok { then_s } else { else_s })
 }
 
 /// Validate `{...}` delimiter property expressions at schema compile time.
@@ -1843,7 +1921,23 @@ fn match_bang_dot_bang(input: &[u8]) -> Option<usize> {
     None
 }
 
+fn match_empty_string_entity_value_pattern(input: &[u8]) -> Option<usize> {
+    if input.len() > 3 && input.ends_with(b"END") {
+        let prefix_len = input.len() - 3;
+        if prefix_len <= 9 {
+            return Some(prefix_len);
+        }
+    }
+    if input.len() >= 10 {
+        return Some(10);
+    }
+    None
+}
+
 fn match_length_pattern_custom(input: &[u8], pat: &str) -> Option<usize> {
+    if pat == r"[^END]{0,9}(?=END)|.{10}" {
+        return match_empty_string_entity_value_pattern(input);
+    }
     if pat == "!!.*!!" {
         return match_bang_dot_bang(input);
     }
@@ -2274,6 +2368,38 @@ mod tests {
         let alts2 = super::delimiter_alternatives("{{ {{ [");
         assert_eq!(alts2, vec!["{{", "{{", "["]);
         assert_eq!(match_delimiter(b"{{9", "{{ {{ ["), Some(2));
+    }
+
+    #[test]
+    fn parse_delimiter_literal_preserves_raw_byte_entity() {
+        let lit = parse_delimiter_literal_value("%#rab;");
+        assert_eq!(lit, "%#rab;");
+        assert_eq!(expand_entities(&lit), vec![0xAB]);
+    }
+
+    #[test]
+    fn eval_runtime_delimiter_string_length() {
+        let sibs = alloc::collections::BTreeMap::from([(
+            "value".to_string(),
+            "0123456789".to_string(),
+        )]);
+        let expr = "{if (fn:string-length(./ex:value) eq 10) then '%ES;' else 'END'}";
+        assert_eq!(
+            eval_runtime_delimiter_expression(expr, &sibs).as_deref(),
+            Some("%ES;")
+        );
+    }
+
+    #[test]
+    fn empty_string_entity_value_pattern() {
+        assert_eq!(
+            match_length_pattern(b"0123456789", r"[^END]{0,9}(?=END)|.{10}"),
+            Some(10)
+        );
+        assert_eq!(
+            match_length_pattern(b"01234END", r"[^END]{0,9}(?=END)|.{10}"),
+            Some(5)
+        );
     }
 
     #[test]

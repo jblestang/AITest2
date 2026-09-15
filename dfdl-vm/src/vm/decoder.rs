@@ -33,6 +33,27 @@ struct SiblingState {
     content_bytes: usize,
 }
 
+fn sibling_text_map_for_delimiters(
+    siblings: Option<&BTreeMap<String, SiblingState>>,
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(siblings) = siblings else {
+        return out;
+    };
+    for (k, v) in siblings {
+        match &v.value {
+            DfdlValue::String(s) => {
+                out.insert(k.clone(), s.text.clone());
+            }
+            DfdlValue::Null => {
+                out.insert(k.clone(), String::new());
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn sibling_boolean_env<'a>(
     siblings: Option<&'a BTreeMap<String, SiblingState>>,
     text_map: &'a BTreeMap<String, String>,
@@ -358,32 +379,63 @@ impl<'a> Decoder<'a> {
                                 *cursor = saved;
                             }
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            if let Ok(IrNode::Element { props: cp, .. }) =
+                                self.ctx.program.node(child)
+                            {
+                                if cp.occurs_min == 0 {
+                                    let msg = e.to_string();
+                                    if msg.contains("Init('")
+                                        || msg.contains("initiator mismatch")
+                                        || msg.contains("Delimiter not found")
+                                    {
+                                        prev_absent_or_empty = true;
+                                        if cursor.pos == saved.pos {
+                                            *cursor = saved;
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
+                            return Err(e);
+                        }
                     }
                 }
                 let mut terminator_alt = None;
                 if let Some(id) = props.terminator {
                     let pat = self.ctx.strings().get(id)?;
                     if !pat.is_empty() {
+                        let pat_resolved = if pat.trim().starts_with('{') {
+                            let sib_text = sibling_text_map_for_delimiters(siblings);
+                            crate::schema::eval_runtime_delimiter_expression(pat, &sib_text)
+                                .unwrap_or_else(|| pat.to_string())
+                        } else {
+                            pat.to_string()
+                        };
                         let enc = encoding_name(props, self.ctx.strings()).ok();
                         if let Some((n, alt)) = cursor.consume_delimiter_with_alt(
-                            pat,
+                            &pat_resolved,
                             props.ignore_case,
                             enc.as_deref(),
                         ) {
                             if n == 0
                                 && !cursor.is_empty()
-                                && !crate::schema::delimiter_alt_allows_trailing_input(pat, alt)
-                                {
-                                    return Err(VmError::InvalidValue {
-                                        message: alloc::format!("terminator mismatch: expected `{pat}`"),
-                                    }
-                                    .into());
+                                && !crate::schema::delimiter_alt_allows_trailing_input(
+                                    &pat_resolved,
+                                    alt,
+                                )
+                            {
+                                return Err(VmError::InvalidValue {
+                                    message: alloc::format!(
+                                        "terminator mismatch: expected `{pat_resolved}`"
+                                    ),
                                 }
+                                .into());
+                            }
                             terminator_alt = Some(alt);
                         } else if !cursor.is_empty() {
                             return Err(VmError::InvalidValue {
-                                message: alloc::format!("terminator mismatch: expected `{pat}`"),
+                                message: alloc::format!("terminator mismatch: expected `{pat_resolved}`"),
                             }
                             .into());
                         }
