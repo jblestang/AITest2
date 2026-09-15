@@ -738,6 +738,9 @@ pub fn match_pattern_opts(input: &[u8], pattern: &str, ignore_case: bool) -> Opt
     // Single-byte literals (e.g. CSV `*` separator) — never quantifiers.
     if pattern.len() == 1 {
         let b = pattern.as_bytes()[0];
+        if b == b'\n' {
+            return match_one_newline(input);
+        }
         return input
             .first()
             .filter(|&&x| ascii_eq_ic(x, b, ignore_case))
@@ -1331,12 +1334,19 @@ fn match_nl_entity(input: &[u8], pattern: &str) -> Option<usize> {
 
 fn match_one_newline(input: &[u8]) -> Option<usize> {
     if input.starts_with(b"\r\n") {
-        Some(2)
-    } else if input.first().is_some_and(|b| *b == b'\n' || *b == b'\r') {
-        Some(1)
-    } else {
-        None
+        return Some(2);
     }
+    if input.first().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+        return Some(1);
+    }
+    // NEL (U+0085), LS (U+2028), PS (U+2029) — DFDL %NL; line breaks in UTF-8 data.
+    if input.starts_with(&[0xC2, 0x85]) {
+        return Some(2);
+    }
+    if input.starts_with(&[0xE2, 0x80, 0xA8]) || input.starts_with(&[0xE2, 0x80, 0xA9]) {
+        return Some(3);
+    }
+    None
 }
 
 fn match_wsp_entity(input: &[u8], pattern: &str) -> Option<usize> {
@@ -1961,6 +1971,14 @@ mod tests {
         assert_eq!(super::match_pattern(b"*x", "*"), Some(1));
         assert_eq!(match_delimiter(b"*x", "*"), Some(1));
         assert_eq!(match_delimiter(b"*", "*"), Some(1));
+    }
+
+    #[test]
+    fn match_nl_separator_accepts_cr_and_unicode_line_breaks() {
+        assert_eq!(match_delimiter(b"\r5,6", "\n"), Some(1));
+        assert_eq!(match_delimiter(b"\n5,6", "\n"), Some(1));
+        assert_eq!(match_delimiter(&[0xC2, 0x85, b'5'], "\n"), Some(2));
+        assert_eq!(match_delimiter(&[0xE2, 0x80, 0xA8, b'5'], "\n"), Some(3));
     }
 
     #[test]

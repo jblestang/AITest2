@@ -33,3 +33,17 @@ fn debug_complex_includes() {
         eprintln!("{name}: {:?}", r.outcome);
     }
 }
+
+#[test]
+#[ignore]
+fn debug_char_class_entities() {
+    let path = Path::new(ROOT).join("entities/charClassEntities.tdml");
+    let mut suite = parse_tdml(&fs::read_to_string(&path).unwrap()).unwrap();
+    enrich(&mut suite, &path);
+    for name in ["CarriageReturn", "LineSeparator", "NextLine"] {
+        if let Some(t) = suite.tests.iter().find(|t| t.name == name) {
+            let r = run_parser_test(&suite, t).unwrap();
+            eprintln!("{name}: {:?}", r.outcome);
+        }
+    }
+}
