@@ -134,40 +134,54 @@ impl SchemaResolver {
     }
 
     pub fn resolve(&self, location: &str) -> Result<String> {
+        self.resolve_with_include_dir(location)
+            .map(|(content, _)| content)
+    }
+
+    /// Resolve schema content and the directory containing the file (for nested relative includes).
+    pub fn resolve_with_include_dir(&self, location: &str) -> Result<(String, Option<String>)> {
         let loc = location.trim();
         if let Some(content) = self.bundled.get(loc) {
-            return Ok((*content).to_string());
+            return Ok(((*content).to_string(), None));
         }
         let normalized = loc.trim_start_matches('/');
         if let Some(content) = self.bundled.get(normalized) {
-            return Ok((*content).to_string());
+            return Ok(((*content).to_string(), None));
         }
         let file_name = loc.rsplit('/').next().unwrap_or(loc);
         if let Some(content) = self.bundled.get(file_name) {
-            return Ok((*content).to_string());
+            return Ok(((*content).to_string(), None));
         }
         for base in &self.base_dirs {
             let candidate = alloc::format!("{base}/{loc}");
             if let Some(content) = self.bundled.get(&candidate) {
-                return Ok((*content).to_string());
+                return Ok(((*content).to_string(), None));
             }
         }
         #[cfg(feature = "std")]
         {
-            use std::path::Path;
-            for base in &self.base_dirs {
+            use std::path::{Path, PathBuf};
+            let mut search_bases: Vec<PathBuf> = self
+                .base_dirs
+                .iter()
+                .map(|b| PathBuf::from(b))
+                .collect();
+            search_bases.push(PathBuf::from(daffodil_test_resources_root()));
+
+            for base in search_bases.iter().rev() {
                 let candidates = [
-                    Path::new(base).join(loc),
-                    Path::new(base).join(file_name),
+                    base.join(loc),
+                    base.join(normalized),
+                    base.join(file_name),
                 ];
                 for path in &candidates {
                     if let Ok(content) = std::fs::read_to_string(path) {
-                        return Ok(content);
+                        let parent = path
+                            .parent()
+                            .map(|p| p.to_string_lossy().into_owned());
+                        return Ok((content, parent));
                     }
                 }
-            }
-            if let Some(content) = read_daffodil_test_resource(loc) {
-                return Ok(content);
             }
         }
         Err(ParseError::InvalidXml {

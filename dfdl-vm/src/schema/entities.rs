@@ -134,8 +134,35 @@ pub fn normalize_delimiter_pattern(raw: &str) -> String {
     expand_entities_str(raw.trim_end_matches([' ', '\t']))
 }
 
-/// Validate `%entity;` references in a DFDL property literal.
-pub fn validate_dfdl_entities_in_property(raw: &str) -> Result<(), String> {
+fn invalid_dfdl_entity_error(entity_token: &str, raw: &str) -> String {
+    alloc::format!("Invalid DFDL Entity ({entity_token}) found in \"{raw}\"")
+}
+
+fn entity_reference_valid(entity_name: &str) -> bool {
+    if parse_entity(&format!("%{entity_name};")).is_none() {
+        return false;
+    }
+    if let Some(r) = entity_name
+        .strip_prefix("#r")
+        .or_else(|| entity_name.strip_prefix("#R"))
+    {
+        return r.len() == 2 && r.chars().all(|c| c.is_ascii_hexdigit());
+    }
+    if let Some(hex) = entity_name
+        .strip_prefix("#x")
+        .or_else(|| entity_name.strip_prefix("#X"))
+    {
+        return !hex.is_empty()
+            && hex.chars().all(|c| c.is_ascii_hexdigit())
+            && hex.len() <= 6;
+    }
+    if let Some(dec) = entity_name.strip_prefix('#') {
+        return !dec.is_empty() && dec.chars().all(|c| c.is_ascii_digit());
+    }
+    true
+}
+
+fn validate_entity_tokens_in_literal(raw: &str) -> Result<(), String> {
     if raw == "%" {
         return Err("Invalid DFDL Entity (%) found".into());
     }
@@ -148,10 +175,11 @@ pub fn validate_dfdl_entities_in_property(raw: &str) -> Result<(), String> {
                 continue;
             }
             if let Some(rel) = raw[i..].find(';') {
+                let entity_token = &raw[i..=i + rel];
                 let entity = &raw[i + 1..i + rel];
                 let entity_name = entity.trim_end_matches(['+', '*', '?']);
-                if parse_entity(&format!("%{entity_name};")).is_none() {
-                    return Err(format!("Invalid DFDL Entity ({entity}) found"));
+                if !entity_reference_valid(entity_name) {
+                    return Err(invalid_dfdl_entity_error(entity_token, raw));
                 }
                 i += rel + 1;
             } else {
@@ -166,6 +194,11 @@ pub fn validate_dfdl_entities_in_property(raw: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Validate `%entity;` references in a DFDL property literal.
+pub fn validate_dfdl_entities_in_property(raw: &str) -> Result<(), String> {
+    validate_entity_tokens_in_literal(raw)
 }
 
 pub fn validate_text_boolean_rep_value(raw: &str) -> Result<(), String> {
@@ -610,33 +643,7 @@ pub fn validate_runtime_delimiter_expression(prop: &str, expr: &str) -> Result<(
 
 /// Validate initiator/separator/terminator literals at schema compile time.
 pub fn validate_delimiter_property_value(raw: &str) -> Result<(), String> {
-    if raw == "%" {
-        return Err("Invalid DFDL Entity (%) found".into());
-    }
-    let mut i = 0usize;
-    while i < raw.len() {
-        if raw.as_bytes()[i] == b'%' {
-            if i + 1 < raw.len() && raw.as_bytes()[i + 1] == b'%' {
-                i += 2;
-                continue;
-            }
-            if let Some(rel) = raw[i..].find(';') {
-                let entity_slice = &raw[i..i + rel + 1];
-                let entity = &raw[i + 1..i + rel];
-                let entity_name = entity.trim_end_matches(['+', '*', '?']);
-                if parse_entity(&format!("%{entity_name};")).is_none() {
-                    return Err(format!("Invalid DFDL Entity ({entity}) found"));
-                }
-                let _ = entity_slice;
-                i += rel + 1;
-            } else {
-                return Err("Invalid DFDL Entity (%) found".into());
-            }
-        } else {
-            i += 1;
-        }
-    }
-    Ok(())
+    validate_entity_tokens_in_literal(raw)
 }
 
 /// True when a delimiter pattern is zero-length after entity expansion.

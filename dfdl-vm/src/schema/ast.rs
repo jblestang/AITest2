@@ -694,6 +694,8 @@ pub struct SchemaDocument {
     /// Set when a top-level `dfdl:format` explicitly declares `encodingErrorPolicy`.
     pub explicit_encoding_error_policy_on_format: bool,
     pub target_namespace: Option<String>,
+    /// Prefix → URI from `xs:schema` xmlns declarations (format ref resolution).
+    pub namespace_prefixes: BTreeMap<String, String>,
     /// `xs:schema/@elementFormDefault` (default unqualified).
     pub element_form_default_qualified: bool,
     /// True when `elementFormDefault` was present on `xs:schema`.

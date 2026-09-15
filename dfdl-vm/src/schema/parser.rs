@@ -130,18 +130,27 @@ impl<'a> XsdParser<'a> {
         }
     }
 
-    fn merge_included(&mut self, other: SchemaDocument) -> Result<()> {
+    fn merge_included(&mut self, other: SchemaDocument, kind: SchemaMergeKind) -> Result<()> {
         for (k, v) in other.types {
             self.doc.types.insert(k, v);
         }
         for (k, v) in other.global_elements {
             self.doc.global_elements.insert(k, v);
         }
+        let included_target = other.target_namespace.clone();
         for (k, v) in other.named_formats {
-            if self.doc.named_formats.contains_key(&k) {
-                return Err(duplicate_format_definition(&k).into());
+            let local = format_local_from_storage_key(&k);
+            let ns = match kind {
+                SchemaMergeKind::Import => included_target.as_deref(),
+                SchemaMergeKind::Include => included_target
+                    .as_deref()
+                    .or(self.doc.target_namespace.as_deref()),
+            };
+            let key = format_storage_key(local, ns);
+            if self.doc.named_formats.contains_key(&key) {
+                return Err(duplicate_format_definition(local).into());
             }
-            self.doc.named_formats.insert(k, v);
+            self.doc.named_formats.insert(key, v);
         }
         for (k, v) in other.named_escape_schemes {
             self.doc.named_escape_schemes.insert(k, v);
@@ -243,6 +252,8 @@ impl<'a> XsdParser<'a> {
 
     fn parse_schema_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
         self.doc.target_namespace = attrs.get("targetNamespace").cloned();
+        self.doc.namespace_prefixes.clear();
+        collect_namespace_prefixes(&attrs, &mut self.doc.namespace_prefixes);
         if attrs.keys().any(|k| k.contains("dfdl") || k.ends_with(":dfdl"))
             || attrs.values().any(|v| v.as_str() == DFDL_NS)
         {
@@ -383,8 +394,12 @@ impl<'a> XsdParser<'a> {
         if !self.resolver.register_include(location) {
             return Ok(());
         }
-        let content = self.resolver.resolve(location)?;
-        let included = parse_schema_with_resolver(&content, self.resolver.clone())?;
+        let (content, include_dir) = self.resolver.resolve_with_include_dir(location)?;
+        let mut child_resolver = self.resolver.clone();
+        if let Some(dir) = include_dir {
+            child_resolver = child_resolver.with_base_dir(dir);
+        }
+        let included = parse_schema_with_resolver(&content, child_resolver)?;
         if !included.dfdl_annotations_seen {
             let label = location
                 .rsplit('/')
@@ -397,8 +412,51 @@ impl<'a> XsdParser<'a> {
             self.doc.schema_warnings.push(label);
             return Ok(());
         }
-        self.merge_included(included)?;
+        let kind = if local == "import" {
+            SchemaMergeKind::Import
+        } else {
+            SchemaMergeKind::Include
+        };
+        self.merge_included(included, kind)?;
         Ok(())
+    }
+
+    fn resolve_format_qname(&self, qname: &str) -> String {
+        if let Some((prefix, local)) = qname.split_once(':') {
+            let ns = self
+                .doc
+                .namespace_prefixes
+                .get(prefix)
+                .map(String::as_str)
+                .or(Some(prefix));
+            format_storage_key(local, ns)
+        } else {
+            format_storage_key(qname, self.doc.target_namespace.as_deref())
+        }
+    }
+
+    fn lookup_named_format(&self, qname: &str) -> Option<DfdlProps> {
+        let local = normalize_qname(qname);
+        let key = self.resolve_format_qname(qname);
+        if let Some(base) = self.doc.named_formats.get(&key) {
+            return Some(base.clone());
+        }
+        if qname.contains(':') {
+            if let Some(tns) = self.doc.target_namespace.as_deref() {
+                let tns_key = format_storage_key(&local, Some(tns));
+                if tns_key != key {
+                    if let Some(base) = self.doc.named_formats.get(&tns_key) {
+                        return Some(base.clone());
+                    }
+                }
+            }
+        }
+        let fallback = format_storage_key(&local, None);
+        if fallback != key {
+            self.doc.named_formats.get(&fallback).cloned()
+        } else {
+            None
+        }
     }
 
     fn parse_global_element(&mut self, attrs: BTreeMap<String, String>) -> Result<()> {
@@ -1434,9 +1492,8 @@ impl<'a> XsdParser<'a> {
 
     fn finalize_props(&self, mut props: DfdlProps) -> DfdlProps {
         if let Some(ref_name) = props.format_ref.take() {
-            let key = format_ref_key(&ref_name);
-            if let Some(base) = self.doc.named_formats.get(&key) {
-                props = merge_dfdl_props(base.clone(), props);
+            if let Some(base) = self.lookup_named_format(&ref_name) {
+                props = merge_dfdl_props(base, props);
             }
         }
         props
@@ -1484,8 +1541,7 @@ impl<'a> XsdParser<'a> {
                 local_tag(k) == "encodingErrorPolicy" || k.ends_with(":encodingErrorPolicy")
             });
             if let Some(ref_name) = attrs.get("ref") {
-                let key = normalize_qname(ref_name);
-                if let Some(base) = self.doc.named_formats.get(&key).cloned() {
+                if let Some(base) = self.lookup_named_format(ref_name) {
                     props = merge_dfdl_props(base, props);
                 }
             }
@@ -1647,12 +1703,13 @@ impl<'a> XsdParser<'a> {
         self.in_define_format = false;
 
         if let Some(name) = format_name {
-            if self.doc.named_formats.contains_key(&name) {
+            let key = format_storage_key(&name, self.doc.target_namespace.as_deref());
+            if self.doc.named_formats.contains_key(&key) {
                 return Err(duplicate_format_definition(&name).into());
             }
             let mut stored = props.clone();
             stored.calendar_time_zone_defined = false;
-            self.doc.named_formats.insert(name, stored);
+            self.doc.named_formats.insert(key, stored);
         }
         Ok(props)
     }
@@ -1701,16 +1758,25 @@ impl<'a> XsdParser<'a> {
 }
 
 fn escape_scheme_from_attrs(attrs: &BTreeMap<String, String>) -> EscapeSchemeDef {
+    use super::entities::expand_entities_str;
     let escape_kind = match attrs.get("escapeKind").map(String::as_str) {
         Some("escapeBlock") => EscapeKind::EscapeBlock,
         _ => EscapeKind::EscapeCharacter,
     };
     EscapeSchemeDef {
         escape_kind,
-        escape_character: attrs.get("escapeCharacter").cloned(),
-        escape_escape_character: attrs.get("escapeEscapeCharacter").cloned(),
-        escape_block_start: attrs.get("escapeBlockStart").cloned(),
-        escape_block_end: attrs.get("escapeBlockEnd").cloned(),
+        escape_character: attrs
+            .get("escapeCharacter")
+            .map(|s| expand_entities_str(s)),
+        escape_escape_character: attrs
+            .get("escapeEscapeCharacter")
+            .map(|s| expand_entities_str(s)),
+        escape_block_start: attrs
+            .get("escapeBlockStart")
+            .map(|s| expand_entities_str(s)),
+        escape_block_end: attrs
+            .get("escapeBlockEnd")
+            .map(|s| expand_entities_str(s)),
     }
 }
 
@@ -3401,7 +3467,7 @@ fn props_from_attrs_with_variables(
                 props.fill_byte_raw = Some(value.to_string());
                 props.fill_byte = Some(crate::schema::expand_entities(value));
             }
-            "ref" => props.format_ref = Some(format_ref_key(value)),
+            "ref" => props.format_ref = Some(value.to_string()),
             "prefixLengthType" => {
                 props.prefix_length_type = Some(TypeName::new(normalize_qname(value)));
             }
@@ -3465,8 +3531,44 @@ fn normalize_qname(name: &str) -> String {
     name.rsplit(':').next().unwrap_or(name).to_string()
 }
 
-fn format_ref_key(name: &str) -> String {
-    normalize_qname(name)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum SchemaMergeKind {
+    Include,
+    Import,
+}
+
+fn collect_namespace_prefixes(attrs: &BTreeMap<String, String>, out: &mut BTreeMap<String, String>) {
+    for (key, value) in attrs {
+        if key.as_str() == "xmlns" {
+            out.insert(String::new(), value.clone());
+            continue;
+        }
+        if let Some(prefix) = key.strip_prefix("xmlns:") {
+            out.insert(prefix.to_string(), value.clone());
+            continue;
+        }
+        // xml_no_std exposes xmlns declarations as unprefixed keys (e.g. `ex` → URI).
+        if !key.contains(':')
+            && key != "targetNamespace"
+            && key != "elementFormDefault"
+            && key != "attributeFormDefault"
+            && key != "version"
+            && (value.starts_with("http://") || value.starts_with("https://") || value.starts_with("urn:"))
+        {
+            out.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+fn format_storage_key(local: &str, namespace: Option<&str>) -> String {
+    match namespace {
+        Some(ns) if !ns.is_empty() => alloc::format!("{ns}|{local}"),
+        _ => alloc::format!("|{local}"),
+    }
+}
+
+fn format_local_from_storage_key(key: &str) -> &str {
+    key.rsplit_once('|').map(|(_, local)| local).unwrap_or(key)
 }
 
 /// Parse XSD numeric facet values (`0`, `0.0`, `-1.5`) into i64 when representable as integer.
@@ -3617,6 +3719,52 @@ mod tests {
     }
 
     #[test]
+    fn group_ref_named_format_lookup() {
+        let tdml_inner = r#"
+    <xs:include schemaLocation="/org/apache/daffodil/xsd/DFDLGeneralFormat.dfdl.xsd"/>
+    <dfdl:defineFormat name="def">
+      <dfdl:format separator=","/>
+    </dfdl:defineFormat>
+    <xs:group name="namedGroup">
+      <xs:sequence dfdl:separatorPosition="infix">
+        <xs:element name="quantity" type="xs:int" />
+      </xs:sequence>
+    </xs:group>
+    <xs:element name="Item" dfdl:lengthKind="implicit">
+      <xs:complexType>
+        <xs:group ref="ex:namedGroup" dfdl:ref="ex:def" />
+      </xs:complexType>
+    </xs:element>"#;
+        let xsd = alloc::format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
+           xmlns:ex="http://example.com"
+           targetNamespace="http://example.com">{inner}
+</xs:schema>"#,
+            inner = tdml_inner
+        );
+        let doc = parse_schema(&xsd).expect("parse");
+        let def_key = format_storage_key("def", Some("http://example.com"));
+        let def = doc.named_formats.get(&def_key).expect("def format");
+        assert_eq!(def.separator.as_deref(), Some(","));
+        let item = doc.global_elements.get("Item").expect("Item");
+        if let TypeDef::Complex { content, .. } = doc.resolve_type(&item.type_name).unwrap() {
+            if let ComplexContent::Sequence(seq) = content {
+                if let Particle::GroupRef(gr) = &seq.particles[0] {
+                    assert_eq!(gr.props.separator.as_deref(), Some(","));
+                } else {
+                    panic!("expected group ref particle");
+                }
+            } else {
+                panic!("expected sequence content {:?}", content);
+            }
+        } else {
+            panic!("expected complex type");
+        }
+    }
+
+    #[test]
     fn define_format_does_not_clobber_schema_format_defaults() {
         let xsd = r#"<?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
@@ -3635,7 +3783,7 @@ mod tests {
             Some(LengthKind::Delimited),
             "defineFormat inner format must not reset schema format defaults"
         );
-        assert!(doc.named_formats.contains_key("trimmed"));
+        assert!(doc.named_formats.contains_key("|trimmed"));
     }
 
     #[test]
