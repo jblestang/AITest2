@@ -138,7 +138,7 @@ pub fn validate_hidden_groups_unparse(schema: &SchemaDocument, root: &str) -> Re
         if local.is_empty() {
             continue;
         }
-        validate_hidden_group_model(schema, local, &mut Vec::new())?;
+        validate_hidden_group_model(schema, local, &target, &mut Vec::new())?;
     }
     Ok(())
 }
@@ -237,6 +237,7 @@ fn collect_hidden_group_refs_in_particle(
 fn validate_hidden_group_model(
     schema: &SchemaDocument,
     group_name: &str,
+    group_ref_qname: &str,
     stack: &mut Vec<String>,
 ) -> Result<(), String> {
     if stack.iter().any(|s| s == group_name) {
@@ -245,10 +246,11 @@ fn validate_hidden_group_model(
         );
     }
     stack.push(group_name.to_string());
-    let group = schema
-        .groups
-        .get(group_name)
-        .ok_or_else(|| format!("Schema Definition Error: hidden group `{group_name}` not found"))?;
+    let group = schema.groups.get(group_name).ok_or_else(|| {
+        format!(
+            "Schema Definition Error: Referenced group definition not found: {group_ref_qname}\nSchema context: group reference\n{group_name}"
+        )
+    })?;
     let particles = match group {
         GroupDecl::Sequence(s) => s.particles.as_slice(),
         GroupDecl::Choice(c) => {
@@ -276,7 +278,7 @@ fn validate_hidden_group_model(
         if let Particle::Sequence(s) = particle {
             if let Some(ref href) = s.props.hidden_group_ref {
                 let nested = group_local_name(href);
-                validate_hidden_group_model(schema, &nested, stack)?;
+                validate_hidden_group_model(schema, &nested, href, stack)?;
                 continue;
             }
         }
@@ -308,6 +310,9 @@ fn particle_display(_schema: &SchemaDocument, particle: &Particle) -> Option<Str
 fn can_be_absent_from_unparse_infoset(props: &DfdlProps) -> bool {
     props.occurs_min.unwrap_or(1) == 0
         || props.output_value_calc.is_some()
+        || props.output_value_calc_literal.is_some()
+        || props.output_value_calc_sibling.is_some()
+        || props.output_value_calc_conditional
         || props
             .default_value
             .as_ref()
@@ -341,6 +346,26 @@ fn particle_can_unparse_if_no_events(schema: &SchemaDocument, particle: &Particl
     }
 }
 
+fn resolve_type_def<'a>(
+    schema: &'a SchemaDocument,
+    type_name: &crate::schema::TypeName,
+) -> Option<&'a TypeDef> {
+    if let Some(td) = schema.resolve_type(type_name) {
+        return Some(td);
+    }
+    let s = type_name.as_str();
+    let local = s.rsplit(':').next().unwrap_or(s);
+    for cand in [local, &alloc::format!("ex:{local}"), s] {
+        if cand == s {
+            continue;
+        }
+        if let Some(td) = schema.resolve_type(&crate::schema::TypeName::new(cand)) {
+            return Some(td);
+        }
+    }
+    None
+}
+
 fn element_can_unparse_if_no_events(schema: &SchemaDocument, el: &ElementDecl) -> bool {
     let props = &el.props;
     if can_be_absent_from_unparse_infoset(props) {
@@ -349,7 +374,7 @@ fn element_can_unparse_if_no_events(schema: &SchemaDocument, el: &ElementDecl) -
     if BuiltinType::from_xsd(el.type_name.as_str()).is_some() {
         return false;
     }
-    if let Some(TypeDef::Complex { content, .. }) = schema.resolve_type(&el.type_name) {
+    if let Some(TypeDef::Complex { content, .. }) = resolve_type_def(schema, &el.type_name) {
         return complex_content_can_unparse_if_no_events(schema, content);
     }
     false

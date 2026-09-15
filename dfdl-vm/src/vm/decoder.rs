@@ -398,7 +398,10 @@ impl<'a> Decoder<'a> {
                     );
                 }
                 if props.sequence_kind == SequenceKind::Unordered {
-                    if props.separator.is_some() {
+                    if props.initiated_content
+                        || props.separator.is_some()
+                        || self.unordered_sequence_uses_initiator_scan(children)
+                    {
                         return self.decode_sequence_initiated_content(
                             node_id,
                             children,
@@ -1027,6 +1030,17 @@ impl<'a> Decoder<'a> {
         )
     }
 
+    fn unordered_sequence_uses_initiator_scan(&self, children: &[u32]) -> bool {
+        children.iter().any(|&id| {
+            matches!(
+                self.ctx.program.node(id),
+                Ok(IrNode::Element { props, .. }) if props
+                    .initiator
+                    .is_some_and(|i| self.ctx.strings().get(i).ok().is_some_and(|p| !p.is_empty()))
+            )
+        })
+    }
+
     fn decode_unordered_unseparated_sequence(
         &self,
         _node_id: u32,
@@ -1045,7 +1059,8 @@ impl<'a> Decoder<'a> {
         let mut map = BTreeMap::new();
         let mut seq_siblings = self.xpath_siblings_snapshot();
         let remaining: alloc::vec::Vec<usize> = (0..children.len()).collect();
-        self.unordered_unseparated_backtrack(
+        let frame_start = cursor.pos;
+        if let Err(e) = self.unordered_unseparated_backtrack(
             children,
             props,
             cursor,
@@ -1057,7 +1072,15 @@ impl<'a> Decoder<'a> {
             child_stops,
             &remaining,
             &mut map,
-        )?;
+        ) {
+            if let Some(scalar_err) = self.unordered_unseparated_scalar_duplicate_error(
+                children,
+                &cursor.data[frame_start..],
+            ) {
+                return Err(scalar_err.into());
+            }
+            return Err(e);
+        }
         self.validate_particle_discriminator(props)?;
         Ok(DfdlValue::Sequence(crate::value::SequenceValue {
             fields: map,
@@ -1253,6 +1276,80 @@ impl<'a> Decoder<'a> {
         .into())
     }
 
+    fn unordered_unseparated_scalar_duplicate_error(
+        &self,
+        children: &[u32],
+        data: &[u8],
+    ) -> Option<VmError> {
+        for &child in children {
+            let Ok(IrNode::Element {
+                name,
+                kind,
+                props,
+                child: None,
+                ..
+            }) = self.ctx.program.node(child)
+            else {
+                continue;
+            };
+            let max = props.occurs_max.unwrap_or(1);
+            if max != 1 {
+                continue;
+            }
+            let Some(len) = props.length.filter(|&l| l > 0) else {
+                continue;
+            };
+            if props.length_kind != LengthKind::Explicit {
+                continue;
+            }
+            let len = len as usize;
+            if data.len() < len {
+                continue;
+            }
+            let mut match_starts = alloc::vec::Vec::new();
+            for start in 0..=data.len().saturating_sub(len) {
+                let slice = core::str::from_utf8(&data[start..start + len]).ok()?;
+                let v = DfdlValue::String(StringValue::new(slice));
+                if needs_facet_validation(props)
+                    && validate_decoded_facets_tdml(
+                        &v,
+                        *kind,
+                        props,
+                        self.ctx.strings(),
+                        &self.ctx.program.tunables,
+                        false,
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
+                match_starts.push(start);
+            }
+            if match_starts.len() < 2 {
+                continue;
+            }
+            let mut disjoint_pairs = false;
+            'outer: for (i, &a) in match_starts.iter().enumerate() {
+                for &b in &match_starts[i + 1..] {
+                    if a + len <= b || b + len <= a {
+                        disjoint_pairs = true;
+                        break 'outer;
+                    }
+                }
+            }
+            if !disjoint_pairs {
+                continue;
+            }
+            let ename = self.ctx.strings().get(*name).ok()?;
+            return Some(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Scalar Element Error: Multiple instances detected for scalar element {ename}"
+                ),
+            });
+        }
+        None
+    }
+
     fn decode_sequence_initiated_content(
         &self,
         node_id: u32,
@@ -1289,6 +1386,14 @@ impl<'a> Decoder<'a> {
                     child_stops,
                 );
             }
+            while cursor.pos < cursor.data.len() {
+                let b = cursor.data[cursor.pos];
+                if b == b';' || b == b'\n' || b == b'\r' || b == b' ' || b == b'\t' {
+                    cursor.advance(1);
+                } else {
+                    break;
+                }
+            }
             let round_start = cursor.pos;
             let mut round_progress = false;
             for (idx, &child) in children.iter().enumerate() {
@@ -1310,16 +1415,56 @@ impl<'a> Decoder<'a> {
                 }
                 let saved = cursor.clone();
                 let start = cursor.pos;
-                match self.decode_particle(
-                    child,
-                    cursor,
-                    child_has_following,
-                    Some(props),
-                    Some(&seq_siblings),
-                    content_scope_bytes,
-                    pattern_text_frame,
-                    child_stops,
-                ) {
+                let decode_result = if props.sequence_kind == SequenceKind::Unordered {
+                    if let Ok(IrNode::Element { props: cp, .. }) = self.ctx.program.node(child) {
+                        if cp.occurs_max.map(|m| m > 1).unwrap_or(true) {
+                            self.decode_one_element_occurrence(
+                                child,
+                                cursor,
+                                child_has_following,
+                                Some(props),
+                                Some(&seq_siblings),
+                                content_scope_bytes,
+                                pattern_text_frame,
+                                child_stops,
+                            )
+                        } else {
+                            self.decode_particle(
+                                child,
+                                cursor,
+                                child_has_following,
+                                Some(props),
+                                Some(&seq_siblings),
+                                content_scope_bytes,
+                                pattern_text_frame,
+                                child_stops,
+                            )
+                        }
+                    } else {
+                        self.decode_particle(
+                            child,
+                            cursor,
+                            child_has_following,
+                            Some(props),
+                            Some(&seq_siblings),
+                            content_scope_bytes,
+                            pattern_text_frame,
+                            child_stops,
+                        )
+                    }
+                } else {
+                    self.decode_particle(
+                        child,
+                        cursor,
+                        child_has_following,
+                        Some(props),
+                        Some(&seq_siblings),
+                        content_scope_bytes,
+                        pattern_text_frame,
+                        child_stops,
+                    )
+                };
+                match decode_result {
                     Ok(child_value) => {
                         if let Ok(IrNode::Element { props: cp, .. }) =
                             self.ctx.program.node(child)
@@ -1421,6 +1566,9 @@ impl<'a> Decoder<'a> {
             }
             .into());
         }
+        if props.sequence_kind == SequenceKind::Unordered {
+            self.validate_initiated_unordered_min_occurs(children, &map)?;
+        }
         let _ = (node_id, has_following_sibling, parent_sequence);
         let mut terminator_alt = None;
         if let Some(id) = props.terminator {
@@ -1460,6 +1608,68 @@ impl<'a> Decoder<'a> {
                 Ok(IrNode::Element { props, .. }) if props.hidden
             )
         })
+    }
+
+    fn decode_one_element_occurrence(
+        &self,
+        node_id: u32,
+        cursor: &mut Cursor<'_>,
+        has_following_sibling: bool,
+        parent_sequence: Option<&IrProps>,
+        siblings: Option<&BTreeMap<String, SiblingState>>,
+        content_scope_bytes: Option<usize>,
+        pattern_text_frame: bool,
+        stop_sequences: &[&IrProps],
+    ) -> Result<DfdlValue> {
+        let IrNode::Element { props, .. } = self.ctx.program.node(node_id)? else {
+            return Err(VmError::TypeMismatch {
+                expected: "element".into(),
+            }
+            .into());
+        };
+        let mut one_shot = props.clone();
+        one_shot.occurs_min = 0;
+        one_shot.occurs_max = Some(1);
+        self.decode_element_occurrences(
+            node_id,
+            &one_shot,
+            cursor,
+            has_following_sibling,
+            parent_sequence,
+            siblings,
+            content_scope_bytes,
+            pattern_text_frame,
+            stop_sequences,
+        )
+    }
+
+    fn validate_initiated_unordered_min_occurs(
+        &self,
+        children: &[u32],
+        map: &BTreeMap<String, DfdlValue>,
+    ) -> Result<()> {
+        for &child in children {
+            let IrNode::Element { name, props, .. } = self.ctx.program.node(child)? else {
+                continue;
+            };
+            let key = self.ctx.strings().get(*name)?.to_string();
+            let count = match map.get(&key) {
+                Some(DfdlValue::Array(items)) => items.len(),
+                Some(DfdlValue::Null) => 0,
+                Some(_) => 1,
+                None => 0,
+            };
+            if (count as u64) < props.occurs_min {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "unordered initiated sequence: element `{key}` expected at least {} occurrence(s), got {count}",
+                        props.occurs_min
+                    ),
+                }
+                .into());
+            }
+        }
+        Ok(())
     }
 
     fn decode_particle(
