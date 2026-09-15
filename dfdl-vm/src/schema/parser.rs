@@ -41,6 +41,9 @@ fn parse_schema_with_resolver_and_label(
     resolver: SchemaResolver,
     schema_label: Option<&str>,
 ) -> Result<SchemaDocument> {
+    if let Some(message) = precheck_schema_definition_errors(input) {
+        return Err(crate::error::SchemaError::InvalidProperty { message }.into());
+    }
     if input.contains("<!DOCTYPE") {
         let mut message = "Schema Definition Error. org.xml.sax.SAXParseException: DOCTYPE is disallowed when parsing DFDL schemas".to_string();
         if let Some(label) = schema_label {
@@ -57,7 +60,93 @@ fn parse_schema_with_resolver_and_label(
     if input.contains(DFDL_NS) {
         parser.doc.dfdl_annotations_seen = true;
     }
-    parser.parse_document()
+    parser.parse_document().map_err(map_xml_parse_error_to_schema)
+}
+
+fn map_xml_parse_error_to_schema(err: crate::error::Error) -> crate::error::Error {
+    let msg = err.to_string();
+    if msg.contains("Cannot redefine XMLNS prefix") {
+        return crate::error::SchemaError::InvalidProperty {
+            message: "Schema Definition Error: The prefix \"xmlns\" cannot be bound to any namespace explicitly; neither can the namespace for \"xmlns\" be bound to any prefix explicitly".into(),
+        }
+        .into();
+    }
+    if msg.contains("Unexpected token inside qualified name") {
+        return crate::error::SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: Element or attribute do not match QName production: QName::=(NCName':')?NCName"
+            ),
+        }
+        .into();
+    }
+    err
+}
+
+const QNAME_PRODUCTION_SDE: &str =
+    "Schema Definition Error: Element or attribute do not match QName production: QName::=(NCName':')?NCName";
+
+fn precheck_schema_definition_errors(input: &str) -> Option<String> {
+    if input.contains("xmlns:xmlns=") {
+        return Some(
+            "Schema Definition Error: The prefix \"xmlns\" cannot be bound to any namespace explicitly; neither can the namespace for \"xmlns\" be bound to any prefix explicitly".into(),
+        );
+    }
+    for attr in ["type", "ref", "base", "substitutionGroup"] {
+        let needle = alloc::format!("{attr}=\"");
+        let mut start = 0usize;
+        while let Some(rel) = input[start..].find(&needle) {
+            let abs = start + rel + needle.len();
+            let rest = &input[abs..];
+            let end = rest.find('"')?;
+            let value = &rest[..end];
+            if !qname_attr_value_is_well_formed(value) {
+                if value.starts_with(':') || value.ends_with(':') {
+                    return Some(QNAME_PRODUCTION_SDE.into());
+                }
+                if value.matches(':').count() > 1 {
+                    return Some(alloc::format!(
+                        "Schema Definition Error: Error loading schema\n'{value}' is not a valid value for 'QName'"
+                    ));
+                }
+                return Some(QNAME_PRODUCTION_SDE.into());
+            }
+            start = abs + end + 1;
+        }
+    }
+    None
+}
+
+fn qname_attr_value_is_well_formed(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if trimmed.starts_with(':') || trimmed.ends_with(':') {
+        return false;
+    }
+    if trimmed.matches(':').count() > 1 {
+        return false;
+    }
+    true
+}
+
+fn record_foreign_attrs_on_dfdl_element(
+    local: &str,
+    attrs: &BTreeMap<String, String>,
+    diagnostics: &mut alloc::vec::Vec<String>,
+) {
+    for key in attrs.keys() {
+        if !key.contains(':') {
+            continue;
+        }
+        let prefix = key.split(':').next().unwrap_or("");
+        if matches!(prefix, "dfdl" | "dfdlx" | "xml" | "xs" | "xsd") {
+            continue;
+        }
+        diagnostics.push(alloc::format!(
+            "Schema Definition Error: Attribute '{key}' is not allowed to appear in element 'dfdl:{local}'"
+        ));
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1774,6 +1863,7 @@ impl<'a> XsdParser<'a> {
         attrs: BTreeMap<String, String>,
     ) -> Result<DfdlProps> {
         self.doc.dfdl_annotations_seen = true;
+        record_foreign_attrs_on_dfdl_element(local, &attrs, &mut self.doc.schema_diagnostics);
         for key in attrs.keys() {
             if key.starts_with("dfdl:") || key.starts_with("dfdlx:") {
                 let attr_local = key.rsplit(':').next().unwrap_or(key.as_str());
