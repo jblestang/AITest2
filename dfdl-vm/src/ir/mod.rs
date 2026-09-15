@@ -44,6 +44,8 @@ pub enum IrNode {
 pub struct ChoiceBranch {
     pub name: StringId,
     pub initiator: Option<StringId>,
+    /// `dfdl:choiceBranchKey` lexical value matched against choice dispatch key.
+    pub branch_key: Option<StringId>,
     pub node: u32,
 }
 
@@ -264,6 +266,12 @@ pub struct IrProps {
     pub xsd_type: Option<StringId>,
     /// Resolved `dfdl:escapeSchemeRef` for post-trim unescape on text parse.
     pub escape_scheme: Option<EscapeSchemeDef>,
+    /// Prior sibling local name for `{ xs:string(./name) }` choice dispatch.
+    pub choice_dispatch_sibling: Option<StringId>,
+    /// `{ ../a/b }` path for choice dispatch (first step is prior sibling).
+    pub choice_dispatch_path: Option<Vec<IrInputPathStep>>,
+    /// Literal choice dispatch key (`{ xs:string('…') }`).
+    pub choice_dispatch_literal: Option<StringId>,
 }
 
 impl Default for IrProps {
@@ -416,6 +424,9 @@ impl Default for IrProps {
             object_kind: ObjectKind::Normal,
             xsd_type: None,
             escape_scheme: None,
+            choice_dispatch_sibling: None,
+            choice_dispatch_path: None,
+            choice_dispatch_literal: None,
         }
     }
 }

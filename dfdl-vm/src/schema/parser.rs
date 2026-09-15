@@ -2043,7 +2043,13 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
         base.occurs_max = overlay.occurs_max;
     }
     if overlay.choice_dispatch_key.is_some() {
-        base.choice_dispatch_key = overlay.choice_dispatch_key;
+        base.choice_dispatch_key = overlay.choice_dispatch_key.clone();
+        base.choice_dispatch_sibling = overlay.choice_dispatch_sibling.clone();
+        base.choice_dispatch_path = overlay.choice_dispatch_path.clone();
+        base.choice_dispatch_literal = overlay.choice_dispatch_literal.clone();
+    }
+    if overlay.choice_branch_key.is_some() {
+        base.choice_branch_key = overlay.choice_branch_key.clone();
     }
     if overlay.length_pattern.is_some() {
         base.length_pattern = overlay.length_pattern;
@@ -2555,6 +2561,38 @@ fn parse_self_string_length_max_expr(value: &str) -> Option<u64> {
     None
 }
 
+fn apply_choice_dispatch_key_parse(props: &mut DfdlProps, value: &str) {
+    props.choice_dispatch_key = Some(value.to_string());
+    props.choice_dispatch_sibling = None;
+    props.choice_dispatch_path = None;
+    props.choice_dispatch_literal = None;
+    if let Some(steps) = parse_input_value_calc_relative_path(value) {
+        props.choice_dispatch_path = Some(steps);
+        return;
+    }
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    if inner.starts_with("xs:string(") && inner.ends_with(')') {
+        let arg = inner["xs:string(".len()..inner.len() - 1].trim();
+        if let Some(rest) = arg.strip_prefix("./") {
+            props.choice_dispatch_sibling =
+                Some(local_name_from_qname(rest).to_string());
+            return;
+        }
+        if let Some(rest) = arg.strip_prefix("../") {
+            props.choice_dispatch_sibling =
+                Some(local_name_from_qname(rest).to_string());
+            return;
+        }
+        if let Some(lit) = parse_xs_string_literal_arg(arg) {
+            props.choice_dispatch_literal = Some(lit);
+        }
+    }
+}
+
 fn parse_sibling_length_expr(value: &str) -> Option<(String, bool)> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
@@ -2777,6 +2815,8 @@ fn is_dfdl_property(name: &str) -> bool {
             | "prefixLengthType"
             | "prefixIncludesPrefixLength"
             | "objectKind"
+            | "choiceDispatchKey"
+            | "choiceBranchKey"
             | "parseUnparsePolicy"
             | "textBidi"
             | "floating"
@@ -3510,7 +3550,8 @@ fn props_from_attrs_with_variables(
                     }
                 });
             }
-            "choiceDispatchKey" => props.choice_dispatch_key = Some(value.clone()),
+            "choiceDispatchKey" => apply_choice_dispatch_key_parse(&mut props, value),
+            "choiceBranchKey" => props.choice_branch_key = Some(value.clone()),
             _ => {}
         }
     }

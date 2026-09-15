@@ -101,6 +101,14 @@ pub struct DfdlProps {
     /// True when `maxOccurs` was present in XSD (distinguishes unset vs unbounded).
     pub max_occurs_specified: bool,
     pub choice_dispatch_key: Option<String>,
+    /// Parsed sibling from `{ xs:string(./name) }` or `{ xs:string(../name) }` in choiceDispatchKey.
+    pub choice_dispatch_sibling: Option<String>,
+    /// Parsed `{ ../a/b }` path in choiceDispatchKey (no xs:string wrapper).
+    pub choice_dispatch_path: Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>>,
+    /// Literal dispatch key from `{ xs:string('…') }` in choiceDispatchKey.
+    pub choice_dispatch_literal: Option<String>,
+    /// Branch discriminator for choice dispatch (`dfdl:choiceBranchKey`).
+    pub choice_branch_key: Option<String>,
     pub length_pattern: Option<String>,
     pub separator_position: Option<SeparatorPosition>,
     pub text_boolean_true_rep: Option<String>,

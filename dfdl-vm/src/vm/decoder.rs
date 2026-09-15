@@ -393,9 +393,38 @@ impl<'a> Decoder<'a> {
                     },
                 }))
             }
-            IrNode::Choice { branches, props: _ } => {
+            IrNode::Choice { branches, props } => {
+                let dispatch_key = choice_dispatch_key_string(
+                    props,
+                    siblings,
+                    self.ctx.strings(),
+                    &self.ctx.program.tunables,
+                )?;
+                let branches_iter: alloc::vec::Vec<&ChoiceBranch> = if let Some(ref key) =
+                    dispatch_key
+                {
+                    let matched: alloc::vec::Vec<&ChoiceBranch> = branches
+                        .iter()
+                        .filter(|b| {
+                            b.branch_key
+                                .and_then(|id| self.ctx.strings().get(id).ok())
+                                .is_some_and(|bk| bk == key.as_str())
+                        })
+                        .collect();
+                    if matched.is_empty() {
+                        return Err(VmError::InvalidValue {
+                            message: alloc::format!(
+                                "choice dispatch key `{key}` did not match any choiceBranchKey"
+                            ),
+                        }
+                        .into());
+                    }
+                    matched
+                } else {
+                    branches.iter().collect()
+                };
                 let mut branch_errors = Vec::new();
-                for branch in branches {
+                for branch in branches_iter {
                     let saved = cursor.clone();
                     match self.decode_node(
                         branch.node,
@@ -1765,7 +1794,9 @@ fn insert_child(
         IrNode::Choice { .. } => {
             if let DfdlValue::Choice { discriminator, value } = value {
                 match *value {
-                    DfdlValue::Sequence(seq) => {
+                    DfdlValue::Sequence(seq)
+                        if discriminator == "sequence" || discriminator == "choice" =>
+                    {
                         for (k, v) in seq.fields {
                             insert_field(map, k, v);
                         }
@@ -2102,6 +2133,62 @@ fn dfdl_value_text(value: &DfdlValue) -> &str {
     }
 }
 
+fn choice_dispatch_key_string(
+    props: &IrProps,
+    siblings: Option<&BTreeMap<String, SiblingState>>,
+    strings: &crate::ir::StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
+) -> Result<Option<alloc::string::String>> {
+    if props.choice_dispatch_literal.is_some()
+        || props.choice_dispatch_sibling.is_some()
+        || props.choice_dispatch_path.is_some()
+    {
+        if let Some(id) = props.choice_dispatch_literal {
+            return Ok(Some(strings.get(id)?.to_string()));
+        }
+        if let Some(id) = props.choice_dispatch_sibling {
+            let name = strings.get(id)?;
+            let value = siblings
+                .and_then(|m| m.get(name))
+                .map(|s| &s.value)
+                .ok_or_else(|| VmError::InvalidValue {
+                    message: alloc::format!(
+                        "choice dispatch sibling `{name}` not available"
+                    ),
+                })?;
+            return Ok(Some(dfdl_value_dispatch_string(value)));
+        }
+        if let Some(steps) = props.choice_dispatch_path.as_ref() {
+            let value = eval_infoset_path_steps(steps, siblings, strings, tunables)?;
+            return Ok(Some(dfdl_value_dispatch_string(&value)));
+        }
+    }
+    Ok(None)
+}
+
+fn dfdl_value_dispatch_string(value: &DfdlValue) -> alloc::string::String {
+    match value {
+        DfdlValue::String(v) => v.text.clone(),
+        DfdlValue::Int(v) => v.to_string(),
+        DfdlValue::Long(v) => v.to_string(),
+        DfdlValue::Short(v) => v.to_string(),
+        DfdlValue::Byte(v) => v.to_string(),
+        DfdlValue::UnsignedInt(v) => v.to_string(),
+        DfdlValue::UnsignedShort(v) => v.to_string(),
+        DfdlValue::UnsignedByte(v) => v.to_string(),
+        DfdlValue::Integer(v) => v.clone(),
+        DfdlValue::Decimal(v) => v.clone(),
+        DfdlValue::Boolean(v) => {
+            if *v {
+                "true".into()
+            } else {
+                "false".into()
+            }
+        }
+        other => dfdl_value_text(other).to_string(),
+    }
+}
+
 fn sibling_state<'a>(
     props: &IrProps,
     siblings: Option<&'a BTreeMap<String, SiblingState>>,
@@ -2148,13 +2235,23 @@ fn eval_input_value_calc_path(
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
 ) -> Result<DfdlValue> {
-    use crate::length_validate::UnqualifiedPathStepPolicy;
     let steps = props.input_value_calc_path.as_ref().ok_or_else(|| VmError::InvalidValue {
         message: "missing inputValueCalc path".into(),
     })?;
+    let value = eval_infoset_path_steps(steps, siblings, strings, tunables)?;
+    let text = dfdl_value_text(&value);
+    Ok(DfdlValue::String(StringValue::new(text.to_string())))
+}
+
+fn eval_infoset_path_steps(
+    steps: &[crate::ir::IrInputPathStep],
+    siblings: Option<&BTreeMap<String, SiblingState>>,
+    strings: &crate::ir::StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
+) -> Result<DfdlValue> {
     if steps.is_empty() {
         return Err(VmError::InvalidValue {
-            message: "empty inputValueCalc path".into(),
+            message: "empty infoset path".into(),
         }
         .into());
     }
@@ -2171,8 +2268,7 @@ fn eval_input_value_calc_path(
         check_path_step(step.prefix.is_some(), local, tunables.unqualified_path_step_policy)?;
         value = navigate_to_child(value, local)?;
     }
-    let text = dfdl_value_text(value);
-    Ok(DfdlValue::String(StringValue::new(text.to_string())))
+    Ok(value.clone())
 }
 
 fn check_path_step(

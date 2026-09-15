@@ -520,6 +520,7 @@ impl<'a> IrBuilder<'a> {
                             branches.push(ChoiceBranch {
                                 name: self.strings.intern(&branch_name(branch)),
                                 initiator: branch_initiator(branch, &mut self.strings),
+                                branch_key: branch_choice_key(branch, &mut self.strings),
                                 node,
                             });
                         }
@@ -605,6 +606,7 @@ impl<'a> IrBuilder<'a> {
                     branches.push(ChoiceBranch {
                         name: self.strings.intern(&name),
                         initiator,
+                        branch_key: branch_choice_key(branch, &mut self.strings),
                         node,
                     });
                 }
@@ -704,6 +706,7 @@ impl<'a> IrBuilder<'a> {
                     branches.push(ChoiceBranch {
                         name: self.strings.intern(branch_name(branch)),
                         initiator: branch_initiator(branch, &mut self.strings),
+                        branch_key: branch_choice_key(branch, &mut self.strings),
                         node,
                     });
                 }
@@ -2296,6 +2299,16 @@ fn branch_initiator(particle: &Particle, strings: &mut StringPool) -> Option<Str
     raw.map(|s| strings.intern(s))
 }
 
+fn branch_choice_key(particle: &Particle, strings: &mut StringPool) -> Option<StringId> {
+    let raw = match particle {
+        Particle::Element(e) => e.props.choice_branch_key.as_deref(),
+        Particle::Sequence(s) => s.props.choice_branch_key.as_deref(),
+        Particle::Choice(c) => c.props.choice_branch_key.as_deref(),
+        Particle::GroupRef(_) => None,
+    };
+    raw.map(|s| strings.intern(s))
+}
+
 fn value_kind_from_simple(schema: &SchemaDocument, base: &SimpleBase) -> ValueKind {
     schema
         .builtin_for_simple_base(base)
@@ -2839,6 +2852,29 @@ fn overlay_dfdl_to_ir(
                 .collect(),
         );
     }
+    if props.choice_dispatch_sibling.is_some() {
+        base.choice_dispatch_sibling = props
+            .choice_dispatch_sibling
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
+    if let Some(steps) = &props.choice_dispatch_path {
+        base.choice_dispatch_path = Some(
+            steps
+                .iter()
+                .map(|(prefix, local)| crate::ir::IrInputPathStep {
+                    prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
+                    local: strings.intern(local.clone()),
+                })
+                .collect(),
+        );
+    }
+    if props.choice_dispatch_literal.is_some() {
+        base.choice_dispatch_literal = props
+            .choice_dispatch_literal
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
     if let Some(v) = props.output_value_calc {
         base.output_value_calc = Some(v);
     }
@@ -3373,6 +3409,64 @@ fn intern_input_value_calc_segments(
 mod tests {
     use super::*;
     use crate::schema::parse_schema;
+    use crate::value::DfdlValue;
+
+    #[test]
+    fn test05_choice_dispatch_ir() {
+        use crate::schema::parse_schema_with_options;
+        use std::fs;
+        use std::path::Path;
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section06/namespaces");
+        let xsd = fs::read_to_string(dir.join("test05sch1.dfdl.xsd")).unwrap();
+        let schema = parse_schema_with_options(
+            &xsd,
+            &crate::schema::ParseOptions {
+                base_dir: Some(dir.to_string_lossy().into()),
+                schema_label: Some("test05sch1.dfdl.xsd".into()),
+            },
+        )
+        .expect("parse");
+        let ty = schema
+            .resolve_type(&crate::schema::TypeName::new("rootType"))
+            .unwrap();
+        if let crate::schema::TypeDef::Complex { content, .. } = ty {
+            if let crate::schema::ComplexContent::Sequence(seq) = content {
+                if let crate::schema::Particle::Choice(ch) = &seq.particles[1] {
+                    assert_eq!(
+                        ch.props.choice_dispatch_sibling.as_deref(),
+                        Some("elem")
+                    );
+                    if let crate::schema::Particle::Element(el) = &ch.branches[0] {
+                        assert_eq!(el.props.choice_branch_key.as_deref(), Some("1"));
+                    }
+                }
+            }
+        }
+        let program = compile_named(&schema, Some("root")).expect("compile");
+        let root = program.node(program.root).unwrap();
+        if let IrNode::Element { child: Some(id), .. } = root {
+            if let IrNode::Sequence { children, .. } = program.node(*id).unwrap() {
+                if let IrNode::Choice { branches, props } = program.node(children[1]).unwrap() {
+                    assert!(props.choice_dispatch_sibling.is_some());
+                    assert!(branches[0].branch_key.is_some());
+                }
+            }
+        }
+        let spec =
+            crate::api::DfdlSpec::from_schema_root_with_tunables(schema, Some("root"), Default::default())
+                .expect("spec");
+        let val = spec.decode(b"1ab").expect("decode");
+        let DfdlValue::Sequence(root) = val else {
+            panic!("expected root sequence");
+        };
+        let inner = root.fields.get("root").expect("root element");
+        let DfdlValue::Sequence(fields) = inner else {
+            panic!("expected root complex");
+        };
+        assert!(fields.fields.contains_key("elem1"));
+        assert!(!fields.fields.contains_key("elem1_fields"));
+    }
 
     #[test]
     fn compile_record_schema() {
