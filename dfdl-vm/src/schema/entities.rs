@@ -1412,10 +1412,45 @@ pub fn validate_nil_value_compile(
 
 /// `escapeBlockStart` / `escapeBlockEnd` must not contain literal whitespace (DFDL-6-036R).
 pub fn validate_escape_block_property(raw: &str) -> Result<(), String> {
+    validate_property_no_literal_whitespace(raw, "escapeScheme")
+}
+
+/// `escapeCharacter` / `escapeEscapeCharacter` must not contain literal whitespace (DFDL-6-036R).
+pub fn validate_escape_character_property(raw: &str) -> Result<(), String> {
+    validate_property_no_literal_whitespace(raw, "escapeScheme")
+}
+
+fn validate_property_no_literal_whitespace(raw: &str, property: &str) -> Result<(), String> {
     if raw.chars().any(|c| c.is_whitespace()) {
-        return Err(format!(
-            "The string ({raw}) must not contain any whitespace. Use DFDL Entities (property escapeScheme)"
-        ));
+        if property == "escapeScheme" {
+            return Err(format!(
+                "The string ({raw}) must not contain any whitespace. Use DFDL Entities (property {property})"
+            ));
+        }
+        return Err(format!("Use DFDL Entities (property {property})"));
+    }
+    Ok(())
+}
+
+/// Compile-time `textNumberPadCharacter` (DFDL-6-036R), analogous to string pad.
+pub fn validate_text_number_pad_character_merged(
+    raw: &str,
+    property_form: bool,
+) -> Result<(), String> {
+    validate_text_string_pad_character_compile(raw)?;
+    validate_dfdl_entities_in_property(raw)?;
+    if raw.chars().any(|c| c.is_whitespace()) {
+        if property_form {
+            return Err(format!("Use DFDL Entities (property textNumberPadCharacter)"));
+        }
+        return Err(
+            "facet-valid NonEmptyStringLiteral property textNumberPadCharacter".into(),
+        );
+    }
+    let expanded = expand_entities_str(raw);
+    let one_char = expanded.chars().count() == 1;
+    if !one_char {
+        return Err("Length of string must be exactly 1 character".into());
     }
     Ok(())
 }

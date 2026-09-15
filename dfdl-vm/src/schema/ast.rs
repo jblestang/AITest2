@@ -44,8 +44,9 @@ pub struct DfdlProps {
     pub text_pad_kind: Option<TextPadKind>,
     /// When false, explicit-length fields may leave unconsumed data in their frame.
     pub truncate_specified_length_string: Option<bool>,
-    /// Expanded pad character for numeric text (`dfdl:textNumberPadCharacter`).
+    /// Raw lexical value for `dfdl:textNumberPadCharacter` (expanded when building IR).
     pub text_number_pad_character: Option<String>,
+    pub text_number_pad_character_property_form: bool,
     /// Expanded pad character for string text (`dfdl:textStringPadCharacter`).
     pub text_string_pad_character: Option<String>,
     /// Set when pad character came from `dfdl:property` (not an XSD attribute).
@@ -189,7 +190,9 @@ pub struct DfdlProps {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct EscapeSchemeDef {
     pub escape_kind: EscapeKind,
+    pub escape_character_raw: Option<String>,
     pub escape_character: Option<String>,
+    pub escape_escape_character_raw: Option<String>,
     pub escape_escape_character: Option<String>,
     /// Raw `escapeBlockStart` attribute (before entity expansion), for compile-time SDE checks.
     pub escape_block_start_raw: Option<String>,

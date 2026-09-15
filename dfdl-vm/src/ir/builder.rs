@@ -386,6 +386,8 @@ impl<'a> IrBuilder<'a> {
                             if element.props.text_number_pad_character.is_none() {
                                 merged_ir.text_number_pad_character =
                                     child_props.text_number_pad_character;
+                                merged_ir.text_number_pad_character_property_form =
+                                    child_props.text_number_pad_character_property_form;
                             }
                             if element.props.text_trim_kind.is_none() {
                                 merged_ir.text_trim_kind = child_props.text_trim_kind;
@@ -1253,18 +1255,37 @@ fn finalize_element_props(
         }
     }
     if let Some(ref scheme) = ir.escape_scheme {
-        use crate::schema::{EscapeKind, validate_escape_block_property};
-        if scheme.escape_kind == EscapeKind::EscapeBlock {
-            for raw in [
-                scheme.escape_block_start_raw.as_deref(),
-                scheme.escape_block_end_raw.as_deref(),
-            ] {
-                if let Some(s) = raw {
-                    if let Err(msg) = validate_escape_block_property(s) {
-                        return Err(SchemaError::InvalidProperty {
-                            message: alloc::format!("Schema Definition Error: {msg}"),
+        use crate::schema::{
+            EscapeKind, validate_escape_block_property, validate_escape_character_property,
+        };
+        match scheme.escape_kind {
+            EscapeKind::EscapeBlock => {
+                for raw in [
+                    scheme.escape_block_start_raw.as_deref(),
+                    scheme.escape_block_end_raw.as_deref(),
+                ] {
+                    if let Some(s) = raw {
+                        if let Err(msg) = validate_escape_block_property(s) {
+                            return Err(SchemaError::InvalidProperty {
+                                message: alloc::format!("Schema Definition Error: {msg}"),
+                            }
+                            .into());
                         }
-                        .into());
+                    }
+                }
+            }
+            EscapeKind::EscapeCharacter => {
+                for raw in [
+                    scheme.escape_character_raw.as_deref(),
+                    scheme.escape_escape_character_raw.as_deref(),
+                ] {
+                    if let Some(s) = raw {
+                        if let Err(msg) = validate_escape_character_property(s) {
+                            return Err(SchemaError::InvalidProperty {
+                                message: alloc::format!("Schema Definition Error: {msg}"),
+                            }
+                            .into());
+                        }
                     }
                 }
             }
@@ -2627,10 +2648,20 @@ fn overlay_dfdl_to_ir(
         base.truncate_specified_length_string = v;
     }
     if props.text_number_pad_character.is_some() {
-        base.text_number_pad_character = props
-            .text_number_pad_character
-            .as_ref()
-            .map(|s| strings.intern(s.clone()));
+        let raw = props.text_number_pad_character.as_deref().unwrap();
+        if let Err(msg) = crate::schema::validate_text_number_pad_character_merged(
+            raw,
+            props.text_number_pad_character_property_form,
+        ) {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {msg}"),
+            }
+            .into());
+        }
+        let expanded = crate::schema::expand_entities_str(raw);
+        base.text_number_pad_character = Some(strings.intern(expanded));
+        base.text_number_pad_character_property_form =
+            props.text_number_pad_character_property_form;
     }
     if props.text_string_pad_character.is_some() {
         base.text_string_pad_character = props
@@ -3160,6 +3191,8 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.text_number_pad_character.is_some() {
         out.text_number_pad_character = overlay.text_number_pad_character;
     }
+    out.text_number_pad_character_property_form =
+        overlay.text_number_pad_character_property_form;
     out.text_string_pad_character = overlay.text_string_pad_character;
     out.text_string_pad_character_property_form =
         overlay.text_string_pad_character_property_form;

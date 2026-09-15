@@ -38,7 +38,8 @@ pub use entities::{
     validate_text_standard_zero_rep_literal,
     validate_text_string_pad_character, validate_text_string_pad_character_compile,
     validate_text_string_pad_character_merged, validate_text_string_pad_character_runtime,
-    validate_escape_block_property, validate_nil_value_compile,
+    validate_escape_block_property, validate_escape_character_property, validate_nil_value_compile,
+    validate_text_number_pad_character_merged,
     validate_text_boolean_rep_value,
 };
 pub use parser::{

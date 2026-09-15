@@ -1644,6 +1644,9 @@ impl<'a> XsdParser<'a> {
                                 if local_tag(&prop_name) == "textStringPadCharacter" {
                                     props.text_string_pad_character_property_form = true;
                                 }
+                                if local_tag(&prop_name) == "textNumberPadCharacter" {
+                                    props.text_number_pad_character_property_form = true;
+                                }
                             } else {
                                 self.skip_element_body(&child_local)?;
                             }
@@ -1819,9 +1822,11 @@ fn escape_scheme_from_attrs(attrs: &BTreeMap<String, String>) -> EscapeSchemeDef
     };
     EscapeSchemeDef {
         escape_kind,
+        escape_character_raw: attrs.get("escapeCharacter").cloned(),
         escape_character: attrs
             .get("escapeCharacter")
             .map(|s| expand_entities_str(s)),
+        escape_escape_character_raw: attrs.get("escapeEscapeCharacter").cloned(),
         escape_escape_character: attrs
             .get("escapeEscapeCharacter")
             .map(|s| expand_entities_str(s)),
@@ -2194,6 +2199,8 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.text_number_pad_character.is_some() {
         base.text_number_pad_character = overlay.text_number_pad_character;
+        base.text_number_pad_character_property_form =
+            overlay.text_number_pad_character_property_form;
     }
     if overlay.text_string_pad_character.is_some() {
         base.text_string_pad_character = overlay.text_string_pad_character;
@@ -3129,8 +3136,7 @@ fn props_from_attrs_with_variables(
                 });
             }
             "textNumberPadCharacter" => {
-                props.text_number_pad_character =
-                    Some(crate::schema::expand_entities_str(value));
+                props.text_number_pad_character = Some(value.clone());
             }
             "textStandardBase" => {
                 props.text_standard_base = Some(value.parse().map_err(|_| {
