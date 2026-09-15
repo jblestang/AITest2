@@ -141,6 +141,33 @@ fn section05_failure_buckets() {
 
 #[test]
 #[ignore]
+fn section05_list_all_failures() {
+    let root = Path::new(TDML_ROOT);
+    let mut files = Vec::new();
+    collect(root, &mut files);
+    files.sort();
+    for path in files {
+        let rel = path.strip_prefix(root).unwrap().to_string_lossy();
+        let Ok(tdml) = fs::read_to_string(&path) else { continue };
+        let Ok(mut suite) = parse_tdml(&tdml) else { continue };
+        enrich(&mut suite, &path);
+        for t in &suite.tests {
+            let Ok(r) = run_parser_test(&suite, t) else { continue };
+            if let TestOutcome::Fail(msg) = r.outcome {
+                eprintln!("P {rel} :: {} :: {msg}", t.name);
+            }
+        }
+        for t in &suite.unparser_tests {
+            let Ok(r) = run_unparser_test(&suite, t) else { continue };
+            if let TestOutcome::Fail(msg) = r.outcome {
+                eprintln!("U {rel} :: {} :: {msg}", t.name);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore]
 fn debug_bitorder_tdml_parse() {
     let p = Path::new(TDML_ROOT).join("simple_types/BitOrder.tdml");
     let tdml = fs::read_to_string(p).unwrap();

@@ -581,23 +581,22 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
             });
         }
     };
-    let run_unparse_validate = element_form_suite || test.expected_errors.is_some();
-    let validate_unparse = if !run_unparse_validate {
-        Ok(())
-    } else if element_form_suite {
+    let validate_unparse = if element_form_suite {
         crate::unparse_validate::validate_unparse_infoset_nodes(
             spec.schema(),
             spec.program(),
             &test.root,
             &infoset_nodes,
         )
-    } else {
+    } else if test.expected_errors.is_none() {
         crate::unparse_validate::validate_unparse_infoset_cardinality(
             spec.schema(),
             spec.program(),
             &test.root,
             &infoset_nodes,
         )
+    } else {
+        Ok(())
     };
     if let Err(msg) = validate_unparse {
         if let Some(expected_errors) = &test.expected_errors {

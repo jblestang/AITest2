@@ -1884,6 +1884,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.calendar_language.is_some() {
         base.calendar_language = overlay.calendar_language;
     }
+    if overlay.calendar_language_segments.is_some() {
+        base.calendar_language_segments = overlay.calendar_language_segments.clone();
+    }
     if overlay.calendar_days_in_first_week.is_some() {
         base.calendar_days_in_first_week = overlay.calendar_days_in_first_week;
     }
@@ -2196,6 +2199,15 @@ fn parse_input_value_calc_concat(value: &str) -> Option<alloc::vec::Vec<crate::s
             out.push(InputValueCalcSegment::Sibling(
                 local_name_from_qname(name).to_string(),
             ));
+            continue;
+        }
+        if part.len() >= 2
+            && ((part.starts_with('\'') && part.ends_with('\''))
+                || (part.starts_with('"') && part.ends_with('"')))
+        {
+            let inner = &part[1..part.len() - 1];
+            let unescaped = inner.replace("''", "'").replace("\"\"", "\"");
+            out.push(InputValueCalcSegment::Literal(unescaped));
             continue;
         }
         if let Some(rest) = part.strip_prefix("fn:substring(") {
@@ -3137,7 +3149,13 @@ fn props_from_attrs_with_variables(
                 })?;
                 props.calendar_century_start = Some(parsed);
             }
-            "calendarLanguage" => props.calendar_language = Some(value.clone()),
+            "calendarLanguage" => {
+                if let Some(segments) = parse_input_value_calc_concat(value) {
+                    props.calendar_language_segments = Some(segments);
+                } else {
+                    props.calendar_language = Some(value.clone());
+                }
+            }
             "calendarDaysInFirstWeek" => {
                 let parsed: u32 = value.parse().map_err(|_| ParseError::InvalidXml {
                     message: alloc::format!("invalid calendarDaysInFirstWeek `{value}`"),

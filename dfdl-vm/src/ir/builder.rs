@@ -2567,6 +2567,9 @@ fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if let Some(segs) = &props.calendar_language_segments {
+        base.calendar_language_segments = Some(intern_input_value_calc_segments(segs, strings));
+    }
     if let Some(v) = props.calendar_days_in_first_week {
         base.calendar_days_in_first_week = v;
     }
@@ -2791,25 +2794,7 @@ fn overlay_dfdl_to_ir(
             .map(|s| strings.intern(s.clone()));
     }
     if let Some(segments) = &props.input_value_calc_segments {
-        base.input_value_calc_segments = Some(
-            segments
-                .iter()
-                .map(|seg| match seg {
-                    crate::schema::InputValueCalcSegment::Sibling(name) => {
-                        crate::ir::IrInputValueCalcSegment::Sibling(strings.intern(name.clone()))
-                    }
-                    crate::schema::InputValueCalcSegment::Substring {
-                        sibling,
-                        start,
-                        length,
-                    } => crate::ir::IrInputValueCalcSegment::Substring {
-                        sibling: strings.intern(sibling.clone()),
-                        start: *start as u32,
-                        length: *length as u32,
-                    },
-                })
-                .collect(),
-        );
+        base.input_value_calc_segments = Some(intern_input_value_calc_segments(segments, strings));
     }
     if let Some(steps) = &props.input_value_calc_path {
         base.input_value_calc_path = Some(
@@ -3043,6 +3028,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.calendar_century_start = overlay.calendar_century_start;
     if overlay.calendar_language.is_some() {
         out.calendar_language = overlay.calendar_language;
+    }
+    if overlay.calendar_language_segments.is_some() {
+        out.calendar_language_segments = overlay.calendar_language_segments.clone();
     }
     out.calendar_days_in_first_week = overlay.calendar_days_in_first_week;
     out.calendar_first_day_of_week = overlay.calendar_first_day_of_week;
@@ -3313,6 +3301,32 @@ pub fn compile_named_with_tunables(
     crate::tunable_validate::validate_tunable_schema_requirements(schema, &root_name, &tunables)?;
     crate::schema_validate::validate_compiled_schema(schema, &root_name, &tunables)?;
     IrBuilder::new(schema, tunables)?.build(&root_name)
+}
+
+fn intern_input_value_calc_segments(
+    segments: &[crate::schema::InputValueCalcSegment],
+    strings: &mut crate::ir::StringPool,
+) -> alloc::vec::Vec<crate::ir::IrInputValueCalcSegment> {
+    segments
+        .iter()
+        .map(|seg| match seg {
+            crate::schema::InputValueCalcSegment::Sibling(name) => {
+                crate::ir::IrInputValueCalcSegment::Sibling(strings.intern(name.clone()))
+            }
+            crate::schema::InputValueCalcSegment::Literal(text) => {
+                crate::ir::IrInputValueCalcSegment::Literal(strings.intern(text.clone()))
+            }
+            crate::schema::InputValueCalcSegment::Substring {
+                sibling,
+                start,
+                length,
+            } => crate::ir::IrInputValueCalcSegment::Substring {
+                sibling: strings.intern(sibling.clone()),
+                start: *start as u32,
+                length: *length as u32,
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]

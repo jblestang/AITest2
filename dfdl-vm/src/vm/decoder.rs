@@ -1890,6 +1890,9 @@ fn eval_input_value_calc_concat(
                 let name = strings.get(*id)?;
                 out.push_str(&sibling_string_value(siblings, name)?);
             }
+            IrInputValueCalcSegment::Literal(id) => {
+                out.push_str(strings.get(*id)?);
+            }
             IrInputValueCalcSegment::Substring {
                 sibling,
                 start,

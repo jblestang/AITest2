@@ -629,10 +629,7 @@ pub fn validate_length_facets_for_type(
         });
     }
 
-    if props.length_kind == LengthKind::Implicit
-        && props.representation == Representation::Text
-        && length_ok
-    {
+    if props.length_kind == LengthKind::Implicit && length_ok {
         if has_length {
             return Ok(());
         }
@@ -693,7 +690,7 @@ fn builtin_type_name(b: BuiltinType) -> &'static str {
         BuiltinType::DateTime => "xs:dateTime",
         BuiltinType::Time => "xs:time",
         BuiltinType::String => "xs:string",
-        BuiltinType::HexBinary => "xs:hexBinary",
+        BuiltinType::HexBinary => "HexBinary",
         BuiltinType::NonNegativeInteger => "xs:nonNegativeInteger",
     }
 }

@@ -68,6 +68,7 @@ pub struct DfdlProps {
     pub calendar_check_policy_lax: Option<bool>,
     pub calendar_century_start: Option<u32>,
     pub calendar_language: Option<String>,
+    pub calendar_language_segments: Option<alloc::vec::Vec<InputValueCalcSegment>>,
     pub calendar_days_in_first_week: Option<u32>,
     pub calendar_first_day_of_week: Option<String>,
     pub calendar_time_zone: Option<String>,
@@ -313,6 +314,7 @@ pub enum TextPadKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputValueCalcSegment {
     Sibling(String),
+    Literal(String),
     Substring {
         sibling: String,
         start: usize,

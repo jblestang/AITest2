@@ -230,6 +230,21 @@ fn validate_sequence_children(
     enforce_element_form: bool,
 ) -> Result<(), String> {
     for &child_id in children {
+        match program.node(child_id).map_err(|e| e.to_string())? {
+            IrNode::Sequence { .. } | IrNode::Choice { .. } => {
+                validate_infoset_particle(
+                    program,
+                    child_id,
+                    node,
+                    qualified,
+                    tns,
+                    parent_name,
+                    enforce_element_form,
+                )?;
+                continue;
+            }
+            _ => {}
+        }
         let IrNode::Element { name, props, .. } = program.node(child_id).map_err(|e| e.to_string())?
         else {
             continue;
@@ -282,28 +297,53 @@ fn validate_sequence_children(
             )?;
         }
     }
-    for (key, extra) in &node.children {
-        let local = crate::xml_util::local_name_str(key);
-        if children.iter().any(|&cid| {
-            program
-                .node(cid)
-                .ok()
-                .and_then(|n| match n {
-                    IrNode::Element { name, .. } => program.strings.get(*name).ok(),
-                    _ => None,
-                })
-                .is_some_and(|n| crate::xml_util::local_name_str(n) == local)
-        }) {
-            continue;
-        }
-        if !extra.is_empty() {
-            return Err(format!(
-                "Unparse Error: {} expected element end, but received start event for {key} at {parent_name}",
-                element_qname_in_errors(local, if qualified { tns } else { None }),
-            ));
+    if enforce_element_form {
+        for (key, extra) in &node.children {
+            let local = crate::xml_util::local_name_str(key);
+            if sequence_allows_child_local(program, children, local) {
+                continue;
+            }
+            if !extra.is_empty() {
+                return Err(format!(
+                    "Unparse Error: {} expected element end, but received start event for {key} at {parent_name}",
+                    element_qname_in_errors(local, if qualified { tns } else { None }),
+                ));
+            }
         }
     }
     Ok(())
+}
+
+fn sequence_allows_child_local(program: &IrProgram, children: &[u32], local: &str) -> bool {
+    for &cid in children {
+        match program.node(cid).ok() {
+            Some(IrNode::Element { name, .. }) => {
+                if program
+                    .strings
+                    .get(*name)
+                    .ok()
+                    .is_some_and(|n| crate::xml_util::local_name_str(n) == local)
+                {
+                    return true;
+                }
+            }
+            Some(IrNode::Sequence { children: nested, .. }) => {
+                if sequence_allows_child_local(program, nested, local) {
+                    return true;
+                }
+            }
+            Some(IrNode::Choice { branches, .. }) => {
+                for branch in branches {
+                    if sequence_allows_child_local(program, core::slice::from_ref(&branch.node), local)
+                    {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn find_infoset_children<'a>(node: &'a InfosetNode, local: &str) -> Vec<&'a InfosetNode> {

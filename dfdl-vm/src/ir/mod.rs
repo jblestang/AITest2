@@ -85,6 +85,7 @@ pub struct IrInputPathStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IrInputValueCalcSegment {
     Sibling(StringId),
+    Literal(StringId),
     Substring {
         sibling: StringId,
         start: u32,
@@ -136,6 +137,7 @@ pub struct IrProps {
     /// Two-digit year pivot (`dfdl:calendarCenturyStart`, default 53).
     pub calendar_century_start: u32,
     pub calendar_language: Option<StringId>,
+    pub calendar_language_segments: Option<Vec<IrInputValueCalcSegment>>,
     pub calendar_days_in_first_week: u32,
     pub calendar_first_day_of_week: u32,
     pub text_number_pattern: Option<StringId>,
@@ -306,6 +308,7 @@ impl Default for IrProps {
             calendar_time_zone_defined: false,
             calendar_century_start: 53,
             calendar_language: None,
+            calendar_language_segments: None,
             calendar_days_in_first_week: 4,
             calendar_first_day_of_week: 7,
             text_number_pattern: None,

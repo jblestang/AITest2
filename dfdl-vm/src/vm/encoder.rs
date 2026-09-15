@@ -220,6 +220,7 @@ impl<'a> Encoder<'a> {
                         &self.ctx.config,
                         Some(&schema_ctx),
                         None,
+                        None,
                     )
                     .map_err(Into::into)
                 }
@@ -399,6 +400,7 @@ impl<'a> Encoder<'a> {
                             Some(&schema_ctx),
                             field_delim,
                             parent_props,
+                            Some(map),
                         );
                     }
                     if resolved.trailing_skip == 0 {
@@ -454,6 +456,7 @@ impl<'a> Encoder<'a> {
                         Some(&schema_ctx),
                         field_delim,
                         parent_props,
+                        Some(map),
                     )
                 }
             }
@@ -492,6 +495,7 @@ impl<'a> Encoder<'a> {
         field_name: Option<&str>,
         delim_meta: Option<&crate::value::FieldDelimiterMeta>,
         sep_props: &IrProps,
+        encode_siblings: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
@@ -533,6 +537,7 @@ impl<'a> Encoder<'a> {
                 &self.ctx.config,
                 field_name,
                 delim_meta,
+                encode_siblings,
             )
             .map_err(Error::from)?;
             if sep_props.separator_position == SeparatorPosition::Postfix {

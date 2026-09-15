@@ -2344,6 +2344,321 @@ fn weekday_from_name(name: &str) -> Option<u32> {
     }
 }
 
+fn calendar_language_is_valid(locale: &str) -> bool {
+    if locale.is_empty() {
+        return false;
+    }
+    let mut parts = locale.split(|c| c == '-' || c == '_');
+    let first = parts.next().unwrap_or("");
+    if first.is_empty()
+        || first.len() > 8
+        || !first.chars().all(|c| c.is_ascii_alphabetic())
+    {
+        return false;
+    }
+    for part in parts {
+        if part.is_empty() || part.len() > 8 {
+            return false;
+        }
+        if !part.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return false;
+        }
+    }
+    true
+}
+
+fn calendar_language_sde(locale: &str) -> crate::error::VmError {
+    crate::error::VmError::InvalidValue {
+        message: alloc::format!(
+            "Schema Definition Error: dfdl:calendarLanguage property syntax error. Must match '([A-Za-z]{{1,8}}([-_][A-Za-z0-9]{{1,8}})*)' (ex: 'en_us' or 'de_1996'), but was '{locale}'."
+        ),
+    }
+}
+
+pub(crate) fn sibling_text_map_for_calendar(
+    siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
+) -> Option<alloc::collections::BTreeMap<String, alloc::string::String>> {
+    let map = siblings?;
+    let mut out = alloc::collections::BTreeMap::new();
+    for (k, v) in map {
+        let text = match v {
+            crate::value::DfdlValue::String(s) => s.text.clone(),
+            crate::value::DfdlValue::DateTime(s) => s.clone(),
+            crate::value::DfdlValue::Integer(i) => i.clone(),
+            crate::value::DfdlValue::Long(n) => alloc::format!("{n}"),
+            crate::value::DfdlValue::Int(n) => alloc::format!("{n}"),
+            _ => continue,
+        };
+        out.insert(k.clone(), text);
+    }
+    Some(out)
+}
+
+pub(crate) fn resolve_calendar_language(
+    props: &IrProps,
+    strings: &StringPool,
+    siblings: Option<&alloc::collections::BTreeMap<String, alloc::string::String>>,
+) -> Result<Option<alloc::string::String>, crate::error::VmError> {
+    use crate::ir::IrInputValueCalcSegment;
+    if let Some(segs) = &props.calendar_language_segments {
+        let mut out = alloc::string::String::new();
+        for seg in segs {
+            match seg {
+                IrInputValueCalcSegment::Sibling(id) => {
+                    let name = strings.get(*id)?;
+                    let local = crate::xml_util::local_name_str(name);
+                    let val = siblings
+                        .and_then(|m| m.get(name).or_else(|| m.get(local)))
+                        .ok_or_else(|| crate::error::VmError::InvalidValue {
+                            message: alloc::format!(
+                                "missing sibling `{name}` for calendarLanguage"
+                            ),
+                        })?;
+                    out.push_str(val);
+                }
+                IrInputValueCalcSegment::Literal(id) => out.push_str(strings.get(*id)?),
+                IrInputValueCalcSegment::Substring {
+                    sibling,
+                    start,
+                    length,
+                } => {
+                    let name = strings.get(*sibling)?;
+                    let text = siblings
+                        .and_then(|m| m.get(name))
+                        .ok_or_else(|| crate::error::VmError::InvalidValue {
+                            message: alloc::format!("missing sibling `{name}` for calendarLanguage"),
+                        })?;
+                    let start = (*start as usize).saturating_sub(1);
+                    for ch in text.chars().skip(start).take(*length as usize) {
+                        out.push(ch);
+                    }
+                }
+            }
+        }
+        if !calendar_language_is_valid(&out) {
+            return Err(calendar_language_sde(&out));
+        }
+        return Ok(Some(out));
+    }
+    if let Some(id) = props.calendar_language {
+        let s = strings.get(id)?.trim();
+        if !s.is_empty() {
+            if !calendar_language_is_valid(s) {
+                return Err(calendar_language_sde(s));
+            }
+            return Ok(Some(s.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+fn month_name_unparse_locale(month: u32, language: Option<&str>, width: usize) -> alloc::string::String {
+    let key = language
+        .and_then(|l| l.split(|c| c == '-' || c == '_').next())
+        .map(|s| s.to_ascii_lowercase());
+    if key.as_deref() == Some("de") {
+        let full = match month {
+            1 => "Januar",
+            2 => "Februar",
+            3 => "März",
+            4 => "April",
+            5 => "Mai",
+            6 => "Juni",
+            7 => "Juli",
+            8 => "August",
+            9 => "September",
+            10 => "Oktober",
+            11 => "November",
+            12 => "Dezember",
+            _ => "März",
+        };
+        if width >= 4 {
+            return full.into();
+        }
+        return full.chars().take(width.max(1)).collect();
+    }
+    let full = match month {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        _ => "March",
+    };
+    if width >= 4 {
+        full.into()
+    } else {
+        full.chars().take(width.max(1)).collect()
+    }
+}
+
+fn weekday_name_unparse_locale(wd: u32, language: Option<&str>, width: usize) -> alloc::string::String {
+    let key = language
+        .and_then(|l| l.split(|c| c == '-' || c == '_').next())
+        .map(|s| s.to_ascii_lowercase());
+    if key.as_deref() == Some("de") {
+        let full = match wd {
+            1 => "Montag",
+            2 => "Dienstag",
+            3 => "Mittwoch",
+            4 => "Donnerstag",
+            5 => "Freitag",
+            6 => "Samstag",
+            7 => "Sonntag",
+            _ => "Freitag",
+        };
+        if width >= 4 {
+            return full.into();
+        }
+        return full.chars().take(width.max(1)).collect();
+    }
+    let full = match wd {
+        1 => "Monday",
+        2 => "Tuesday",
+        3 => "Wednesday",
+        4 => "Thursday",
+        5 => "Friday",
+        6 => "Saturday",
+        7 => "Sunday",
+        _ => "Friday",
+    };
+    if width >= 4 {
+        full.into()
+    } else {
+        full.chars().take(width.max(1)).collect()
+    }
+}
+
+fn parse_iso_date_ymd(iso: &str) -> Result<(i32, u32, u32), crate::error::VmError> {
+    use crate::error::VmError;
+    let date_part = iso.split('T').next().unwrap_or(iso).trim();
+    let mut parts = date_part.split('-');
+    let y: i32 = parts
+        .next()
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:date `{iso}`"),
+        })?
+        .parse()
+        .map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:date `{iso}`"),
+        })?;
+    let m: u32 = parts
+        .next()
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:date `{iso}`"),
+        })?
+        .parse()
+        .map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:date `{iso}`"),
+        })?;
+    let d: u32 = parts
+        .next()
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:date `{iso}`"),
+        })?
+        .parse()
+        .map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:date `{iso}`"),
+        })?;
+    Ok((y, m, d))
+}
+
+fn unparse_iso_date_to_calendar_pattern(
+    iso: &str,
+    pattern: &str,
+    language: Option<&str>,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    use crate::error::VmError;
+    let (year, month, day) = parse_iso_date_ymd(iso)?;
+    let weekday = weekday_of_ymd(year, month, day).unwrap_or(5);
+    let mut out = alloc::string::String::new();
+    let chars: alloc::vec::Vec<char> = pattern.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            i += 1;
+            if i < chars.len() && chars[i] == '\'' {
+                out.push('\'');
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < chars.len() {
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        i += 2;
+                    } else {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            if i >= chars.len() {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("invalid calendarPattern `{pattern}`"),
+                });
+            }
+            let lit: alloc::string::String = chars[start..i]
+                .iter()
+                .collect::<alloc::string::String>()
+                .replace("''", "'");
+            out.push_str(&lit);
+            i += 1;
+            continue;
+        }
+        let c = chars[i];
+        if c.is_whitespace() {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c.is_ascii_alphabetic() {
+            let mut w = 1usize;
+            while i + w < chars.len() && chars[i + w] == c {
+                w += 1;
+            }
+            let field = match c {
+                'E' => weekday_name_unparse_locale(weekday, language, w),
+                'M' if w >= 3 => month_name_unparse_locale(month, language, w),
+                'M' => alloc::format!("{month:02}"),
+                'd' => {
+                    if w >= 2 {
+                        alloc::format!("{day:02}")
+                    } else {
+                        alloc::format!("{day}")
+                    }
+                }
+                'y' | 'Y' => {
+                    if w >= 4 {
+                        alloc::format!("{year:04}")
+                    } else {
+                        alloc::format!("{:02}", year % 100)
+                    }
+                }
+                _ => {
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!("unsupported calendar field `{c}` in unparse"),
+                    });
+                }
+            };
+            out.push_str(&field);
+            i += w;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    Ok(out)
+}
+
 fn weekday_of_ymd(year: i32, month: u32, day: u32) -> Option<u32> {
     if !(1..=12).contains(&month) || day == 0 {
         return None;
@@ -5070,15 +5385,18 @@ pub(crate) fn read_text_scalar(
                         props.calendar_first_day_of_week,
                     )?
                 } else {
+                    let cal_lang = resolve_calendar_language(
+                        props,
+                        strings,
+                        sibling_env.map(|e| e.text),
+                    )?;
                     let parsed_text = format_calendar_text(
                         trimmed,
                         pattern,
                         props.calendar_check_policy_lax,
                         props.calendar_century_start,
                         CalendarTextConfig {
-                            language: props
-                                .calendar_language
-                                .and_then(|id| strings.get(id).ok()),
+                            language: cal_lang.as_deref(),
                             first_day_of_week: props.calendar_first_day_of_week,
                             days_in_first_week: props.calendar_days_in_first_week,
                         },
@@ -5984,6 +6302,7 @@ pub(crate) fn write_text_scalar(
     strings: &StringPool,
     config: &RuntimeConfig,
     field_name: Option<&str>,
+    encode_siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -6051,12 +6370,17 @@ pub(crate) fn write_text_scalar(
         (DateTime, DfdlValue::DateTime(v)) | (Time, DfdlValue::DateTime(v)) => {
             if let Some(pat_id) = props.calendar_pattern {
                 let pattern = strings.get(pat_id)?;
+                let cal_lang = resolve_calendar_language(
+                    props,
+                    strings,
+                    sibling_text_map_for_calendar(encode_siblings).as_ref(),
+                )?;
                 if crate::vm::calendar_binary::calendar_pattern_time_only(pattern)
                     || kind == crate::ir::ValueKind::Time
                 {
                     unparse_iso_time_to_calendar_pattern(v, pattern)?
                 } else {
-                    v.clone()
+                    unparse_iso_date_to_calendar_pattern(v, pattern, cal_lang.as_deref())?
                 }
             } else {
                 v.clone()
@@ -8097,11 +8421,17 @@ fn decode_hex(s: &str) -> Result<Vec<u8>, crate::error::VmError> {
     let mut out = Vec::new();
     let bytes = s.as_bytes();
     for chunk in bytes.chunks(2) {
-        let hi = (chunk[0] as char).to_digit(16).ok_or_else(|| crate::error::VmError::InvalidValue {
-            message: "invalid hexBinary".into(),
+        let hi_ch = chunk[0] as char;
+        let hi = hi_ch.to_digit(16).ok_or_else(|| crate::error::VmError::InvalidValue {
+            message: alloc::format!(
+                "Parse Error: Hex character must be 0-9, a-f, or A-F, but was '{hi_ch}'"
+            ),
         })?;
-        let lo = (chunk[1] as char).to_digit(16).ok_or_else(|| crate::error::VmError::InvalidValue {
-            message: "invalid hexBinary".into(),
+        let lo_ch = chunk[1] as char;
+        let lo = lo_ch.to_digit(16).ok_or_else(|| crate::error::VmError::InvalidValue {
+            message: alloc::format!(
+                "Parse Error: Hex character must be 0-9, a-f, or A-F, but was '{lo_ch}'"
+            ),
         })?;
         out.push((hi << 4 | lo) as u8);
     }
@@ -9766,6 +10096,7 @@ pub(crate) fn write_simple(
     config: &RuntimeConfig,
     field_name: Option<&str>,
     delim_meta: Option<&crate::value::FieldDelimiterMeta>,
+    encode_siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
 ) -> Result<(), crate::error::VmError> {
     validate_unparse_scalar_lexical(value, kind, props, strings)?;
     let value = coerce_value_for_kind(value, kind)?;
@@ -9820,7 +10151,17 @@ pub(crate) fn write_simple(
             field_name,
         )?,
         Representation::Text => {
-            write_text_scalar(out, bit_count, &value, kind, props, strings, &config, field_name)?
+            write_text_scalar(
+                out,
+                bit_count,
+                &value,
+                kind,
+                props,
+                strings,
+                &config,
+                field_name,
+                encode_siblings,
+            )?
         }
     }
     if let Some(id) = props.terminator {
