@@ -972,14 +972,39 @@ impl<'a> XsdParser<'a> {
                     if local == "restriction" {
                         let base = if let Some(base_name) = child_attrs.get("base") {
                             if base_name.chars().any(char::is_whitespace) {
-                                return Err(ParseError::InvalidXml {
-                                    message: alloc::format!(
-                                        "Schema Definition Error: Failed to resolve base property reference for xs:restriction: Invalid QName '{base_name}'"
-                                    ),
-                                }
-                                .into());
+                                self.doc.schema_diagnostics.push(
+                                    "Schema Definition Error: Failed to resolve base property reference for xs:restriction:".into(),
+                                );
+                                self.doc.schema_diagnostics.push(alloc::format!(
+                                    "Invalid QName '{base_name}'"
+                                ));
+                                self.skip_element_body("restriction")?;
+                                return Ok(SimpleBase::Restriction {
+                                    base: RestrictionBase::Builtin(BuiltinType::String),
+                                    restriction_base_is_xs_date: false,
+                                    length: None,
+                                    min_length: None,
+                                    max_length: None,
+                                    min_inclusive: None,
+                                    max_inclusive: None,
+                                    min_exclusive: None,
+                                    max_exclusive: None,
+                                    min_inclusive_lexical: None,
+                                    max_inclusive_lexical: None,
+                                    min_exclusive_lexical: None,
+                                    max_exclusive_lexical: None,
+                                    patterns: alloc::vec::Vec::new(),
+                                    enumerations: alloc::vec::Vec::new(),
+                                    total_digits: None,
+                                    fraction_digits: None,
+                                    invalid_min_length: None,
+                                    invalid_max_length: None,
+                                    invalid_length: None,
+                                    invalid_total_digits: None,
+                                    invalid_fraction_digits: None,
+                                });
                             }
-                            let normalized = normalize_qname(base_name);
+                            let normalized = normalize_qname(base_name.trim());
                             if let Some(b) = BuiltinType::from_xsd(&normalized) {
                                 RestrictionBase::Builtin(b)
                             } else {

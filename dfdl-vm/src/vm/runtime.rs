@@ -1097,6 +1097,47 @@ fn reverse_field_bits(v: u64, bit_width: usize) -> u64 {
 }
 
 /// Daffodil `InputSourceDataInputStream.getUnsignedLong` / `fillByteArray` fragment handling.
+/// Wire bytes for `read_hex_binary_bits` / fillByteArray order (inverse of [`decode_packed_bit_field_u64`]).
+fn encode_packed_bit_field_bytes(
+    value: u64,
+    bit_width: usize,
+    byte_order: ByteOrder,
+    bit_order: BitOrder,
+) -> alloc::vec::Vec<u8> {
+    if bit_width == 0 {
+        return alloc::vec::Vec::new();
+    }
+    let mut v = value & bit_mask(bit_width);
+    let byte_len = bit_width.div_ceil(8);
+    let fragment = bit_width % 8;
+    let mut buf = vec![0u8; byte_len];
+    if fragment != 0
+        && byte_order == ByteOrder::BigEndian
+        && bit_order == BitOrder::MostSignificantBitFirst
+    {
+        v <<= 8 - fragment;
+    }
+    for i in (0..byte_len).rev() {
+        buf[i] = (v & 0xff) as u8;
+        v >>= 8;
+    }
+    if fragment != 0 {
+        if byte_order == ByteOrder::LittleEndian && bit_order == BitOrder::MostSignificantBitFirst {
+            if let Some(first) = buf.first_mut() {
+                *first <<= 8 - fragment;
+            }
+        } else if byte_order == ByteOrder::BigEndian && bit_order == BitOrder::LeastSignificantBitFirst {
+            if let Some(last) = buf.last_mut() {
+                *last >>= 8 - fragment;
+            }
+        }
+    }
+    if bit_width > 8 && byte_order == ByteOrder::LittleEndian {
+        buf.reverse();
+    }
+    buf
+}
+
 fn decode_packed_bit_field_u64(
     bytes: &[u8],
     bit_width: usize,
@@ -5149,6 +5190,25 @@ pub(crate) fn write_binary_scalar(
     if props.length_units == LengthUnits::Bits {
         let n = binary_encode_bit_length(kind, props, tunables, strings)?;
         let raw = scalar_to_raw_bits(value, kind, props, n)?;
+        if props.byte_order == ByteOrder::LittleEndian
+            && kind != crate::ir::ValueKind::String
+            && kind != crate::ir::ValueKind::HexBinary
+        {
+            let wire = if matches!(kind, Float | Double) {
+                stream_bits_to_bytes(raw, n, props.byte_order)
+            } else {
+                encode_packed_bit_field_bytes(raw, n, props.byte_order, props.bit_order)
+            };
+            write_bits_from_stream_with_config(
+                out,
+                bit_count,
+                &wire,
+                n,
+                props.bit_order,
+                Some(config),
+            )?;
+            return Ok(());
+        }
         write_stream_bits_with_config(out, bit_count, raw, n, props.bit_order, Some(config));
         return Ok(());
     }
@@ -5197,8 +5257,8 @@ pub(crate) fn write_binary_scalar(
             bytes = int_bytes(*v as i64, size, le)
         }
         (Long, DfdlValue::Long(v)) => bytes = int_bytes(*v, size, le),
-        (Float, DfdlValue::Float(v)) => bytes = int_bytes(*v as i64, size, le),
-        (Double, DfdlValue::Double(v)) => bytes = int_bytes(*v as i64, size, le),
+        (Float, DfdlValue::Float(v)) => bytes = int_bytes(v.to_bits() as i64, size, le),
+        (Double, DfdlValue::Double(v)) => bytes = int_bytes(v.to_bits() as i64, size, le),
         (Decimal, DfdlValue::Decimal(v)) => {
             let (negative, raw) =
                 parse_virtual_decimal_signed(v, props.binary_decimal_virtual_point)?;
@@ -9412,6 +9472,23 @@ mod bitorder_sub_byte_tests {
             normalize_bit_field_raw(stream_raw, 3, ByteOrder::LittleEndian, BitOrder::LeastSignificantBitFirst),
             2
         );
+    }
+
+    #[test]
+    fn encode_packed_bit_field_roundtrips_decode() {
+        for &(raw, width, order, bit_order) in &[
+            (0x422c_0000u64, 32usize, ByteOrder::LittleEndian, BitOrder::MostSignificantBitFirst),
+            (0x1234u64, 16, ByteOrder::LittleEndian, BitOrder::MostSignificantBitFirst),
+            (0x5u64, 3, ByteOrder::LittleEndian, BitOrder::LeastSignificantBitFirst),
+        ] {
+            let wire = encode_packed_bit_field_bytes(raw, width, order, bit_order);
+            let back = decode_packed_bit_field_u64(&wire, width, order, bit_order);
+            assert_eq!(
+                back,
+                raw & bit_mask(width),
+                "width={width} order={order:?} bit_order={bit_order:?} wire={wire:?}"
+            );
+        }
     }
 
     #[test]
