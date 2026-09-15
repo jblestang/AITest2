@@ -5095,18 +5095,48 @@ pub(crate) fn try_consume_nillable_element_nil(
                     }
                 } else if let Some(sep_id) = parent.separator {
                     let sep = strings.get(sep_id)?;
-                    if !sep.is_empty()
-                        && crate::schema::match_delimiter_opts(
+                    if !sep.is_empty() {
+                        if let Some(sep_len) = crate::schema::match_delimiter_opts(
                             &cursor.data[cursor.pos..],
                             sep,
                             parent.ignore_case,
-                        )
-                        .is_some()
-                    {
-                        let enc = encoding_name(parent, strings).ok();
-                        let _ =
-                            cursor.consume_delimiter(sep, parent.ignore_case, enc.as_deref());
-                        continue;
+                        ) {
+                            let after_sep = cursor.pos.saturating_add(sep_len);
+                            let term_follows = parent.terminator.is_some_and(|term_id| {
+                                strings.get(term_id).ok().filter(|t| !t.is_empty()).is_some_and(
+                                    |term| {
+                                        crate::schema::match_delimiter_opts(
+                                            &cursor.data[after_sep..],
+                                            term,
+                                            parent.ignore_case,
+                                        )
+                                        .is_some()
+                                    },
+                                )
+                            });
+                            if term_follows {
+                                let enc = encoding_name(parent, strings).ok();
+                                let _ = cursor.consume_delimiter(
+                                    sep,
+                                    parent.ignore_case,
+                                    enc.as_deref(),
+                                );
+                                continue;
+                            }
+                            let after_is_sep = crate::schema::match_delimiter_opts(
+                                &cursor.data[after_sep..],
+                                sep,
+                                parent.ignore_case,
+                            )
+                            .is_some();
+                            if after_is_sep || after_sep >= cursor.data.len() {
+                                return Ok(true);
+                            }
+                            let enc = encoding_name(parent, strings).ok();
+                            let _ =
+                                cursor.consume_delimiter(sep, parent.ignore_case, enc.as_deref());
+                            continue;
+                        }
                     }
                 }
                 if let Some(term_id) = parent.terminator {
