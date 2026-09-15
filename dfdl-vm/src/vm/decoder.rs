@@ -1493,7 +1493,10 @@ impl<'a> Decoder<'a> {
                 && (items.len() as u64) >= min
                 && max == u64::MAX
                 && at_empty_slot
-                && parent_sequence.is_some_and(|p| p.separator.is_some())
+                && parent_sequence.is_some_and(|p| {
+                    p.separator.is_some()
+                        && p.separator_position == SeparatorPosition::Infix
+                })
             {
                 let Some(sep_id) = parent_sequence.and_then(|p| p.separator) else {
                     unreachable!();
@@ -1590,6 +1593,47 @@ impl<'a> Decoder<'a> {
                             never_infix_separators_consumed += 1;
                         }
                         continue;
+                    }
+                    if v.as_str().is_some_and(str::is_empty)
+                        && (items.len() as u64) >= min
+                        && min > 0
+                        && max == u64::MAX
+                        && parent_sequence.is_some_and(|p| {
+                            p.separator.is_some()
+                                && p.separator_position == SeparatorPosition::Infix
+                        })
+                    {
+                        let Some(sep_id) = parent_sequence.and_then(|p| p.separator) else {
+                            unreachable!();
+                        };
+                        let pat = self.ctx.strings().get(sep_id)?;
+                        let enc = parent_sequence
+                            .and_then(|p| encoding_name(p, self.ctx.strings()).ok());
+                        let parent = parent_sequence.unwrap();
+                        let skip_leading_excess = items
+                            .iter()
+                            .all(|i| i.as_str().is_some_and(str::is_empty));
+                        let skip_trailing_excess = items.iter().any(|i| {
+                            i.as_str().is_some_and(|s| !s.is_empty())
+                        }) && Self::suffix_is_only_infix_separators(
+                            cursor,
+                            pat,
+                            parent.ignore_case,
+                            enc.as_deref(),
+                        );
+                        if skip_leading_excess || skip_trailing_excess {
+                            let sep_pos = cursor.pos;
+                            self.consume_occurrence_separator(
+                                parent_sequence,
+                                Some(props),
+                                Some(items.as_slice()),
+                                cursor,
+                            )?;
+                            if never_optional_array.is_some() && cursor.pos > sep_pos {
+                                never_infix_separators_consumed += 1;
+                            }
+                            continue;
+                        }
                     }
                     items.push(v);
                     if parent_sequence.is_some_and(|p| {
