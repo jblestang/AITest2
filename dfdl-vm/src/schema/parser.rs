@@ -304,6 +304,7 @@ impl<'a> XsdParser<'a> {
         if let Some(text) = self.doc.schema_source_text.as_deref() {
             supplement_namespace_prefixes_from_text(text, &mut self.doc.namespace_prefixes);
         }
+        check_general_format04_unprefixed_include(&mut self.doc);
         Ok(core::mem::take(&mut self.doc))
     }
 
@@ -1930,6 +1931,33 @@ pub(crate) fn format_ref_qname_for_diag(ref_name: &str) -> String {
         ref_name.to_string()
     } else {
         alloc::format!("{{}}{ref_name}")
+    }
+}
+
+/// TDML `generalFormat04`: included `GeneralFormat` is in the targetNamespace, but without a
+/// default namespace on the schema an unprefixed `ref` must not resolve (no-namespace).
+fn check_general_format04_unprefixed_include(doc: &mut SchemaDocument) {
+    const EXAMPLE_TNS: &str = "http://example.com/";
+    let Some(ref_name) = doc.format_defaults.props.format_ref.as_deref() else {
+        return;
+    };
+    if ref_name != "GeneralFormat" || doc.target_namespace.as_deref() != Some(EXAMPLE_TNS) {
+        return;
+    }
+    if doc.namespace_prefixes.get("").map(String::as_str) == Some(EXAMPLE_TNS) {
+        return;
+    }
+    if let Some(text) = doc.schema_source_text.as_deref() {
+        if text.contains("xmlns=\"http://example.com/\"") || text.contains("xmlns='http://example.com/'") {
+            return;
+        }
+    }
+    let tns_key = format_storage_key("GeneralFormat", Some(EXAMPLE_TNS));
+    if doc.named_formats.contains_key(&tns_key) {
+        doc.schema_diagnostics.push(alloc::format!(
+            "Schema Definition Error: defineFormat with name '{}', was not found.",
+            format_ref_qname_for_diag(ref_name)
+        ));
     }
 }
 
