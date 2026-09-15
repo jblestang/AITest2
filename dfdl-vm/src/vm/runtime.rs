@@ -5221,14 +5221,29 @@ pub(crate) fn read_text_scalar(
             )?
         }
         LengthKind::Delimited => {
-            read_until_delimiters(
+            let raw = read_until_delimiters(
                 cursor,
                 props,
                 strings,
                 require_delimiter,
                 stop_sequences,
                 Some(enc),
-            )?
+            )?;
+            if has_non_empty_terminator(props, strings)?
+                && field_terminator_matches_at_cursor(cursor, props, strings)?
+                    .is_none()
+                && !cursor.is_empty()
+            {
+                let terms = non_empty_delimiter_scan_patterns(props, strings)?
+                    .iter()
+                    .map(|p| alloc::format!("`{}`", format_delimiter_for_error(&p.pat)))
+                    .collect::<alloc::vec::Vec<_>>()
+                    .join(", ");
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("terminator {terms} not found"),
+                });
+            }
+            raw
         }
         LengthKind::Pattern => {
             let id = props.length_pattern.ok_or(VmError::InvalidValue {
@@ -7503,7 +7518,7 @@ pub(crate) fn insufficient_data_bits_error(needed_bits: usize, found_bits: usize
     use crate::error::VmError;
     VmError::InvalidValue {
         message: alloc::format!(
-            "Parse Error. Insufficient bits in data. {needed_bits} bit(s) but found only {found_bits}"
+            "Parse Error. Insufficient bits in data. Needed {needed_bits} bit(s) but found only {found_bits}"
         ),
     }
 }

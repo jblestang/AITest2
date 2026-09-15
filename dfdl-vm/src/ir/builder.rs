@@ -931,6 +931,14 @@ impl<'a> IrBuilder<'a> {
         if ir.length_kind != LengthKind::Prefixed {
             return Ok(());
         }
+        if depth >= 2 {
+            return Err(SchemaError::InvalidProperty {
+                message:
+                    "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" is not supported"
+                        .into(),
+            }
+            .into());
+        }
         let prefix_type = element_props
             .prefix_length_type
             .as_ref()
@@ -2124,20 +2132,6 @@ fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
         && props.length_kind == LengthKind::Delimited
     {
         if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {
-            return Ok(());
-        }
-        if props.binary_number_rep == crate::schema::BinaryNumberRep::Binary
-            && matches!(
-                kind,
-                ValueKind::Byte
-                    | ValueKind::UnsignedByte
-                    | ValueKind::Short
-                    | ValueKind::UnsignedShort
-                    | ValueKind::Int
-                    | ValueKind::UnsignedInt
-                    |                 ValueKind::Long | ValueKind::Integer
-            )
-        {
             return Ok(());
         }
         if matches!(kind, ValueKind::DateTime | ValueKind::Time) {

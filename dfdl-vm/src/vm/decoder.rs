@@ -383,6 +383,21 @@ impl<'a> Decoder<'a> {
                             }
                         }
                     }
+                    let mut particle_stops = child_stops.to_vec();
+                    let extend_following_stops = matches!(
+                        self.ctx.program.node(child),
+                        Ok(IrNode::Element { props: cp, .. })
+                            if cp.occurs_max.map(|m| m > 1).unwrap_or(true)
+                    );
+                    if extend_following_stops {
+                        for &sib in &children[idx + 1..] {
+                            if let Ok(IrNode::Element { props: sib_props, .. }) =
+                                self.ctx.program.node(sib)
+                            {
+                                particle_stops.push(sib_props);
+                            }
+                        }
+                    }
                     match self.decode_particle(
                         child,
                         cursor,
@@ -391,7 +406,7 @@ impl<'a> Decoder<'a> {
                         Some(&seq_siblings),
                         content_scope_bytes,
                         pattern_text_frame,
-                        child_stops,
+                        &particle_stops,
                     ) {
                         Ok(child_value) => {
                             cursor.frame_bit_limit = saved_frame_limit;
@@ -511,9 +526,15 @@ impl<'a> Decoder<'a> {
                             {
                                 if cp.occurs_min == 0 {
                                     let msg = e.to_string();
+                                    let optional_parse_absent = props.separator_suppression_policy
+                                        == Some(
+                                            crate::schema::SeparatorSuppressionPolicy::AnyEmpty,
+                                        )
+                                        && msg.contains("Parse Error");
                                     if msg.contains("Init('")
                                         || msg.contains("initiator mismatch")
                                         || msg.contains("Delimiter not found")
+                                        || optional_parse_absent
                                     {
                                         prev_absent_or_empty = true;
                                         if cursor.pos == saved.pos {
@@ -790,6 +811,18 @@ impl<'a> Decoder<'a> {
         }
         while (items.len() as u64) < max {
             if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
+                let kind = element_kind(self.ctx.program, node_id)?;
+                validate_explicit_decimal_before_decode(
+                    kind,
+                    props,
+                    &self.ctx.program.tunables,
+                    self.ctx.strings(),
+                )?;
+                if kind != ValueKind::Decimal
+                    && binary_length_validation_applies(kind, props.binary_number_rep)
+                {
+                    validate_data_length_vm(kind, 0, props.length_units, props.binary_number_rep)?;
+                }
                 break;
             }
             if items.len() as u64 >= min && cursor.is_empty() {
@@ -1017,6 +1050,24 @@ impl<'a> Decoder<'a> {
                     self.ctx.strings(),
                     &self.ctx.program.tunables,
                 )?;
+                if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
+                    validate_explicit_decimal_before_decode(
+                        *kind,
+                        &props,
+                        &self.ctx.program.tunables,
+                        self.ctx.strings(),
+                    )?;
+                    if *kind != ValueKind::Decimal
+                        && binary_length_validation_applies(*kind, props.binary_number_rep)
+                    {
+                        validate_data_length_vm(
+                            *kind,
+                            0,
+                            props.length_units,
+                            props.binary_number_rep,
+                        )?;
+                    }
+                }
                 if pattern_text_frame
                     && props.representation == Representation::Binary
                     && !matches!(*kind, ValueKind::HexBinary)
@@ -1840,6 +1891,13 @@ impl<'a> Decoder<'a> {
         )
         .is_some()
         {
+            if props.separator_position == SeparatorPosition::Postfix {
+                if let Some(err) =
+                    self.separator_enclosing_delimiter_conflict(props, pat, cursor, &[])
+                {
+                    return Err(err);
+                }
+            }
             if !cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
                 return Err(VmError::InvalidValue {
                     message: "separator mismatch".into(),

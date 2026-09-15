@@ -843,8 +843,39 @@ pub fn validate_runtime_delimiter_expression(prop: &str, expr: &str) -> Result<(
 }
 
 /// Validate initiator/separator/terminator literals at schema compile time.
+fn validate_no_bare_percent_in_delimiter(raw: &str) -> Result<(), String> {
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'%' {
+                i += 2;
+                continue;
+            }
+            if let Some(rel) = raw[i..].find(';') {
+                let entity_token = &raw[i..=i + rel];
+                let entity = &raw[i + 1..i + rel];
+                let entity_name = entity.trim_end_matches(['+', '*', '?']);
+                if !entity_reference_valid(entity_name) {
+                    return Err(invalid_dfdl_entity_error(entity_token, raw));
+                }
+                i += rel + 1;
+            } else {
+                return Err(invalid_dfdl_entity_error("%", raw));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_delimiter_property_value(raw: &str) -> Result<(), String> {
-    validate_entity_tokens_in_literal_lenient(raw)
+    if raw.trim() == "%" {
+        return Err("Invalid DFDL Entity (%) found".into());
+    }
+    validate_entity_tokens_in_literal_lenient(raw)?;
+    validate_no_bare_percent_in_delimiter(raw)
 }
 
 /// Validate delimiter property from the XSD attribute value (before `%%` collapse).
@@ -2371,7 +2402,9 @@ mod tests {
 
     fn validate_percent_escape_in_delimiter() {
         assert!(validate_delimiter_property_value("%%").is_ok());
-        assert!(validate_delimiter_property_value("%").is_ok());
+        assert!(validate_delimiter_property_value("%").is_err());
+        assert!(validate_delimiter_property_value("test%").is_err());
+        assert!(validate_delimiter_property_value("%SP;").is_ok());
         assert!(validate_delimiter_property_value("%SP").is_ok());
         assert!(validate_delimiter_property_value("%%%SP;").is_ok());
         assert!(validate_delimiter_es_restriction("terminator", "%ES; END").is_ok());
