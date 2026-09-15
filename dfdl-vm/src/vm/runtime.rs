@@ -7338,6 +7338,11 @@ fn should_defer_sequence_stop_delimiter_in_field(
         return Ok(false);
     }
     if Some(pattern_id) == seq_props.terminator {
+        // Enclosing complex-element terminators (terminator without sequence framing)
+        // must bound child delimited fields, not be deferred like sequence terminators.
+        if seq_props.separator.is_none() && seq_props.initiator.is_none() {
+            return Ok(false);
+        }
         return Ok(true);
     }
     if should_defer_prefix_sequence_separator(seq_props, pattern_id, field_props, strings)? {
@@ -7503,7 +7508,7 @@ fn read_until_delimiters_bits_charset(
     cursor.read_stream_bits_as_bytes(payload_bits, spec.bit_order)
 }
 
-fn read_until_delimiters(
+pub(crate) fn read_until_delimiters(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,

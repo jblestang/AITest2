@@ -6,7 +6,8 @@ use super::runtime::{
     consume_element_framing, consume_element_trailing_framing, consume_enclosing_delimiter,
     default_value_for, encoding_name, has_non_empty_terminator,
     is_suppressible_empty_representation, prefixed_payload_byte_length, read_delimited_bytes,
-    read_length_span, read_prefixed_payload, read_simple, read_until_separator,
+    read_length_span, read_prefixed_payload, read_simple, read_until_delimiters,
+    read_until_separator,
     should_suppress_decode_infix_separator, should_suppress_decode_occurrence_separator,
     validate_explicit_decimal_before_decode,
     validate_unbounded_wsp_star_terminator, would_read_empty_delimited_field,
@@ -1077,9 +1078,11 @@ impl<'a> Decoder<'a> {
                         )? {
                             continue;
                         }
-                        // Unbounded repetition: failed attempt may have consumed an
-                        // occurrence separator that belongs to following content.
-                        *cursor = if max == u64::MAX {
+                        // Failed attempt may have consumed an occurrence separator that
+                        // belongs to following content (implicit or unbounded repetition).
+                        *cursor = if max == u64::MAX
+                            || props.occurs_count_kind == OccursCountKind::Implicit
+                        {
                             before_occurrence_sep
                         } else {
                             saved
@@ -1375,7 +1378,7 @@ impl<'a> Decoder<'a> {
                                 None,
                                 Some(scope),
                                 pattern_text_frame,
-                                &[],
+                                stop_sequences,
                             )?;
                             if !sub.is_empty() {
                                 return Err(VmError::InvalidValue {
@@ -1476,9 +1479,15 @@ impl<'a> Decoder<'a> {
                                     && self.inner_sequence_separator(*child_id)?.as_deref()
                                         != Some(sep)
                                 {
-                                    let bytes =
-                                        read_until_separator(cursor, sep, false, parent.ignore_case)?;
                                     let enc = encoding_name(parent, self.ctx.strings()).ok();
+                                    let bytes = read_until_delimiters(
+                                        cursor,
+                                        parent,
+                                        self.ctx.strings(),
+                                        false,
+                                        stop_sequences,
+                                        enc.as_deref(),
+                                    )?;
                                     if crate::schema::match_delimiter_opts_for_encoding(
                                         &cursor.data[cursor.pos..],
                                         sep,

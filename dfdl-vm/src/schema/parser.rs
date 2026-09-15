@@ -1001,6 +1001,18 @@ impl<'a> XsdParser<'a> {
             attribute: "name".into(),
         })?;
         self.reader.skip_insignificant_ws()?;
+        loop {
+            self.reader.skip_insignificant_ws()?;
+            match self.reader.peek()? {
+                XmlEvent::StartElement { name, .. } if name.local_name == "annotation" => {
+                    self.reader.skip_element()?;
+                }
+                XmlEvent::Comment(_) => {
+                    let _ = self.reader.next_event()?;
+                }
+                _ => break,
+            }
+        }
         if self.reader.peek_is_end("group")? {
             return Err(ParseError::InvalidXml {
                 message: "group must contain a sequence".into(),
@@ -5146,5 +5158,20 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("Schema Definition Error"), "{msg}");
         assert!(msg.contains("whitespace"), "{msg}");
+    }
+
+    #[test]
+    fn parse_global_group_skips_annotation_and_comment() {
+        let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="sequenceGroup">
+    <xs:annotation><xs:documentation>doc</xs:documentation></xs:annotation>
+    <!-- COMMENT -->
+    <xs:sequence>
+      <xs:element name="inty" type="xs:int"/>
+    </xs:sequence>
+  </xs:group>
+</xs:schema>"#;
+        let doc = parse_schema(xsd).expect("annotated group parses");
+        assert!(doc.groups.contains_key("sequenceGroup"));
     }
 }
