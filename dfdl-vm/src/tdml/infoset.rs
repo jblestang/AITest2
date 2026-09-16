@@ -112,7 +112,12 @@ fn infoset_node_to_ir_value(
                     .strings
                     .get(branch.name)
                     .map_err(|e| e.to_string())?;
-                if !find_infoset_children(node, branch_name).is_empty() {
+                let local = local_name_str(branch_name);
+                let branch_nodes = find_infoset_children(node, local);
+                if !branch_nodes.is_empty() {
+                    if branch_nodes.len() == 1 {
+                        return infoset_node_to_ir_value(program, branch.node, branch_nodes[0]);
+                    }
                     return infoset_particle_to_value(program, branch.node, node);
                 }
             }
@@ -191,10 +196,44 @@ fn infoset_sequence_children_to_value(
                 };
                 map.insert(elem_name.to_string(), value);
             }
-            IrNode::Sequence { .. } | IrNode::Choice { .. } => {
+            IrNode::Sequence { .. } => {
                 let nested = infoset_particle_to_value(program, child_id, node)?;
                 if let DfdlValue::Sequence(nested) = nested {
                     map.extend(nested.fields);
+                }
+            }
+            IrNode::Choice { branches, .. } => {
+                let mut matched = false;
+                for branch in branches {
+                    let branch_name = program.strings.get(branch.name).map_err(|e| e.to_string())?;
+                    let local = local_name_str(branch_name);
+                    if find_infoset_children(node, local).is_empty() {
+                        continue;
+                    }
+                    matched = true;
+                    let branch_nodes = find_infoset_children(node, local);
+                    let value = if branch_nodes.len() == 1 {
+                        infoset_node_to_ir_value(program, branch.node, branch_nodes[0])?
+                    } else {
+                        infoset_particle_to_value(program, branch.node, node)?
+                    };
+                    match value {
+                        DfdlValue::Sequence(nested) => map.extend(nested.fields),
+                        other => {
+                            map.insert(branch_name.to_string(), other);
+                        }
+                    }
+                    break;
+                }
+                if !matched {
+                    for branch in branches {
+                        if matches!(
+                            program.node(branch.node).ok(),
+                            Some(IrNode::Sequence { children, .. }) if children.is_empty()
+                        ) {
+                            break;
+                        }
+                    }
                 }
             }
         }

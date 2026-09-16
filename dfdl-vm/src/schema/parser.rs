@@ -3045,6 +3045,11 @@ fn apply_dfdl_assert_test(props: &mut DfdlProps, test: &str) {
     }
     if let Some(n) = parse_assert_int_eq_test(test) {
         props.assert_int_eq = Some(n);
+        return;
+    }
+    let trimmed = test.trim();
+    if !trimmed.is_empty() && !props.facet_check_constraints {
+        props.discriminator_test = Some(trimmed.to_string());
     }
 }
 

@@ -191,6 +191,8 @@ pub struct Decoder<'a> {
     runtime_variables: RefCell<BTreeMap<String, String>>,
     /// XPath sibling context for the active sequence decode (includes hidden elements).
     xpath_siblings: RefCell<BTreeMap<String, SiblingState>>,
+    /// Outer sequence sibling maps for `../` / `../../` assert and xpath evaluation.
+    xpath_ancestor_frames: RefCell<Vec<BTreeMap<String, SiblingState>>>,
 }
 
 impl<'a> Decoder<'a> {
@@ -210,7 +212,55 @@ impl<'a> Decoder<'a> {
             postfix_bounded_parent_sep_consumed: Cell::new(false),
             runtime_variables: RefCell::new(BTreeMap::new()),
             xpath_siblings: RefCell::new(BTreeMap::new()),
+            xpath_ancestor_frames: RefCell::new(Vec::new()),
         }
+    }
+
+    fn push_xpath_ancestor_frame(&self, siblings: Option<&BTreeMap<String, SiblingState>>) {
+        let frame = siblings
+            .cloned()
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| self.xpath_siblings_snapshot());
+        if !frame.is_empty() {
+            self.xpath_ancestor_frames.borrow_mut().push(frame);
+        }
+    }
+
+    fn pop_xpath_ancestor_frame(&self) {
+        self.xpath_ancestor_frames.borrow_mut().pop();
+    }
+
+    fn lookup_xpath_sibling_state(&self, local: &str, up_levels: usize) -> Option<SiblingState> {
+        if up_levels == 0 {
+            return self
+                .xpath_siblings
+                .borrow()
+                .iter()
+                .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
+                .map(|(_, v)| v.clone());
+        }
+        let frames = self.xpath_ancestor_frames.borrow();
+        if let Some(i) = frames.len().checked_sub(up_levels) {
+            if let Some((_, v)) = frames[i]
+                .iter()
+                .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
+            {
+                return Some(v.clone());
+            }
+        }
+        for frame in frames.iter() {
+            if let Some((_, v)) = frame
+                .iter()
+                .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
+            {
+                return Some(v.clone());
+            }
+        }
+        self.xpath_siblings
+            .borrow()
+            .iter()
+            .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
+            .map(|(_, v)| v.clone())
     }
 
     fn seed_xpath_siblings(&self, seed: Option<&BTreeMap<String, SiblingState>>) {
@@ -292,6 +342,7 @@ impl<'a> Decoder<'a> {
         cursor.tdml_bit_order_regions = tdml_bit_order_regions;
         *self.runtime_variables.borrow_mut() = self.ctx.program.variables.clone();
         self.xpath_siblings.borrow_mut().clear();
+        self.xpath_ancestor_frames.borrow_mut().clear();
         let value = self.decode_node(
             self.ctx.program.root,
             &mut cursor,
@@ -3471,6 +3522,7 @@ impl<'a> Decoder<'a> {
                 if let Ok(expected) = eq_parts[1].parse::<i64>() {
                     let mut product = 1i64;
                     for factor in eq_parts[0].split('*').filter(|s| !s.is_empty()) {
+                        let factor = factor.trim().trim_end_matches(')').trim_start_matches('(');
                         let val = self.xpath_path_int_value(factor)?;
                         product = product.saturating_mul(val);
                     }
@@ -3488,7 +3540,9 @@ impl<'a> Decoder<'a> {
     fn xpath_path_int_value(&self, path: &str) -> Result<i64> {
         let trimmed = path.trim();
         let mut rest = trimmed;
+        let mut up = 0usize;
         while rest.starts_with("../") {
+            up += 1;
             rest = &rest[3..];
         }
         let local = rest
@@ -3496,11 +3550,12 @@ impl<'a> Decoder<'a> {
             .next()
             .unwrap_or(rest)
             .trim();
-        let guard = self.xpath_siblings.borrow();
-        let sib = guard.get(local).ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!(
-                "Schema Definition Error: No element corresponding to step {local} found."
-            ),
+        let sib = self.lookup_xpath_sibling_state(local, up).ok_or_else(|| {
+            VmError::InvalidValue {
+                message: alloc::format!(
+                    "Schema Definition Error: No element corresponding to step {local} found."
+                ),
+            }
         })?;
         numeric_value_from_dfdl(&sib.value)
     }
@@ -4775,12 +4830,23 @@ fn eval_infoset_path_steps(
     let first = &steps[0];
     let first_local = strings.get(first.local)?;
     let mut value = siblings
-        .and_then(|m| m.get(first_local))
+        .and_then(|m| sibling_state_by_local(m, first_local))
         .map(|s| &s.value)
-        .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!(
-                "Schema Definition Error: expression evaluation error: {first_local} does not exist"
-            ),
+        .ok_or_else(|| {
+            let msg = if first.prefix.is_some() {
+                alloc::format!(
+                    "Schema Definition Error: expression evaluation error: {first_local} does not exist"
+                )
+            } else if steps.len() == 1 {
+                alloc::format!(
+                    "Schema Definition Error: No element corresponding to step {first_local} found."
+                )
+            } else {
+                alloc::format!(
+                    "Schema Definition Error: expression evaluation error: {first_local} does not exist"
+                )
+            };
+            VmError::InvalidValue { message: msg }
         })?;
     for step in steps.iter().skip(1) {
         let local = strings.get(step.local)?;
@@ -4839,6 +4905,26 @@ fn numeric_value_from_dfdl(value: &DfdlValue) -> Result<i64> {
     .map_err(Into::into)
 }
 
+fn sibling_state_by_local<'a>(
+    siblings: &'a BTreeMap<String, SiblingState>,
+    local: &str,
+) -> Option<&'a SiblingState> {
+    siblings
+        .iter()
+        .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
+        .map(|(_, v)| v)
+}
+
+fn sequence_field_by_local<'a>(
+    fields: &'a BTreeMap<String, DfdlValue>,
+    local: &str,
+) -> Option<&'a DfdlValue> {
+    fields
+        .iter()
+        .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
+        .map(|(_, v)| v)
+}
+
 fn navigate_to_child<'a>(
     value: &'a DfdlValue,
     local: &str,
@@ -4846,10 +4932,12 @@ fn navigate_to_child<'a>(
 ) -> Result<&'a DfdlValue> {
     match value {
         DfdlValue::Sequence(seq) => {
-            let child = seq.fields.get(local).ok_or_else(|| VmError::InvalidValue {
-                message: alloc::format!(
-                    "Schema Definition Error: No element corresponding to step {local} found."
-                ),
+            let child = sequence_field_by_local(&seq.fields, local).ok_or_else(|| {
+                VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Schema Definition Error: No element corresponding to step {local} found."
+                    ),
+                }
             })?;
             match (index, child) {
                 (Some(n), DfdlValue::Array(items)) => {

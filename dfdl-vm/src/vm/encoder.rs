@@ -910,6 +910,38 @@ fn encoded_value_length_bits(byte_len: usize, bit_count: u8) -> usize {
     }
 }
 
+fn find_particle_by_local_name(
+    enc: &Encoder<'_>,
+    node_id: u32,
+    local: &str,
+) -> Result<Option<u32>> {
+    match enc.ctx.program.node(node_id)? {
+        IrNode::Element { name, .. } => {
+            let ename = enc.ctx.strings().get(*name)?;
+            if crate::xml_util::local_name_str(ename) == local {
+                return Ok(Some(node_id));
+            }
+            Ok(None)
+        }
+        IrNode::Sequence { children, .. } => {
+            for &cid in children {
+                if let Some(found) = find_particle_by_local_name(enc, cid, local)? {
+                    return Ok(Some(found));
+                }
+            }
+            Ok(None)
+        }
+        IrNode::Choice { branches, .. } => {
+            for branch in branches {
+                if let Some(found) = find_particle_by_local_name(enc, branch.node, local)? {
+                    return Ok(Some(found));
+                }
+            }
+            Ok(None)
+        }
+    }
+}
+
 fn eval_output_infoset_path(
     enc: &Encoder<'_>,
     steps: &[crate::ir::IrInputPathStep],
@@ -921,14 +953,22 @@ fn eval_output_infoset_path(
         message: "empty outputValueCalc path".into(),
     })?;
     let first_local = strings.get(first.local)?;
-    let mut value = resolve_path_step_value(enc, sequence_children, map, first_local)?;
+    let mut value = if let Some(k) = map_has_local_key(map, first_local) {
+        map.get(&k).cloned().unwrap()
+    } else if let Some(cid) = find_particle_by_local_in_children(enc, sequence_children, first_local)? {
+        synthesize_element_subtree_value(enc, cid, map, sequence_children)?
+    } else {
+        resolve_path_step_value(enc, sequence_children, map, first_local)?
+    };
     for step in steps.iter().skip(1) {
         let local = strings.get(step.local)?;
         value = match value {
             DfdlValue::Sequence(seq) => {
-                let child = seq.fields.get(local).ok_or_else(|| VmError::InvalidValue {
-                    message: alloc::format!("outputValueCalc path missing `{local}`"),
-                })?;
+                let child = map_has_local_key(&seq.fields, local)
+                    .and_then(|k| seq.fields.get(&k))
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: alloc::format!("outputValueCalc path missing `{local}`"),
+                    })?;
                 match (step.index, child) {
                     (Some(n), DfdlValue::Array(items)) => items
                         .get((n as usize).saturating_sub(1))
@@ -956,14 +996,27 @@ fn eval_output_infoset_path(
     numeric_from_dfdl_value(&value)
 }
 
+fn find_particle_by_local_in_children(
+    enc: &Encoder<'_>,
+    children: &[u32],
+    local: &str,
+) -> Result<Option<u32>> {
+    for &cid in children {
+        if let Some(found) = find_particle_by_local_name(enc, cid, local)? {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
+}
+
 fn resolve_path_step_value(
     enc: &Encoder<'_>,
     sequence_children: &[u32],
     map: &BTreeMap<String, DfdlValue>,
     local: &str,
 ) -> Result<DfdlValue> {
-    if let Some(v) = map.get(local) {
-        return Ok(v.clone());
+    if let Some(k) = map_has_local_key(map, local) {
+        return Ok(map.get(&k).cloned().unwrap());
     }
     for &child_id in sequence_children {
         let IrNode::Element { name, props, .. } = enc.ctx.program.node(child_id)? else {
@@ -997,8 +1050,19 @@ fn synthesize_element_subtree_value(
             children,
             props: seq_props,
         } => {
-            let nested = precompute_output_values(enc, children, map, seq_props)?;
-            Ok(DfdlValue::Sequence(crate::value::SequenceValue::new(nested)))
+            let mut effective = precompute_output_values(enc, children, map, seq_props)?;
+            for &cid in children {
+                let IrNode::Element { name, .. } = enc.ctx.program.node(cid)? else {
+                    continue;
+                };
+                let key = enc.ctx.strings().get(*name)?;
+                if map_has_local_key(&effective, crate::xml_util::local_name_str(key)).is_some() {
+                    continue;
+                }
+                let val = synthesize_element_subtree_value(enc, cid, map, sequence_children)?;
+                effective.insert(key.to_string(), val);
+            }
+            Ok(DfdlValue::Sequence(crate::value::SequenceValue::new(effective)))
         }
         IrNode::Element {
             name,
@@ -1007,8 +1071,8 @@ fn synthesize_element_subtree_value(
             child,
         } => {
             let key = enc.ctx.strings().get(*name)?;
-            if let Some(v) = map.get(key) {
-                return Ok(v.clone());
+            if let Some(k) = map_has_local_key(map, crate::xml_util::local_name_str(key)) {
+                return Ok(map.get(&k).cloned().unwrap());
             }
             if props.output_value_calc.is_some() {
                 return eval_output_value_calc(enc, props, map, sequence_children, props);
