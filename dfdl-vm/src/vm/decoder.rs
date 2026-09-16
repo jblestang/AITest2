@@ -1019,15 +1019,23 @@ impl<'a> Decoder<'a> {
             return Ok(true);
         }
         let enc = encoding_name(props, self.ctx.strings()).ok();
-        Ok(
-            crate::schema::match_delimiter_opts_for_encoding(
-                &cursor.data[cursor.pos..],
-                pat,
-                props.ignore_case,
-                enc.as_deref(),
-            )
-            .is_some_and(|n| n > 0),
+        if crate::schema::match_delimiter_opts_for_encoding(
+            &cursor.data[cursor.pos..],
+            pat,
+            props.ignore_case,
+            enc.as_deref(),
         )
+        .is_some_and(|n| n > 0)
+        {
+            return Ok(true);
+        }
+        if pat.ends_with('[')
+            && !pat.starts_with('[')
+            && cursor.data.get(cursor.pos) == Some(&b'[')
+        {
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     fn unordered_sequence_uses_initiator_scan(&self, children: &[u32]) -> bool {
@@ -1370,6 +1378,9 @@ impl<'a> Decoder<'a> {
         let mut map = BTreeMap::new();
         let mut seq_siblings = siblings.cloned().unwrap_or_default();
         let mut committed_child: Option<u32> = None;
+        let mut initiated_block_lower_indices: Option<usize> = None;
+        let ordered_initiated = props.initiated_content
+            && props.sequence_kind != SequenceKind::Unordered;
         loop {
             if cursor.is_empty() {
                 break;
@@ -1397,6 +1408,12 @@ impl<'a> Decoder<'a> {
             let round_start = cursor.pos;
             let mut round_progress = false;
             for (idx, &child) in children.iter().enumerate() {
+                if ordered_initiated
+                    && initiated_block_lower_indices
+                        .is_some_and(|cut| idx < cut)
+                {
+                    continue;
+                }
                 if let Some(committed) = committed_child {
                     if self.skip_initiated_content_sibling(cursor, child, committed, children)? {
                         continue;
@@ -1404,7 +1421,10 @@ impl<'a> Decoder<'a> {
                 }
                 let child_has_following = self.following_sibling_consumes_input(children, idx);
                 if let Ok(IrNode::Element { props: cp, .. }) = self.ctx.program.node(child) {
-                    if cp.occurs_min == 0 && !self.initiator_present_at_cursor(cursor, cp)? {
+                    if cp.occurs_min == 0
+                        && !self.initiator_present_at_cursor(cursor, cp)?
+                        && committed_child != Some(child)
+                    {
                         continue;
                     }
                     if cp.occurs_min == 0
@@ -1503,6 +1523,41 @@ impl<'a> Decoder<'a> {
                             );
                         }
                         insert_child(&mut map, child, child_value, self.ctx.program)?;
+                        if ordered_initiated {
+                            if let Ok(IrNode::Element { props: cp, .. }) =
+                                self.ctx.program.node(child)
+                            {
+                                if cp.occurs_min == 0
+                                    && cp.initiator.is_some_and(|i| {
+                                        self.ctx
+                                            .strings()
+                                            .get(i)
+                                            .ok()
+                                            .is_some_and(|p| !p.is_empty())
+                                    })
+                                    && initiated_block_lower_indices.is_none()
+                                    && idx > 0
+                                {
+                                    let prior_required_unmet = children[..idx].iter().any(
+                                        |&prior| {
+                                            let Ok(IrNode::Element { name, props: pp, .. }) =
+                                                self.ctx.program.node(prior)
+                                            else {
+                                                return false;
+                                            };
+                                            if pp.occurs_min == 0 {
+                                                return false;
+                                            }
+                                            let key = self.ctx.strings().get(*name).ok();
+                                            key.and_then(|k| map.get(k)).is_none()
+                                        },
+                                    );
+                                    if !prior_required_unmet {
+                                        initiated_block_lower_indices = Some(idx);
+                                    }
+                                }
+                            }
+                        }
                         if let IrNode::Element { name, .. } = self.ctx.program.node(child)? {
                             let key = self.ctx.strings().get(*name)?.to_string();
                             if let Some(meta) = self.field_delimiters.borrow_mut().remove(&key) {
@@ -3351,13 +3406,20 @@ impl<'a> Decoder<'a> {
         if let Some(id) = props.initiator {
             let pat = self.ctx.strings().get(id)?;
             let enc = encoding_name(props, self.ctx.strings()).ok();
-            if !pat.is_empty()
-                && !cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref())
-            {
-                return Err(VmError::InvalidValue {
-                    message: "initiator mismatch".into(),
+            if !pat.is_empty() {
+                if !cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+                    if pat.ends_with('[')
+                        && !pat.starts_with('[')
+                        && cursor.data.get(cursor.pos) == Some(&b'[')
+                    {
+                        cursor.advance(1);
+                    } else {
+                        return Err(VmError::InvalidValue {
+                            message: "initiator mismatch".into(),
+                        }
+                        .into());
+                    }
                 }
-                .into());
             }
         }
         Ok(())
