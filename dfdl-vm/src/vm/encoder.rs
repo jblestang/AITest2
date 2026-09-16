@@ -462,18 +462,28 @@ impl<'a> Encoder<'a> {
                     .map_err(Error::from)?;
                     let schema_ctx =
                         schema_context_field_name(self.ctx.strings().get(*name)?);
+                    let props = encode_scope
+                        .map(|scope| {
+                            resolve_text_standard_props_for_encode(
+                                props,
+                                scope,
+                                self.ctx.strings(),
+                            )
+                        })
+                        .transpose()?
+                        .unwrap_or_else(|| props.clone());
                     write_simple(
                         out,
                         bit_count,
                         value,
                         *kind,
-                        props,
+                        &props,
                         self.ctx.strings(),
                         &self.ctx.program.tunables,
                         &self.ctx.config,
                         Some(&schema_ctx),
                         None,
-                        None,
+                        encode_scope,
                     )
                     .map_err(Into::into)
                 }
@@ -676,6 +686,8 @@ impl<'a> Encoder<'a> {
                 let mut resolved = resolve_length_props_encode(props, map, self.ctx.strings())?;
                 resolved = resolve_encoding_for_encode(&resolved, map, self.ctx.strings())?;
                 resolved = resolve_byte_order_for_encode(&resolved, map, self.ctx.strings())?;
+                resolved =
+                    resolve_text_standard_props_for_encode(&resolved, map, self.ctx.strings())?;
                 validate_fill_byte_for_encode(&resolved, self.ctx.strings())?;
                 validate_explicit_decimal_before_encode(
                     *kind,
@@ -1540,15 +1552,16 @@ fn precompute_output_values<'a>(
 }
 
 fn ovc_value_for_element_kind(kind: crate::ir::ValueKind, value: DfdlValue) -> DfdlValue {
-    if kind == crate::ir::ValueKind::String {
-        if let DfdlValue::Int(n) = value {
-            return DfdlValue::string(n.to_string());
-        }
-        if let DfdlValue::Long(n) = value {
-            return DfdlValue::string(n.to_string());
-        }
+    use crate::ir::ValueKind;
+    match (kind, value) {
+        (ValueKind::String, DfdlValue::Int(n)) => DfdlValue::string(n.to_string()),
+        (ValueKind::String, DfdlValue::Long(n)) => DfdlValue::string(n.to_string()),
+        (ValueKind::Float, DfdlValue::Int(n)) => DfdlValue::Float(n as f32),
+        (ValueKind::Float, DfdlValue::Long(n)) => DfdlValue::Float(n as f32),
+        (ValueKind::Double, DfdlValue::Int(n)) => DfdlValue::Double(n as f64),
+        (ValueKind::Double, DfdlValue::Long(n)) => DfdlValue::Double(n as f64),
+        (_, v) => v,
     }
-    value
 }
 
 fn encoded_bit_length(byte_len: usize, bit_count: u8) -> usize {
@@ -2143,6 +2156,7 @@ fn measure_value_length(
     node_id: u32,
     value: &DfdlValue,
     units: LengthUnits,
+    encode_scope: Option<&BTreeMap<String, DfdlValue>>,
 ) -> Result<usize> {
     if let Ok(IrNode::Element { props, .. }) = enc.ctx.program.node(node_id) {
         if props.object_kind == crate::schema::ObjectKind::Bytes {
@@ -2184,7 +2198,7 @@ fn measure_value_length(
     } else {
         node_id
     };
-    enc.encode_node(encode_id, value, &mut buf, &mut bit_count, None)?;
+    enc.encode_node(encode_id, value, &mut buf, &mut bit_count, encode_scope)?;
     match units {
         LengthUnits::Bits => Ok(encoded_value_length_bits(buf.len(), bit_count)),
         LengthUnits::Bytes => {
@@ -2195,6 +2209,10 @@ fn measure_value_length(
         }
         .into()),
     }
+}
+
+fn apply_output_value_calc_scale(props: &IrProps, len: i64) -> i64 {
+    len.saturating_mul(props.output_value_calc_scale.unwrap_or(1))
 }
 
 fn eval_output_value_calc(
@@ -2241,6 +2259,9 @@ fn eval_output_value_calc(
                 message: "missing outputValueCalc path".into(),
             })?;
             let addend = props.output_value_calc_path_addend.unwrap_or(0);
+            if addend == 0 {
+                return Ok(resolve_output_value_calc_path_value(enc, steps, children, map)?);
+            }
             let base = eval_output_infoset_path(enc, steps, children, map)?;
             let len = base.saturating_add(addend);
             return Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {
@@ -2298,7 +2319,10 @@ fn eval_output_value_calc(
                     ),
                 }
             })?;
-            let len = measure_value_length(enc, child_id, &val, units)? as i64 + addend;
+            let len = apply_output_value_calc_scale(
+                props,
+                measure_value_length(enc, child_id, &val, units, Some(map))? as i64 + addend,
+            );
             return Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {
                 message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
             })?));
@@ -2367,9 +2391,15 @@ fn eval_output_value_calc(
                     })?,
             )?;
             if let Some(child_id) = find_child_element_by_name(enc, children, sib_name)? {
-                measure_value_length(enc, child_id, sib, units)? as i64 + addend
+                apply_output_value_calc_scale(
+                    props,
+                    measure_value_length(enc, child_id, sib, units, Some(map))? as i64 + addend,
+                )
             } else {
-                length_in_units(value_byte_length(sib)?, units)? as i64 + addend
+                apply_output_value_calc_scale(
+                    props,
+                    length_in_units(value_byte_length(sib)?, units)? as i64 + addend,
+                )
             }
         }
         OutputValueCalc::Substring { start, length } => {
@@ -2500,6 +2530,30 @@ fn lookup_sibling_string_in_encode_map(
         }
         .into()),
     }
+}
+
+fn resolve_text_standard_props_for_encode(
+    props: &IrProps,
+    map: &BTreeMap<String, DfdlValue>,
+    strings: &crate::ir::StringPool,
+) -> Result<IrProps> {
+    let mut resolved = props.clone();
+    if let Some(sib_id) = props.text_standard_decimal_separator_sibling {
+        let local = strings.get(sib_id)?;
+        resolved.resolved_text_standard_decimal_separator =
+            Some(lookup_sibling_string_in_encode_map(map, local)?);
+    }
+    if let Some(sib_id) = props.text_standard_grouping_separator_sibling {
+        let local = strings.get(sib_id)?;
+        resolved.resolved_text_standard_grouping_separator =
+            Some(lookup_sibling_string_in_encode_map(map, local)?);
+    }
+    if let Some(sib_id) = props.text_standard_exponent_rep_sibling {
+        let local = strings.get(sib_id)?;
+        resolved.resolved_text_standard_exponent_rep =
+            Some(lookup_sibling_string_in_encode_map(map, local)?);
+    }
+    Ok(resolved)
 }
 
 fn resolve_byte_order_for_encode(

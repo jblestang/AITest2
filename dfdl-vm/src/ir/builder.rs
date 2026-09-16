@@ -3794,6 +3794,9 @@ fn overlay_dfdl_to_ir(
     if props.output_value_calc_path_addend.is_some() {
         base.output_value_calc_path_addend = props.output_value_calc_path_addend;
     }
+    if props.output_value_calc_scale.is_some() {
+        base.output_value_calc_scale = props.output_value_calc_scale;
+    }
     if let Some(v) = props.text_string_justification {
         base.text_string_justification = v;
     }
@@ -4192,6 +4195,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.output_value_calc_path_addend.is_some() {
         out.output_value_calc_path_addend = overlay.output_value_calc_path_addend;
+    }
+    if overlay.output_value_calc_scale.is_some() {
+        out.output_value_calc_scale = overlay.output_value_calc_scale;
     }
     if overlay.output_value_calc_conditional {
         out.output_value_calc_conditional = true;

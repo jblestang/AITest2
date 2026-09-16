@@ -235,6 +235,8 @@ pub struct DfdlProps {
         )>,
     >,
     pub output_value_calc_path_addend: Option<i64>,
+    /// Trailing `* N` on outputValueCalc (e.g. valueLength * 1000).
+    pub output_value_calc_scale: Option<i64>,
     /// Arithmetic / absolute-path inputValueCalc (e.g. AC000 product expression).
     pub input_value_calc_expression: Option<InputValueCalcExpression>,
     pub text_bidi: Option<bool>,

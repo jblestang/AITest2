@@ -3023,6 +3023,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.output_value_calc_path_addend.is_some() {
         base.output_value_calc_path_addend = overlay.output_value_calc_path_addend;
     }
+    if overlay.output_value_calc_scale.is_some() {
+        base.output_value_calc_scale = overlay.output_value_calc_scale;
+    }
     if overlay.output_value_calc_conditional {
         base.output_value_calc_conditional = true;
     }
@@ -4004,6 +4007,22 @@ fn parse_decode_dfdl_entities_call(arg: &str) -> Option<String> {
     Some(crate::schema::expand_entities_str(&lit))
 }
 
+fn output_value_calc_strip_multiply(value: &str) -> (alloc::string::String, i64) {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return (value.to_string(), 1);
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    if let Some(star) = inner.rfind('*') {
+        let left = inner[..star].trim();
+        let right = inner[star + 1..].trim();
+        if let Ok(n) = right.parse::<i64>() {
+            return (alloc::format!("{{{left}}}"), n);
+        }
+    }
+    (value.to_string(), 1)
+}
+
 fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<String>, Option<String>)> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
@@ -4811,6 +4830,11 @@ fn props_from_attrs_with_variables(
                 });
             }
             "outputValueCalc" => {
+                let (ovc_value, scale) = output_value_calc_strip_multiply(value);
+                if scale != 1 {
+                    props.output_value_calc_scale = Some(scale);
+                }
+                let value = ovc_value.as_str();
                 if parse_repeat_indicator_output_value_calc(value) {
                     props.output_value_calc = Some(OutputValueCalc::RepeatIndicatorFromParentCount);
                 } else if value.contains("if (") {
