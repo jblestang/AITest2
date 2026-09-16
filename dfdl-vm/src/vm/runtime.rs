@@ -5456,13 +5456,13 @@ pub(crate) fn read_text_scalar(
                     .is_none()
                 && !cursor.is_empty()
             {
-                let terms = non_empty_delimiter_scan_patterns(props, strings, scan_ctx)?
-                    .iter()
-                    .map(|p| alloc::format!("`{}`", format_delimiter_for_error(&p.pat)))
-                    .collect::<alloc::vec::Vec<_>>()
-                    .join(", ");
+                let patterns = non_empty_delimiter_scan_patterns(props, strings, scan_ctx)?;
+                let pat = patterns
+                    .first()
+                    .map(|p| p.pat.as_str())
+                    .unwrap_or("");
                 return Err(VmError::InvalidValue {
-                    message: alloc::format!("terminator {terms} not found"),
+                    message: format_terminator_not_found_error(pat),
                 });
             }
             raw
@@ -7580,8 +7580,9 @@ fn include_stop_sequence_delimiter_in_field_scan(
     if should_defer_infix_sequence_separator(seq, pattern_id, field_props, strings)? {
         return Ok(false);
     }
-    // Postfix sequence separators trail each particle (including the last) and must
-    // bound delimited content; consumption after decode is separate.
+    if should_defer_postfix_sequence_separator(seq, pattern_id, field_props, strings)? {
+        return Ok(false);
+    }
     Ok(true)
 }
 
@@ -7808,13 +7809,12 @@ fn read_until_delimiters_bits_charset(
 
     if matched_term_chars == 0 {
         if require_delimiter {
-            let labels = patterns
-                .iter()
-                .map(|p| alloc::format!("`{}`", format_delimiter_for_error(&p.pat)))
-                .collect::<alloc::vec::Vec<_>>()
-                .join(", ");
+            let pat = patterns
+                .first()
+                .map(|p| p.pat.as_str())
+                .unwrap_or("");
             return Err(VmError::InvalidValue {
-                message: alloc::format!("terminator {labels} not found"),
+                message: format_terminator_not_found_error(pat),
             });
         }
     }
@@ -8129,13 +8129,9 @@ fn read_until_any_delimiter(
         if allow_payload_at_eos && cursor.remaining() == 0 {
             return Ok(cursor.data[start..cursor.pos].to_vec());
         }
-        let terms = delimiters
-            .iter()
-            .map(|p| alloc::format!("`{}`", format_delimiter_for_error(&p.pat)))
-            .collect::<alloc::vec::Vec<_>>()
-            .join(", ");
+        let pat = delimiters.first().map(|p| p.pat.as_str()).unwrap_or("");
         return Err(VmError::InvalidValue {
-            message: alloc::format!("terminator {terms} not found"),
+            message: format_terminator_not_found_error(pat),
         });
     }
     Ok(cursor.data[start..].to_vec())
@@ -8616,6 +8612,13 @@ fn read_prefix_field_payload(
 
 fn format_delimiter_for_error(pat: &str) -> alloc::string::String {
     pat.replace('\n', "%NL;").replace('\r', "%CR;")
+}
+
+pub(crate) fn format_terminator_not_found_error(pat: &str) -> alloc::string::String {
+    alloc::format!(
+        "Parse Error. Terminator '{}' not found",
+        format_delimiter_for_error(pat)
+    )
 }
 
 /// Visible glyph for delimiter-mismatch errors (DFDL control-picture convention).
@@ -9952,14 +9955,7 @@ pub(crate) fn read_simple(
                 }
             } else if !cursor.is_empty() {
                 return Err(VmError::InvalidValue {
-                    message: if cursor.is_empty() {
-                        alloc::format!("terminator `{}` not found", format_delimiter_for_error(&pat))
-                    } else {
-                        alloc::format!(
-                            "terminator mismatch: expected `{}`",
-                            format_delimiter_for_error(&pat)
-                        )
-                    },
+                    message: format_terminator_not_found_error(&pat),
                 });
             }
         }

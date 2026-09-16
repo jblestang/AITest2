@@ -4443,29 +4443,30 @@ impl<'a> Decoder<'a> {
             }
             .into());
         }
-        let nl_like_sep = pat.contains('\n') || pat.trim() == "%NL;" || pat.starts_with("%NL");
         let mandatory_postfix = props.separator_position == SeparatorPosition::Postfix
-            && nl_like_sep
             && item_props.is_some()
-            && items.is_some_and(|it| !it.is_empty())
-            && !cursor.is_empty();
+            && items.is_some_and(|it| !it.is_empty());
         if mandatory_postfix {
             if cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
                 return Ok(());
             }
             // Postfix may already have been consumed by separator-bounded implicit complex decode.
-            if crate::schema::match_delimiter_opts_for_encoding(
-                &cursor.data[cursor.pos..],
-                pat,
-                props.ignore_case,
-                enc.as_deref(),
-            )
-            .is_none()
+            if !cursor.is_empty()
+                && crate::schema::match_delimiter_opts_for_encoding(
+                    &cursor.data[cursor.pos..],
+                    pat,
+                    props.ignore_case,
+                    enc.as_deref(),
+                )
+                .is_none()
             {
                 return Ok(());
             }
-            let found_display =
-                format_found_at_cursor(&cursor.data, cursor.pos, enc.as_deref());
+            let found_display = if cursor.is_empty() {
+                "End of file".into()
+            } else {
+                format_found_at_cursor(&cursor.data, cursor.pos, enc.as_deref())
+            };
             return Err(VmError::InvalidValue {
                 message: alloc::format!(
                     "Parse Error. postfix separator. Delimiter not found!  Was looking for ({pat}) but found \"{found_display}\" instead"
@@ -4747,7 +4748,7 @@ impl<'a> Decoder<'a> {
                     return Ok(());
                 }
                 return Err(VmError::InvalidValue {
-                    message: alloc::format!("terminator '{pat}' not found"),
+                    message: crate::vm::runtime::format_terminator_not_found_error(&pat),
                 }
                 .into());
             }
@@ -5969,15 +5970,17 @@ fn element_parse_error(
     strings: &StringPool,
     err: impl core::fmt::Display,
 ) -> crate::error::VmError {
-    let msg = if let Ok(IrNode::Element { name, .. }) = program.node(node_id) {
+    let mut msg = err.to_string();
+    while let Some(rest) = msg.strip_prefix("vm error: ") {
+        msg = rest.to_string();
+    }
+    if let Ok(IrNode::Element { name, .. }) = program.node(node_id) {
         if let Ok(local) = strings.get(*name) {
-            alloc::format!("{err} {local}")
-        } else {
-            err.to_string()
+            if !msg.ends_with(local) {
+                msg = alloc::format!("{msg} {local}");
+            }
         }
-    } else {
-        err.to_string()
-    };
+    }
     crate::error::VmError::InvalidValue { message: msg }
 }
 
