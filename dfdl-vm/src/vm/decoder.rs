@@ -1122,25 +1122,14 @@ impl<'a> Decoder<'a> {
                             if let Some(frame) = choice_frame_bytes {
                                 cursor.pos = choice_start.saturating_add(frame);
                             }
-                            if !cursor.is_empty()
-                                && matches!(
-                                    self.ctx.program.node(branch.node),
-                                    Ok(IrNode::Choice { .. })
-                                )
-                            {
-                                let branch_err: Error = VmError::InvalidValue {
-                                    message: "unconsumed input after nested choice branch".into(),
-                                }
-                                .into();
-                                branch_errors.push(format_choice_branch_error(
-                                    branch,
-                                    self.ctx.strings(),
-                                    &branch_err,
-                                ));
-                                *cursor = saved;
-                                continue;
-                            }
                             self.consume_terminator(props, cursor)?;
+                            if matches!(
+                                self.ctx.program.node(branch.node),
+                                Ok(IrNode::Choice { .. })
+                            ) && matches!(value, DfdlValue::Choice { .. })
+                            {
+                                return Ok(value);
+                            }
                             let name = self.ctx.strings().get(branch.name)?.to_string();
                             return Ok(DfdlValue::choice(name, value));
                         }
@@ -3376,7 +3365,10 @@ impl<'a> Decoder<'a> {
                             .borrow_mut()
                             .insert(field_name, delim_meta);
                     }
-                    self.validate_particle_discriminator(&props, value.as_str().unwrap_or(""))?;
+                    self.validate_particle_discriminator(
+                        &props,
+                        &dfdl_value_dispatch_string(&value),
+                    )?;
                     Ok(value)
                 }
             }
@@ -5100,7 +5092,7 @@ fn peek_choice_discriminator_dot(
             continue;
         }
         let mut c = cursor.clone();
-        if let Ok(DfdlValue::String(s)) = read_simple(
+        if let Ok(value) = read_simple(
             &mut c,
             *kind,
             props,
@@ -5116,7 +5108,7 @@ fn peek_choice_discriminator_dot(
             false,
             None,
         ) {
-            return Some(s.text);
+            return Some(dfdl_value_dispatch_string(&value));
         }
     }
     None

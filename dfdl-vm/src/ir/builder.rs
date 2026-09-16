@@ -46,6 +46,20 @@ fn apply_format_default_delimiters(ir: &mut IrProps, defaults: &IrProps) {
     }
 }
 
+/// Local `ref=` particles parsed before a global declaration retain a stub `xs:string` type;
+/// compile using the resolved global element type when available.
+fn effective_element_type_name<'a>(
+    schema: &'a SchemaDocument,
+    element: &'a ElementDecl,
+) -> &'a TypeName {
+    if let Some(ref er) = element.element_ref {
+        if let Some(g) = get_global_element(schema, er) {
+            return &g.type_name;
+        }
+    }
+    &element.type_name
+}
+
 fn dfdl_props_for_element_ref(schema: &SchemaDocument, element: &ElementDecl) -> DfdlProps {
     use crate::schema::merge_dfdl_props;
     let mut props = element.props.clone();
@@ -472,12 +486,11 @@ impl<'a> IrBuilder<'a> {
                 }
                 validate_text_standard_sibling_order(&merged, prior_element_names, &self.strings)?;
                 let name = self.strings.intern(&element.name);
-                if let Some(builtin) =
-                    builtin_for_element_type_name(self.schema, &element.type_name)
-                {
+                let type_name = effective_element_type_name(self.schema, element);
+                if let Some(builtin) = builtin_for_element_type_name(self.schema, type_name) {
                     let kind = value_kind_from_builtin(builtin);
                     let mut ir_props = merged;
-                    apply_type_name_ir_flags(&element.type_name, &mut ir_props);
+                    apply_type_name_ir_flags(type_name, &mut ir_props);
                 let mut ir_props = finalize_element_props(
                     kind,
                     ir_props,
@@ -503,7 +516,7 @@ impl<'a> IrBuilder<'a> {
                 validate_fixed_occurs_count(&ir_props)?;
                 ir_props.hidden = hidden;
                 validate_implicit_text_length(kind, &ir_props)?;
-                ir_props.xsd_type = Some(self.strings.intern(element.type_name.as_str()));
+                ir_props.xsd_type = Some(self.strings.intern(type_name.as_str()));
                 Ok(self.push(IrNode::Element {
                     name,
                     kind,
@@ -514,11 +527,11 @@ impl<'a> IrBuilder<'a> {
                     let props = merged;
                     if let Some(ref er) = element.element_ref {
                         if let Some(TypeDef::Simple { props: type_props, .. }) =
-                            self.schema.resolve_type(&element.type_name)
+                            self.schema.resolve_type(type_name)
                         {
                             let type_label = crate::schema::get_global_element(self.schema, er)
                                 .and_then(|g| g.type_xsd_qname.clone())
-                                .unwrap_or_else(|| element.type_name.as_str().to_string());
+                                .unwrap_or_else(|| type_name.as_str().to_string());
                             if er.contains(':') && type_label.contains(':') {
                                 validate_text_number_pad_character_overlap(
                                     er.as_str(),
@@ -533,14 +546,14 @@ impl<'a> IrBuilder<'a> {
                     // can preserve type/format alignment as framing_alignment when the element
                     // overrides dfdl:alignment (Section 12 aligned_data alignment03).
                     let compile_element_props_owned =
-                        match self.schema.resolve_type(&element.type_name) {
+                        match self.schema.resolve_type(type_name) {
                             Some(TypeDef::Simple { .. }) => {
                                 element_props_for_simple_type_compile(&element_props)
                             }
                             _ => element_props.clone(),
                         };
                     let child = self.compile_type(
-                        &element.type_name,
+                        type_name,
                         &compile_element_props_owned,
                         Some(element.name.as_str()),
                         hidden,
