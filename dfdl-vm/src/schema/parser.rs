@@ -3062,9 +3062,36 @@ fn take_daf_suppress_warnings(attrs: &BTreeMap<String, String>) -> Option<String
         .map(|(_, v)| v.clone())
 }
 
+fn parse_assert_eq_occurs_index_addend(test: &str) -> Option<i64> {
+    let compact: alloc::string::String = test
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let body = compact
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(compact.as_str());
+    if !body.contains("dfdl:occursIndex()") {
+        return None;
+    }
+    if body.contains("xs:int(.)eqdfdl:occursIndex()") || body.contains(".eqdfdl:occursIndex()") {
+        return Some(0);
+    }
+    if let Some(rest) = body.strip_prefix(".eq(dfdl:occursIndex()+") {
+        let n = rest.strip_suffix(')')?;
+        return n.parse().ok();
+    }
+    None
+}
+
 fn apply_dfdl_assert_test(props: &mut DfdlProps, test: &str) {
     if test.contains("checkConstraints") {
         props.facet_check_constraints = true;
+    }
+    if let Some(addend) = parse_assert_eq_occurs_index_addend(test) {
+        props.facet_check_constraints = true;
+        props.assert_eq_occurs_index_addend = Some(addend);
+        return;
     }
     if let Some(n) = parse_assert_int_eq_test(test) {
         props.assert_int_eq = Some(n);

@@ -1,6 +1,7 @@
 use super::facet_validate::{
     needs_choice_discriminator_facet_check, needs_facet_validation,
-    validate_choice_discriminator_facets, validate_decoded_facets_tdml,
+    validate_assert_eq_occurs_index, validate_choice_discriminator_facets,
+    validate_decoded_facets_tdml,
 };
 use super::runtime::{
     consume_element_framing, consume_element_trailing_framing, consume_enclosing_delimiter,
@@ -2358,6 +2359,18 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    fn push_decoded_array_item(
+        &self,
+        items: &mut Vec<DfdlValue>,
+        value: DfdlValue,
+        props: &IrProps,
+    ) -> Result<()> {
+        let index = items.len() as u64 + 1;
+        validate_assert_eq_occurs_index(&value, props, self.ctx.strings(), index)?;
+        items.push(value);
+        Ok(())
+    }
+
     fn decode_element_occurrences(
         &self,
         node_id: u32,
@@ -2489,7 +2502,7 @@ impl<'a> Decoder<'a> {
                     delimiter_stops.as_slice(),
                     parent_infix_consumed_by_occurrence_loop,
                 )?;
-                items.push(v);
+                self.push_decoded_array_item(&mut items, v, props)?;
                 if parent_sequence.is_some_and(|p| {
                     p.separator_position == SeparatorPosition::Postfix
                 }) {
@@ -2618,7 +2631,7 @@ impl<'a> Decoder<'a> {
                 if never_optional_array.is_some() && cursor.pos > sep_pos {
                     never_infix_separators_consumed += 1;
                 }
-                items.push(DfdlValue::string(""));
+                self.push_decoded_array_item(&mut items, DfdlValue::string(""), props)?;
                 continue;
             }
             if min > 0
@@ -2710,7 +2723,7 @@ impl<'a> Decoder<'a> {
                                     break;
                                 }
                             }
-                            items.push(v);
+                            self.push_decoded_array_item(&mut items, v, props)?;
                             continue;
                         }
                         if (items.len() as u64) >= min {
@@ -2785,7 +2798,7 @@ impl<'a> Decoder<'a> {
                             continue;
                         }
                     }
-                    items.push(v);
+                    self.push_decoded_array_item(&mut items, v, props)?;
                     if parent_sequence.is_some_and(|p| {
                         p.separator_position == SeparatorPosition::Postfix
                     }) {
@@ -2932,7 +2945,7 @@ impl<'a> Decoder<'a> {
                         props,
                         self.ctx.strings(),
                     ) {
-                        items.push(default);
+                        self.push_decoded_array_item(&mut items, default, props)?;
                         break;
                     }
                     if populate_errors {

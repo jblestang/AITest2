@@ -11,8 +11,8 @@ use crate::length_validate::validate_fill_byte_schema;
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
     encode_delimiter, encode_delimiter_by_alt, encode_property_delimiter, encode_sequence_separator,
-    ChoiceLengthKind, LengthKind, LengthUnits, Representation, TextPadKind, OutputValueCalc,
-    SeparatorPosition,
+    ChoiceLengthKind, LengthKind, LengthUnits, OccursCountKind, Representation,
+    SeparatorSuppressionPolicy, TextPadKind, OutputValueCalc, SeparatorPosition,
 };
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
@@ -199,6 +199,24 @@ impl<'a> Encoder<'a> {
                         continue;
                     }
                     if optional_sequence_particle_absent(self, child, &effective)? {
+                        if trailing_empty_absent_position_slot(
+                            self,
+                            props,
+                            child,
+                            children,
+                            idx,
+                            &effective,
+                        )? {
+                            self.write_sequence_separator(
+                                props,
+                                out,
+                                bit_count,
+                                idx,
+                                children.len(),
+                                &seq.meta,
+                            )?;
+                            wrote_particle = true;
+                        }
                         continue;
                     }
                     let defer_sep = sequence_separator_deferred_to_child_occurrences(self, child)?;
@@ -1013,6 +1031,53 @@ impl<'a> Encoder<'a> {
         self.write_terminator(props, out, bit_count, None)?;
         Ok(())
     }
+}
+
+fn later_sequence_particle_present(
+    enc: &Encoder<'_>,
+    children: &[u32],
+    from_idx: usize,
+    map: &BTreeMap<String, DfdlValue>,
+) -> Result<bool> {
+    for &later in children.iter().skip(from_idx + 1) {
+        if child_skips_encode(enc, later)? {
+            continue;
+        }
+        if !optional_sequence_particle_absent(enc, later, map)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Positional `trailingEmpty`: absent optional implicit slots before a later present sibling
+/// still unparse one zero-length occurrence (infix separator only).
+fn trailing_empty_absent_position_slot(
+    enc: &Encoder<'_>,
+    seq_props: &IrProps,
+    node_id: u32,
+    children: &[u32],
+    idx: usize,
+    map: &BTreeMap<String, DfdlValue>,
+) -> Result<bool> {
+    if !matches!(
+        seq_props.separator_suppression_policy,
+        Some(SeparatorSuppressionPolicy::TrailingEmpty)
+    ) || seq_props.separator_position != SeparatorPosition::Infix
+    {
+        return Ok(false);
+    }
+    let IrNode::Element { props, .. } = enc.ctx.program.node(node_id)? else {
+        return Ok(false);
+    };
+    if props.occurs_min != 0
+        || props.occurs_count_kind != OccursCountKind::Implicit
+        || props.occurs_max.is_none()
+        || props.occurs_max.is_some_and(|m| m > 1)
+    {
+        return Ok(false);
+    }
+    later_sequence_particle_present(enc, children, idx, map)
 }
 
 fn optional_sequence_particle_absent(

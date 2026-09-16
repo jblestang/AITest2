@@ -2946,6 +2946,9 @@ fn apply_restriction_facets(
     if let Some(n) = element_props.assert_int_eq {
         props.assert_int_eq = Some(n);
     }
+    if let Some(n) = element_props.assert_eq_occurs_index_addend {
+        props.assert_eq_occurs_index_addend = Some(n);
+    }
     if let SimpleBase::Restriction {
         base,
         enumerations,
@@ -3991,6 +3994,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.assert_int_eq.is_some() {
         out.assert_int_eq = overlay.assert_int_eq;
+    }
+    if overlay.assert_eq_occurs_index_addend.is_some() {
+        out.assert_eq_occurs_index_addend = overlay.assert_eq_occurs_index_addend;
     }
     if overlay.discriminator_test.is_some() {
         out.discriminator_test = overlay.discriminator_test;

@@ -608,21 +608,29 @@ fn validate_sequence_children(
         }
         let elem_name = program.strings.get(*name).map_err(|e| e.to_string())?;
         let local = crate::xml_util::local_name_str(elem_name);
+        let ns_for_qname = if qualified { tns } else { None };
         let max = effective_occurs_max_for_unparse(program, props, node)?;
         let min = props.occurs_min;
         let infoset_children = find_infoset_children(node, local);
         let count = infoset_children.len() as u64;
         if count < min {
+            let elem_qname = element_qname_in_errors(local, ns_for_qname);
+            if props.occurs_count_kind == OccursCountKind::Implicit && min > 0 {
+                let needed = min.saturating_sub(count);
+                return Err(format!(
+                    "Unparse Error: Expected {needed} additional {elem_qname} received element end event for {parent_name}"
+                ));
+            }
             return Err(format!(
                 "Unparse Error: Expected element start event for {elem_name}, but received element end event for {parent_name}"
             ));
         }
         if count > max {
-            let elem_qname = element_qname_in_errors(local, tns);
+            let elem_qname = element_qname_in_errors(local, ns_for_qname);
             let parent_q = if parent_name.starts_with('{') {
                 parent_name.to_string()
             } else {
-                element_qname_in_errors(parent_name, tns)
+                element_qname_in_errors(parent_name, ns_for_qname)
             };
             if max > 1 || props.occurs_count_kind != OccursCountKind::Parsed {
                 return Err(format!(
@@ -924,6 +932,12 @@ fn effective_occurs_max_for_unparse(
         if let Some(steps) = props.occurs_count_fn_path.as_ref() {
             return eval_occurs_count_from_infoset(program, steps, parent);
         }
+    }
+    if props.occurs_count_kind == OccursCountKind::Parsed && props.occurs_min == 0 {
+        if props.occurs_max == Some(1) {
+            return Ok(u64::MAX);
+        }
+        return Ok(props.occurs_max.unwrap_or(u64::MAX));
     }
     Ok(props.occurs_max.unwrap_or(u64::MAX))
 }

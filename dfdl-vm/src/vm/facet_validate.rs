@@ -125,6 +125,31 @@ pub fn canonicalize_xs_decimal_lexical(s: &str) -> alloc::string::String {
     }
 }
 
+pub fn validate_assert_eq_occurs_index(
+    value: &DfdlValue,
+    props: &IrProps,
+    strings: &StringPool,
+    occurs_index_1based: u64,
+) -> Result<(), VmError> {
+    let Some(addend) = props.assert_eq_occurs_index_addend else {
+        return Ok(());
+    };
+    let expected = occurs_index_1based as i64 + addend;
+    let Some(actual) = numeric_value_i64(value) else {
+        return Err(VmError::InvalidValue {
+            message: "Assertion failed".into(),
+        });
+    };
+    if actual != expected {
+        return Err(facet_validation_error(
+            props,
+            strings,
+            "Assertion failed".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_assert_int_eq(
     value: &DfdlValue,
     props: &IrProps,

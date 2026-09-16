@@ -197,6 +197,8 @@ pub struct DfdlProps {
     pub facet_check_constraints: bool,
     /// `{ xs:int(.) eq N }` on `dfdl:assert` (section 02 assert tests).
     pub assert_int_eq: Option<i64>,
+    /// `{ xs:int(.) eq dfdl:occursIndex() (+ addend) }` element assert.
+    pub assert_eq_occurs_index_addend: Option<i64>,
     /// `dfdl:discriminator` body text for choice branch selection.
     pub discriminator_test: Option<String>,
     /// XPath prefix bindings in scope on this construct's `dfdl:discriminator` only.
