@@ -2652,6 +2652,11 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.byte_order.is_some() {
         base.byte_order = overlay.byte_order;
     }
+    if overlay.byte_order_conditional_test.is_some() {
+        base.byte_order_conditional_test = overlay.byte_order_conditional_test;
+        base.byte_order_if_true = overlay.byte_order_if_true;
+        base.byte_order_if_false = overlay.byte_order_if_false;
+    }
     if overlay.bit_order.is_some() {
         base.bit_order = overlay.bit_order;
     }
@@ -3374,6 +3379,36 @@ fn parse_infoset_path_step(step: &str) -> (Option<alloc::string::String>, alloc:
     (prefix, local, index)
 }
 
+fn parse_byte_order_literal(order: &str) -> Option<ByteOrder> {
+    match order.trim().trim_matches('\'').trim_matches('"') {
+        "bigEndian" => Some(ByteOrder::BigEndian),
+        "littleEndian" => Some(ByteOrder::LittleEndian),
+        _ => None,
+    }
+}
+
+fn parse_byte_order_if_expr(value: &str) -> Option<(String, ByteOrder, ByteOrder)> {
+    let trimmed = value.trim();
+    let inner = trimmed
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .map(str::trim)?;
+    let rest = inner.strip_prefix("if")?.trim();
+    let rest = rest.strip_prefix('(')?.trim();
+    let then_idx = rest.find(") then ")?;
+    let cond = rest[..then_idx].trim().to_string();
+    let rest = rest[then_idx + 7..].trim();
+    let else_idx = rest.find(" else ")?;
+    let then_lit = rest[..else_idx].trim();
+    let else_lit = rest[else_idx + 6..].trim();
+    let t = parse_byte_order_literal(then_lit)?;
+    let f = parse_byte_order_literal(else_lit)?;
+    if cond.is_empty() {
+        return None;
+    }
+    Some((cond, t, f))
+}
+
 fn parse_input_value_calc_relative_path(
     value: &str,
 ) -> Option<
@@ -4053,16 +4088,22 @@ fn props_from_attrs_with_variables(
                 });
             }
             "byteOrder" => {
-                props.byte_order = Some(match value.as_str() {
-                    "bigEndian" => ByteOrder::BigEndian,
-                    "littleEndian" => ByteOrder::LittleEndian,
-                    other => {
-                        return Err(ParseError::InvalidXml {
-                            message: alloc::format!("unknown byteOrder `{other}`"),
+                if let Some((test, t, f)) = parse_byte_order_if_expr(value) {
+                    props.byte_order_conditional_test = Some(test);
+                    props.byte_order_if_true = Some(t);
+                    props.byte_order_if_false = Some(f);
+                } else {
+                    props.byte_order = Some(match value.as_str() {
+                        "bigEndian" => ByteOrder::BigEndian,
+                        "littleEndian" => ByteOrder::LittleEndian,
+                        other => {
+                            return Err(ParseError::InvalidXml {
+                                message: alloc::format!("unknown byteOrder `{other}`"),
+                            }
+                            .into())
                         }
-                        .into())
-                    }
-                });
+                    });
+                }
             }
             "bitOrder" => {
                 props.bit_order = Some(match value.as_str() {

@@ -22,6 +22,10 @@ impl TypeName {
 pub struct DfdlProps {
     pub representation: Option<Representation>,
     pub byte_order: Option<ByteOrder>,
+    /// `if (../../ex:a eq 'b') then 'bigEndian' else 'littleEndian'` condition text.
+    pub byte_order_conditional_test: Option<String>,
+    pub byte_order_if_true: Option<ByteOrder>,
+    pub byte_order_if_false: Option<ByteOrder>,
     pub bit_order: Option<BitOrder>,
     pub length_kind: Option<LengthKind>,
     /// True when `dfdl:lengthKind` was set on this construct or merged format ref.

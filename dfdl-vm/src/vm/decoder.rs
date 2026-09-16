@@ -126,6 +126,14 @@ fn cursor_at_own_sequence_terminator(
     )
 }
 
+fn trailing_empty_strict_parse_error() -> Error {
+    VmError::InvalidValue {
+        message: "Parse Error. Empty trailing optional separatorSuppressionPolicy trailingEmptyStrict"
+            .into(),
+    }
+    .into()
+}
+
 fn cursor_at_parent_infix_separator(
     cursor: &Cursor<'_>,
     parent_sequence: Option<&IrProps>,
@@ -813,6 +821,26 @@ impl<'a> Decoder<'a> {
                         ..
                     }) = self.ctx.program.node(child)
                     {
+                        if props.separator_suppression_policy
+                            == Some(crate::schema::SeparatorSuppressionPolicy::TrailingEmptyStrict)
+                            && props.separator_position == SeparatorPosition::Infix
+                            && cp.occurs_min == 0
+                            && cp.occurs_count_kind == OccursCountKind::Implicit
+                        {
+                            let empty_slot = would_read_empty_delimited_field(
+                                cursor,
+                                cp,
+                                self.ctx.strings(),
+                                &particle_stops,
+                            )? || cursor_at_parent_infix_separator(
+                                cursor,
+                                Some(props),
+                                self.ctx.strings(),
+                            )?;
+                            if empty_slot {
+                                return Err(trailing_empty_strict_parse_error());
+                            }
+                        }
                         if self.trailing_empty_implicit_optional_empty_slot(
                             props,
                             cp,
@@ -1120,6 +1148,13 @@ impl<'a> Decoder<'a> {
                     && props.separator_position == SeparatorPosition::Infix
                 {
                     while self.consume_one_sequence_infix_separator(props, cursor)? {}
+                }
+                if props.separator_suppression_policy
+                    == Some(crate::schema::SeparatorSuppressionPolicy::TrailingEmptyStrict)
+                    && props.separator_position == SeparatorPosition::Infix
+                    && self.consume_one_sequence_infix_separator(props, cursor)?
+                {
+                    return Err(trailing_empty_strict_parse_error());
                 }
                 let mut terminator_alt = None;
                 if let Some(id) = props.terminator {
@@ -2392,6 +2427,26 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    fn resolve_conditional_byte_order(&self, props: &IrProps) -> Result<IrProps> {
+        let mut out = props.clone();
+        let Some(test_id) = props.byte_order_conditional_test else {
+            return Ok(out);
+        };
+        let test = self.ctx.strings().get(test_id)?;
+        let pick_true = self
+            .eval_discriminator_xpath_eq(test, "")
+            .ok()
+            .flatten()
+            .unwrap_or(false);
+        out.byte_order = if pick_true {
+            props.byte_order_if_true
+        } else {
+            props.byte_order_if_false
+        };
+        out.byte_order_defined = true;
+        Ok(out)
+    }
+
     fn push_decoded_array_item(
         &self,
         items: &mut Vec<DfdlValue>,
@@ -3080,6 +3135,7 @@ impl<'a> Decoder<'a> {
                     self.ctx.strings(),
                     &self.ctx.program.tunables,
                 )?;
+                let props = self.resolve_conditional_byte_order(&props)?;
                 if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
                     validate_explicit_decimal_before_decode(
                         *kind,

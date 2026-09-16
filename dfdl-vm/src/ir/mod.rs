@@ -114,6 +114,9 @@ pub struct IrProps {
     pub byte_order: ByteOrder,
     /// True when `dfdl:byteOrder` was present on merged DFDL props (not schema default only).
     pub byte_order_defined: bool,
+    pub byte_order_conditional_test: Option<StringId>,
+    pub byte_order_if_true: ByteOrder,
+    pub byte_order_if_false: ByteOrder,
     pub bit_order: BitOrder,
     /// True when `dfdl:bitOrder` was present on merged DFDL props.
     pub bit_order_defined: bool,
@@ -311,6 +314,9 @@ impl Default for IrProps {
             representation: Representation::Binary,
             byte_order: ByteOrder::BigEndian,
             byte_order_defined: false,
+            byte_order_conditional_test: None,
+            byte_order_if_true: ByteOrder::BigEndian,
+            byte_order_if_false: ByteOrder::LittleEndian,
             bit_order: BitOrder::MostSignificantBitFirst,
             bit_order_defined: false,
             length_kind: LengthKind::Implicit,

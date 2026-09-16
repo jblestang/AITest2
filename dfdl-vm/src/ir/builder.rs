@@ -7,9 +7,9 @@ use crate::length_validate::{
     validate_signed_one_bit_length_schema, validate_text_alignment_schema, DaffodilTunables,
 };
 use crate::schema::{
-    BuiltinType, ComplexContent, DfdlProps, ElementDecl, GlobalElement, GroupDecl, LengthKind,
-    LengthUnits,
-    OccursCountKind, Particle, Representation, SchemaDocument, SimpleBase, TextTrimKind, TypeDef,
+    BuiltinType, ByteOrder, ComplexContent, DfdlProps, ElementDecl, GlobalElement, GroupDecl,
+    LengthKind, LengthUnits, OccursCountKind, Particle, Representation, SchemaDocument, SimpleBase,
+    TextTrimKind, TypeDef,
     TypeName, get_global_element,
     expand_entities_str,
     parse_text_standard_separator_list, parse_text_standard_zero_rep_list,
@@ -3066,6 +3066,12 @@ fn overlay_dfdl_to_ir(
         base.byte_order = v;
         base.byte_order_defined = true;
     }
+    if let Some(ref test) = props.byte_order_conditional_test {
+        base.byte_order_conditional_test = Some(strings.intern(test.clone()));
+        base.byte_order_if_true = props.byte_order_if_true.unwrap_or(ByteOrder::BigEndian);
+        base.byte_order_if_false = props.byte_order_if_false.unwrap_or(ByteOrder::LittleEndian);
+        base.byte_order_defined = true;
+    }
     if let Some(v) = props.bit_order {
         base.bit_order = v;
         base.bit_order_defined = true;
@@ -3645,6 +3651,11 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.byte_order = overlay.byte_order;
     if overlay.byte_order_defined {
         out.byte_order_defined = true;
+    }
+    if overlay.byte_order_conditional_test.is_some() {
+        out.byte_order_conditional_test = overlay.byte_order_conditional_test;
+        out.byte_order_if_true = overlay.byte_order_if_true;
+        out.byte_order_if_false = overlay.byte_order_if_false;
     }
     out.bit_order = overlay.bit_order;
     if overlay.bit_order_defined {
