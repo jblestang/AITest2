@@ -5650,6 +5650,13 @@ pub(crate) fn read_text_scalar(
             }
         }
         Float => {
+            if props.length_kind == LengthKind::Delimited
+                && trimmed
+                    .chars()
+                    .any(|c| c.is_ascii_alphabetic() || c == ':')
+            {
+                return Err(unable_parse_from_text("xs:float", trimmed));
+            }
             let num = text_number_for_parse(trimmed, kind, props, strings)?;
             let v = parse_float(&num).map(|v| DfdlValue::Float(v as f32))?;
             if props.length_kind == LengthKind::Delimited
@@ -5660,6 +5667,13 @@ pub(crate) fn read_text_scalar(
             Ok(v)
         }
         Double => {
+            if props.length_kind == LengthKind::Delimited
+                && trimmed
+                    .chars()
+                    .any(|c| c.is_ascii_alphabetic() || c == ':')
+            {
+                return Err(unable_parse_from_text("xs:double", trimmed));
+            }
             let num = text_number_for_parse(trimmed, kind, props, strings)?;
             let v = parse_float(&num).map(DfdlValue::Double)?;
             if props.length_kind == LengthKind::Delimited

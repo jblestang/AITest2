@@ -890,7 +890,8 @@ impl<'a> Decoder<'a> {
                                             )
                                         && msg.contains("Parse Error");
                                     if msg.contains("Init('")
-                                        || msg.contains("initiator mismatch")
+                                        || (msg.contains("initiator mismatch")
+                                            && optional_element_may_absorb_initiator_failure(cp))
                                         || msg.contains("Delimiter not found")
                                         || optional_parse_absent
                                     {
@@ -1114,7 +1115,6 @@ impl<'a> Decoder<'a> {
                                 cursor.pos = choice_start.saturating_add(frame);
                             }
                             if !cursor.is_empty()
-                                && !has_following_sibling
                                 && matches!(
                                     self.ctx.program.node(branch.node),
                                     Ok(IrNode::Choice { .. })
@@ -1964,7 +1964,8 @@ impl<'a> Decoder<'a> {
                             }
                             let msg = e.to_string();
                             if msg.contains("Init('")
-                                || msg.contains("initiator mismatch")
+                                || (msg.contains("initiator mismatch")
+                                    && optional_element_may_absorb_initiator_failure(cp))
                                 || msg.contains("Delimiter not found")
                             {
                                 continue;
@@ -4317,6 +4318,15 @@ impl<'a> Decoder<'a> {
 
 fn is_element_absent(err: &Error) -> bool {
     matches!(err, Error::Vm(VmError::ElementAbsent))
+}
+
+/// Optional single-occurrence elements may treat initiator failures as absent; repeating or
+/// `occursCountKind="parsed"` arrays must surface the error (e.g. e1a initiated-content choice).
+fn optional_element_may_absorb_initiator_failure(props: &IrProps) -> bool {
+    if props.occurs_count_kind == OccursCountKind::Parsed {
+        return false;
+    }
+    !props.occurs_max.map(|m| m > 1).unwrap_or(true)
 }
 
 fn is_pattern_length_mismatch(err: &Error) -> bool {
