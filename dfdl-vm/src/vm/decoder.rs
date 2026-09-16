@@ -1027,8 +1027,13 @@ impl<'a> Decoder<'a> {
                 let mut branch_errors = Vec::new();
                 for branch in branches_iter {
                     let saved = cursor.clone();
+                    let saved_frame_limit = cursor.frame_bit_limit;
+                    if let Some(frame) = choice_frame_bytes {
+                        cursor.frame_bit_limit =
+                            Some(choice_start.saturating_add(frame).saturating_mul(8));
+                    }
                     let branch_scope = choice_frame_bytes.or(content_scope_bytes);
-                    match self.decode_node(
+                    let decode_result = self.decode_node(
                         branch.node,
                         cursor,
                         has_following_sibling,
@@ -1037,8 +1042,26 @@ impl<'a> Decoder<'a> {
                         branch_scope,
                         pattern_text_frame,
                         stop_sequences,
-                    ) {
+                    );
+                    cursor.frame_bit_limit = saved_frame_limit;
+                    match decode_result {
                         Ok(value) => {
+                            if let Some(frame) = choice_frame_bytes {
+                                if cursor.pos > choice_start.saturating_add(frame) {
+                                    let branch_err: Error = VmError::InvalidValue {
+                                        message: "choice branch exceeded explicit choice length"
+                                            .into(),
+                                    }
+                                    .into();
+                                    branch_errors.push(format_choice_branch_error(
+                                        branch,
+                                        self.ctx.strings(),
+                                        &branch_err,
+                                    ));
+                                    *cursor = saved;
+                                    continue;
+                                }
+                            }
                             if self.choice_branch_needs_post_decode_facet_check(branch.node) {
                                 if let Err(e) = self.validate_choice_branch_value(branch.node, &value)
                                 {
@@ -1066,6 +1089,9 @@ impl<'a> Decoder<'a> {
                             *cursor = saved;
                         }
                     }
+                }
+                if let Some(frame) = choice_frame_bytes {
+                    cursor.pos = choice_start.saturating_add(frame);
                 }
                 Err(VmError::InvalidChoice { branch_errors }.into())
             }

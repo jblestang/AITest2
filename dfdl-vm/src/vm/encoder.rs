@@ -11,8 +11,8 @@ use crate::length_validate::validate_fill_byte_schema;
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
     encode_delimiter, encode_delimiter_by_alt, encode_property_delimiter, encode_sequence_separator,
-    LengthKind, LengthUnits, TextPadKind,
-    OutputValueCalc, SeparatorPosition,
+    ChoiceLengthKind, LengthKind, LengthUnits, Representation, TextPadKind, OutputValueCalc,
+    SeparatorPosition,
 };
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
@@ -67,6 +67,20 @@ impl<'a> Encoder<'a> {
         let mut out = Vec::new();
         self.encode(value, &mut out)?;
         Ok(out)
+    }
+
+    fn encode_choice_matched_branch(
+        &self,
+        choice_props: &IrProps,
+        branch_node: u32,
+        value: &DfdlValue,
+        out: &mut Vec<u8>,
+        bit_count: &mut u8,
+    ) -> Result<()> {
+        let start = out.len();
+        self.encode_node(branch_node, value, out, bit_count)?;
+        pad_choice_explicit_frame(self, choice_props, out, bit_count, start)?;
+        Ok(())
     }
 
     fn encode_node(
@@ -142,7 +156,7 @@ impl<'a> Encoder<'a> {
                 self.write_terminator(props, out, bit_count, seq.meta.terminator_alt)?;
                 Ok(())
             }
-            IrNode::Choice { branches, .. } => {
+            IrNode::Choice { branches, props: choice_props, .. } => {
                 if let DfdlValue::Choice { discriminator, value } = value {
                     let branch = branches
                         .iter()
@@ -156,13 +170,25 @@ impl<'a> Encoder<'a> {
                         .ok_or(VmError::InvalidChoice {
                             branch_errors: alloc::vec::Vec::new(),
                         })?;
-                    return self.encode_node(branch.node, value, out, bit_count);
+                    return self.encode_choice_matched_branch(
+                        choice_props,
+                        branch.node,
+                        value,
+                        out,
+                        bit_count,
+                    );
                 }
                 if let Some(map) = value.sequence_fields() {
                     for branch in branches {
                         let key = self.ctx.strings().get(branch.name)?;
                         if let Some(branch_value) = map.get(key) {
-                            return self.encode_node(branch.node, branch_value, out, bit_count);
+                            return self.encode_choice_matched_branch(
+                                choice_props,
+                                branch.node,
+                                branch_value,
+                                out,
+                                bit_count,
+                            );
                         }
                     }
                 }
@@ -516,7 +542,13 @@ impl<'a> Encoder<'a> {
                             name: key.clone(),
                         })?;
                         self.write_initiator(choice_props, out, bit_count, None)?;
-                        return self.encode_node(branch.node, val, out, bit_count);
+                        return self.encode_choice_matched_branch(
+                            choice_props,
+                            branch.node,
+                            val,
+                            out,
+                            bit_count,
+                        );
                     }
                 }
                 self.write_initiator(choice_props, out, bit_count, None)?;
@@ -1511,6 +1543,69 @@ fn resolve_encoding_for_encode(
         }
     })?;
     Ok(resolved)
+}
+
+fn choice_explicit_frame_bytes_encode(
+    props: &IrProps,
+    strings: &crate::ir::StringPool,
+) -> Result<Option<usize>> {
+    if props.choice_length_kind != ChoiceLengthKind::Explicit {
+        return Ok(None);
+    }
+    let Some(units) = props.choice_length else {
+        return Err(VmError::InvalidValue {
+            message: "choiceLengthKind explicit requires choiceLength".into(),
+        }
+        .into());
+    };
+    let n = units as usize;
+    let span = match props.length_units {
+        LengthUnits::Bytes => n,
+        LengthUnits::Characters => {
+            let enc = encoding_name(props, strings)?;
+            super::encoding::character_span_byte_length(n, &enc)?
+        }
+        LengthUnits::Bits => n.saturating_add(7) / 8,
+    };
+    Ok(Some(span))
+}
+
+fn choice_explicit_pad_byte(props: &IrProps) -> u8 {
+    if props.representation == Representation::Text {
+        return b' ';
+    }
+    props.fill_byte as u8
+}
+
+fn pad_choice_explicit_frame(
+    enc: &Encoder<'_>,
+    choice_props: &IrProps,
+    out: &mut Vec<u8>,
+    bit_count: &mut u8,
+    start_byte_len: usize,
+) -> Result<()> {
+    let Some(frame) = choice_explicit_frame_bytes_encode(choice_props, enc.ctx.strings())? else {
+        return Ok(());
+    };
+    if *bit_count != 0 {
+        return Err(VmError::InvalidValue {
+            message: "choice explicit length requires byte-aligned branch payload".into(),
+        }
+        .into());
+    }
+    let mut written = out.len().saturating_sub(start_byte_len);
+    if written > frame {
+        return Err(VmError::InvalidValue {
+            message: "choice branch payload exceeds explicit choiceLength".into(),
+        }
+        .into());
+    }
+    let pad = choice_explicit_pad_byte(choice_props);
+    while written < frame {
+        write_byte_aligned(out, bit_count, core::slice::from_ref(&pad))?;
+        written += 1;
+    }
+    Ok(())
 }
 
 fn validate_fill_byte_for_encode(props: &IrProps, strings: &crate::ir::StringPool) -> Result<()> {
