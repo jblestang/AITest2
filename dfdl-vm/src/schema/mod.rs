@@ -57,6 +57,7 @@ pub use parser::{
     get_global_element, parse_schema, parse_schema_with_options, parse_schema_with_resolver,
     resolve_global_element_storage_key, ParseOptions,
 };
+pub(crate) use parser::parse_input_value_calc_expression;
 pub use resolver::SchemaResolver;
 #[cfg(feature = "std")]
 pub use resolver::read_schema_text_file;

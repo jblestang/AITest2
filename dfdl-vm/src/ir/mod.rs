@@ -1,4 +1,4 @@
-mod builder;
+pub(crate) mod builder;
 
 pub use builder::{compile, compile_named, compile_named_with_tunables};
 use crate::error::VmError;

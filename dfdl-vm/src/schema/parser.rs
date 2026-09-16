@@ -3496,7 +3496,7 @@ fn parse_ivc_add_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression
     parse_ivc_sub_expr(s)
 }
 
-fn parse_input_value_calc_expression(value: &str) -> Option<crate::schema::InputValueCalcExpression> {
+pub(crate) fn parse_input_value_calc_expression(value: &str) -> Option<crate::schema::InputValueCalcExpression> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;

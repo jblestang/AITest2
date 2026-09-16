@@ -512,6 +512,93 @@ impl<'a> Decoder<'a> {
         self.xpath_siblings.borrow().clone()
     }
 
+    fn eval_escape_scheme_property(&self, raw: &str) -> Result<String> {
+        let trimmed = raw.trim();
+        if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+            return Ok(trimmed.to_string());
+        }
+        let sib_snap = self.xpath_siblings_snapshot();
+        let sib_values: BTreeMap<String, DfdlValue> = sib_snap
+            .iter()
+            .map(|(k, v)| (k.clone(), v.value.clone()))
+            .collect();
+        if let Some(local) = super::runtime::parse_sibling_property_expr(raw) {
+            if let Some(text) = super::runtime::sibling_string_from_encode_map(&sib_values, &local)
+            {
+                return Ok(text);
+            }
+        }
+        let Some(schema_expr) = crate::schema::parse_input_value_calc_expression(raw) else {
+            return Ok(trimmed[1..trimmed.len() - 1].trim().to_string());
+        };
+        let mut pool = self.ctx.strings().clone();
+        let ir_expr =
+            crate::ir::builder::intern_input_value_calc_expression(&schema_expr, &mut pool);
+        let ancestor_frames = self.xpath_ancestor_frames.borrow();
+        let ivc_ctx = IvcEvalCtx {
+            siblings: Some(&sib_snap),
+            ancestor_frames: Some(ancestor_frames.as_slice()),
+            root_element: self.ctx.program.root_element.as_str(),
+            define_variables: &self.ctx.program.variables,
+            runtime_variables: &self.runtime_variables.borrow(),
+            element_name: None,
+        };
+        let value = eval_input_value_calc_expression(
+            &ir_expr,
+            ivc_ctx,
+            &pool,
+            &self.ctx.program.tunables,
+            ValueKind::String,
+            &IrProps::default(),
+        )?;
+        Ok(dfdl_value_to_string(&value))
+    }
+
+    fn resolve_escape_scheme_for_decode(
+        &self,
+        scheme: &crate::schema::EscapeSchemeDef,
+    ) -> Result<crate::schema::EscapeSchemeDef> {
+        let mut resolved = scheme.clone();
+        if let Some(raw) = scheme
+            .escape_character_raw
+            .as_deref()
+            .or(scheme.escape_character.as_deref())
+        {
+            if raw.trim().starts_with('{') {
+                resolved.escape_character = Some(self.eval_escape_scheme_property(raw)?);
+            }
+        }
+        if let Some(raw) = scheme
+            .escape_escape_character_raw
+            .as_deref()
+            .or(scheme.escape_escape_character.as_deref())
+        {
+            if raw.trim().starts_with('{') {
+                resolved.escape_escape_character =
+                    Some(self.eval_escape_scheme_property(raw)?);
+            }
+        }
+        if let Some(raw) = scheme
+            .escape_block_start_raw
+            .as_deref()
+            .or(scheme.escape_block_start.as_deref())
+        {
+            if raw.trim().starts_with('{') {
+                resolved.escape_block_start = Some(self.eval_escape_scheme_property(raw)?);
+            }
+        }
+        if let Some(raw) = scheme
+            .escape_block_end_raw
+            .as_deref()
+            .or(scheme.escape_block_end.as_deref())
+        {
+            if raw.trim().starts_with('{') {
+                resolved.escape_block_end = Some(self.eval_escape_scheme_property(raw)?);
+            }
+        }
+        Ok(resolved)
+    }
+
     fn runtime_check_bit_order_change(
         &self,
         props: &IrProps,
@@ -3913,14 +4000,10 @@ impl<'a> Decoder<'a> {
                             resolved_stop_delimiters.push((id, lit));
                         }
                     }
-                    let sib_snap = self.xpath_siblings_snapshot();
-                    let sib_values: BTreeMap<String, DfdlValue> = sib_snap
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.value.clone()))
-                        .collect();
-                    let resolved_escape = props.escape_scheme.as_ref().map(|s| {
-                        super::runtime::resolve_escape_scheme_runtime(s, Some(&sib_values))
-                    });
+                    let resolved_escape = props
+                        .escape_scheme
+                        .as_ref()
+                        .and_then(|s| self.resolve_escape_scheme_for_decode(s).ok());
                     let scan_ctx = parent_sequence.map(|parent| {
                         let nested_under_repeating_particle = self.occurrence_decode_depth.get() > 1
                             && parent.separator.is_some()

@@ -4410,7 +4410,7 @@ fn intern_input_path_steps_legacy(
         .collect()
 }
 
-fn intern_input_value_calc_expression(
+pub(crate) fn intern_input_value_calc_expression(
     expr: &crate::schema::InputValueCalcExpression,
     strings: &mut crate::ir::StringPool,
 ) -> crate::ir::IrInputValueCalcExpression {

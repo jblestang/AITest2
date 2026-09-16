@@ -7094,7 +7094,48 @@ pub(crate) fn write_text_scalar(
         let resolved = resolve_escape_scheme_runtime(scheme, encode_siblings);
         let markup =
             delimited_field_escape_markup(props, encode_escape_parent, strings, encode_siblings);
-        let markup_refs: alloc::vec::Vec<&str> = markup.iter().map(|s| s.as_str()).collect();
+        let block_markup_owned: alloc::vec::Vec<alloc::string::String>;
+        let markup_refs: alloc::vec::Vec<&str> = match scheme.escape_kind {
+            crate::schema::EscapeKind::EscapeBlock => {
+                let mut block_markup = alloc::vec::Vec::new();
+                if let Some(s) = resolved.escape_block_start.as_deref() {
+                    if !s.is_empty() {
+                        block_markup.push(s.to_string());
+                    }
+                }
+                if let Some(s) = resolved.escape_block_end.as_deref() {
+                    if !s.is_empty() {
+                        block_markup.push(s.to_string());
+                    }
+                }
+                if let Some(id) = props.initiator {
+                    if let Ok(raw) = strings.get(id) {
+                        let pat = resolve_encode_property_pattern(raw, encode_siblings);
+                        for alt in crate::schema::delimiter_alternatives(&pat) {
+                            if !alt.is_empty() {
+                                block_markup.push(alt);
+                            }
+                        }
+                    }
+                }
+                if let Some(id) = props.terminator {
+                    if let Ok(raw) = strings.get(id) {
+                        let pat = resolve_encode_property_pattern(raw, encode_siblings);
+                        for alt in crate::schema::delimiter_alternatives(&pat) {
+                            if !alt.is_empty() {
+                                block_markup.push(alt);
+                            }
+                        }
+                    }
+                }
+                block_markup_owned = block_markup;
+                block_markup_owned.iter().map(|s| s.as_str()).collect()
+            }
+            crate::schema::EscapeKind::EscapeCharacter => {
+                block_markup_owned = alloc::vec::Vec::new();
+                markup.iter().map(|s| s.as_str()).collect()
+            }
+        };
         crate::vm::escape::escape_field_text(&text, &resolved, &markup_refs)
     } else {
         text
@@ -11259,7 +11300,7 @@ pub(crate) fn write_simple(
     Ok(())
 }
 
-fn parse_sibling_property_expr(raw: &str) -> Option<alloc::string::String> {
+pub(crate) fn parse_sibling_property_expr(raw: &str) -> Option<alloc::string::String> {
     let trimmed = raw.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;
@@ -11275,27 +11316,23 @@ fn parse_sibling_property_expr(raw: &str) -> Option<alloc::string::String> {
     )
 }
 
+pub(crate) fn sibling_string_from_encode_map(
+    map: &alloc::collections::BTreeMap<String, crate::value::DfdlValue>,
+    local: &str,
+) -> Option<alloc::string::String> {
+    for (k, v) in map {
+        if crate::xml_util::local_name_str(k) == local {
+            return sibling_string_from_dfdl_value(v);
+        }
+    }
+    map.get(local)
+        .and_then(sibling_string_from_dfdl_value)
+}
+
 fn sibling_string_from_dfdl_value(
     value: &crate::value::DfdlValue,
 ) -> Option<alloc::string::String> {
     match value {
-        crate::value::DfdlValue::String(s) => Some(s.text.clone()),
-        crate::value::DfdlValue::Decimal(s) | crate::value::DfdlValue::DateTime(s) => {
-            Some(s.clone())
-        }
-        _ => None,
-    }
-}
-
-fn sibling_string_from_encode_map(
-    map: &alloc::collections::BTreeMap<String, crate::value::DfdlValue>,
-    local: &str,
-) -> Option<alloc::string::String> {
-    let key = map
-        .iter()
-        .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
-        .map(|(k, _)| k.clone())?;
-    match map.get(&key)? {
         crate::value::DfdlValue::String(s) => Some(s.text.clone()),
         crate::value::DfdlValue::Decimal(s) | crate::value::DfdlValue::DateTime(s) => {
             Some(s.clone())

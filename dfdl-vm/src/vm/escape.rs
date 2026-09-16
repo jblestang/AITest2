@@ -164,6 +164,13 @@ fn escape_block_field(
     if inner.starts_with(start) && inner.ends_with(end) {
         return inner;
     }
+    let needs_wrap = inner != input
+        || markup.iter().any(|m| !m.is_empty() && input.contains(m))
+        || (!start.is_empty() && input.contains(start))
+        || (!end.is_empty() && input.contains(end));
+    if !needs_wrap {
+        return inner;
+    }
     alloc::format!("{start}{inner}{end}")
 }
 
