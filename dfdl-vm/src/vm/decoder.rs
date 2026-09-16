@@ -302,7 +302,7 @@ impl<'a> Decoder<'a> {
                         ),
                     })?;
                 value = Some(if let Some(idx) = index {
-                    array_item_at(&state.value, idx)?
+                    single_or_array_item_at(&state.value, idx)?
                 } else {
                     state.value.clone()
                 });
@@ -2920,7 +2920,9 @@ impl<'a> Decoder<'a> {
 
         if items.is_empty() {
             if min == 0
-                && props.occurs_max.map(|m| m > 1).unwrap_or(false)
+                && (props.occurs_max.map(|m| m > 1).unwrap_or(false)
+                    || (props.occurs_count_kind == OccursCountKind::Parsed
+                        && props.occurs_max.is_none()))
             {
                 return Ok(DfdlValue::Array(Vec::new()));
             }
@@ -5402,6 +5404,15 @@ fn parse_discriminator_path_step(step: &str) -> Result<(&str, Option<usize>)> {
     Ok((step, None))
 }
 
+fn single_or_array_item_at(value: &DfdlValue, one_based_index: usize) -> Result<DfdlValue> {
+    if one_based_index == 1 {
+        if matches!(value, DfdlValue::Sequence(_)) {
+            return Ok(value.clone());
+        }
+    }
+    array_item_at(value, one_based_index)
+}
+
 fn array_item_at(value: &DfdlValue, one_based_index: usize) -> Result<DfdlValue> {
     let DfdlValue::Array(items) = value else {
         return Err(VmError::InvalidValue {
@@ -5437,7 +5448,7 @@ fn navigate_discriminator_path_step(
         }
     })?;
     if let Some(idx) = index {
-        array_item_at(field, idx)
+        single_or_array_item_at(field, idx)
     } else {
         Ok(field.clone())
     }

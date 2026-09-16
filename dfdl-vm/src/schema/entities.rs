@@ -718,6 +718,9 @@ pub fn unquote_xpath_string_literal(raw: &str) -> String {
     if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
         return t[1..t.len() - 1].replace("''", "'");
     }
+    if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
+        return t[1..t.len() - 1].replace("\"\"", "\"");
+    }
     t.to_string()
 }
 
