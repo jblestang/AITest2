@@ -1031,10 +1031,22 @@ impl<'a> Decoder<'a> {
                             )
                         });
                     }
+                    if props.initiated_content {
+                        list.retain(|b| {
+                            self.choice_branch_lacks_initiator(b.node).unwrap_or(false)
+                                || self
+                                    .choice_branch_initiator_present(cursor, b.node)
+                                    .unwrap_or(false)
+                        });
+                    }
                     list
                 };
                 let mut branch_errors = Vec::new();
+                let mut initiated_initiator_committed = false;
                 for branch in branches_iter {
+                    if props.initiated_content && initiated_initiator_committed {
+                        break;
+                    }
                     let saved = cursor.clone();
                     let saved_frame_limit = cursor.frame_bit_limit;
                     if let Some(frame) = choice_frame_bytes {
@@ -1086,6 +1098,25 @@ impl<'a> Decoder<'a> {
                             if let Some(frame) = choice_frame_bytes {
                                 cursor.pos = choice_start.saturating_add(frame);
                             }
+                            if !cursor.is_empty()
+                                && !has_following_sibling
+                                && matches!(
+                                    self.ctx.program.node(branch.node),
+                                    Ok(IrNode::Choice { .. })
+                                )
+                            {
+                                let branch_err: Error = VmError::InvalidValue {
+                                    message: "unconsumed input after nested choice branch".into(),
+                                }
+                                .into();
+                                branch_errors.push(format_choice_branch_error(
+                                    branch,
+                                    self.ctx.strings(),
+                                    &branch_err,
+                                ));
+                                *cursor = saved;
+                                continue;
+                            }
                             self.consume_terminator(props, cursor)?;
                             let name = self.ctx.strings().get(branch.name)?.to_string();
                             return Ok(DfdlValue::choice(name, value));
@@ -1097,6 +1128,12 @@ impl<'a> Decoder<'a> {
                                 &e,
                             ));
                             *cursor = saved;
+                            if props.initiated_content
+                                && self.choice_branch_initiator_present(cursor, branch.node)
+                                    .unwrap_or(false)
+                            {
+                                initiated_initiator_committed = true;
+                            }
                         }
                     }
                 }
@@ -1152,6 +1189,62 @@ impl<'a> Decoder<'a> {
             return Ok(false);
         }
         Ok(true)
+    }
+
+    fn choice_branch_lacks_initiator(&self, branch_node: u32) -> Result<bool> {
+        match self.ctx.program.node(branch_node)? {
+            IrNode::Element { props, child, .. } => {
+                if props.initiator.is_some() {
+                    return Ok(false);
+                }
+                if let Some(c) = *child {
+                    return self.choice_branch_lacks_initiator(c);
+                }
+                Ok(true)
+            }
+            IrNode::Sequence { children, props, .. } => {
+                if props.initiator.is_some() {
+                    return Ok(false);
+                }
+                Ok(children.iter().all(|&c| {
+                    self.choice_branch_lacks_initiator(c).unwrap_or(false)
+                }))
+            }
+            IrNode::Choice { .. } => Ok(false),
+        }
+    }
+
+    fn choice_branch_initiator_present(
+        &self,
+        cursor: &Cursor<'_>,
+        branch_node: u32,
+    ) -> Result<bool> {
+        match self.ctx.program.node(branch_node)? {
+            IrNode::Element { props, .. } => self.initiator_present_at_cursor(cursor, props),
+            IrNode::Sequence { children, props, .. } => {
+                if props.initiator.is_some() {
+                    return self.initiator_present_at_cursor(cursor, props);
+                }
+                for &child in children {
+                    if let Ok(IrNode::Element { props: cp, .. }) = self.ctx.program.node(child) {
+                        if cp.initiator.is_some()
+                            && self.initiator_present_at_cursor(cursor, cp)?
+                        {
+                            return Ok(true);
+                        }
+                    }
+                }
+                Ok(false)
+            }
+            IrNode::Choice { branches, .. } => {
+                for branch in branches {
+                    if self.choice_branch_initiator_present(cursor, branch.node)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+        }
     }
 
     fn initiator_present_at_cursor(

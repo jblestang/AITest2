@@ -5571,6 +5571,13 @@ pub(crate) fn read_text_scalar(
             reject_internal_whitespace_explicit_field(
                 trimmed, "xs:int", props, base, trailing_input,
             )?;
+            if base == 10
+                && trimmed.contains('.')
+                && !trimmed.contains('e')
+                && !trimmed.contains('E')
+            {
+                return Err(unable_parse_from_text("xs:int", trimmed));
+            }
             if props.length_kind == LengthKind::Delimited
                 && trimmed
                     .chars()
@@ -5583,7 +5590,13 @@ pub(crate) fn read_text_scalar(
             } else {
                 trimmed.to_string()
             };
-            parse_int_typed_with_base(&num, "xs:int", base, trimmed).map(DfdlValue::Int)
+            let v = parse_int_typed_with_base(&num, "xs:int", base, trimmed).map(DfdlValue::Int)?;
+            if props.length_kind == LengthKind::Delimited
+                && delimited_trailing_fraction_at_cursor(cursor, props, strings, scan_ctx)
+            {
+                return Err(unable_parse_from_text("xs:int", trimmed));
+            }
+            Ok(v)
         }
         Integer => {
             let num = if base == 10 && props.custom_text_number_pattern {
@@ -5638,11 +5651,23 @@ pub(crate) fn read_text_scalar(
         }
         Float => {
             let num = text_number_for_parse(trimmed, kind, props, strings)?;
-            parse_float(&num).map(|v| DfdlValue::Float(v as f32))
+            let v = parse_float(&num).map(|v| DfdlValue::Float(v as f32))?;
+            if props.length_kind == LengthKind::Delimited
+                && delimited_trailing_fraction_at_cursor(cursor, props, strings, scan_ctx)
+            {
+                return Err(unable_parse_from_text("xs:float", trimmed));
+            }
+            Ok(v)
         }
         Double => {
             let num = text_number_for_parse(trimmed, kind, props, strings)?;
-            parse_float(&num).map(DfdlValue::Double)
+            let v = parse_float(&num).map(DfdlValue::Double)?;
+            if props.length_kind == LengthKind::Delimited
+                && delimited_trailing_fraction_at_cursor(cursor, props, strings, scan_ctx)
+            {
+                return Err(unable_parse_from_text("xs:double", trimmed));
+            }
+            Ok(v)
         }
         Decimal => {
             let num = text_number_for_parse(trimmed, kind, props, strings)?;
@@ -8977,6 +9002,44 @@ fn parse_u128_radix_base10(
             }
         }
     })
+}
+
+fn delimited_trailing_fraction_at_cursor(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
+) -> bool {
+    if cursor.data.get(cursor.pos) != Some(&b'.') {
+        return false;
+    }
+    if !cursor
+        .data
+        .get(cursor.pos.saturating_add(1))
+        .is_some_and(|b| b.is_ascii_digit())
+    {
+        return false;
+    }
+    if let Some(ctx) = scan_ctx {
+        if let Some(sep_id) = ctx.parent_sequence.separator {
+            if ctx.parent_sequence.separator_position == SeparatorPosition::Infix {
+                if let Ok(sep) = strings.get(sep_id) {
+                    if sep == "."
+                        && crate::schema::match_delimiter_opts(
+                            &cursor.data[cursor.pos..],
+                            sep,
+                            ctx.parent_sequence.ignore_case,
+                        )
+                        .is_some()
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    let _ = props;
+    true
 }
 
 fn field_has_non_digit(field_text: &str) -> bool {
