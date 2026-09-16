@@ -890,6 +890,10 @@ impl<'a> Decoder<'a> {
                         // (see decode_element_occurrences), not before the next index.
                         None
                     } else {
+                        let allow_missing_infix = child_element_props
+                            .is_some_and(|cp| cp.occurs_min == 0)
+                            && (cursor.is_empty()
+                                || self.at_enclosing_terminator_stop(cursor, child_stops)?);
                         self.consume_separator(
                             props,
                             cursor,
@@ -897,7 +901,7 @@ impl<'a> Decoder<'a> {
                             children.len(),
                             &mut infix_sep_newline_prefix,
                             child_stops,
-                            false,
+                            allow_missing_infix,
                         )?
                     };
                     separator_alts.push(sep_alt);
@@ -3612,7 +3616,13 @@ impl<'a> Decoder<'a> {
                                     // Decode sequence children in the outer stream so separators
                                     // can detect enclosing terminators (e.g. `$` vs `$$`).
                                 } else {
-                                let bytes = read_until_separator(cursor, term, false, props.ignore_case)?;
+                                let bytes = read_until_separator(
+                                    cursor,
+                                    term,
+                                    false,
+                                    props.ignore_case,
+                                    props.escape_scheme.as_ref(),
+                                )?;
                                 let enc = encoding_name(&props, self.ctx.strings()).ok();
                                 if crate::schema::match_delimiter_opts_for_encoding(
                                     &cursor.data[cursor.pos..],
@@ -4844,7 +4854,8 @@ impl<'a> Decoder<'a> {
                     )
                     .is_some();
                     if !sep_at_cursor
-                        && self.at_enclosing_terminator_stop(cursor, stop_sequences)?
+                        && (cursor.is_empty()
+                            || self.at_enclosing_terminator_stop(cursor, stop_sequences)?)
                     {
                         return Ok(None);
                     }

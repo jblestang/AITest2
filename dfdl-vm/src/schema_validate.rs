@@ -66,7 +66,7 @@ pub fn validate_compiled_schema(
     validate_element_type_qnames(schema, root)?;
     validate_simple_restriction_bases(schema, root)?;
     validate_name_and_ref(schema)?;
-    validate_escape_separator_distinct(schema)?;
+    validate_escape_separator_distinct(schema, root)?;
     validate_invalid_restrictions(schema, root, tunables)?;
     validate_max_hex_binary_length(schema, root, tunables)?;
     validate_unique_particle_attribution(schema)?;
@@ -804,9 +804,10 @@ fn all_choice_particle_lists(schema: &SchemaDocument) -> Vec<&[Particle]> {
     out
 }
 
-fn validate_escape_separator_distinct(schema: &SchemaDocument) -> Result<(), SchemaError> {
-    for td in schema.types.values() {
-        let TypeDef::Complex { content, .. } = td else {
+fn validate_escape_separator_distinct(schema: &SchemaDocument, root: &str) -> Result<(), SchemaError> {
+    let reachable = types_reachable_from_root(schema, root);
+    for tn in reachable {
+        let Some(TypeDef::Complex { content, .. }) = schema.resolve_type(&tn) else {
             continue;
         };
         let ComplexContent::Sequence(seq) = content else {

@@ -15,11 +15,85 @@ fn unescape_block(input: &str, scheme: &EscapeSchemeDef) -> Result<String, VmErr
     if start.is_empty() || end.is_empty() {
         return Ok(input.to_string());
     }
-    if input.starts_with(start) && input.ends_with(end) && input.len() >= start.len() + end.len() {
-        Ok(input[start.len()..input.len() - end.len()].to_string())
+    let inner = if input.starts_with(start) && input.ends_with(end) && input.len() >= start.len() + end.len()
+    {
+        &input[start.len()..input.len() - end.len()]
     } else {
-        Ok(input.to_string())
+        input
+    };
+    if scheme
+        .escape_escape_character
+        .as_deref()
+        .is_some_and(|s| !s.is_empty())
+    {
+        let esc = scheme.escape_escape_character.clone();
+        let inner_scheme = EscapeSchemeDef {
+            escape_kind: EscapeKind::EscapeCharacter,
+            escape_character: esc,
+            escape_escape_character: Some(String::new()),
+            ..Default::default()
+        };
+        return Ok(unescape_character(inner, &inner_scheme));
     }
+    Ok(inner.to_string())
+}
+
+/// Next byte index when scanning delimited data with an escape scheme (Section 7).
+pub(crate) fn advance_escape_scan_index(data: &[u8], i: usize, scheme: &EscapeSchemeDef) -> usize {
+    if i >= data.len() {
+        return i;
+    }
+    match scheme.escape_kind {
+        EscapeKind::EscapeBlock => {
+            let start = scheme.escape_block_start.as_deref().unwrap_or("");
+            let end = scheme.escape_block_end.as_deref().unwrap_or("");
+            if !start.is_empty()
+                && data.len() >= i + start.len()
+                && &data[i..i + start.len()] == start.as_bytes()
+            {
+                if let Some(rel) = find_subslice(data, i + start.len(), end.as_bytes()) {
+                    return rel + end.len();
+                }
+            }
+            i + 1
+        }
+        EscapeKind::EscapeCharacter => {
+            let Some(esc) = scheme.escape_character.as_deref().filter(|s| !s.is_empty()) else {
+                return i + 1;
+            };
+            let esc_bytes = esc.as_bytes();
+            let esc_esc_bytes = scheme
+                .escape_escape_character
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.as_bytes());
+            if let Some(ee) = esc_esc_bytes {
+                if i + ee.len() + esc_bytes.len() <= data.len()
+                    && &data[i..i + ee.len()] == ee
+                    && &data[i + ee.len()..i + ee.len() + esc_bytes.len()] == esc_bytes
+                {
+                    return i + ee.len() + esc_bytes.len();
+                }
+            }
+            if i + esc_bytes.len() < data.len() && &data[i..i + esc_bytes.len()] == esc_bytes {
+                return i + esc_bytes.len() + 1;
+            }
+            if i + esc_bytes.len() <= data.len() && &data[i..i + esc_bytes.len()] == esc_bytes {
+                return i + esc_bytes.len();
+            }
+            i + 1
+        }
+    }
+}
+
+fn find_subslice(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(from);
+    }
+    haystack[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| from + p)
 }
 
 fn unescape_character(input: &str, scheme: &EscapeSchemeDef) -> String {
@@ -173,6 +247,21 @@ mod tests {
         assert_eq!(
             escape_field_text("test;ing", &scheme, b";"),
             "testx;ing"
+        );
+    }
+
+    #[test]
+    fn block_interior_escape_escape() {
+        let scheme = EscapeSchemeDef {
+            escape_kind: EscapeKind::EscapeBlock,
+            escape_block_start: Some("/*".into()),
+            escape_block_end: Some("*/".into()),
+            escape_escape_character: Some("#".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            unescape_field_text("/*, three and four#*/", &scheme).unwrap(),
+            ", three and four*/"
         );
     }
 

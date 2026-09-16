@@ -7847,6 +7847,7 @@ pub(crate) fn read_until_delimiters(
         require_delimiter,
         encoding,
         !stop_sequences.is_empty(),
+        props.escape_scheme.as_ref(),
     )
 }
 
@@ -7855,12 +7856,20 @@ pub(crate) fn read_until_separator(
     separator: &str,
     require_delimiter: bool,
     ignore_case: bool,
+    escape_scheme: Option<&crate::schema::EscapeSchemeDef>,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     let patterns = [DelimScanPattern {
         pat: separator.to_string(),
         ignore_case,
     }];
-    read_until_any_delimiter(cursor, &patterns, require_delimiter, None, false)
+    read_until_any_delimiter(
+        cursor,
+        &patterns,
+        require_delimiter,
+        None,
+        false,
+        escape_scheme,
+    )
 }
 
 pub(crate) fn bits_available_in_cursor(cursor: &Cursor<'_>) -> usize {
@@ -8034,6 +8043,7 @@ fn read_until_any_delimiter(
     require_delimiter: bool,
     encoding: Option<&str>,
     allow_payload_at_eos: bool,
+    escape_scheme: Option<&crate::schema::EscapeSchemeDef>,
 ) -> Result<Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let start = cursor.pos;
@@ -8060,7 +8070,16 @@ fn read_until_any_delimiter(
                 }
             }
         }
-        cursor.advance(step);
+        let next = if let Some(scheme) = escape_scheme {
+            crate::vm::escape::advance_escape_scan_index(&cursor.data, cursor.pos, scheme)
+        } else {
+            cursor.pos + step
+        };
+        if next <= cursor.pos {
+            cursor.advance(step);
+        } else {
+            cursor.pos = next;
+        }
     }
     if cursor.pos == start {
         return Ok(Vec::new());
