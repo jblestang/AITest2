@@ -3362,6 +3362,13 @@ fn parse_ivc_primary(s: &str) -> Option<crate::schema::InputValueCalcExpression>
             unescaped,
         ));
     }
+    if let Some(name) = s.strip_prefix('$').map(str::trim) {
+        if !name.is_empty() && !name.contains(' ') {
+            return Some(crate::schema::InputValueCalcExpression::Variable(
+                name.to_string(),
+            ));
+        }
+    }
     parse_ivc_path_expr(s)
 }
 
@@ -3385,6 +3392,46 @@ fn parse_ivc_div_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression
     parse_ivc_unary_expr(s)
 }
 
+fn split_top_level_ivc_sub(s: &str) -> Option<alloc::vec::Vec<alloc::string::String>> {
+    let s = s.trim();
+    let mut parts = alloc::vec::Vec::new();
+    let mut current = alloc::string::String::new();
+    let mut depth = 0i32;
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        match ch {
+            '(' | '[' | '{' => {
+                depth += 1;
+                current.push(ch);
+                i += 1;
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                current.push(ch);
+                i += 1;
+            }
+            _ if depth == 0 && s[i..].starts_with(" - ") => {
+                parts.push(current.trim().to_string());
+                current.clear();
+                i += 3;
+            }
+            _ => {
+                current.push(ch);
+                i += 1;
+            }
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    if parts.len() <= 1 {
+        return None;
+    }
+    Some(parts)
+}
+
 fn parse_ivc_mul_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
     let s = s.trim();
     if let Some(parts) = split_top_level_ivc_op(s, '*') {
@@ -3397,16 +3444,32 @@ fn parse_ivc_mul_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression
     parse_ivc_div_expr(s)
 }
 
+fn parse_ivc_sub_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
+    let s = s.trim();
+    if let Some(parts) = split_top_level_ivc_sub(s) {
+        let mut left = parse_ivc_mul_expr(&parts[0])?;
+        for part in parts.iter().skip(1) {
+            let right = parse_ivc_mul_expr(part)?;
+            left = crate::schema::InputValueCalcExpression::Sub(alloc::vec![
+                left,
+                right,
+            ]);
+        }
+        return Some(left);
+    }
+    parse_ivc_mul_expr(s)
+}
+
 fn parse_ivc_add_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
     let s = s.trim();
     if let Some(parts) = split_top_level_ivc_op(s, '+') {
         let mut terms = alloc::vec::Vec::new();
         for part in parts {
-            terms.push(parse_ivc_mul_expr(&part)?);
+            terms.push(parse_ivc_sub_expr(&part)?);
         }
         return Some(crate::schema::InputValueCalcExpression::Add(terms));
     }
-    parse_ivc_mul_expr(s)
+    parse_ivc_sub_expr(s)
 }
 
 fn parse_input_value_calc_expression(value: &str) -> Option<crate::schema::InputValueCalcExpression> {

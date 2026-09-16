@@ -214,6 +214,20 @@ impl<'a> IrBuilder<'a> {
         root_name: &str,
         root_element: &GlobalElement,
     ) -> Result<u32> {
+        if dfdl_props_has_input_value_calc(&root_element.props) {
+            let pseudo = ElementDecl {
+                name: root_name.to_string(),
+                element_ref: None,
+                has_element_name_attr: true,
+                type_name: root_element.type_name.clone(),
+                type_xsd_qname: root_element.type_xsd_qname.clone(),
+                type_qname_scope: None,
+                props: root_element.props.clone(),
+                particle: None,
+                default_value: None,
+            };
+            validate_ivc_on_element_decl(&pseudo, self.schema, true)?;
+        }
         let root = if let Some(builtin) =
             builtin_for_element_type_name(&self.schema, &root_element.type_name)
         {
@@ -466,6 +480,7 @@ impl<'a> IrBuilder<'a> {
     ) -> Result<u32> {
         match particle {
             Particle::Element(element) => {
+                validate_ivc_on_element_decl(element, self.schema, false)?;
                 let element_props = dfdl_props_for_element_ref(self.schema, element);
                 if let Some(ref expr) = element_props.input_value_calc_expression {
                     validate_schema_ivc_expression_prefixes(expr, self.schema)?;
@@ -2109,16 +2124,34 @@ fn validate_input_value_calc_compile(
     Ok(())
 }
 
+fn ivc_path_prefix_is_known(schema: &SchemaDocument, prefix: &str) -> bool {
+    if schema.namespace_prefixes.contains_key(prefix) {
+        return true;
+    }
+    if prefix == "tns" && schema.target_namespace.is_some() {
+        return true;
+    }
+    matches!(prefix, "xs" | "xsd")
+}
+
 fn validate_schema_ivc_expression_prefixes(
     expr: &crate::schema::InputValueCalcExpression,
     schema: &SchemaDocument,
 ) -> Result<()> {
     use crate::schema::InputValueCalcExpression;
     match expr {
-        InputValueCalcExpression::Path { steps, .. } => {
+        InputValueCalcExpression::Path {
+            parent_root: false,
+            ..
+        } => {}
+        InputValueCalcExpression::Path {
+            parent_root: true,
+            steps,
+            ..
+        } => {
             for (prefix, _, _) in steps {
                 if let Some(p) = prefix {
-                    if !schema.namespace_prefixes.contains_key(p) {
+                    if !ivc_path_prefix_is_known(schema, p) {
                         return Err(SchemaError::InvalidProperty {
                             message: alloc::format!(
                                 "Schema Definition Error: The prefix `{p}` has no corresponding namespace declaration in the schema."
@@ -2136,7 +2169,9 @@ fn validate_schema_ivc_expression_prefixes(
             validate_schema_ivc_expression_prefixes(left, schema)?;
             validate_schema_ivc_expression_prefixes(right, schema)?;
         }
-        InputValueCalcExpression::Add(items) | InputValueCalcExpression::Mul(items) => {
+        InputValueCalcExpression::Add(items)
+        | InputValueCalcExpression::Sub(items)
+        | InputValueCalcExpression::Mul(items) => {
             for item in items {
                 validate_schema_ivc_expression_prefixes(item, schema)?;
             }
@@ -2144,7 +2179,60 @@ fn validate_schema_ivc_expression_prefixes(
         InputValueCalcExpression::StringOf(inner) => {
             validate_schema_ivc_expression_prefixes(inner, schema)?;
         }
-        _ => {}
+        InputValueCalcExpression::Variable(_)
+        | InputValueCalcExpression::Literal(_)
+        | InputValueCalcExpression::LiteralLexical(_) => {}
+    }
+    Ok(())
+}
+
+fn dfdl_props_has_input_value_calc(props: &DfdlProps) -> bool {
+    props.input_value_calc.is_some()
+        || props.input_value_calc_literal.is_some()
+        || props.input_value_calc_sibling.is_some()
+        || props.input_value_calc_segments.is_some()
+        || props.input_value_calc_path.is_some()
+        || props.input_value_calc_expression.is_some()
+}
+
+fn validate_format_has_no_input_value_calc(schema: &SchemaDocument) -> Result<()> {
+    if dfdl_props_has_input_value_calc(&schema.format_defaults.props) {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Property dfdl:inputValueCalc is not allowed on dfdl:format".into(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_ivc_on_element_decl(
+    element: &ElementDecl,
+    schema: &SchemaDocument,
+    is_global: bool,
+) -> Result<()> {
+    let props = dfdl_props_for_element_ref(schema, element);
+    if !dfdl_props_has_input_value_calc(&props) {
+        return Ok(());
+    }
+    if props.output_value_calc.is_some() || props.output_value_calc_conditional {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: Cannot have both dfdl:inputValueCalc and dfdl:outputValueCalc on the same element".into(),
+        }
+        .into());
+    }
+    if is_global {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: dfdl:inputValueCalc on global element declaration is not allowed".into(),
+        }
+        .into());
+    }
+    let min = element.props.occurs_min.unwrap_or(1);
+    let max = element.props.occurs_max;
+    if min == 0 || max.map(|m| m > 1).unwrap_or(false) {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: dfdl:inputValueCalc property is not allowed on optional or array elements".into(),
+        }
+        .into());
     }
     Ok(())
 }
@@ -2501,6 +2589,9 @@ fn validate_hex_binary_delimited_encoding(
 }
 
 fn validate_binary_delimited(kind: ValueKind, props: &IrProps) -> Result<()> {
+    if crate::ir::ir_props_has_input_value_calc(props) {
+        return Ok(());
+    }
     if props.representation == Representation::Binary
         && matches!(
             props.length_kind,
@@ -4230,6 +4321,7 @@ pub fn compile_named_with_tunables(
     crate::parse_unparse_policy::validate_parse_unparse_policy(schema, &root_name)?;
     crate::tunable_validate::validate_tunable_schema_requirements(schema, &root_name, &tunables)?;
     crate::schema_validate::validate_compiled_schema(schema, &root_name, &tunables)?;
+    validate_format_has_no_input_value_calc(schema)?;
     IrBuilder::new(schema, tunables)?.build(&root_name)
 }
 
@@ -4281,6 +4373,12 @@ fn intern_input_value_calc_expression(
                 .map(|e| intern_input_value_calc_expression(e, strings))
                 .collect(),
         ),
+        InputValueCalcExpression::Sub(items) => IrInputValueCalcExpression::Sub(
+            items
+                .iter()
+                .map(|e| intern_input_value_calc_expression(e, strings))
+                .collect(),
+        ),
         InputValueCalcExpression::Mul(items) => IrInputValueCalcExpression::Mul(
             items
                 .iter()
@@ -4324,6 +4422,9 @@ fn intern_input_value_calc_expression(
             alloc::boxed::Box::new(intern_input_value_calc_expression(left, strings)),
             alloc::boxed::Box::new(intern_input_value_calc_expression(right, strings)),
         ),
+        InputValueCalcExpression::Variable(name) => {
+            IrInputValueCalcExpression::Variable(strings.intern(name.clone()))
+        }
     }
 }
 

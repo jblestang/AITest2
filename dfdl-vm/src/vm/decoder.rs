@@ -3773,6 +3773,8 @@ impl<'a> Decoder<'a> {
                             siblings: Some(&sib_snap),
                             ancestor_frames: Some(ancestor_frames.as_slice()),
                             root_element: self.ctx.program.root_element.as_str(),
+                            define_variables: &self.ctx.program.variables,
+                            runtime_variables: &self.runtime_variables.borrow(),
                         },
                         self.ctx.strings(),
                         &self.ctx.program.tunables,
@@ -4479,6 +4481,8 @@ impl<'a> Decoder<'a> {
                                 siblings,
                                 ancestor_frames: None,
                                 root_element: "",
+                                define_variables: &BTreeMap::new(),
+                                runtime_variables: &BTreeMap::new(),
                             },
                             strings,
                             &self.ctx.program.tunables,
@@ -5563,6 +5567,8 @@ fn eval_input_value_calc_concat(
                         siblings,
                         ancestor_frames: None,
                         root_element: root_element,
+                        define_variables: &BTreeMap::new(),
+                        runtime_variables: &BTreeMap::new(),
                     },
                     strings,
                     tunables,
@@ -6179,6 +6185,25 @@ struct IvcEvalCtx<'a> {
     siblings: Option<&'a BTreeMap<String, SiblingState>>,
     ancestor_frames: Option<&'a [BTreeMap<String, SiblingState>]>,
     root_element: &'a str,
+    define_variables: &'a BTreeMap<String, String>,
+    runtime_variables: &'a BTreeMap<String, String>,
+}
+
+fn resolve_ivc_variable(name: &str, ctx: IvcEvalCtx<'_>) -> Result<String> {
+    if let Some(text) = ctx.runtime_variables.get(name) {
+        return Ok(text.clone());
+    }
+    if let Some(text) = ctx.define_variables.get(name) {
+        return Ok(text.clone());
+    }
+    Err(VmError::InvalidValue {
+        message: alloc::format!("Schema Definition Error: variable `{name}` is not defined"),
+    }
+    .into())
+}
+
+fn ivc_target_uses_float_math(kind: ValueKind) -> bool {
+    matches!(kind, ValueKind::Float | ValueKind::Double)
 }
 
 fn parse_ivc_lexical_for_kind(
@@ -6234,6 +6259,15 @@ fn eval_input_value_calc_expression(
     use crate::ir::IrInputValueCalcExpression;
     match expr {
         IrInputValueCalcExpression::Add(terms) => {
+            if ivc_target_uses_float_math(target_kind) {
+                let mut sum = 0.0f64;
+                for term in terms {
+                    sum += eval_input_value_calc_to_f64(
+                        term, ctx, strings, tunables, target_kind, target_props,
+                    )?;
+                }
+                return ivc_f64_to_value(sum, target_kind);
+            }
             let mut sum = 0i64;
             for term in terms {
                 sum = sum.saturating_add(eval_input_value_calc_to_i64(
@@ -6242,7 +6276,40 @@ fn eval_input_value_calc_expression(
             }
             Ok(DfdlValue::Integer(sum.to_string()))
         }
+        IrInputValueCalcExpression::Sub(items) => {
+            if items.len() != 2 {
+                return Err(VmError::InvalidValue {
+                    message: "Schema Definition Error: expression evaluation error: invalid subtraction".into(),
+                }
+                .into());
+            }
+            if ivc_target_uses_float_math(target_kind) {
+                let a = eval_input_value_calc_to_f64(
+                    &items[0], ctx, strings, tunables, target_kind, target_props,
+                )?;
+                let b = eval_input_value_calc_to_f64(
+                    &items[1], ctx, strings, tunables, target_kind, target_props,
+                )?;
+                return ivc_f64_to_value(a - b, target_kind);
+            }
+            let a = eval_input_value_calc_to_i64(
+                &items[0], ctx, strings, tunables, target_kind, target_props,
+            )?;
+            let b = eval_input_value_calc_to_i64(
+                &items[1], ctx, strings, tunables, target_kind, target_props,
+            )?;
+            Ok(DfdlValue::Integer((a - b).to_string()))
+        }
         IrInputValueCalcExpression::Mul(terms) => {
+            if ivc_target_uses_float_math(target_kind) {
+                let mut product = 1.0f64;
+                for term in terms {
+                    product *= eval_input_value_calc_to_f64(
+                        term, ctx, strings, tunables, target_kind, target_props,
+                    )?;
+                }
+                return ivc_f64_to_value(product, target_kind);
+            }
             let mut product = 1i64;
             for term in terms {
                 product = product.saturating_mul(eval_input_value_calc_to_i64(
@@ -6252,6 +6319,21 @@ fn eval_input_value_calc_expression(
             Ok(DfdlValue::Integer(product.to_string()))
         }
         IrInputValueCalcExpression::Div(left, right) => {
+            if ivc_target_uses_float_math(target_kind) {
+                let a = eval_input_value_calc_to_f64(
+                    left, ctx, strings, tunables, target_kind, target_props,
+                )?;
+                let b = eval_input_value_calc_to_f64(
+                    right, ctx, strings, tunables, target_kind, target_props,
+                )?;
+                if b == 0.0 {
+                    return Err(VmError::InvalidValue {
+                        message: "divide by zero".into(),
+                    }
+                    .into());
+                }
+                return ivc_f64_to_value(a / b, target_kind);
+            }
             let a = eval_input_value_calc_to_i64(
                 left, ctx, strings, tunables, target_kind, target_props,
             )?;
@@ -6298,6 +6380,19 @@ fn eval_input_value_calc_expression(
             }
             parse_ivc_lexical_for_kind(&text, cast_kind, &cast_props, strings)
         }
+        IrInputValueCalcExpression::Variable(id) => {
+            let name = strings.get(*id)?;
+            let text = resolve_ivc_variable(name, ctx)?;
+            parse_ivc_lexical_for_kind(&text, target_kind, target_props, strings)
+        }
+    }
+}
+
+fn ivc_f64_to_value(value: f64, kind: ValueKind) -> Result<DfdlValue> {
+    match kind {
+        ValueKind::Float => Ok(DfdlValue::Float(value as f32)),
+        ValueKind::Double => Ok(DfdlValue::Double(value)),
+        _ => Ok(DfdlValue::Integer(value.to_string())),
     }
 }
 
@@ -6335,6 +6430,31 @@ fn eval_input_value_calc_to_i64(
         }
         .into()
     })
+}
+
+fn eval_input_value_calc_to_f64(
+    expr: &crate::ir::IrInputValueCalcExpression,
+    ctx: IvcEvalCtx<'_>,
+    strings: &crate::ir::StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
+    target_kind: ValueKind,
+    target_props: &IrProps,
+) -> Result<f64> {
+    let value = eval_input_value_calc_expression(
+        expr, ctx, strings, tunables, target_kind, target_props,
+    )?;
+    match value {
+        DfdlValue::Float(v) => Ok(f64::from(v)),
+        DfdlValue::Double(v) => Ok(v),
+        other => other.as_i64().map(|n| n as f64).ok_or_else(|| {
+            VmError::InvalidValue {
+                message: alloc::format!(
+                    "Schema Definition Error: expression evaluation error: non-numeric value"
+                ),
+            }
+            .into()
+        }),
+    }
 }
 
 fn eval_ivc_path_steps(

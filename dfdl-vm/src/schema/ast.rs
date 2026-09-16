@@ -406,6 +406,7 @@ pub enum IvcXsCast {
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputValueCalcExpression {
     Add(alloc::vec::Vec<InputValueCalcExpression>),
+    Sub(alloc::vec::Vec<InputValueCalcExpression>),
     Mul(alloc::vec::Vec<InputValueCalcExpression>),
     Div(
         alloc::boxed::Box<InputValueCalcExpression>,
@@ -426,6 +427,8 @@ pub enum InputValueCalcExpression {
         kind: IvcXsCast,
         inner: alloc::boxed::Box<InputValueCalcExpression>,
     },
+    /// `$varName` or `$prefix:varName` from defineVariable.
+    Variable(alloc::string::String),
 }
 
 /// One segment of `{ fn:concat(...) }` in `dfdl:inputValueCalc`.

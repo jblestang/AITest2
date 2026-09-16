@@ -115,9 +115,19 @@ pub enum IrIvcXsCast {
     String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+pub fn ir_props_has_input_value_calc(props: &IrProps) -> bool {
+    props.input_value_calc.is_some()
+        || props.input_value_calc_literal.is_some()
+        || props.input_value_calc_sibling.is_some()
+        || props.input_value_calc_segments.is_some()
+        || props.input_value_calc_path.is_some()
+        || props.input_value_calc_expression.is_some()
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum IrInputValueCalcExpression {
     Add(alloc::vec::Vec<IrInputValueCalcExpression>),
+    Sub(alloc::vec::Vec<IrInputValueCalcExpression>),
     Mul(alloc::vec::Vec<IrInputValueCalcExpression>),
     Div(
         alloc::boxed::Box<IrInputValueCalcExpression>,
@@ -134,6 +144,7 @@ pub enum IrInputValueCalcExpression {
         kind: IrIvcXsCast,
         inner: alloc::boxed::Box<IrInputValueCalcExpression>,
     },
+    Variable(StringId),
 }
 
 #[derive(Debug, Clone, PartialEq)]

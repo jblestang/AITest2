@@ -651,6 +651,9 @@ pub fn validate_length_facets_for_type(
     }
 
     if props.length_kind == LengthKind::Implicit && length_ok {
+        if crate::ir::ir_props_has_input_value_calc(props) {
+            return Ok(());
+        }
         if has_length {
             return Ok(());
         }
