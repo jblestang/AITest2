@@ -193,34 +193,70 @@ fn escape_block_field(
     if start.is_empty() || end.is_empty() {
         return input.to_string();
     }
-    let inner = escape_block_interior(input, scheme, markup);
-    if inner.starts_with(start) && inner.ends_with(end) {
+    let needs_wrap = block_field_needs_wrap(input, scheme, markup);
+    let interior_markup = block_interior_markup_only(scheme);
+    let interior_refs: alloc::vec::Vec<&str> =
+        interior_markup.iter().map(|s| s.as_str()).collect();
+    let inner = escape_block_interior(input, scheme, &interior_refs, needs_wrap);
+    if inner.starts_with(start) && inner.ends_with(end) && !needs_wrap {
         return inner;
     }
-    let needs_wrap = inner != input
-        || markup.iter().any(|m| !m.is_empty() && input.contains(m))
-        || (!start.is_empty() && input.contains(start))
-        || (!end.is_empty() && input.contains(end))
-        || input_contains_extra_escaped(input, &scheme.extra_escaped_characters);
     if !needs_wrap {
         return inner;
     }
     alloc::format!("{start}{inner}{end}")
 }
 
-fn escape_block_interior(input: &str, scheme: &EscapeSchemeDef, markup: &[&str]) -> alloc::string::String {
+fn block_interior_markup_only(scheme: &EscapeSchemeDef) -> alloc::vec::Vec<alloc::string::String> {
+    let mut out = alloc::vec::Vec::new();
+    if let Some(s) = scheme.escape_block_start.as_deref() {
+        if !s.is_empty() {
+            out.push(s.to_string());
+        }
+    }
+    if let Some(s) = scheme.escape_block_end.as_deref() {
+        if !s.is_empty() {
+            out.push(s.to_string());
+        }
+    }
+    out
+}
+
+fn block_field_needs_wrap(input: &str, scheme: &EscapeSchemeDef, markup: &[&str]) -> bool {
     let start = scheme.escape_block_start.as_deref().unwrap_or("");
     let end = scheme.escape_block_end.as_deref().unwrap_or("");
-    let body = if !start.is_empty()
-        && !end.is_empty()
-        && input.starts_with(start)
-        && input.ends_with(end)
-        && input.len() >= start.len() + end.len()
-    {
-        &input[start.len()..input.len() - end.len()]
-    } else {
-        input
-    };
+    if markup.iter().any(|m| !m.is_empty() && input.contains(m)) {
+        return true;
+    }
+    if input_contains_extra_escaped(input, &scheme.extra_escaped_characters) {
+        return true;
+    }
+    if !start.is_empty() && input.contains(start) {
+        return true;
+    }
+    if !end.is_empty() && input.contains(end) {
+        if input.starts_with(end) {
+            return false;
+        }
+        if input.ends_with(end) && input.len() > end.len() {
+            return true;
+        }
+        if !input.ends_with(end) {
+            return true;
+        }
+    }
+    false
+}
+
+fn escape_block_interior(
+    input: &str,
+    scheme: &EscapeSchemeDef,
+    markup: &[&str],
+    will_wrap: bool,
+) -> alloc::string::String {
+    let start = scheme.escape_block_start.as_deref().unwrap_or("");
+    let end = scheme.escape_block_end.as_deref().unwrap_or("");
+    let body = input;
     let ee = scheme
         .escape_escape_character
         .as_deref()
@@ -233,17 +269,38 @@ fn escape_block_interior(input: &str, scheme: &EscapeSchemeDef, markup: &[&str])
     let mut i = 0usize;
     while i < bytes.len() {
         let mut matched = false;
-        if !start.is_empty() && i + start_b.len() <= bytes.len() && &bytes[i..i + start_b.len()] == start_b {
-            if let Some(e) = ee_bytes {
+        if !start.is_empty() && i + start_b.len() <= bytes.len() && &bytes[i..i + start_b.len()] == start_b
+        {
+            if i == 0 {
+                out.extend_from_slice(start_b);
+                i += start_b.len();
+                matched = true;
+            } else if let Some(e) = ee_bytes {
                 out.extend_from_slice(e);
+                out.extend_from_slice(start_b);
+                i += start_b.len();
+                matched = true;
+            } else {
+                out.extend_from_slice(start_b);
+                i += start_b.len();
+                matched = true;
             }
-            out.extend_from_slice(start_b);
-            i += start_b.len();
-            matched = true;
         } else if !end.is_empty() && i + end_b.len() <= bytes.len() && &bytes[i..i + end_b.len()] == end_b
         {
-            if let Some(e) = ee_bytes {
-                out.extend_from_slice(e);
+            let at_suffix = i + end_b.len() == bytes.len();
+            let escape_end = if i == 0 && !will_wrap {
+                false
+            } else if at_suffix && will_wrap {
+                true
+            } else if !at_suffix {
+                true
+            } else {
+                false
+            };
+            if escape_end {
+                if let Some(e) = ee_bytes {
+                    out.extend_from_slice(e);
+                }
             }
             out.extend_from_slice(end_b);
             i += end_b.len();

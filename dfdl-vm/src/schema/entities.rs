@@ -1605,6 +1605,40 @@ pub fn validate_nil_value_compile(
     Ok(())
 }
 
+/// Compile-time check: each whitespace-separated entry must expand to exactly one character.
+pub fn validate_extra_escaped_characters_property(raw: &str) -> Result<(), String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.starts_with('{') {
+        return Ok(());
+    }
+    let tokens: alloc::vec::Vec<alloc::string::String> =
+        if let Some(alts) = split_entity_and_literal_alternatives(trimmed) {
+            alts
+        } else {
+            trimmed
+                .split_whitespace()
+                .map(|t| unescape_dfdl_delimiter_alt(t))
+                .collect()
+        };
+    for token in tokens {
+        let t = token.trim();
+        if t.contains("#WSP") || t.contains("#NL") && t.contains('*') || t.contains("%[") {
+            return Err("Invalid DFDL Entity".into());
+        }
+        if t.starts_with("%#r") {
+            return Err("Byte Entity not allowed".into());
+        }
+        let expanded = expand_entities_str(t);
+        if expanded.chars().count() != 1 {
+            return Err(
+                "extraEscapedCharacters property values must be strings of exactly 1 character"
+                    .into(),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Parse `dfdl:extraEscapedCharacters` into single-character entries (whitespace-separated tokens).
 pub fn extra_escaped_characters_from_property(raw: &str) -> alloc::vec::Vec<char> {
     let trimmed = raw.trim();

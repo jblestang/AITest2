@@ -2318,6 +2318,7 @@ impl<'a> XsdParser<'a> {
         let scheme_name = attrs.get("name").cloned();
         self.reader.skip_insignificant_ws()?;
         let mut scheme = EscapeSchemeDef::default();
+        let mut saw_escape_scheme_child = false;
         loop {
             self.reader.skip_insignificant_ws()?;
             match self.reader.peek()? {
@@ -2331,6 +2332,7 @@ impl<'a> XsdParser<'a> {
                     let child_attrs = self.reader.take_start_attributes()?;
                     if local == "escapeScheme" {
                         scheme = escape_scheme_from_attrs(&child_attrs);
+                        saw_escape_scheme_child = true;
                         self.reader.skip_current_subtree()?;
                     } else {
                         self.skip_element_body(&local)?;
@@ -2353,10 +2355,26 @@ impl<'a> XsdParser<'a> {
                 }
             }
         }
-        if let Some(name) = scheme_name {
-            let key = format_storage_key(&name, self.doc.target_namespace.as_deref());
-            self.doc.named_escape_schemes.insert(key, scheme);
+        if !saw_escape_scheme_child {
+            return Err(crate::error::SchemaError::InvalidProperty {
+                message: "Schema Definition Error: The content of element 'dfdl:defineEscapeScheme' is not complete".into(),
+            }
+            .into());
         }
+        let Some(name) = scheme_name else {
+            return Err(crate::error::SchemaError::InvalidProperty {
+                message: "Schema Definition Error: Attribute 'name' must appear on element defineEscapeScheme".into(),
+            }
+            .into());
+        };
+        let key = format_storage_key(&name, self.doc.target_namespace.as_deref());
+        if self.doc.named_escape_schemes.contains_key(&key) {
+            return Err(crate::error::SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: More than one definition for name: {name}"),
+            }
+            .into());
+        }
+        self.doc.named_escape_schemes.insert(key, scheme);
         Ok(())
     }
 }
@@ -5411,6 +5429,12 @@ fn props_from_attrs_with_variables(
             }
             "choiceDispatchKey" => apply_choice_dispatch_key_parse(&mut props, value),
             "choiceBranchKey" => props.choice_branch_key = Some(value.clone()),
+            "defineEscapeScheme" => {
+                return Err(crate::error::SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: defineEscapeScheme must not appear as a property on an element declaration".into(),
+                }
+                .into());
+            }
             _ => {}
         }
     }

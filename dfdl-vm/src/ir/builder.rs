@@ -1683,7 +1683,16 @@ fn finalize_element_props(
     if let Some(ref scheme) = ir.escape_scheme {
         use crate::schema::{
             EscapeKind, validate_escape_block_property, validate_escape_character_property,
+            validate_extra_escaped_characters_property,
         };
+        if let Some(raw) = scheme.extra_escaped_characters_raw.as_deref() {
+            if let Err(msg) = validate_extra_escaped_characters_property(raw) {
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!("Schema Definition Error: {msg}"),
+                }
+                .into());
+            }
+        }
         match scheme.escape_kind {
             EscapeKind::EscapeBlock => {
                 for raw in [

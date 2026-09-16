@@ -834,15 +834,16 @@ fn validate_escape_separator_distinct(schema: &SchemaDocument, root: &str) -> Re
                 continue;
             };
             if scheme.escape_kind == crate::schema::EscapeKind::EscapeCharacter {
-                if scheme
-                    .escape_character
-                    .as_deref()
-                    .is_some_and(|c| c == sep)
-                {
+                let Some(esc) = scheme.escape_character.as_deref().filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                let sep_expanded = crate::schema::expand_entities_str(sep);
+                let conflicts = crate::schema::delimiter_alternatives(&sep_expanded)
+                    .into_iter()
+                    .any(|alt| alt.starts_with(esc) || alt == esc);
+                if conflicts {
                     return Err(SchemaError::InvalidProperty {
-                        message: alloc::format!(
-                            "Schema Definition Error: escape character `{sep}` cannot be the same as terminating markup `{sep}`"
-                        ),
+                        message: "Schema Definition Error: dfdl:terminator and dfdl:separator properties may not begin with the dfdl:escapeCharacter property value.".into(),
                     });
                 }
             }
