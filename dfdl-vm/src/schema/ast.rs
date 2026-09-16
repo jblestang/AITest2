@@ -119,6 +119,7 @@ pub struct DfdlProps {
             Option<alloc::string::String>,
             alloc::string::String,
             Option<u32>,
+            bool,
         )>,
     >,
     /// Literal dispatch key from `{ xs:string('…') }` in choiceDispatchKey.
@@ -185,6 +186,7 @@ pub struct DfdlProps {
             Option<alloc::string::String>,
             alloc::string::String,
             Option<u32>,
+            bool,
         )>,
     >,
     /// `dfdl:hiddenGroupRef` on a sequence (inline hidden model group).
@@ -220,6 +222,7 @@ pub struct DfdlProps {
             Option<alloc::string::String>,
             alloc::string::String,
             Option<u32>,
+            bool,
         )>,
     >,
     /// `{ ../ex:a/b + N }` on outputValueCalc.
@@ -228,6 +231,7 @@ pub struct DfdlProps {
             Option<alloc::string::String>,
             alloc::string::String,
             Option<u32>,
+            bool,
         )>,
     >,
     pub output_value_calc_path_addend: Option<i64>,
@@ -421,6 +425,7 @@ pub enum InputValueCalcExpression {
             Option<alloc::string::String>,
             alloc::string::String,
             Option<u32>,
+            bool,
         )>,
     },
     StringOf(alloc::boxed::Box<InputValueCalcExpression>),
@@ -448,6 +453,7 @@ pub enum InputValueCalcSegment {
         Option<alloc::string::String>,
         alloc::string::String,
         Option<u32>,
+        bool,
     )>),
 }
 
@@ -500,6 +506,8 @@ pub enum OutputValueCalc {
     InfosetPathAddend,
     /// `{ dfdl:valueLength(../a/b, 'bytes') + N }` — encoded length of path target.
     ValueLengthInfosetPath(LengthUnits, i64),
+    /// `{ dfdl:occursIndex() (+|*) ../path (+ N)? }` — path in [`DfdlProps::output_value_calc_path`].
+    OccursIndexPath { multiply: bool },
     /// `{ if (dfdl:occursIndex() lt fn:count(..)) then 1 else 0 }` on repeat indicators (GRI/FRI).
     RepeatIndicatorFromParentCount,
 }

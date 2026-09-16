@@ -3193,6 +3193,7 @@ fn parse_ivc_path_steps(
         Option<alloc::string::String>,
         alloc::string::String,
         Option<u32>,
+        bool,
     )>,
 )> {
     let s = s.trim();
@@ -3599,6 +3600,7 @@ fn parse_fn_count_path(
         Option<alloc::string::String>,
         alloc::string::String,
         Option<u32>,
+        bool,
     )>,
 > {
     let inner = inner.trim();
@@ -3617,21 +3619,79 @@ fn parse_fn_count_path(
     Some(steps)
 }
 
-fn parse_infoset_path_step(step: &str) -> (Option<alloc::string::String>, alloc::string::String, Option<u32>) {
-    let (head, index) = if let Some(open) = step.find('[') {
-        let idx = step[open + 1..]
-            .strip_suffix(']')
-            .and_then(|s| s.parse::<u32>().ok());
-        (&step[..open], idx)
+type InfosetPathStepParsed = (
+    Option<alloc::string::String>,
+    alloc::string::String,
+    Option<u32>,
+    bool,
+);
+
+fn parse_infoset_path_step(step: &str) -> InfosetPathStepParsed {
+    let (head, index, index_from_occurs) = if let Some(open) = step.find('[') {
+        let bracket = step[open + 1..].strip_suffix(']').unwrap_or("");
+        let bracket_trim = bracket.trim();
+        if bracket_trim == "dfdl:occursIndex()" {
+            (&step[..open], None, true)
+        } else {
+            let idx = bracket_trim.parse::<u32>().ok();
+            (&step[..open], idx, false)
+        }
     } else {
-        (step, None)
+        (step, None, false)
     };
     let (prefix, local) = if let Some((p, l)) = head.split_once(':') {
         (Some(p.to_string()), l.to_string())
     } else {
         (None, head.to_string())
     };
-    (prefix, local, index)
+    (prefix, local, index, index_from_occurs)
+}
+
+fn parse_output_value_calc_occurs_index(
+    value: &str,
+) -> Option<(
+    OutputValueCalc,
+    alloc::vec::Vec<InfosetPathStepParsed>,
+    Option<i64>,
+)> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let (multiply, path_part) = if let Some(rest) = inner.strip_prefix("dfdl:occursIndex() * ") {
+        (true, rest.trim())
+    } else if let Some(rest) = inner.strip_prefix("dfdl:occursIndex() + ") {
+        (false, rest.trim())
+    } else {
+        return None;
+    };
+    let (path_expr, addend) = match path_part.rsplit_once('+') {
+        Some((left, right)) if right.trim().parse::<i64>().is_ok() && !left.contains('[') => {
+            (left.trim(), Some(right.trim().parse::<i64>().ok()?))
+        }
+        _ => (path_part, Some(0)),
+    };
+    let mut rel = path_expr;
+    while rel.starts_with("../") {
+        rel = rel.strip_prefix("../").unwrap_or(rel);
+    }
+    if rel.is_empty() {
+        return Some((
+            OutputValueCalc::OccursIndexPath { multiply },
+            alloc::vec::Vec::new(),
+            addend,
+        ));
+    }
+    let mut steps = alloc::vec::Vec::new();
+    for step in rel.split('/').filter(|s| !s.is_empty()) {
+        steps.push(parse_infoset_path_step(step));
+    }
+    Some((
+        OutputValueCalc::OccursIndexPath { multiply },
+        steps,
+        addend,
+    ))
 }
 
 fn parse_byte_order_literal(order: &str) -> Option<ByteOrder> {
@@ -3671,6 +3731,7 @@ fn parse_input_value_calc_relative_path(
         Option<alloc::string::String>,
         alloc::string::String,
         Option<u32>,
+        bool,
     )>,
 > {
     let trimmed = value.trim();
@@ -3696,6 +3757,7 @@ fn parse_output_value_calc_value_length_path(
         Option<alloc::string::String>,
         alloc::string::String,
         Option<u32>,
+        bool,
     )>,
     LengthUnits,
     i64,
@@ -3733,6 +3795,7 @@ fn parse_output_value_calc_infoset_path(
         Option<alloc::string::String>,
         alloc::string::String,
         Option<u32>,
+        bool,
     )>,
     i64,
 )> {
@@ -4753,6 +4816,11 @@ fn props_from_attrs_with_variables(
                     props.output_value_calc = Some(OutputValueCalc::InfosetPathAddend);
                     props.output_value_calc_path = Some(steps);
                     props.output_value_calc_path_addend = Some(addend);
+                } else if let Some((calc, steps, addend)) = parse_output_value_calc_occurs_index(value)
+                {
+                    props.output_value_calc = Some(calc);
+                    props.output_value_calc_path = Some(steps);
+                    props.output_value_calc_path_addend = addend;
                 } else if let Some(calc) = parse_output_value_calc(value) {
                     props.output_value_calc = Some(calc.0);
                     props.output_value_calc_sibling = calc.1;

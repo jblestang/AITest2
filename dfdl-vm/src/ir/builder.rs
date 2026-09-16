@@ -2156,7 +2156,7 @@ fn validate_schema_ivc_expression_prefixes(
             steps,
             ..
         } => {
-            for (prefix, _, _) in steps {
+            for (prefix, _, _, _) in steps {
                 if let Some(p) = prefix {
                     if !ivc_path_prefix_is_known(schema, p) {
                         return Err(SchemaError::InvalidProperty {
@@ -4338,15 +4338,17 @@ fn intern_input_path_steps(
         Option<alloc::string::String>,
         alloc::string::String,
         Option<u32>,
+        bool,
     )],
     strings: &mut StringPool,
 ) -> alloc::vec::Vec<crate::ir::IrInputPathStep> {
     steps
         .iter()
-        .map(|(prefix, local, index)| crate::ir::IrInputPathStep {
+        .map(|(prefix, local, index, index_from_occurs)| crate::ir::IrInputPathStep {
             prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
             local: strings.intern(local.clone()),
             index: *index,
+            index_from_occurs: *index_from_occurs,
         })
         .collect()
 }
@@ -4364,6 +4366,7 @@ fn intern_input_path_steps_legacy(
             prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
             local: strings.intern(local.clone()),
             index: None,
+            index_from_occurs: false,
         })
         .collect()
 }

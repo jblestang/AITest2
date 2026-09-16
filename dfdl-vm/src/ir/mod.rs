@@ -86,6 +86,8 @@ pub struct IrInputPathStep {
     pub local: StringId,
     /// 1-based array index from `name[n]` in an infoset path step.
     pub index: Option<u32>,
+    /// `name[dfdl:occursIndex()]` — use the current enclosing array occurrence index.
+    pub index_from_occurs: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

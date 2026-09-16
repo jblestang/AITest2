@@ -127,6 +127,7 @@ impl<'a> Encoder<'a> {
                     bit_count,
                     &meta,
                     Some(&map),
+                    &[],
                 )?;
             }
             _ => {
@@ -261,6 +262,7 @@ impl<'a> Encoder<'a> {
                         bit_count,
                         &seq.meta,
                         Some(&scope_lookup),
+                        children,
                     )?;
                     wrote_particle = true;
                 }
@@ -615,6 +617,7 @@ impl<'a> Encoder<'a> {
         bit_count: &mut u8,
         seq_meta: &crate::value::SequenceMeta,
         encode_scope: Option<&BTreeMap<String, DfdlValue>>,
+        sequence_children: &[u32],
     ) -> Result<()> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element {
@@ -625,7 +628,14 @@ impl<'a> Encoder<'a> {
             } => {
                 let key = self.ctx.strings().get(*name)?;
                 let field_delim = seq_meta.field_delimiters.get(key);
-                let mut value = match self.element_encode_value(*kind, props, key, map) {
+                let value_map = merged_encode_lookup(encode_scope, map);
+                let mut value = match self.element_encode_value(
+                    *kind,
+                    props,
+                    key,
+                    &value_map,
+                    sequence_children,
+                ) {
                     Ok(v) => v,
                     Err(Error::Vm(VmError::MissingField { .. })) if props.occurs_min == 0 => {
                         return Ok(());
@@ -822,6 +832,7 @@ impl<'a> Encoder<'a> {
                         bit_count,
                         seq_meta,
                         Some(&scope_lookup),
+                        children,
                     )?;
                     wrote_particle = true;
                 }
@@ -1012,16 +1023,20 @@ impl<'a> Encoder<'a> {
         props: &IrProps,
         key: &str,
         map: &BTreeMap<String, DfdlValue>,
+        sequence_children: &[u32],
     ) -> Result<DfdlValue> {
         if props.output_value_calc.is_some() {
             let local = crate::xml_util::local_name_str(key);
-            if let Some(k) = map_has_local_key(map, local) {
-                return Ok(map.get(&k).cloned().unwrap());
+            if !ovc_deferred_to_encode_occurrence(props) {
+                if let Some(k) = map_has_local_key(map, local) {
+                    return Ok(map.get(&k).cloned().unwrap());
+                }
+                if let Some(v) = map.get(key) {
+                    return Ok(v.clone());
+                }
             }
-            if let Some(v) = map.get(key) {
-                return Ok(v.clone());
-            }
-            let computed = eval_output_value_calc(self, props, map, &[], props)?;
+            let computed =
+                eval_output_value_calc(self, props, map, sequence_children, props)?;
             return Ok(ovc_value_for_element_kind(kind, computed));
         }
         if props.hidden {
@@ -1403,6 +1418,13 @@ fn collect_ovc_elements_in_subtree(
     }
 }
 
+fn ovc_deferred_to_encode_occurrence(props: &IrProps) -> bool {
+    matches!(
+        props.output_value_calc,
+        Some(OutputValueCalc::OccursIndexPath { .. })
+    )
+}
+
 fn precompute_output_values<'a>(
     enc: &Encoder<'a>,
     children: &[u32],
@@ -1417,6 +1439,9 @@ fn precompute_output_values<'a>(
     for _pass in 0..max_passes {
         let mut progress = false;
         for entry in &ovc_entries {
+            if ovc_deferred_to_encode_occurrence(&entry.props) {
+                continue;
+            }
             let computed = match eval_output_value_calc(
                 enc,
                 &entry.props,
@@ -1440,6 +1465,9 @@ fn precompute_output_values<'a>(
         }
     }
     for entry in &ovc_entries {
+        if ovc_deferred_to_encode_occurrence(&entry.props) {
+            continue;
+        }
         if effective.get(&entry.name_key).is_none() {
             let elem = &entry.local;
             return Err(VmError::InvalidValue {
@@ -1528,6 +1556,49 @@ fn root_sequence_children(enc: &Encoder<'_>) -> Result<Vec<u32>> {
     }
 }
 
+fn apply_ovc_path_step_index(
+    enc: &Encoder<'_>,
+    step: &crate::ir::IrInputPathStep,
+    local: &str,
+    value: DfdlValue,
+) -> Result<DfdlValue> {
+    match value {
+        DfdlValue::Array(items) => {
+            if step.index_from_occurs {
+                let (idx, _) = enc.array_occurrence_for_ovc.get().ok_or_else(|| VmError::InvalidValue {
+                    message: alloc::format!(
+                        "outputValueCalc path `{local}[dfdl:occursIndex()]` missing occurrence context"
+                    ),
+                })?;
+                return items
+                    .get(idx.saturating_sub(1))
+                    .cloned()
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: alloc::format!(
+                            "outputValueCalc path missing `{local}[dfdl:occursIndex()]`"
+                        ),
+                    }
+                    .into());
+            }
+            if let Some(n) = step.index {
+                return items
+                    .get((n as usize).saturating_sub(1))
+                    .cloned()
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: alloc::format!("outputValueCalc path missing `{local}[{n}]`"),
+                    }
+                    .into());
+            }
+        }
+        other if !step.index_from_occurs && step.index.is_none() => return Ok(other),
+        _ => {}
+    }
+    Err(VmError::InvalidValue {
+        message: alloc::format!("outputValueCalc path invalid index on `{local}`"),
+    }
+    .into())
+}
+
 fn resolve_output_value_calc_path_value(
     enc: &Encoder<'_>,
     steps: &[crate::ir::IrInputPathStep],
@@ -1558,36 +1629,49 @@ fn resolve_output_value_calc_path_value(
     } else {
         resolve_path_step_value(enc, scope, map, first_local)?
     };
+    if first.index.is_some() || first.index_from_occurs {
+        value = apply_ovc_path_step_index(enc, first, first_local, value)?;
+    }
+    if steps.len() == 1 {
+        return Ok(value);
+    }
+    let root_scope = root_sequence_children(enc)?;
+    let mut path_scope_vec = if let Some(b_id) =
+        find_particle_by_local_in_children(enc, &root_scope, first_local)?
+    {
+        inner_sequence_children_of_element(enc, b_id).unwrap_or_else(|| scope.to_vec())
+    } else {
+        scope.to_vec()
+    };
+    let mut path_scope = path_scope_vec.as_slice();
     for step in steps.iter().skip(1) {
         let local = strings.get(step.local)?;
         value = match value {
             DfdlValue::Sequence(seq) => {
+                let step_map = {
+                    let mut merged = map.clone();
+                    for (k, v) in &seq.fields {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                    merged
+                };
                 let child_val = if let Some(k) = map_has_local_key(&seq.fields, local) {
                     seq.fields.get(&k).cloned()
-                } else if let Ok(Some(cid)) = find_particle_by_local_in_children(enc, scope, local) {
-                    synthesize_element_subtree_value(enc, cid, map, scope).ok()
+                } else if let Ok(v) = resolve_path_step_value(enc, path_scope, &step_map, local) {
+                    Some(v)
+                } else if let Ok(Some(cid)) = find_particle_by_local_in_children(enc, path_scope, local)
+                {
+                    synthesize_element_subtree_value(enc, cid, &step_map, path_scope).ok()
                 } else {
                     None
                 };
                 let child = child_val.as_ref().ok_or_else(|| VmError::InvalidValue {
                     message: alloc::format!("outputValueCalc path missing `{local}`"),
                 })?;
-                match (step.index, child) {
-                    (Some(n), DfdlValue::Array(items)) => items
-                        .get((n as usize).saturating_sub(1))
-                        .cloned()
-                        .ok_or_else(|| VmError::InvalidValue {
-                            message: alloc::format!("outputValueCalc path missing `{local}[{n}]`"),
-                        })?,
-                    (None, v) => v.clone(),
-                    _ => {
-                        return Err(VmError::InvalidValue {
-                            message: alloc::format!(
-                                "outputValueCalc path invalid index on `{local}`"
-                            ),
-                        }
-                        .into());
-                    }
+                if step.index.is_some() || step.index_from_occurs {
+                    apply_ovc_path_step_index(enc, step, local, child.clone())?
+                } else {
+                    child.clone()
                 }
             }
             _ => {
@@ -1609,6 +1693,16 @@ fn eval_output_infoset_path(
 ) -> Result<i64> {
     let value = resolve_output_value_calc_path_value(enc, steps, sequence_children, map)?;
     numeric_from_dfdl_value(&value)
+}
+
+fn inner_sequence_children_of_element(enc: &Encoder<'_>, element_id: u32) -> Option<Vec<u32>> {
+    let IrNode::Element { child: Some(c), .. } = enc.ctx.program.node(element_id).ok()? else {
+        return None;
+    };
+    match enc.ctx.program.node(*c).ok()? {
+        IrNode::Sequence { children, .. } => Some(children.clone()),
+        _ => None,
+    }
 }
 
 fn find_particle_by_local_in_children(
@@ -2095,6 +2189,31 @@ fn eval_output_value_calc(
                 message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
             })?));
         }
+        OutputValueCalc::OccursIndexPath { multiply } => {
+            let (idx, _) = enc.array_occurrence_for_ovc.get().ok_or_else(|| VmError::InvalidValue {
+                message: "occursIndex outputValueCalc missing occurrence context".into(),
+            })?;
+            let idx = idx as i64;
+            let addend = props.output_value_calc_path_addend.unwrap_or(0);
+            let steps = props.output_value_calc_path.as_deref().unwrap_or(&[]);
+            let v = if steps.is_empty() {
+                if multiply {
+                    idx
+                } else {
+                    idx.saturating_add(addend)
+                }
+            } else {
+                let path_val = eval_output_infoset_path(enc, steps, children, map)?;
+                if multiply {
+                    idx.saturating_mul(path_val)
+                } else {
+                    idx.saturating_add(path_val).saturating_add(addend)
+                }
+            };
+            return Ok(DfdlValue::Int(i32::try_from(v).map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("outputValueCalc result `{v}` out of range for int"),
+            })?));
+        }
         OutputValueCalc::ValueLengthInfosetPath(units, addend) => {
             let steps = props.output_value_calc_path.as_ref().ok_or_else(|| VmError::InvalidValue {
                 message: "missing outputValueCalc path".into(),
@@ -2215,6 +2334,7 @@ fn eval_output_value_calc(
         | OutputValueCalc::HexBinaryFromShort(_)
         | OutputValueCalc::HexBinaryFromByteSibling
         | OutputValueCalc::InfosetPathAddend
+        | OutputValueCalc::OccursIndexPath { .. }
         | OutputValueCalc::ValueLengthInfosetPath(_, _) => {
             unreachable!("handled above")
         }
