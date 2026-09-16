@@ -1636,6 +1636,20 @@ fn split_entity_and_literal_alternatives(pattern: &str) -> Option<alloc::vec::Ve
     }
 }
 
+/// Initiators like `[s2:` are literal framing text, not DFDL delimiter regex character classes.
+pub fn encode_framing_property_literal(pattern: &str) -> Option<Vec<u8>> {
+    if pattern.starts_with('[')
+        && !pattern.starts_with('%')
+        && !pattern.contains('*')
+        && !pattern.contains('?')
+        && !pattern.contains('+')
+        && !pattern.contains(']')
+    {
+        return Some(pattern.as_bytes().to_vec());
+    }
+    None
+}
+
 /// Encode the first alternative of a DFDL delimiter property (unparse default).
 pub fn encode_property_delimiter(pattern: &str, output_new_line: Option<&str>) -> Vec<u8> {
     if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
@@ -1654,6 +1668,9 @@ pub fn encode_property_delimiter(pattern: &str, output_new_line: Option<&str>) -
             return encode_delimiter(onl);
         }
     }
+    if let Some(lit) = encode_framing_property_literal(first) {
+        return lit;
+    }
     encode_delimiter(first)
 }
 
@@ -1671,6 +1688,9 @@ pub fn encode_delimiter_by_alt(pattern: &str, alt_index: u8) -> Vec<u8> {
 pub fn encode_delimiter(pattern: &str) -> Vec<u8> {
     if pattern.is_empty() {
         return Vec::new();
+    }
+    if let Some(lit) = encode_framing_property_literal(pattern) {
+        return lit;
     }
     let alts = delimiter_alternatives(pattern);
     if alts.len() > 1 {
@@ -2764,6 +2784,11 @@ mod alt_split_tests {
         assert_eq!(encode_delimiter("? . !"), vec![b'?']);
         assert_eq!(encode_property_delimiter("%ES; %NL; !", None), Vec::<u8>::new());
         assert_eq!(encode_property_delimiter("%WSP+; * )", None), vec![b' ']);
+        assert_eq!(
+            encode_property_delimiter("[s2:", None),
+            b"[s2:".to_vec()
+        );
+        assert_eq!(encode_delimiter("[s1:"), b"[s1:".to_vec());
     }
 
     #[test]

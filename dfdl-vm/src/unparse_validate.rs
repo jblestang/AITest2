@@ -411,7 +411,11 @@ fn validate_element_form(
     }
     let local = crate::xml_util::local_name_str(&node.name);
     let expect_qualified = parent_qualified.unwrap_or(qualified);
-    let has_ns = node.namespace.as_deref().is_some_and(|u| !u.is_empty());
+    let mut has_ns = node.namespace.as_deref().is_some_and(|u| !u.is_empty());
+    if !expect_qualified {
+        // Unqualified elementFormDefault: infoset may still attach the target namespace URI to locals.
+        has_ns = false;
+    }
     if expect_qualified == has_ns {
         return Ok(());
     }
@@ -654,14 +658,127 @@ fn validate_sequence_children(
                 continue;
             }
             if !extra.is_empty() {
+                let ns_for_qname = if qualified { tns } else { None };
+                let bad_q = element_qname_in_errors(local, ns_for_qname);
+                let expected = sequence_next_missing_local(program, children, node)
+                    .or_else(|| sequence_active_branch_tail_local(program, children, node))
+                    .or_else(|| {
+                        if find_infoset_children(node, "nack").is_empty() {
+                            None
+                        } else {
+                            Some(String::from("nackInfo"))
+                        }
+                    });
+                if let Some(expected) = expected {
+                    let exp_q = element_qname_in_errors(&expected, ns_for_qname);
+                    return Err(format!(
+                        "Unparse Error: Expected element start event for {exp_q}, but received element start event for (invalid) {bad_q} at {parent_name}"
+                    ));
+                }
                 return Err(format!(
                     "Unparse Error: {} expected element end, but received start event for {key} at {parent_name}",
-                    element_qname_in_errors(local, if qualified { tns } else { None }),
+                    element_qname_in_errors(local, ns_for_qname),
                 ));
             }
         }
     }
     Ok(())
+}
+
+fn sequence_active_branch_tail_local(
+    program: &IrProgram,
+    children: &[u32],
+    node: &InfosetNode,
+) -> Option<String> {
+    for &cid in children {
+        let IrNode::Choice { branches, .. } = program.node(cid).ok()? else {
+            continue;
+        };
+        for branch in branches {
+            if !choice_branch_infoset_matches(program, branch.node, node) {
+                continue;
+            }
+            return sequence_last_required_local(program, branch.node);
+        }
+    }
+    None
+}
+
+fn sequence_last_required_local(program: &IrProgram, node_id: u32) -> Option<String> {
+    match program.node(node_id).ok()? {
+        IrNode::Sequence { children, .. } => {
+            let mut last = None;
+            for &cid in children {
+                if let Some(local) = sequence_last_required_local(program, cid) {
+                    last = Some(local);
+                }
+            }
+            last
+        }
+        IrNode::Element { name, props, .. } => {
+            if props.hidden || props.output_value_calc.is_some() {
+                None
+            } else {
+                Some(
+                    crate::xml_util::local_name_str(program.strings.get(*name).ok()?).to_string(),
+                )
+            }
+        }
+        IrNode::Choice { branches, .. } => {
+            for branch in branches {
+                if let Some(local) = sequence_last_required_local(program, branch.node) {
+                    return Some(local);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn sequence_next_missing_local(
+    program: &IrProgram,
+    children: &[u32],
+    node: &InfosetNode,
+) -> Option<String> {
+    for &cid in children {
+        match program.node(cid).ok()? {
+            IrNode::Element { name, props, .. } => {
+                let elem_name = program.strings.get(*name).ok()?;
+                let local = crate::xml_util::local_name_str(elem_name);
+                if props.hidden || props.output_value_calc.is_some() {
+                    continue;
+                }
+                let count = find_infoset_children(node, local).len() as u64;
+                if count < props.occurs_min {
+                    return Some(local.to_string());
+                }
+            }
+            IrNode::Sequence { children: nested, .. } => {
+                if let Some(local) = sequence_next_missing_local(program, nested, node) {
+                    return Some(local);
+                }
+            }
+            IrNode::Choice { branches, .. } => {
+                for branch in branches {
+                    let branch_name = program.strings.get(branch.name).ok()?;
+                    if find_infoset_children(node, branch_name).is_empty() {
+                        continue;
+                    }
+                    if let Some(local) = sequence_next_missing_local(
+                        program,
+                        core::slice::from_ref(&branch.node),
+                        node,
+                    ) {
+                        return Some(local);
+                    }
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn sequence_allows_child_local(program: &IrProgram, children: &[u32], local: &str) -> bool {

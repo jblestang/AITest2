@@ -18,6 +18,7 @@ use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::cell::Cell;
 
 fn schema_context_field_name(local_name: &str) -> String {
     alloc::format!("ex:{local_name}")
@@ -25,20 +26,14 @@ fn schema_context_field_name(local_name: &str) -> String {
 
 /// Initiators like `[s1:` are literal text, not DFDL delimiter regex character classes.
 fn encode_element_framing_literal(pattern: &str) -> Vec<u8> {
-    if pattern.starts_with('[')
-        && !pattern.starts_with("%")
-        && !pattern.contains('*')
-        && !pattern.contains('?')
-        && !pattern.contains('+')
-    {
-        return pattern.as_bytes().to_vec();
-    }
-    encode_delimiter(pattern)
+    crate::schema::encode_framing_property_literal(pattern).unwrap_or_else(|| encode_delimiter(pattern))
 }
 
 /// DFDL encoder VM — executes compiled IR to serialize logical values.
 pub struct Encoder<'a> {
     ctx: VmContext<'a>,
+    /// 1-based index and total count for the nearest enclosing array occurrence (repeat indicators).
+    array_occurrence_for_ovc: Cell<Option<(usize, usize)>>,
 }
 
 impl<'a> Encoder<'a> {
@@ -49,7 +44,15 @@ impl<'a> Encoder<'a> {
     pub fn with_config(program: &'a IrProgram, config: RuntimeConfig) -> Self {
         Self {
             ctx: VmContext { program, config },
+            array_occurrence_for_ovc: Cell::new(None),
         }
+    }
+
+    fn with_array_occurrence<R>(&self, index_1: usize, total: usize, f: impl FnOnce() -> Result<R>) -> Result<R> {
+        self.array_occurrence_for_ovc.set(Some((index_1, total)));
+        let out = f();
+        self.array_occurrence_for_ovc.set(None);
+        out
     }
 
     /// Encode `value` and append bytes to `output`. Returns trailing bit count in the last byte.
@@ -510,7 +513,9 @@ impl<'a> Encoder<'a> {
                     nil_unparse_bytes_for_encode(props, self.ctx.strings()).map_err(Error::from)?;
                 write_byte_aligned(out, bit_count, &nil_bytes).map_err(Error::from)?;
             } else {
-                self.encode_node(node_id, item, out, bit_count)?;
+                self.with_array_occurrence(idx + 1, encode_len, || {
+                    self.encode_node(node_id, item, out, bit_count)
+                })?;
             }
             self.write_terminator(props, out, bit_count, None)?;
             if sep_props.separator_position == SeparatorPosition::Postfix {
@@ -1795,6 +1800,15 @@ fn eval_output_value_calc(
             let start0 = start.saturating_sub(1);
             let slice: String = text.chars().skip(start0).take(length).collect();
             return Ok(DfdlValue::string(slice));
+        }
+        OutputValueCalc::RepeatIndicatorFromParentCount => {
+            let (idx, total) = enc.array_occurrence_for_ovc.get().ok_or_else(|| {
+                VmError::InvalidValue {
+                    message: "repeatIndicator outputValueCalc missing occurrence context".into(),
+                }
+            })?;
+            let v = if idx < total { 1 } else { 0 };
+            return Ok(DfdlValue::Int(v));
         }
         OutputValueCalc::HexBinaryFromLexical
         | OutputValueCalc::HexBinaryFromInteger(_)

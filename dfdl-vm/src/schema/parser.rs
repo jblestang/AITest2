@@ -3510,6 +3510,18 @@ fn parse_variable_length_expr(value: &str, vars: &BTreeMap<String, String>) -> O
     vars.get(name)?.parse().ok()
 }
 
+fn parse_repeat_indicator_output_value_calc(value: &str) -> bool {
+    let trimmed = value.trim();
+    let inner = trimmed
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .map(str::trim)
+        .unwrap_or(trimmed);
+    let compact: String = inner.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("dfdl:occursIndex()ltfn:count(..)")
+        && compact.contains("then1else0")
+}
+
 fn looks_like_xpath_output_value_calc(value: &str) -> bool {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
@@ -4287,7 +4299,9 @@ fn props_from_attrs_with_variables(
                 });
             }
             "outputValueCalc" => {
-                if value.contains("if (") {
+                if parse_repeat_indicator_output_value_calc(value) {
+                    props.output_value_calc = Some(OutputValueCalc::RepeatIndicatorFromParentCount);
+                } else if value.contains("if (") {
                     props.output_value_calc_conditional = true;
                 } else if let Some((steps, addend)) = parse_output_value_calc_infoset_path(value) {
                     props.output_value_calc = Some(OutputValueCalc::InfosetPathAddend);

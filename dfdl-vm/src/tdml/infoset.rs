@@ -654,11 +654,17 @@ fn parse_infoset_element(
     if let Some(xmlns) = attrs.get("xmlns") {
         default_ns = Some(xmlns.clone());
     }
-    let namespace = name
-        .namespace
-        .clone()
-        .filter(|ns| !ns.is_empty())
-        .or_else(|| default_ns.clone());
+    let unprefixed_under_empty_default = default_ns.as_deref() == Some("")
+        && name.prefix.as_ref().is_none_or(|p| p.is_empty());
+    let namespace = if unprefixed_under_empty_default {
+        None
+    } else {
+        name.namespace
+            .clone()
+            .filter(|ns| !ns.is_empty())
+            .or_else(|| default_ns.clone())
+            .filter(|ns| !ns.is_empty())
+    };
     let is_nil = attrs
         .get("xsi:nil")
         .or_else(|| attrs.get("{http://www.w3.org/2001/XMLSchema-instance}nil"))
