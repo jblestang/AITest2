@@ -214,20 +214,6 @@ impl<'a> IrBuilder<'a> {
         root_name: &str,
         root_element: &GlobalElement,
     ) -> Result<u32> {
-        if dfdl_props_has_input_value_calc(&root_element.props) {
-            let pseudo = ElementDecl {
-                name: root_name.to_string(),
-                element_ref: None,
-                has_element_name_attr: true,
-                type_name: root_element.type_name.clone(),
-                type_xsd_qname: root_element.type_xsd_qname.clone(),
-                type_qname_scope: None,
-                props: root_element.props.clone(),
-                particle: None,
-                default_value: None,
-            };
-            validate_ivc_on_element_decl(&pseudo, self.schema, true)?;
-        }
         let root = if let Some(builtin) =
             builtin_for_element_type_name(&self.schema, &root_element.type_name)
         {
@@ -480,7 +466,7 @@ impl<'a> IrBuilder<'a> {
     ) -> Result<u32> {
         match particle {
             Particle::Element(element) => {
-                validate_ivc_on_element_decl(element, self.schema, false)?;
+                validate_ivc_on_element_decl(element, self.schema)?;
                 let element_props = dfdl_props_for_element_ref(self.schema, element);
                 if let Some(ref expr) = element_props.input_value_calc_expression {
                     validate_schema_ivc_expression_prefixes(expr, self.schema)?;
@@ -2208,7 +2194,6 @@ fn validate_format_has_no_input_value_calc(schema: &SchemaDocument) -> Result<()
 fn validate_ivc_on_element_decl(
     element: &ElementDecl,
     schema: &SchemaDocument,
-    is_global: bool,
 ) -> Result<()> {
     let props = dfdl_props_for_element_ref(schema, element);
     if !dfdl_props_has_input_value_calc(&props) {
@@ -2217,12 +2202,6 @@ fn validate_ivc_on_element_decl(
     if props.output_value_calc.is_some() || props.output_value_calc_conditional {
         return Err(SchemaError::InvalidProperty {
             message: "Schema Definition Error: Cannot have both dfdl:inputValueCalc and dfdl:outputValueCalc on the same element".into(),
-        }
-        .into());
-    }
-    if is_global {
-        return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error: dfdl:inputValueCalc on global element declaration is not allowed".into(),
         }
         .into());
     }
@@ -2792,12 +2771,7 @@ fn validate_implicit_text_length(kind: ValueKind, props: &IrProps) -> Result<()>
     if props.representation != Representation::Text {
         return Ok(());
     }
-    if props.input_value_calc.is_some()
-        || props.input_value_calc_sibling.is_some()
-        || props.input_value_calc_segments.is_some()
-        || props.input_value_calc_path.is_some()
-        || props.input_value_calc_expression.is_some()
-    {
+    if crate::ir::ir_props_has_input_value_calc(props) {
         return Ok(());
     }
     if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {

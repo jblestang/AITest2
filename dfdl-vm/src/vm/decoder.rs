@@ -2597,18 +2597,90 @@ impl<'a> Decoder<'a> {
             return Ok(out);
         };
         let test = self.ctx.strings().get(test_id)?;
-        let pick_true = self
-            .eval_discriminator_xpath_eq(test, "")
-            .ok()
-            .flatten()
-            .unwrap_or(false);
-        out.byte_order = if pick_true {
-            props.byte_order_if_true
-        } else {
-            props.byte_order_if_false
+        if test.contains(") then ") && test.contains(" else ") {
+            let pick_true = self
+                .eval_discriminator_xpath_eq(test, "")
+                .ok()
+                .flatten()
+                .unwrap_or(false);
+            out.byte_order = if pick_true {
+                props.byte_order_if_true
+            } else {
+                props.byte_order_if_false
+            };
+            out.byte_order_defined = true;
+            return Ok(out);
+        }
+        let trimmed = test.trim();
+        let path = trimmed
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .map(str::trim)
+            .unwrap_or(trimmed);
+        let text = self
+            .eval_byte_order_path_literal(path)?
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+        out.byte_order = match text.as_str() {
+            "bigEndian" => crate::schema::ByteOrder::BigEndian,
+            "littleEndian" => crate::schema::ByteOrder::LittleEndian,
+            other => {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("unknown byteOrder `{other}`"),
+                }
+                .into())
+            }
         };
         out.byte_order_defined = true;
         Ok(out)
+    }
+
+    fn eval_byte_order_path_literal(&self, path: &str) -> Result<String> {
+        let trimmed = path.trim();
+        if trimmed.starts_with('$') {
+            let name = trimmed.trim_start_matches('$').trim();
+            let local = name.rsplit(':').next().unwrap_or(name);
+            let vars = self.runtime_variables.borrow();
+            if let Some(v) = vars.get(name).or_else(|| vars.get(local)) {
+                return Ok(v.clone());
+            }
+            if let Some(v) = self.ctx.program.variables.get(name) {
+                return Ok(v.clone());
+            }
+            if let Some(v) = self.ctx.program.variables.get(local) {
+                return Ok(v.clone());
+            }
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("Schema Definition Error: variable `{name}` is not defined"),
+            }
+            .into());
+        }
+        let mut rest = trimmed;
+        let mut up = 0usize;
+        while rest.starts_with("../") || rest.starts_with("..\\") {
+            up += 1;
+            rest = rest
+                .strip_prefix("../")
+                .or_else(|| rest.strip_prefix("..\\"))
+                .unwrap_or(rest);
+        }
+        let local = rest
+            .rsplit(':')
+            .next()
+            .unwrap_or(rest)
+            .trim();
+        let sib = self
+            .lookup_xpath_sibling_state(local, up.saturating_sub(1))
+            .ok_or_else(|| {
+                VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Schema Definition Error: No element corresponding to step {local} found."
+                    ),
+                }
+            })?;
+        Ok(dfdl_value_to_string(&sib.value))
     }
 
     fn push_decoded_array_item(
@@ -2671,7 +2743,29 @@ impl<'a> Decoder<'a> {
             if !occurs_from_expression {
                 min = 0;
             }
-            if cursor.is_empty() && min == 0 {
+            if crate::ir::ir_props_has_input_value_calc(props) {
+                let v = self.decode_single_element(
+                    node_id,
+                    cursor,
+                    has_following_sibling,
+                    parent_sequence,
+                    siblings,
+                    content_scope_bytes,
+                    pattern_text_frame,
+                    stop_sequences,
+                    false,
+                )?;
+                return Ok(v);
+            }
+            let is_complex = matches!(
+                self.ctx.program.node(node_id),
+                Ok(IrNode::Element {
+                    child: Some(_),
+                    kind: ValueKind::Complex,
+                    ..
+                })
+            );
+            if cursor.is_empty() && min == 0 && !is_complex {
                 return Ok(DfdlValue::Array(Vec::new()));
             }
         }
@@ -2779,7 +2873,10 @@ impl<'a> Decoder<'a> {
                 }
                 continue;
             }
-            if items.len() as u64 >= min && cursor.is_empty() {
+            if items.len() as u64 >= min
+                && cursor.is_empty()
+                && !(items.is_empty() && crate::ir::ir_props_has_input_value_calc(props))
+            {
                 if props.occurs_count_kind == OccursCountKind::Implicit
                     && items.is_empty()
                     && !implicit_empty_probe
@@ -3320,21 +3417,23 @@ impl<'a> Decoder<'a> {
                 )?;
                 let props = self.resolve_conditional_byte_order(&props)?;
                 if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
-                    validate_explicit_decimal_before_decode(
-                        *kind,
-                        &props,
-                        &self.ctx.program.tunables,
-                        self.ctx.strings(),
-                    )?;
-                    if *kind != ValueKind::Decimal
-                        && binary_length_validation_applies(*kind, props.binary_number_rep)
-                    {
-                        validate_data_length_vm(
+                    if !crate::ir::ir_props_has_input_value_calc(&props) {
+                        validate_explicit_decimal_before_decode(
                             *kind,
-                            0,
-                            props.length_units,
-                            props.binary_number_rep,
+                            &props,
+                            &self.ctx.program.tunables,
+                            self.ctx.strings(),
                         )?;
+                        if *kind != ValueKind::Decimal
+                            && binary_length_validation_applies(*kind, props.binary_number_rep)
+                        {
+                            validate_data_length_vm(
+                                *kind,
+                                0,
+                                props.length_units,
+                                props.binary_number_rep,
+                            )?;
+                        }
                     }
                 }
                 if pattern_text_frame
@@ -6196,6 +6295,15 @@ fn resolve_ivc_variable(name: &str, ctx: IvcEvalCtx<'_>) -> Result<String> {
     if let Some(text) = ctx.define_variables.get(name) {
         return Ok(text.clone());
     }
+    let local = name.rsplit(':').next().unwrap_or(name);
+    if local != name {
+        if let Some(text) = ctx.runtime_variables.get(local) {
+            return Ok(text.clone());
+        }
+        if let Some(text) = ctx.define_variables.get(local) {
+            return Ok(text.clone());
+        }
+    }
     Err(VmError::InvalidValue {
         message: alloc::format!("Schema Definition Error: variable `{name}` is not defined"),
     }
@@ -6365,10 +6473,10 @@ fn eval_input_value_calc_expression(
             parse_ivc_lexical_for_kind(text, target_kind, target_props, strings)
         }
         IrInputValueCalcExpression::Cast { kind, inner } => {
-            let value = eval_input_value_calc_expression(
-                inner, ctx, strings, tunables, target_kind, target_props,
-            )?;
             let cast_kind = ivc_cast_kind_to_value_kind(*kind);
+            let value = eval_input_value_calc_expression(
+                inner, ctx, strings, tunables, cast_kind, target_props,
+            )?;
             if cast_kind == ValueKind::String {
                 let text = dfdl_value_to_string(&value);
                 return Ok(DfdlValue::String(StringValue::new(text)));
@@ -6407,6 +6515,15 @@ fn dfdl_value_to_string(value: &DfdlValue) -> String {
         DfdlValue::UnsignedInt(n) => n.to_string(),
         DfdlValue::UnsignedShort(n) => n.to_string(),
         DfdlValue::UnsignedByte(n) => n.to_string(),
+        DfdlValue::Float(v) => v.to_string(),
+        DfdlValue::Double(v) => v.to_string(),
+        DfdlValue::Boolean(v) => {
+            if *v {
+                "true".into()
+            } else {
+                "false".into()
+            }
+        }
         other => dfdl_value_text(other).to_string(),
     }
 }

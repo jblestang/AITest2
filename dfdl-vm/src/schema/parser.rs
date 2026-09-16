@@ -3194,7 +3194,7 @@ fn parse_ivc_path_steps(
         (true, r)
     } else if let Some(r) = s.strip_prefix('/') {
         (false, r)
-    } else if let Some(r) = s.strip_prefix("../") {
+    } else if let Some(r) = s.strip_prefix("../").or_else(|| s.strip_prefix("..\\")) {
         (false, r)
     } else {
         return None;
@@ -3313,16 +3313,27 @@ fn parse_ivc_primary(s: &str) -> Option<crate::schema::InputValueCalcExpression>
     let s = s.trim();
     for (prefix, kind) in [
         ("xs:byte(", crate::schema::IvcXsCast::Byte),
+        ("xsd:byte(", crate::schema::IvcXsCast::Byte),
         ("xs:short(", crate::schema::IvcXsCast::Short),
+        ("xsd:short(", crate::schema::IvcXsCast::Short),
         ("xs:int(", crate::schema::IvcXsCast::Int),
+        ("xsd:int(", crate::schema::IvcXsCast::Int),
         ("xs:long(", crate::schema::IvcXsCast::Long),
+        ("xsd:long(", crate::schema::IvcXsCast::Long),
         ("xs:unsignedByte(", crate::schema::IvcXsCast::UnsignedByte),
+        ("xsd:unsignedByte(", crate::schema::IvcXsCast::UnsignedByte),
         ("xs:unsignedShort(", crate::schema::IvcXsCast::UnsignedShort),
+        ("xsd:unsignedShort(", crate::schema::IvcXsCast::UnsignedShort),
         ("xs:unsignedInt(", crate::schema::IvcXsCast::UnsignedInt),
+        ("xsd:unsignedInt(", crate::schema::IvcXsCast::UnsignedInt),
         ("xs:unsignedLong(", crate::schema::IvcXsCast::UnsignedLong),
+        ("xsd:unsignedLong(", crate::schema::IvcXsCast::UnsignedLong),
         ("xs:float(", crate::schema::IvcXsCast::Float),
+        ("xsd:float(", crate::schema::IvcXsCast::Float),
         ("xs:double(", crate::schema::IvcXsCast::Double),
+        ("xsd:double(", crate::schema::IvcXsCast::Double),
         ("xs:string(", crate::schema::IvcXsCast::String),
+        ("xsd:string(", crate::schema::IvcXsCast::String),
     ] {
         if let Some(arg) = extract_ivc_paren_argument(s, prefix) {
             let inner = parse_ivc_add_expr(&arg)?;
@@ -4336,10 +4347,13 @@ fn props_from_attrs_with_variables(
                 });
             }
             "byteOrder" => {
+                let trimmed = value.trim();
                 if let Some((test, t, f)) = parse_byte_order_if_expr(value) {
                     props.byte_order_conditional_test = Some(test);
                     props.byte_order_if_true = Some(t);
                     props.byte_order_if_false = Some(f);
+                } else if trimmed.starts_with('{') && trimmed.ends_with('}') {
+                    props.byte_order_conditional_test = Some(trimmed.to_string());
                 } else {
                     props.byte_order = Some(match value.as_str() {
                         "bigEndian" => ByteOrder::BigEndian,
