@@ -570,7 +570,7 @@ impl<'a> Encoder<'a> {
             } => {
                 let key = self.ctx.strings().get(*name)?;
                 let field_delim = seq_meta.field_delimiters.get(key);
-                let mut value = match self.element_encode_value(props, key, map) {
+                let mut value = match self.element_encode_value(*kind, props, key, map) {
                     Ok(v) => v,
                     Err(Error::Vm(VmError::MissingField { .. })) if props.occurs_min == 0 => {
                         return Ok(());
@@ -865,12 +865,21 @@ impl<'a> Encoder<'a> {
 
     fn element_encode_value(
         &self,
+        kind: crate::ir::ValueKind,
         props: &IrProps,
         key: &str,
         map: &BTreeMap<String, DfdlValue>,
     ) -> Result<DfdlValue> {
         if props.output_value_calc.is_some() {
-            return eval_output_value_calc(self, props, map, &[], props);
+            let local = crate::xml_util::local_name_str(key);
+            if let Some(k) = map_has_local_key(map, local) {
+                return Ok(map.get(&k).cloned().unwrap());
+            }
+            if let Some(v) = map.get(key) {
+                return Ok(v.clone());
+            }
+            let computed = eval_output_value_calc(self, props, map, &[], props)?;
+            return Ok(ovc_value_for_element_kind(kind, computed));
         }
         if props.hidden {
             if let Some(default_id) = props.default_value {
@@ -1194,21 +1203,72 @@ fn precompute_output_values<'a>(
         }
     }
     let mut effective = map.clone();
-    for _pass in 0..3 {
+    let max_passes = children.len().saturating_mul(2).max(4);
+    for _pass in 0..max_passes {
+        let mut progress = false;
         for &child in children {
-            let IrNode::Element { name, props, .. } = enc.ctx.program.node(child)? else {
+            let IrNode::Element { name, kind, props, .. } = enc.ctx.program.node(child)? else {
                 continue;
             };
             if props.output_value_calc.is_none() {
                 continue;
             }
             let key = enc.ctx.strings().get(*name)?.to_string();
-            let computed =
-                eval_output_value_calc(enc, props, &effective, children, parent_props)?;
+            let local = crate::xml_util::local_name_str(&key);
+            if map_has_local_key(map, local).is_some() {
+                continue;
+            }
+            if effective.get(&key).is_some() {
+                continue;
+            }
+            let computed = match eval_output_value_calc(enc, props, &effective, children, parent_props)
+            {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let computed = ovc_value_for_element_kind(*kind, computed);
             effective.insert(key, computed);
+            progress = true;
+        }
+        if !progress {
+            break;
+        }
+    }
+    for &child in children {
+        let IrNode::Element { name, props, .. } = enc.ctx.program.node(child)? else {
+            continue;
+        };
+        if props.output_value_calc.is_none() {
+            continue;
+        }
+        let key = enc.ctx.strings().get(*name)?.to_string();
+        let local = crate::xml_util::local_name_str(&key);
+        if map_has_local_key(map, local).is_some() {
+            continue;
+        }
+        if effective.get(&key).is_none() {
+            let elem = enc.ctx.strings().get(*name)?;
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Unparse Error: Element `{elem}` does not have a value, due to a circular dependency"
+                ),
+            }
+            .into());
         }
     }
     Ok(effective)
+}
+
+fn ovc_value_for_element_kind(kind: crate::ir::ValueKind, value: DfdlValue) -> DfdlValue {
+    if kind == crate::ir::ValueKind::String {
+        if let DfdlValue::Int(n) = value {
+            return DfdlValue::string(n.to_string());
+        }
+        if let DfdlValue::Long(n) = value {
+            return DfdlValue::string(n.to_string());
+        }
+    }
+    value
 }
 
 fn encoded_bit_length(byte_len: usize, bit_count: u8) -> usize {
@@ -1274,12 +1334,12 @@ fn root_sequence_children(enc: &Encoder<'_>) -> Result<Vec<u32>> {
     }
 }
 
-fn eval_output_infoset_path(
+fn resolve_output_value_calc_path_value(
     enc: &Encoder<'_>,
     steps: &[crate::ir::IrInputPathStep],
     sequence_children: &[u32],
     map: &BTreeMap<String, DfdlValue>,
-) -> Result<i64> {
+) -> Result<DfdlValue> {
     let strings = enc.ctx.strings();
     let first = steps.first().ok_or_else(|| VmError::InvalidValue {
         message: "empty outputValueCalc path".into(),
@@ -1328,9 +1388,11 @@ fn eval_output_infoset_path(
                     (None, v) => v.clone(),
                     _ => {
                         return Err(VmError::InvalidValue {
-                            message: alloc::format!("outputValueCalc path invalid index on `{local}`"),
+                            message: alloc::format!(
+                                "outputValueCalc path invalid index on `{local}`"
+                            ),
                         }
-                        .into())
+                        .into());
                     }
                 }
             }
@@ -1338,10 +1400,20 @@ fn eval_output_infoset_path(
                 return Err(VmError::InvalidValue {
                     message: "outputValueCalc path requires sequence".into(),
                 }
-                .into())
+                .into());
             }
         };
     }
+    Ok(value)
+}
+
+fn eval_output_infoset_path(
+    enc: &Encoder<'_>,
+    steps: &[crate::ir::IrInputPathStep],
+    sequence_children: &[u32],
+    map: &BTreeMap<String, DfdlValue>,
+) -> Result<i64> {
+    let value = resolve_output_value_calc_path_value(enc, steps, sequence_children, map)?;
     numeric_from_dfdl_value(&value)
 }
 
@@ -1356,6 +1428,30 @@ fn find_particle_by_local_in_children(
         }
     }
     Ok(None)
+}
+
+fn find_particle_for_ovc_path(
+    enc: &Encoder<'_>,
+    scope_children: &[u32],
+    steps: &[crate::ir::IrInputPathStep],
+) -> Result<Option<u32>> {
+    let strings = enc.ctx.strings();
+    let first = steps.first().ok_or_else(|| VmError::InvalidValue {
+        message: "empty outputValueCalc path".into(),
+    })?;
+    let first_local = strings.get(first.local)?;
+    let mut current = match find_particle_by_local_in_children(enc, scope_children, first_local)? {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+    for step in steps.iter().skip(1) {
+        let local = strings.get(step.local)?;
+        current = match find_particle_by_local_name(enc, current, local)? {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+    }
+    Ok(Some(current))
 }
 
 fn resolve_path_step_value(
@@ -1779,6 +1875,27 @@ fn eval_output_value_calc(
                 message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
             })?));
         }
+        OutputValueCalc::ValueLengthInfosetPath(units, addend) => {
+            let steps = props.output_value_calc_path.as_ref().ok_or_else(|| VmError::InvalidValue {
+                message: "missing outputValueCalc path".into(),
+            })?;
+            let val = resolve_output_value_calc_path_value(enc, steps, children, map)?;
+            let last = steps.last().ok_or_else(|| VmError::InvalidValue {
+                message: "missing outputValueCalc path".into(),
+            })?;
+            let child_id = find_particle_for_ovc_path(enc, children, steps)?.ok_or_else(|| {
+                let last_local = strings.get(last.local).unwrap_or("?");
+                VmError::InvalidValue {
+                    message: alloc::format!(
+                        "outputValueCalc sibling `{last_local}` not available"
+                    ),
+                }
+            })?;
+            let len = measure_value_length(enc, child_id, &val, units)? as i64 + addend;
+            return Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
+            })?));
+        }
         OutputValueCalc::HexBinaryFromByteSibling => {
             let sib = sibling_from_map(props.output_value_calc_sibling, map, strings)?;
             let byte = match sib {
@@ -1834,6 +1951,7 @@ fn eval_output_value_calc(
             len
         }
         OutputValueCalc::ValueLengthSibling(units, addend) => {
+            let sib = sibling_from_map(props.output_value_calc_sibling, map, strings)?;
             let sib_name = strings.get(
                 props
                     .output_value_calc_sibling
@@ -1841,13 +1959,10 @@ fn eval_output_value_calc(
                         message: "outputValueCalc sibling missing".into(),
                     })?,
             )?;
-            let sib_val = map.get(sib_name).ok_or_else(|| VmError::InvalidValue {
-                message: alloc::format!("outputValueCalc sibling `{sib_name}` not available"),
-            })?;
             if let Some(child_id) = find_child_element_by_name(enc, children, sib_name)? {
-                measure_value_length(enc, child_id, sib_val, units)? as i64 + addend
+                measure_value_length(enc, child_id, sib, units)? as i64 + addend
             } else {
-                length_in_units(value_byte_length(sib_val)?, units)? as i64 + addend
+                length_in_units(value_byte_length(sib)?, units)? as i64 + addend
             }
         }
         OutputValueCalc::Substring { start, length } => {
@@ -1879,7 +1994,8 @@ fn eval_output_value_calc(
         | OutputValueCalc::HexBinaryFromInteger(_)
         | OutputValueCalc::HexBinaryFromShort(_)
         | OutputValueCalc::HexBinaryFromByteSibling
-        | OutputValueCalc::InfosetPathAddend => {
+        | OutputValueCalc::InfosetPathAddend
+        | OutputValueCalc::ValueLengthInfosetPath(_, _) => {
             unreachable!("handled above")
         }
     };
@@ -1998,11 +2114,25 @@ fn lookup_encoding_string_id(pool: &crate::ir::StringPool, enc: &str) -> Option<
     if let Some(id) = pool.lookup(enc) {
         return Some(id);
     }
-    pool.values
+    if let Some(id) = pool
+        .values
         .iter()
         .enumerate()
         .find(|(_, v)| v.eq_ignore_ascii_case(enc))
         .map(|(idx, _)| crate::ir::StringId(idx as u32))
+    {
+        return Some(id);
+    }
+    let upper = enc.to_ascii_uppercase();
+    let canonical = match upper.as_str() {
+        "US-ASCII" | "ASCII" | "ISO646-US" => "US-ASCII",
+        "UTF8" => "UTF-8",
+        "UTF16" | "UTF_16" => "UTF-16",
+        "UTF32" | "UTF_32" => "UTF-32",
+        "ISO8859-1" | "ISO_8859-1" | "LATIN1" => "ISO-8859-1",
+        _ => return None,
+    };
+    pool.lookup(canonical)
 }
 
 fn choice_explicit_frame_bytes_encode(

@@ -3686,6 +3686,43 @@ fn parse_input_value_calc_relative_path(
     Some(steps)
 }
 
+fn parse_output_value_calc_value_length_path(
+    value: &str,
+) -> Option<(
+    alloc::vec::Vec<(
+        Option<alloc::string::String>,
+        alloc::string::String,
+        Option<u32>,
+    )>,
+    LengthUnits,
+    i64,
+)> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let (func_expr, addend_str) = inner.rsplit_once('+')?;
+    let addend = addend_str.trim().parse::<i64>().ok()?;
+    let func_expr = func_expr.trim();
+    let rest = func_expr.strip_prefix("dfdl:valueLength(")?.strip_suffix(')')?;
+    let arg_parts = split_top_level_commas(rest.trim());
+    if arg_parts.len() != 2 {
+        return None;
+    }
+    let path_part = arg_parts[0].trim().strip_prefix("../")?;
+    let units_part = arg_parts[1].trim();
+    if path_part.is_empty() {
+        return None;
+    }
+    let mut steps = alloc::vec::Vec::new();
+    for step in path_part.split('/').filter(|s| !s.is_empty()) {
+        steps.push(parse_infoset_path_step(step));
+    }
+    let units = length_units_from_calc_args(units_part.trim());
+    Some((steps, units, addend))
+}
+
 fn parse_output_value_calc_infoset_path(
     value: &str,
 ) -> Option<(
@@ -4667,6 +4704,12 @@ fn props_from_attrs_with_variables(
                     props.output_value_calc = Some(OutputValueCalc::RepeatIndicatorFromParentCount);
                 } else if value.contains("if (") {
                     props.output_value_calc_conditional = true;
+                } else if let Some((steps, units, addend)) =
+                    parse_output_value_calc_value_length_path(value)
+                {
+                    props.output_value_calc =
+                        Some(OutputValueCalc::ValueLengthInfosetPath(units, addend));
+                    props.output_value_calc_path = Some(steps);
                 } else if let Some((steps, addend)) = parse_output_value_calc_infoset_path(value) {
                     props.output_value_calc = Some(OutputValueCalc::InfosetPathAddend);
                     props.output_value_calc_path = Some(steps);
@@ -5750,6 +5793,14 @@ mod tests {
         assert_eq!(parse_constant_length_expr("{1}"), Some(1));
         assert_eq!(parse_constant_length_expr("{ 1 + 1 }"), Some(2));
         assert_eq!(parse_constant_length_expr("{ ../len }"), None);
+    }
+
+    #[test]
+    fn parse_sibling_length_with_adjustment() {
+        assert_eq!(
+            parse_sibling_length_expr("{ ../messageLength - 8 }"),
+            Some(("messageLength".into(), false, -8))
+        );
     }
 
     #[test]

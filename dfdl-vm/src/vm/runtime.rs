@@ -11028,14 +11028,15 @@ pub(crate) fn write_simple(
         return Ok(());
     }
     if let Some(id) = props.initiator {
-        let pat = strings.get(id)?;
+        let raw = strings.get(id)?;
+        let pat = resolve_encode_property_pattern(raw, encode_siblings);
         if !pat.is_empty() {
             let output_nl = props
                 .output_new_line
                 .and_then(|id| strings.get(id).ok());
             let bytes = match delim_meta.and_then(|m| m.initiator_alt) {
-                Some(a) => encode_delimiter_by_alt(pat, a),
-                None => encode_property_delimiter(pat, output_nl),
+                Some(a) => encode_delimiter_by_alt(&pat, a),
+                None => encode_property_delimiter(&pat, output_nl),
             };
             write_byte_aligned(out, bit_count, &bytes)?;
         }
@@ -11067,20 +11068,68 @@ pub(crate) fn write_simple(
         }
     }
     if let Some(id) = props.terminator {
-        let pat = strings.get(id)?;
+        let raw = strings.get(id)?;
+        let pat = resolve_encode_property_pattern(raw, encode_siblings);
         if !pat.is_empty() {
             let output_nl = props
                 .output_new_line
                 .and_then(|id| strings.get(id).ok());
             let bytes = match delim_meta.and_then(|m| m.terminator_alt) {
-                Some(a) => encode_delimiter_by_alt(pat, a),
-                None => encode_property_delimiter(pat, output_nl),
+                Some(a) => encode_delimiter_by_alt(&pat, a),
+                None => encode_property_delimiter(&pat, output_nl),
             };
             write_byte_aligned(out, bit_count, &bytes)?;
         }
     }
     crate::vm::alignment::write_trailing_skip(out, bit_count, props)?;
     Ok(())
+}
+
+fn parse_sibling_property_expr(raw: &str) -> Option<alloc::string::String> {
+    let trimmed = raw.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let path = inner.strip_prefix("../")?;
+    Some(
+        path.rsplit(':')
+            .next()
+            .unwrap_or(path)
+            .trim()
+            .to_string(),
+    )
+}
+
+fn sibling_string_from_encode_map(
+    map: &alloc::collections::BTreeMap<String, crate::value::DfdlValue>,
+    local: &str,
+) -> Option<alloc::string::String> {
+    let key = map
+        .iter()
+        .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
+        .map(|(k, _)| k.clone())?;
+    match map.get(&key)? {
+        crate::value::DfdlValue::String(s) => Some(s.text.clone()),
+        crate::value::DfdlValue::Decimal(s) | crate::value::DfdlValue::DateTime(s) => {
+            Some(s.clone())
+        }
+        _ => None,
+    }
+}
+
+fn resolve_encode_property_pattern(
+    raw: &str,
+    siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
+) -> alloc::string::String {
+    if let Some(map) = siblings {
+        if let Some(sib) = parse_sibling_property_expr(raw) {
+            if let Some(text) = sibling_string_from_encode_map(map, &sib) {
+                return text;
+            }
+        }
+    }
+    raw.to_string()
 }
 
 pub(crate) fn default_value_for(

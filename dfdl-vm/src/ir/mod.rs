@@ -534,6 +534,10 @@ impl StringPool {
     pub fn new() -> Self {
         let mut pool = Self { values: Vec::new() };
         pool.intern("UTF-8");
+        pool.intern("UTF-16");
+        pool.intern("UTF-32");
+        pool.intern("US-ASCII");
+        pool.intern("ISO-8859-1");
         pool
     }
 

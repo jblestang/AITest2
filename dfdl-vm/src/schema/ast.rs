@@ -497,6 +497,8 @@ pub enum OutputValueCalc {
     HexBinaryFromByteSibling,
     /// `{ ../path/to/elem + N }` — path in [`DfdlProps::output_value_calc_path`], addend stored separately.
     InfosetPathAddend,
+    /// `{ dfdl:valueLength(../a/b, 'bytes') + N }` — encoded length of path target.
+    ValueLengthInfosetPath(LengthUnits, i64),
     /// `{ if (dfdl:occursIndex() lt fn:count(..)) then 1 else 0 }` on repeat indicators (GRI/FRI).
     RepeatIndicatorFromParentCount,
 }
