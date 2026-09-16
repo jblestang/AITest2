@@ -177,20 +177,26 @@ impl<'a> Encoder<'a> {
                 let map = &seq.fields;
                 let effective = precompute_output_values(self, children, map, props)?;
                 self.write_initiator(props, out, bit_count, seq.meta.initiator_alt)?;
+                let mut wrote_particle = false;
                 for (idx, &child) in children.iter().enumerate() {
                     if child_skips_encode(self, child)? {
                         continue;
                     }
+                    if optional_sequence_particle_absent(self, child, &effective)? {
+                        continue;
+                    }
                     let defer_sep = sequence_separator_deferred_to_child_occurrences(self, child)?;
                     if !defer_sep {
-                        self.write_sequence_separator(
-                            props,
-                            out,
-                            bit_count,
-                            idx,
-                            children.len(),
-                            &seq.meta,
-                        )?;
+                        if wrote_particle {
+                            self.write_sequence_separator(
+                                props,
+                                out,
+                                bit_count,
+                                idx,
+                                children.len(),
+                                &seq.meta,
+                            )?;
+                        }
                     } else if idx > 0 && props.separator_position == SeparatorPosition::Infix {
                         // Leading infix separator before an unbounded/repeated child (NS_13a).
                         self.write_sequence_separator(
@@ -203,6 +209,7 @@ impl<'a> Encoder<'a> {
                         )?;
                     }
                     self.encode_sequence_particle(child, &effective, props, out, bit_count, &seq.meta)?;
+                    wrote_particle = true;
                 }
                 self.write_terminator(props, out, bit_count, seq.meta.terminator_alt)?;
                 Ok(())
@@ -270,6 +277,34 @@ impl<'a> Encoder<'a> {
                     }
                 }
                 self.write_initiator(choice_props, out, bit_count, None)?;
+                for branch in branches {
+                    if matches!(
+                        self.ctx.program.node(branch.node).ok(),
+                        Some(IrNode::Sequence { children, .. }) if children.is_empty()
+                    ) {
+                        return self.encode_node(
+                            branch.node,
+                            &DfdlValue::sequence(BTreeMap::new()),
+                            out,
+                            bit_count,
+                        );
+                    }
+                }
+                for branch in branches {
+                    if infoset_particle_can_absent_enc(self, branch.node)? {
+                        return self.encode_choice_matched_branch(
+                            choice_props,
+                            branch.node,
+                            &DfdlValue::sequence(BTreeMap::new()),
+                            value
+                                .sequence_fields()
+                                .map(|m| m as &BTreeMap<_, _>)
+                                .unwrap_or(&BTreeMap::new()),
+                            out,
+                            bit_count,
+                        );
+                    }
+                }
                 for branch in branches {
                     if ir_branch_encodable_without_infoset(self, branch.node)? {
                         return self.encode_choice_matched_branch(
@@ -688,6 +723,20 @@ impl<'a> Encoder<'a> {
                             bit_count,
                         );
                     }
+                }
+                for branch in branches {
+                    if infoset_particle_can_absent_enc(self, branch.node)? {
+                        return self.encode_choice_matched_branch(
+                            choice_props,
+                            branch.node,
+                            &DfdlValue::sequence(BTreeMap::new()),
+                            map,
+                            out,
+                            bit_count,
+                        );
+                    }
+                }
+                for branch in branches {
                     if ir_branch_encodable_without_infoset(self, branch.node)? {
                         return self.encode_choice_matched_branch(
                             choice_props,
@@ -946,6 +995,21 @@ impl<'a> Encoder<'a> {
         self.write_terminator(props, out, bit_count, None)?;
         Ok(())
     }
+}
+
+fn optional_sequence_particle_absent(
+    enc: &Encoder<'_>,
+    node_id: u32,
+    map: &BTreeMap<String, DfdlValue>,
+) -> Result<bool> {
+    let IrNode::Element { name, props, .. } = enc.ctx.program.node(node_id)? else {
+        return Ok(false);
+    };
+    if props.occurs_min > 0 || props.output_value_calc.is_some() || props.hidden {
+        return Ok(false);
+    }
+    let key = enc.ctx.strings().get(*name)?;
+    Ok(map_has_local_key(map, crate::xml_util::local_name_str(key)).is_none())
 }
 
 fn child_skips_encode(enc: &Encoder<'_>, node_id: u32) -> Result<bool> {
@@ -1337,6 +1401,44 @@ fn ir_props_encodable_without_infoset(props: &IrProps) -> bool {
         || props.occurs_min == 0
 }
 
+fn infoset_particle_can_absent_enc(enc: &Encoder<'_>, node_id: u32) -> Result<bool> {
+    match enc.ctx.program.node(node_id)? {
+        IrNode::Element {
+            props,
+            child,
+            kind,
+            ..
+        } => {
+            if ir_props_encodable_without_infoset(props) {
+                return Ok(true);
+            }
+            if *kind == crate::ir::ValueKind::Complex {
+                if let Some(child_id) = child {
+                    return infoset_particle_can_absent_enc(enc, *child_id);
+                }
+            }
+            Ok(false)
+        }
+        IrNode::Sequence { children, .. } => {
+            for &cid in children {
+                if !infoset_particle_can_absent_enc(enc, cid)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        IrNode::Choice { branches, .. } => {
+            for branch in branches {
+                if infoset_particle_can_absent_enc(enc, branch.node)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
+}
+
 fn ir_branch_encodable_without_infoset(enc: &Encoder<'_>, branch_node: u32) -> Result<bool> {
     match enc.ctx.program.node(branch_node)? {
         IrNode::Element {
@@ -1356,12 +1458,15 @@ fn ir_branch_encodable_without_infoset(enc: &Encoder<'_>, branch_node: u32) -> R
             Ok(false)
         }
         IrNode::Sequence { children, .. } => {
+            if children.is_empty() {
+                return Ok(true);
+            }
             for &cid in children {
                 if !ir_branch_encodable_without_infoset(enc, cid)? {
                     return Ok(false);
                 }
             }
-            Ok(!children.is_empty())
+            Ok(true)
         }
         IrNode::Choice { branches, .. } => {
             for branch in branches {

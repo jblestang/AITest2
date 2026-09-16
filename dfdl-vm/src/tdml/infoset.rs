@@ -267,11 +267,16 @@ fn choice_matched_branch_value(
         let local = local_name_str(branch_name);
         if !find_infoset_children(node, local).is_empty() {
             let branch_nodes = find_infoset_children(node, local);
-            let value = if branch_nodes.len() == 1 {
-                infoset_node_to_ir_value(program, branch.node, branch_nodes[0])?
-            } else {
-                infoset_particle_to_value(program, branch.node, node)?
-            };
+        let value = if branch_nodes.len() == 1 {
+            infoset_node_to_ir_value(program, branch.node, branch_nodes[0])?
+        } else {
+            DfdlValue::Array(
+                branch_nodes
+                    .iter()
+                    .map(|n| infoset_node_to_ir_value(program, branch.node, n))
+                    .collect::<Result<_, _>>()?,
+            )
+        };
             let mut map = BTreeMap::new();
             insert_choice_branch_value(program, branch.node, branch_name, value, &mut map)?;
             return Ok(DfdlValue::sequence(map));

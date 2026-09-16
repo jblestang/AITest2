@@ -972,6 +972,12 @@ impl<'a> Decoder<'a> {
             }
             IrNode::Choice { branches, props } => {
                 let choice_start = cursor.pos;
+                self.consume_initiator(props, cursor)?;
+                let mut choice_stops = stop_sequences.to_vec();
+                if props.terminator.is_some() {
+                    choice_stops.push(props);
+                }
+                let child_stops = choice_stops.as_slice();
                 let choice_frame_bytes = choice_explicit_frame_bytes(
                     props,
                     cursor,
@@ -1041,7 +1047,7 @@ impl<'a> Decoder<'a> {
                         siblings,
                         branch_scope,
                         pattern_text_frame,
-                        stop_sequences,
+                        child_stops,
                     );
                     cursor.frame_bit_limit = saved_frame_limit;
                     match decode_result {
@@ -1077,6 +1083,7 @@ impl<'a> Decoder<'a> {
                             if let Some(frame) = choice_frame_bytes {
                                 cursor.pos = choice_start.saturating_add(frame);
                             }
+                            self.consume_terminator(props, cursor)?;
                             let name = self.ctx.strings().get(branch.name)?.to_string();
                             return Ok(DfdlValue::choice(name, value));
                         }
