@@ -263,6 +263,9 @@ pub struct EscapeSchemeDef {
     /// Raw `escapeBlockEnd` attribute (before entity expansion), for compile-time SDE checks.
     pub escape_block_end_raw: Option<String>,
     pub escape_block_end: Option<String>,
+    pub extra_escaped_characters_raw: Option<String>,
+    /// Expanded single-character entries from `extraEscapedCharacters` (whitespace-separated).
+    pub extra_escaped_characters: alloc::vec::Vec<char>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -438,6 +441,7 @@ pub enum InputValueCalcExpression {
         kind: IvcXsCast,
         inner: alloc::boxed::Box<InputValueCalcExpression>,
     },
+    Ceiling(alloc::boxed::Box<InputValueCalcExpression>),
     /// `$varName` or `$prefix:varName` from defineVariable.
     Variable(alloc::string::String),
 }

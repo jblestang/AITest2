@@ -2187,6 +2187,9 @@ fn validate_schema_ivc_expression_prefixes(
         InputValueCalcExpression::StringOf(inner) => {
             validate_schema_ivc_expression_prefixes(inner, schema)?;
         }
+        InputValueCalcExpression::Ceiling(inner) => {
+            validate_schema_ivc_expression_prefixes(inner, schema)?;
+        }
         InputValueCalcExpression::Variable(_)
         | InputValueCalcExpression::Literal(_)
         | InputValueCalcExpression::LiteralLexical(_) => {}
@@ -3045,7 +3048,8 @@ fn resolve_escape_scheme(
     let ref_name = element_props
         .escape_scheme_ref
         .as_ref()
-        .or(type_props.escape_scheme_ref.as_ref());
+        .or(type_props.escape_scheme_ref.as_ref())
+        .or(schema.format_defaults.props.escape_scheme_ref.as_ref());
     let Some(ref_name) = ref_name else {
         return;
     };
@@ -4471,6 +4475,9 @@ pub(crate) fn intern_input_value_calc_expression(
         InputValueCalcExpression::Div(left, right) => IrInputValueCalcExpression::Div(
             alloc::boxed::Box::new(intern_input_value_calc_expression(left, strings)),
             alloc::boxed::Box::new(intern_input_value_calc_expression(right, strings)),
+        ),
+        InputValueCalcExpression::Ceiling(inner) => IrInputValueCalcExpression::Ceiling(
+            alloc::boxed::Box::new(intern_input_value_calc_expression(inner, strings)),
         ),
         InputValueCalcExpression::Variable(name) => {
             IrInputValueCalcExpression::Variable(strings.intern(name.clone()))

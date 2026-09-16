@@ -11407,6 +11407,13 @@ pub(crate) fn resolve_escape_scheme_runtime(
     if let Some(raw) = scheme.escape_block_end_raw.as_deref() {
         resolved.escape_block_end = Some(resolve_encode_property_pattern(raw, siblings));
     }
+    if let Some(raw) = scheme.extra_escaped_characters_raw.as_deref() {
+        if parse_sibling_property_expr(raw).is_some() || raw.trim().starts_with('{') {
+            let text = resolve_encode_property_pattern(raw, siblings);
+            resolved.extra_escaped_characters =
+                crate::schema::extra_escaped_characters_from_property(&text);
+        }
+    }
     resolved
 }
 

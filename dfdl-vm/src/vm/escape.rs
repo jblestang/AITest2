@@ -1,6 +1,30 @@
 use crate::error::VmError;
 use crate::schema::{EscapeKind, EscapeSchemeDef};
 
+fn utf8_char_len_at(data: &[u8], i: usize, ch: char) -> Option<usize> {
+    let mut buf = [0u8; 4];
+    let s = ch.encode_utf8(&mut buf);
+    let b = s.as_bytes();
+    if i + b.len() <= data.len() && &data[i..i + b.len()] == b {
+        Some(b.len())
+    } else {
+        None
+    }
+}
+
+fn extra_escaped_char_len(data: &[u8], i: usize, extras: &[char]) -> Option<usize> {
+    for &c in extras {
+        if let Some(n) = utf8_char_len_at(data, i, c) {
+            return Some(n);
+        }
+    }
+    None
+}
+
+fn input_contains_extra_escaped(input: &str, extras: &[char]) -> bool {
+    extras.iter().any(|c| input.contains(*c))
+}
+
 /// Apply DFDL escape scheme after padding trim (Section 7 / DFDL-7-089R).
 pub fn unescape_field_text(input: &str, scheme: &EscapeSchemeDef) -> Result<String, VmError> {
     match scheme.escape_kind {
@@ -76,7 +100,11 @@ pub(crate) fn advance_escape_scan_index(data: &[u8], i: usize, scheme: &EscapeSc
                 }
             }
             if i + esc_bytes.len() < data.len() && &data[i..i + esc_bytes.len()] == esc_bytes {
-                return i + esc_bytes.len() + 1;
+                let next = i + esc_bytes.len();
+                if let Some(n) = extra_escaped_char_len(data, next, &scheme.extra_escaped_characters) {
+                    return next + n;
+                }
+                return next + 1;
             }
             if i + esc_bytes.len() <= data.len() && &data[i..i + esc_bytes.len()] == esc_bytes {
                 return i + esc_bytes.len();
@@ -127,8 +155,13 @@ fn unescape_character(input: &str, scheme: &EscapeSchemeDef) -> String {
         if i + esc_bytes.len() <= bytes.len() && &bytes[i..i + esc_bytes.len()] == esc_bytes {
             i += esc_bytes.len();
             if i < bytes.len() {
-                out.push(bytes[i]);
-                i += 1;
+                if let Some(n) = extra_escaped_char_len(bytes, i, &scheme.extra_escaped_characters) {
+                    out.extend_from_slice(&bytes[i..i + n]);
+                    i += n;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
             }
             continue;
         }
@@ -167,7 +200,8 @@ fn escape_block_field(
     let needs_wrap = inner != input
         || markup.iter().any(|m| !m.is_empty() && input.contains(m))
         || (!start.is_empty() && input.contains(start))
-        || (!end.is_empty() && input.contains(end));
+        || (!end.is_empty() && input.contains(end))
+        || input_contains_extra_escaped(input, &scheme.extra_escaped_characters);
     if !needs_wrap {
         return inner;
     }

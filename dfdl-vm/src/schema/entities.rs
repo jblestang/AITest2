@@ -1605,6 +1605,31 @@ pub fn validate_nil_value_compile(
     Ok(())
 }
 
+/// Parse `dfdl:extraEscapedCharacters` into single-character entries (whitespace-separated tokens).
+pub fn extra_escaped_characters_from_property(raw: &str) -> alloc::vec::Vec<char> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return alloc::vec::Vec::new();
+    }
+    let tokens: alloc::vec::Vec<alloc::string::String> =
+        if let Some(alts) = split_entity_and_literal_alternatives(trimmed) {
+            alts
+        } else {
+            trimmed
+                .split_whitespace()
+                .map(|t| unescape_dfdl_delimiter_alt(t))
+                .collect()
+        };
+    let mut out = alloc::vec::Vec::new();
+    for token in tokens {
+        let expanded = expand_entities_str(&token);
+        for ch in expanded.chars() {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// `escapeBlockStart` / `escapeBlockEnd` must not contain literal whitespace (DFDL-6-036R).
 pub fn validate_escape_block_property(raw: &str) -> Result<(), String> {
     validate_property_no_literal_whitespace(raw, "escapeScheme")

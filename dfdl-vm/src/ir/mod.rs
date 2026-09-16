@@ -150,6 +150,7 @@ pub enum IrInputValueCalcExpression {
         kind: IrIvcXsCast,
         inner: alloc::boxed::Box<IrInputValueCalcExpression>,
     },
+    Ceiling(alloc::boxed::Box<IrInputValueCalcExpression>),
     Variable(StringId),
 }
 

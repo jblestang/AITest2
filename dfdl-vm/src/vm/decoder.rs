@@ -596,6 +596,13 @@ impl<'a> Decoder<'a> {
                 resolved.escape_block_end = Some(self.eval_escape_scheme_property(raw)?);
             }
         }
+        if let Some(raw) = scheme.extra_escaped_characters_raw.as_deref() {
+            if raw.trim().starts_with('{') {
+                let text = self.eval_escape_scheme_property(raw)?;
+                resolved.extra_escaped_characters =
+                    crate::schema::extra_escaped_characters_from_property(&text);
+            }
+        }
         Ok(resolved)
     }
 
@@ -4000,10 +4007,10 @@ impl<'a> Decoder<'a> {
                             resolved_stop_delimiters.push((id, lit));
                         }
                     }
-                    let resolved_escape = props
-                        .escape_scheme
-                        .as_ref()
-                        .and_then(|s| self.resolve_escape_scheme_for_decode(s).ok());
+                    let resolved_escape = match props.escape_scheme.as_ref() {
+                        Some(s) => Some(self.resolve_escape_scheme_for_decode(s)?),
+                        None => None,
+                    };
                     let scan_ctx = parent_sequence.map(|parent| {
                         let nested_under_repeating_particle = self.occurrence_decode_depth.get() > 1
                             && parent.separator.is_some()
@@ -6534,7 +6541,12 @@ fn eval_input_value_calc_expression(
         } => eval_ivc_path_steps(*parent_root, steps, ctx, strings, tunables),
         IrInputValueCalcExpression::StringOf(inner) => {
             let value = eval_input_value_calc_expression(
-                inner, ctx, strings, tunables, target_kind, target_props,
+                inner,
+                ctx,
+                strings,
+                tunables,
+                ValueKind::Integer,
+                target_props,
             )?;
             let text = dfdl_value_to_string(&value);
             Ok(DfdlValue::String(StringValue::new(text)))
@@ -6564,6 +6576,12 @@ fn eval_input_value_calc_expression(
             let name = strings.get(*id)?;
             let text = resolve_ivc_variable(name, ctx)?;
             parse_ivc_lexical_for_kind(&text, target_kind, target_props, strings)
+        }
+        IrInputValueCalcExpression::Ceiling(inner) => {
+            let value = eval_input_value_calc_to_f64(
+                inner, ctx, strings, tunables, ValueKind::Double, target_props,
+            )?;
+            ivc_f64_to_value(value.ceil(), target_kind)
         }
     }
 }

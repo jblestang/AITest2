@@ -2339,6 +2339,9 @@ impl<'a> XsdParser<'a> {
                 XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
                     let _ = self.reader.next_event()?;
                 }
+                XmlEvent::Comment(_) => {
+                    let _ = self.reader.next_event()?;
+                }
                 other => {
                     return Err(ParseError::InvalidXml {
                         message: alloc::format!(
@@ -2428,6 +2431,11 @@ fn escape_scheme_from_attrs(attrs: &BTreeMap<String, String>) -> EscapeSchemeDef
         escape_block_end: attrs
             .get("escapeBlockEnd")
             .map(|s| expand_entities_str(s)),
+        extra_escaped_characters_raw: attrs.get("extraEscapedCharacters").cloned(),
+        extra_escaped_characters: attrs
+            .get("extraEscapedCharacters")
+            .map(|s| super::entities::extra_escaped_characters_from_property(s))
+            .unwrap_or_default(),
     }
 }
 
@@ -3324,6 +3332,12 @@ fn parse_ivc_path_expr(s: &str) -> Option<crate::schema::InputValueCalcExpressio
 
 fn parse_ivc_primary(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
     let s = s.trim();
+    if let Some(arg) = extract_ivc_paren_argument(s, "fn:ceiling(") {
+        let inner = parse_ivc_add_expr(&arg)?;
+        return Some(crate::schema::InputValueCalcExpression::Ceiling(
+            alloc::boxed::Box::new(inner),
+        ));
+    }
     for (prefix, kind) in [
         ("xs:byte(", crate::schema::IvcXsCast::Byte),
         ("xsd:byte(", crate::schema::IvcXsCast::Byte),
