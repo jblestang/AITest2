@@ -23,6 +23,19 @@ fn schema_context_field_name(local_name: &str) -> String {
     alloc::format!("ex:{local_name}")
 }
 
+/// Initiators like `[s1:` are literal text, not DFDL delimiter regex character classes.
+fn encode_element_framing_literal(pattern: &str) -> Vec<u8> {
+    if pattern.starts_with('[')
+        && !pattern.starts_with("%")
+        && !pattern.contains('*')
+        && !pattern.contains('?')
+        && !pattern.contains('+')
+    {
+        return pattern.as_bytes().to_vec();
+    }
+    encode_delimiter(pattern)
+}
+
 /// DFDL encoder VM — executes compiled IR to serialize logical values.
 pub struct Encoder<'a> {
     ctx: VmContext<'a>,
@@ -431,7 +444,7 @@ impl<'a> Encoder<'a> {
                 if !pat.is_empty() {
                     let bytes = match delim_meta.and_then(|m| m.initiator_alt) {
                         Some(a) => encode_delimiter_by_alt(pat, a),
-                        None => encode_delimiter(pat),
+                        None => encode_element_framing_literal(pat),
                     };
                     write_byte_aligned(out, bit_count, &bytes).map_err(Error::from)?;
                 }

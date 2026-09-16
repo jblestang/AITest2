@@ -46,6 +46,18 @@ fn run_single_tdml_file() {
     let mut suite = parse_tdml(&tdml).expect("parse");
     enrich_external_tdml_models(&mut suite, Path::new(&path));
     if let Ok(only) = env::var("TDML_TEST") {
+        if let Ok(unparse) = env::var("TDML_UNPARSE") {
+            if unparse == "1" {
+                let t = suite
+                    .unparser_tests
+                    .iter()
+                    .find(|t| t.name == only)
+                    .unwrap_or_else(|| panic!("unparse test {only} not found"));
+                let r = run_unparser_test(&suite, t).expect("run");
+                eprintln!("{only}: {:?}", r.outcome);
+                return;
+            }
+        }
         let t = suite
             .tests
             .iter()
