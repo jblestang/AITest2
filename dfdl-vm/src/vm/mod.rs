@@ -13,4 +13,4 @@ mod runtime;
 
 pub use decoder::Decoder;
 pub use encoder::Encoder;
-pub use runtime::{Cursor, RuntimeConfig};
+pub use runtime::{resolve_output_new_line_for_encode, Cursor, RuntimeConfig};

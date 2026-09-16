@@ -275,6 +275,9 @@ impl<'a> XmlReader<'a> {
 }
 
 pub fn local_name_str(name: &str) -> &str {
+    if let Some(idx) = name.rfind('}') {
+        return &name[idx + 1..];
+    }
     name.rsplit(':').next().unwrap_or(name)
 }
 

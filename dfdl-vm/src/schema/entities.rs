@@ -1715,6 +1715,19 @@ pub fn encode_framing_property_literal(pattern: &str) -> Option<Vec<u8>> {
     None
 }
 
+/// Encode a resolved `dfdl:outputNewLine` value (may be NEL/LS/PS, not only LF).
+fn encode_output_new_line_text(onl: &str, encoding: Option<&str>) -> Vec<u8> {
+    use crate::vm::encoding::{encode_document_text, normalize_encoding_name};
+    if let Some(enc) = encoding.and_then(normalize_encoding_name) {
+        if let Ok(bytes) = encode_document_text(onl, enc) {
+            return bytes;
+        }
+    } else if let Ok(bytes) = encode_document_text(onl, "utf-8") {
+        return bytes;
+    }
+    encode_delimiter(onl)
+}
+
 /// Encode a full delimiter pattern (all segments) in the field's character encoding.
 pub fn encode_delimiter_for_encoding(
     pattern: &str,
@@ -1729,7 +1742,7 @@ pub fn encode_delimiter_for_encoding(
                     let mut out = Vec::new();
                     for segment in split_delimiter_segments(pattern) {
                         if segment == "%NL;" || segment == "\n" {
-                            out.extend(encode_delimiter(onl));
+                            out.extend(encode_output_new_line_text(onl, Some("utf-8")));
                         } else {
                             out.extend(minimal_encode_segment(segment));
                         }
@@ -1824,7 +1837,7 @@ pub fn encode_property_delimiter(pattern: &str, output_new_line: Option<&str>) -
     }
     if first == "%NL;" || first == "\n" {
         if let Some(onl) = output_new_line {
-            return encode_delimiter(onl);
+            return encode_output_new_line_text(onl, None);
         }
     }
     if let Some(lit) = encode_framing_property_literal(first) {
@@ -2013,7 +2026,7 @@ pub fn encode_nl_comma_space_separator(
     let mut out = Vec::new();
     if newline_prefix {
         if let Some(onl) = output_new_line {
-            out.extend(encode_delimiter(onl));
+            out.extend(encode_output_new_line_text(onl, None));
         } else {
             out.push(b'\n');
         }
@@ -2878,6 +2891,15 @@ mod tests {
         assert_eq!(expand_entities("%NL;"), vec![10u8]);
         assert_eq!(encode_delimiter("\n"), vec![10u8]);
         assert_eq!(encode_delimiter("%NL;"), vec![10u8]);
+    }
+
+    #[test]
+    fn encode_delimiter_for_encoding_output_new_line_nel() {
+        let nel = "\u{0085}";
+        assert_eq!(
+            encode_delimiter_for_encoding("%NL;|", Some(nel), Some("utf-8")),
+            vec![0xc2, 0x85, b'|']
+        );
     }
 
     #[test]

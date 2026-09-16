@@ -11174,7 +11174,7 @@ fn parse_encode_dfdl_entities_sibling(raw: &str) -> Option<alloc::string::String
     )
 }
 
-pub(crate) fn resolve_output_new_line_for_encode(
+pub fn resolve_output_new_line_for_encode(
     props: &IrProps,
     siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
     strings: &StringPool,
