@@ -195,6 +195,8 @@ pub struct Decoder<'a> {
     xpath_siblings: RefCell<BTreeMap<String, SiblingState>>,
     /// Outer sequence sibling maps for `../` / `../../` assert and xpath evaluation.
     xpath_ancestor_frames: RefCell<Vec<BTreeMap<String, SiblingState>>>,
+    /// Set when a choice branch discriminator evaluates true (commits outer choice).
+    discriminator_committed_branch: Cell<bool>,
 }
 
 impl<'a> Decoder<'a> {
@@ -216,6 +218,7 @@ impl<'a> Decoder<'a> {
             runtime_variables: RefCell::new(BTreeMap::new()),
             xpath_siblings: RefCell::new(BTreeMap::new()),
             xpath_ancestor_frames: RefCell::new(Vec::new()),
+            discriminator_committed_branch: Cell::new(false),
         }
     }
 
@@ -1141,6 +1144,8 @@ impl<'a> Decoder<'a> {
                 let choice_start = cursor.pos;
                 self.consume_initiator(props, cursor)?;
                 validate_choice_branches_non_optional_runtime(self.ctx.program, branches)?;
+                validate_choice_branches_not_ivc_runtime(self.ctx.program, branches)?;
+                validate_choice_branch_element_name_upa_runtime(self.ctx.program, branches)?;
                 let mut choice_stops = stop_sequences.to_vec();
                 if props.terminator.is_some() {
                     choice_stops.push(props);
@@ -1235,6 +1240,7 @@ impl<'a> Decoder<'a> {
                     if props.initiated_content && initiated_initiator_committed {
                         break;
                     }
+                    self.discriminator_committed_branch.set(false);
                     let saved = cursor.clone();
                     let saved_frame_limit = cursor.frame_bit_limit;
                     if let Some(frame) = choice_frame_bytes {
@@ -1298,10 +1304,30 @@ impl<'a> Decoder<'a> {
                                 branch,
                                 branches,
                                 self.ctx.strings(),
+                                self.ctx.program,
                             )?;
                             return Ok(DfdlValue::choice(discriminator, value));
                         }
                         Err(e) => {
+                            if is_schema_definition_error(&e) {
+                                return Err(e);
+                            }
+                            if self.discriminator_committed_branch.get() && cursor.pos > saved.pos {
+                                let detail = format_choice_branch_error(
+                                    branch,
+                                    self.ctx.strings(),
+                                    &e,
+                                );
+                                let mut committed_errors = alloc::vec![detail];
+                                if using_dispatch {
+                                    committed_errors
+                                        .insert(0, "Choice dispatch branch failed".into());
+                                }
+                                return Err(VmError::InvalidChoice {
+                                    branch_errors: committed_errors,
+                                }
+                                .into());
+                            }
                             branch_errors.push(format_choice_branch_error(
                                 branch,
                                 self.ctx.strings(),
@@ -4146,6 +4172,7 @@ impl<'a> Decoder<'a> {
         };
         let expr = self.ctx.strings().get(id)?;
         if self.eval_particle_assert_expression(expr, dot)? {
+            self.discriminator_committed_branch.set(true);
             return Ok(());
         }
         let msg = self.eval_facet_assert_message(props)?;
@@ -4222,10 +4249,7 @@ impl<'a> Decoder<'a> {
                     return Ok(());
                 }
                 return Err(VmError::InvalidValue {
-                    message: alloc::format!(
-                        "terminator mismatch: expected `{pat}` at byte 0x{:02x}",
-                        cursor.data.get(cursor.pos).copied().unwrap_or(0)
-                    ),
+                    message: alloc::format!("terminator '{pat}' not found"),
                 }
                 .into());
             }
@@ -5503,6 +5527,65 @@ fn validate_choice_branches_non_optional_runtime(
     Ok(())
 }
 
+fn ir_element_has_input_value_calc(props: &IrProps) -> bool {
+    props.input_value_calc.is_some()
+        || props.input_value_calc_literal.is_some()
+        || props.input_value_calc_sibling.is_some()
+        || props.input_value_calc_segments.is_some()
+        || props.input_value_calc_path.is_some()
+        || props.input_value_calc_expression.is_some()
+}
+
+fn choice_branch_has_input_value_calc(program: &IrProgram, branch_node: u32) -> Result<bool> {
+    match program.node(branch_node)? {
+        IrNode::Element { props, .. } if !props.hidden => {
+            Ok(ir_element_has_input_value_calc(props))
+        }
+        _ => Ok(false),
+    }
+}
+
+fn validate_choice_branches_not_ivc_runtime(
+    program: &IrProgram,
+    branches: &[ChoiceBranch],
+) -> Result<()> {
+    for branch in branches {
+        if choice_branch_has_input_value_calc(program, branch.node)? {
+            return Err(VmError::InvalidValue {
+                message:
+                    "Schema Definition Error: Branch of choice cannot have the dfdl:inputValueCalc property."
+                        .into(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_choice_branch_element_name_upa_runtime(
+    program: &IrProgram,
+    branches: &[ChoiceBranch],
+) -> Result<()> {
+    let mut seen: BTreeMap<alloc::string::String, ()> = BTreeMap::new();
+    for branch in branches {
+        let term = choice_branch_term_node(program, branch.node)?;
+        let IrNode::Element { name, .. } = program.node(term)? else {
+            continue;
+        };
+        let local = program.strings.get(*name)?.to_string();
+        if seen.contains_key(&local) {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Schema Definition Error: Unique Particle Attribution violation for element '{local}' in choice"
+                ),
+            }
+            .into());
+        }
+        seen.insert(local, ());
+    }
+    Ok(())
+}
+
 fn parse_discriminator_path_step(step: &str) -> Result<(&str, Option<usize>)> {
     let step = step.trim();
     if let Some(open) = step.find('[') {
@@ -6185,16 +6268,39 @@ fn choice_branch_names_collide(branches: &[ChoiceBranch], name: StringId) -> boo
         > 1
 }
 
+fn choice_branch_leading_element_name(
+    program: &IrProgram,
+    branch_node: u32,
+) -> Result<Option<alloc::string::String>> {
+    let term = choice_branch_term_node(program, branch_node)?;
+    match program.node(term)? {
+        IrNode::Element { name, .. } => Ok(Some(program.strings.get(*name)?.to_string())),
+        IrNode::Sequence { children, .. } => {
+            for &child in children {
+                if let IrNode::Element { name, .. } = program.node(child)? {
+                    return Ok(Some(program.strings.get(*name)?.to_string()));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
 fn choice_branch_discriminator_for_infoset(
     branch: &ChoiceBranch,
     branches: &[ChoiceBranch],
     strings: &StringPool,
+    program: &IrProgram,
 ) -> Result<alloc::string::String> {
     if choice_branch_names_collide(branches, branch.name) {
         if let Some(id) = branch.branch_key {
             if let Ok(k) = strings.get(id) {
                 return Ok(k.to_string());
             }
+        }
+        if let Some(local) = choice_branch_leading_element_name(program, branch.node)? {
+            return Ok(local);
         }
     }
     Ok(strings.get(branch.name)?.to_string())
@@ -6209,6 +6315,13 @@ fn choice_branch_discriminator_matches_name(
         .branch_key
         .and_then(|id| program.strings.get(id).ok())
         .is_some_and(|k| k == discriminator)
+    {
+        return true;
+    }
+    if choice_branch_leading_element_name(program, branch.node)
+        .ok()
+        .flatten()
+        .is_some_and(|n| n == discriminator)
     {
         return true;
     }
