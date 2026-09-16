@@ -583,7 +583,7 @@ fn validate_sequence_children(
     parent_name: &str,
     enforce_element_form: bool,
 ) -> Result<(), String> {
-    for &child_id in children {
+    for (child_idx, &child_id) in children.iter().enumerate() {
         match program.node(child_id).map_err(|e| e.to_string())? {
             IrNode::Sequence { .. } | IrNode::Choice { .. } => {
                 validate_infoset_particle(
@@ -609,16 +609,43 @@ fn validate_sequence_children(
         let elem_name = program.strings.get(*name).map_err(|e| e.to_string())?;
         let local = crate::xml_util::local_name_str(elem_name);
         let ns_for_qname = if qualified { tns } else { None };
+        let ns_for_errors = tns.filter(|u| !u.is_empty());
         let max = effective_occurs_max_for_unparse(program, props, node)?;
         let min = props.occurs_min;
         let infoset_children = find_infoset_children(node, local);
         let count = infoset_children.len() as u64;
         if count < min {
             let elem_qname = element_qname_in_errors(local, ns_for_qname);
-            if props.occurs_count_kind == OccursCountKind::Implicit && min > 0 {
+            if min > 0
+                && matches!(
+                    props.occurs_count_kind,
+                    OccursCountKind::Implicit
+                        | OccursCountKind::Expression
+                        | OccursCountKind::Fixed
+                )
+            {
                 let needed = min.saturating_sub(count);
+                let end_event_for = if props.occurs_count_kind == OccursCountKind::Expression {
+                    children
+                        .get(child_idx + 1)
+                        .and_then(|&next_id| program.node(next_id).ok())
+                        .and_then(|next| {
+                            if let IrNode::Element { name: next_name, .. } = next {
+                                let next_local = crate::xml_util::local_name_str(
+                                    program.strings.get(*next_name).ok()?,
+                                );
+                                Some(element_qname_in_errors(next_local, ns_for_errors))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| parent_name.to_string())
+                } else {
+                    parent_name.to_string()
+                };
+                let end_kind = if min > 1 { "array end" } else { "element end" };
                 return Err(format!(
-                    "Unparse Error: Expected {needed} additional {elem_qname} received element end event for {parent_name}"
+                    "Unparse Error: Expected {needed} additional {elem_qname} received {end_kind} event for {end_event_for}"
                 ));
             }
             return Err(format!(
@@ -626,11 +653,11 @@ fn validate_sequence_children(
             ));
         }
         if count > max {
-            let elem_qname = element_qname_in_errors(local, ns_for_qname);
+            let elem_qname = element_qname_in_errors(local, ns_for_errors);
             let parent_q = if parent_name.starts_with('{') {
                 parent_name.to_string()
             } else {
-                element_qname_in_errors(parent_name, ns_for_qname)
+                element_qname_in_errors(parent_name, ns_for_errors)
             };
             if max > 1 {
                 return Err(format!(

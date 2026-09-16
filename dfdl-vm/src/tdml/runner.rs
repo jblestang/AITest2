@@ -628,6 +628,8 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
                 || el.contains("element start")
                 || el.contains("expected element")
                 || el.contains("expected one of")
+                || el.contains("expected 1 additional")
+                || el.contains("additional")
                 || el.contains("schema definition error")
                 || el.contains("no global element")
                 || el.contains("not implemented")

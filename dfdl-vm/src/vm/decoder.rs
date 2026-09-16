@@ -847,7 +847,26 @@ impl<'a> Decoder<'a> {
                             props,
                             self.ctx.strings(),
                         )?;
-                    if skip_sep_at_term {
+                    let skip_optional_absent_at_boundary =
+                        if let Ok(IrNode::Element { props: cp, .. }) =
+                            self.ctx.program.node(child)
+                        {
+                            cp.occurs_min == 0
+                                && cp.initiator.is_some()
+                                && !self.initiator_present_at_cursor(cursor, cp)?
+                                && (skip_sep_at_term
+                                    || self.at_enclosing_terminator_stop(cursor, child_stops)?)
+                        } else {
+                            false
+                        };
+                    if skip_sep_at_term || skip_optional_absent_at_boundary {
+                        break 'repeat_slot;
+                    }
+                    let skip_empty_prefix_optional = props.separator_position
+                        == SeparatorPosition::Prefix
+                        && cursor.is_empty()
+                        && child_element_props.is_some_and(|cp| cp.occurs_min == 0);
+                    if skip_empty_prefix_optional {
                         break 'repeat_slot;
                     }
                     if child_element_props.is_some_and(|cp| cp.occurs_min == 0)
@@ -935,7 +954,10 @@ impl<'a> Decoder<'a> {
                         }
                         if props.separator_suppression_policy
                             == Some(crate::schema::SeparatorSuppressionPolicy::TrailingEmptyStrict)
-                            && props.separator_position == SeparatorPosition::Infix
+                            && matches!(
+                                props.separator_position,
+                                SeparatorPosition::Infix | SeparatorPosition::Prefix
+                            )
                             && cp.occurs_min == 0
                             && cp.occurs_count_kind == OccursCountKind::Implicit
                         {
@@ -948,7 +970,21 @@ impl<'a> Decoder<'a> {
                                 cursor,
                                 Some(props),
                                 self.ctx.strings(),
-                            )?;
+                            )? || (props.separator_position == SeparatorPosition::Prefix
+                                && props.separator.is_some()
+                                && {
+                                    let sep_id = props.separator.unwrap();
+                                    let sep_pat = self.ctx.strings().get(sep_id)?;
+                                    crate::schema::match_delimiter_opts_for_encoding(
+                                        &cursor.data[cursor.pos..],
+                                        sep_pat,
+                                        props.ignore_case,
+                                        encoding_name(props, self.ctx.strings())
+                                            .ok()
+                                            .as_deref(),
+                                    )
+                                    .is_some()
+                                });
                             if empty_slot {
                                 return Err(trailing_empty_strict_parse_error());
                             }
@@ -3131,6 +3167,13 @@ impl<'a> Decoder<'a> {
                         }
                         let err_msg = e.to_string();
                         if err_msg.contains("initiator mismatch") && !rewind.is_empty() {
+                            if !items.is_empty()
+                                && (items.len() as u64) >= min
+                                && props.occurs_count_kind == OccursCountKind::Implicit
+                            {
+                                *cursor = before_occurrence_sep;
+                                break;
+                            }
                             return Err(
                                 element_parse_error(
                                     node_id,
