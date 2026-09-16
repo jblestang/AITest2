@@ -2866,6 +2866,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.output_new_line.is_some() {
         base.output_new_line = overlay.output_new_line;
     }
+    if overlay.output_new_line_sibling.is_some() {
+        base.output_new_line_sibling = overlay.output_new_line_sibling;
+    }
     if overlay.occurs_min.is_some() {
         base.occurs_min = overlay.occurs_min;
     }
@@ -3896,6 +3899,33 @@ fn looks_like_xpath_output_value_calc(value: &str) -> bool {
         || inner.contains("xs:long(")
 }
 
+fn parse_output_new_line_encode_sibling(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let inner = if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        trimmed[1..trimmed.len() - 1].trim()
+    } else {
+        trimmed
+    };
+    let prefix = "dfdl:encodeDFDLEntities(";
+    if !inner.starts_with(prefix) || !inner.ends_with(')') {
+        return None;
+    }
+    let path = inner[prefix.len()..inner.len() - 1].trim();
+    let path = path.strip_prefix("../")?;
+    Some(local_name_from_qname(path).to_string())
+}
+
+fn parse_decode_dfdl_entities_call(arg: &str) -> Option<String> {
+    let arg = arg.trim();
+    let prefix = "dfdl:decodeDFDLEntities(";
+    if !arg.starts_with(prefix) || !arg.ends_with(')') {
+        return None;
+    }
+    let inner = arg[prefix.len()..arg.len() - 1].trim();
+    let lit = parse_xs_string_literal_arg(inner)?;
+    Some(crate::schema::expand_entities_str(&lit))
+}
+
 fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<String>, Option<String>)> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
@@ -3909,6 +3939,9 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
         let arg = inner["xs:string(".len()..inner.len() - 1].trim();
         if let Some(lit) = parse_xs_string_literal_arg(arg) {
             return Some((OutputValueCalc::Constant(0), None, Some(lit)));
+        }
+        if let Some(decoded) = parse_decode_dfdl_entities_call(arg) {
+            return Some((OutputValueCalc::Constant(0), None, Some(decoded)));
         }
         if let Some(nested) = parse_output_value_calc(&alloc::format!("{{{arg}}}")) {
             return Some(nested);
@@ -5004,14 +5037,18 @@ fn props_from_attrs_with_variables(
                 props.separator = Some(lit);
             }
             "outputNewLine" => {
-                let lit = parse_delimiter_literal(value)?;
-                if lit.is_empty() {
-                    return Err(ParseError::InvalidXml {
-                        message: "For property dfdl:outputNewLine, the length of string must be exactly 1 character, except for CRLF case when it can be 2 characters.".into(),
+                if let Some(sib) = parse_output_new_line_encode_sibling(value) {
+                    props.output_new_line_sibling = Some(sib);
+                } else {
+                    let lit = parse_delimiter_literal(value)?;
+                    if lit.is_empty() {
+                        return Err(ParseError::InvalidXml {
+                            message: "For property dfdl:outputNewLine, the length of string must be exactly 1 character, except for CRLF case when it can be 2 characters.".into(),
+                        }
+                        .into());
                     }
-                    .into());
+                    props.output_new_line = Some(lit);
                 }
-                props.output_new_line = Some(lit);
             }
             "initiatedContent" => {
                 props.initiated_content = Some(matches!(value.as_str(), "yes" | "true" | "1"));

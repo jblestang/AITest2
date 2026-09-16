@@ -14,7 +14,7 @@ fn codepoint_to_delimiter_bytes(cp: u32, encoding: Option<&str>) -> Option<Vec<u
                 }
                 return None;
             }
-            "utf-16be" | "utf-16le" => {
+            "utf-16be" | "utf-16le" | "utf-32be" | "utf-32le" => {
                 let ch = char::from_u32(cp)?;
                 return encode_document_text(&ch.to_string(), enc).ok();
             }
@@ -577,6 +577,10 @@ pub fn parse_delimiter_literal_value(raw: &str) -> String {
         return unescaped.trim_end_matches([' ', '\t']).to_string();
     }
     if is_compound_dfdl_entity_delimiter(&unescaped) || has_quantified_dfdl_entity(&unescaped) {
+        return unescaped.trim().to_string();
+    }
+    // Keep `%NL;` + literal suffix (e.g. `%NL;|`) for unparse outputNewLine substitution.
+    if unescaped.starts_with("%NL;") && unescaped.len() > "%NL;".len() {
         return unescaped.trim().to_string();
     }
     let expanded = expand_entities(&unescaped);
@@ -1711,6 +1715,100 @@ pub fn encode_framing_property_literal(pattern: &str) -> Option<Vec<u8>> {
     None
 }
 
+/// Encode a full delimiter pattern (all segments) in the field's character encoding.
+pub fn encode_delimiter_for_encoding(
+    pattern: &str,
+    output_new_line: Option<&str>,
+    encoding: Option<&str>,
+) -> Vec<u8> {
+    use crate::vm::encoding::{encode_document_text, normalize_encoding_name};
+    let enc = match encoding.and_then(normalize_encoding_name) {
+        Some("utf-8") | Some("ascii") | None => {
+            if let Some(onl) = output_new_line {
+                if pattern.contains("%NL;") {
+                    let mut out = Vec::new();
+                    for segment in split_delimiter_segments(pattern) {
+                        if segment == "%NL;" || segment == "\n" {
+                            out.extend(encode_delimiter(onl));
+                        } else {
+                            out.extend(minimal_encode_segment(segment));
+                        }
+                    }
+                    return out;
+                }
+            }
+            return encode_delimiter(pattern);
+        }
+        Some(e) => e,
+    };
+    let mut out = Vec::new();
+    for segment in split_delimiter_segments(pattern) {
+        if segment == "%NL;" || segment == "\n" {
+            if let Some(onl) = output_new_line {
+                if let Ok(bytes) = encode_document_text(onl, enc) {
+                    out.extend(bytes);
+                    continue;
+                }
+            }
+        }
+        out.extend(encode_property_delimiter_for_encoding(segment, None, Some(enc)));
+    }
+    out
+}
+
+/// Encode the first alternative of a delimiter property using the field's character encoding.
+pub fn encode_property_delimiter_for_encoding(
+    pattern: &str,
+    output_new_line: Option<&str>,
+    encoding: Option<&str>,
+) -> Vec<u8> {
+    use crate::vm::encoding::{encode_document_text, normalize_encoding_name};
+    let enc = match encoding.and_then(normalize_encoding_name) {
+        Some("utf-8") | Some("ascii") | None => {
+            return encode_property_delimiter(pattern, output_new_line);
+        }
+        Some(e) => e,
+    };
+    if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
+        return encode_document_text(",", enc).unwrap_or_else(|_| vec![b',']);
+    }
+    let alts = delimiter_alternatives(pattern);
+    if alts.is_empty() {
+        return Vec::new();
+    }
+    let first = alts[0].as_str();
+    if first.is_empty() {
+        return Vec::new();
+    }
+    if first == "%NL;" || first == "\n" {
+        if let Some(onl) = output_new_line {
+            return encode_document_text(onl, enc)
+                .unwrap_or_else(|_| encode_property_delimiter(pattern, Some(onl)));
+        }
+    }
+    if first.starts_with('%') {
+        let bytes = expand_entities_for_encoding(first, Some(enc));
+        if !bytes.is_empty() {
+            return bytes;
+        }
+    }
+    if first.len() == 1 {
+        return encode_document_text(first, enc).unwrap_or_else(|_| vec![first.as_bytes()[0]]);
+    }
+    if !first.contains('[')
+        && !first.contains('*')
+        && !first.contains('?')
+        && !first.contains('+')
+        && !first.contains('(')
+    {
+        let text = expand_entities_str(first);
+        if let Ok(bytes) = encode_document_text(&text, enc) {
+            return bytes;
+        }
+    }
+    encode_property_delimiter(pattern, output_new_line)
+}
+
 /// Encode the first alternative of a DFDL delimiter property (unparse default).
 pub fn encode_property_delimiter(pattern: &str, output_new_line: Option<&str>) -> Vec<u8> {
     if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
@@ -2794,6 +2892,18 @@ mod tests {
         assert_eq!(delimiter_alternatives(pat), vec![",", ",,", ",,,"]);
         assert_eq!(match_delimiter_opts(b",,2", pat, false), Some(2));
         assert_eq!(match_delimiter_opts(b",,,3", pat, false), Some(3));
+    }
+
+    #[test]
+    fn encode_nl_pipe_terminator_uses_output_new_line() {
+        let nel = "\u{0085}";
+        let out = super::encode_delimiter_for_encoding("%NL;|", Some(nel), Some("utf-8"));
+        assert_eq!(out, alloc::vec![0xc2, 0x85, b'|']);
+    }
+
+    #[test]
+    fn parse_nl_pipe_terminator_literal() {
+        assert_eq!(super::parse_delimiter_literal_value("%NL;|"), "%NL;|");
     }
 
     #[test]

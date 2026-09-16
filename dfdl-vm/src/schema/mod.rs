@@ -20,7 +20,8 @@ pub use facets::{
 };
 pub use entities::{
     encode_delimiter, encode_delimiter_by_alt, encode_framing_property_literal,
-    encode_nl_comma_space_separator, encode_property_delimiter, encode_sequence_separator,
+    encode_delimiter_for_encoding, encode_nl_comma_space_separator, encode_property_delimiter,
+    encode_property_delimiter_for_encoding, encode_sequence_separator,
     expand_entities, match_delimiter_with_alt,
     validate_delimiter_es_restriction,
     expand_entities_for_encoding, expand_entities_str, is_nl_comma_space_pattern, match_delimiter,

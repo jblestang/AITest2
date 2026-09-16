@@ -424,6 +424,7 @@ impl<'a> Encoder<'a> {
                             Some(&schema_ctx),
                             None,
                             encode_scope,
+                            encode_scope,
                             false,
                         )
                     } else {
@@ -479,6 +480,7 @@ impl<'a> Encoder<'a> {
         field_name: Option<&str>,
         delim_meta: Option<&crate::value::FieldDelimiterMeta>,
         encode_scope: Option<&BTreeMap<String, DfdlValue>>,
+        encode_siblings: Option<&BTreeMap<String, DfdlValue>>,
         sequence_particle: bool,
     ) -> Result<()> {
         let items = match value {
@@ -528,6 +530,7 @@ impl<'a> Encoder<'a> {
                 Some(&self.ctx.config),
                 field_name,
                 delim_meta,
+                encode_siblings,
             )?;
         }
         Ok(())
@@ -683,6 +686,7 @@ impl<'a> Encoder<'a> {
                 }
                 if let Some(child_id) = child {
                     let field = element_payload_value(&value, key);
+                    let sibling_lookup = merged_encode_lookup(encode_scope, map);
                     if needs_length_frame(&resolved) {
                         let schema_ctx = schema_context_field_name(key);
                         self.encode_framed_element(
@@ -694,6 +698,7 @@ impl<'a> Encoder<'a> {
                             Some(&schema_ctx),
                             field_delim,
                             encode_scope,
+                            Some(&sibling_lookup),
                             true,
                         )
                     } else {

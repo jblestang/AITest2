@@ -10589,6 +10589,7 @@ pub(crate) fn write_framed_payload(
     config: Option<&RuntimeConfig>,
     field_name: Option<&str>,
     delim_meta: Option<&crate::value::FieldDelimiterMeta>,
+    encode_siblings: Option<&BTreeMap<String, crate::value::DfdlValue>>,
 ) -> Result<(), crate::error::VmError> {
     match props.length_kind {
         LengthKind::Prefixed => {
@@ -10617,10 +10618,16 @@ pub(crate) fn write_framed_payload(
             if let Some(id) = props.terminator {
                 let pat = strings.get(id)?;
                 if !pat.is_empty() {
-                    let bytes = match delim_meta.and_then(|m| m.terminator_alt) {
-                        Some(a) => encode_delimiter_by_alt(pat, a),
-                        None => encode_delimiter(pat),
-                    };
+                    let encoding = encoding_name(props, strings)?;
+                    let output_nl =
+                        resolve_output_new_line_for_encode(props, encode_siblings, strings)?
+                            .map(|s| s as alloc::string::String);
+                    let bytes = encode_framing_delimiter_bytes(
+                        pat,
+                        output_nl.as_deref(),
+                        encoding,
+                        delim_meta.and_then(|m| m.terminator_alt),
+                    );
                     write_byte_aligned(out, bit_count, &bytes)?;
                 }
             }
@@ -11027,17 +11034,20 @@ pub(crate) fn write_simple(
         crate::vm::alignment::write_trailing_skip(out, bit_count, props)?;
         return Ok(());
     }
+    let encoding = encoding_name(props, strings)?;
+    let output_nl = resolve_output_new_line_for_encode(props, encode_siblings, strings)?
+        .map(|s| s as alloc::string::String);
+    let output_nl_ref = output_nl.as_deref();
     if let Some(id) = props.initiator {
         let raw = strings.get(id)?;
         let pat = resolve_encode_property_pattern(raw, encode_siblings);
         if !pat.is_empty() {
-            let output_nl = props
-                .output_new_line
-                .and_then(|id| strings.get(id).ok());
-            let bytes = match delim_meta.and_then(|m| m.initiator_alt) {
-                Some(a) => encode_delimiter_by_alt(&pat, a),
-                None => encode_property_delimiter(&pat, output_nl),
-            };
+            let bytes = encode_framing_delimiter_bytes(
+                &pat,
+                output_nl_ref,
+                encoding,
+                delim_meta.and_then(|m| m.initiator_alt),
+            );
             write_byte_aligned(out, bit_count, &bytes)?;
         }
     }
@@ -11071,13 +11081,12 @@ pub(crate) fn write_simple(
         let raw = strings.get(id)?;
         let pat = resolve_encode_property_pattern(raw, encode_siblings);
         if !pat.is_empty() {
-            let output_nl = props
-                .output_new_line
-                .and_then(|id| strings.get(id).ok());
-            let bytes = match delim_meta.and_then(|m| m.terminator_alt) {
-                Some(a) => encode_delimiter_by_alt(&pat, a),
-                None => encode_property_delimiter(&pat, output_nl),
-            };
+            let bytes = encode_framing_delimiter_bytes(
+                &pat,
+                output_nl_ref,
+                encoding,
+                delim_meta.and_then(|m| m.terminator_alt),
+            );
             write_byte_aligned(out, bit_count, &bytes)?;
         }
     }
@@ -11099,6 +11108,18 @@ fn parse_sibling_property_expr(raw: &str) -> Option<alloc::string::String> {
             .trim()
             .to_string(),
     )
+}
+
+fn sibling_string_from_dfdl_value(
+    value: &crate::value::DfdlValue,
+) -> Option<alloc::string::String> {
+    match value {
+        crate::value::DfdlValue::String(s) => Some(s.text.clone()),
+        crate::value::DfdlValue::Decimal(s) | crate::value::DfdlValue::DateTime(s) => {
+            Some(s.clone())
+        }
+        _ => None,
+    }
 }
 
 fn sibling_string_from_encode_map(
@@ -11130,6 +11151,73 @@ pub(crate) fn resolve_encode_property_pattern(
         }
     }
     raw.to_string()
+}
+
+fn parse_encode_dfdl_entities_sibling(raw: &str) -> Option<alloc::string::String> {
+    let trimmed = raw.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let prefix = "dfdl:encodeDFDLEntities(";
+    if !inner.starts_with(prefix) || !inner.ends_with(')') {
+        return None;
+    }
+    let path = inner[prefix.len()..inner.len() - 1].trim();
+    let path = path.strip_prefix("../")?;
+    Some(
+        path.rsplit(':')
+            .next()
+            .unwrap_or(path)
+            .trim()
+            .to_string(),
+    )
+}
+
+pub(crate) fn resolve_output_new_line_for_encode(
+    props: &IrProps,
+    siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
+    strings: &StringPool,
+) -> Result<Option<alloc::string::String>, crate::error::VmError> {
+    if let Some(id) = props.output_new_line_sibling {
+        let local = strings.get(id)?;
+        if let Some(map) = siblings {
+            if let Some(text) = sibling_string_from_encode_map(map, local) {
+                return Ok(Some(text));
+            }
+            if let Some(val) = map.get(local) {
+                if let Some(text) = sibling_string_from_dfdl_value(val) {
+                    return Ok(Some(text));
+                }
+            }
+        }
+        return Ok(None);
+    }
+    let Some(id) = props.output_new_line else {
+        return Ok(None);
+    };
+    let raw = strings.get(id)?;
+    if let Some(local) = parse_encode_dfdl_entities_sibling(raw) {
+        if let Some(map) = siblings {
+            if let Some(text) = sibling_string_from_encode_map(map, &local) {
+                return Ok(Some(text));
+            }
+        }
+        return Ok(None);
+    }
+    Ok(Some(raw.to_string()))
+}
+
+fn encode_framing_delimiter_bytes(
+    pattern: &str,
+    output_new_line: Option<&str>,
+    encoding: &str,
+    delim_alt: Option<u8>,
+) -> alloc::vec::Vec<u8> {
+    if let Some(alt) = delim_alt {
+        return crate::schema::encode_delimiter_by_alt(pattern, alt);
+    }
+    crate::schema::encode_delimiter_for_encoding(pattern, output_new_line, Some(encoding))
 }
 
 pub(crate) fn default_value_for(
