@@ -3763,12 +3763,18 @@ impl<'a> Decoder<'a> {
                     ))
                 } else if props.input_value_calc_expression.is_some() {
                     let sib_snap = self.xpath_siblings_snapshot();
+                    let ancestor_frames = self.xpath_ancestor_frames.borrow();
                     let value = eval_input_value_calc_expression(
                         props.input_value_calc_expression.as_ref().unwrap(),
-                        Some(&sib_snap),
+                        IvcEvalCtx {
+                            siblings: Some(&sib_snap),
+                            ancestor_frames: Some(ancestor_frames.as_slice()),
+                            root_element: self.ctx.program.root_element.as_str(),
+                        },
                         self.ctx.strings(),
                         &self.ctx.program.tunables,
-                        &self.ctx.program.root_element,
+                        *kind,
+                        &props,
                     )?;
                     self.finalize_ivc_value(value, *kind, &props)
                 } else if props.input_value_calc_path.is_some() {
@@ -4464,11 +4470,15 @@ impl<'a> Decoder<'a> {
                     }
                     IrInputValueCalcSegment::InfosetPath(steps) => {
                         let value = eval_ivc_path_steps(
+                            false,
                             steps,
-                            siblings,
+                            IvcEvalCtx {
+                                siblings,
+                                ancestor_frames: None,
+                                root_element: "",
+                            },
                             strings,
                             &self.ctx.program.tunables,
-                            "",
                         )?;
                         out.push_str(&dfdl_value_to_string(&value));
                     }
@@ -5543,8 +5553,17 @@ fn eval_input_value_calc_concat(
                 }
             }
             IrInputValueCalcSegment::InfosetPath(steps) => {
-                let value =
-                    eval_ivc_path_steps(steps, siblings, strings, tunables, root_element)?;
+                let value = eval_ivc_path_steps(
+                    false,
+                    steps,
+                    IvcEvalCtx {
+                        siblings,
+                        ancestor_frames: None,
+                        root_element: root_element,
+                    },
+                    strings,
+                    tunables,
+                )?;
                 out.push_str(&dfdl_value_to_string(&value));
             }
         }
@@ -5640,6 +5659,13 @@ fn eval_input_value_calc(
         }
         return constant_input_value(kind, v);
     }
+    if calc == InputValueCalc::ConstantLexical {
+        let lit_id = props.input_value_calc_literal.ok_or_else(|| VmError::InvalidValue {
+            message: "missing inputValueCalc lexical constant".into(),
+        })?;
+        let text = strings.get(lit_id)?;
+        return parse_ivc_lexical_for_kind(text, kind, props, strings);
+    }
     if calc == InputValueCalc::BooleanFromSibling {
         if kind != ValueKind::Boolean {
             return Err(VmError::InvalidValue {
@@ -5667,6 +5693,7 @@ fn eval_input_value_calc(
     }
     let len = match calc {
         InputValueCalc::Constant(_) => unreachable!("handled above"),
+        InputValueCalc::ConstantLexical => unreachable!("handled above"),
         InputValueCalc::StringLiteral => unreachable!("handled above"),
         InputValueCalc::SchemaVariable => unreachable!("handled above"),
         InputValueCalc::BooleanFromSibling => unreachable!("handled above"),
@@ -6142,12 +6169,62 @@ fn value_byte_length(value: &DfdlValue) -> Result<usize> {
     }
 }
 
+#[derive(Copy, Clone)]
+struct IvcEvalCtx<'a> {
+    siblings: Option<&'a BTreeMap<String, SiblingState>>,
+    ancestor_frames: Option<&'a [BTreeMap<String, SiblingState>]>,
+    root_element: &'a str,
+}
+
+fn parse_ivc_lexical_for_kind(
+    text: &str,
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &crate::ir::StringPool,
+) -> Result<DfdlValue> {
+    if kind == ValueKind::String {
+        return Ok(DfdlValue::String(StringValue::new(text.to_string())));
+    }
+    let mut sub = Cursor::new(text.as_bytes());
+    super::runtime::read_text_scalar(
+        &mut sub,
+        kind,
+        props,
+        strings,
+        false,
+        &[],
+        None,
+        None,
+        &crate::length_validate::DaffodilTunables::default(),
+        None,
+    )
+    .map_err(Into::into)
+}
+
+fn ivc_cast_kind_to_value_kind(cast: crate::ir::IrIvcXsCast) -> ValueKind {
+    use crate::ir::{IrIvcXsCast, ValueKind};
+    match cast {
+        IrIvcXsCast::Byte => ValueKind::Byte,
+        IrIvcXsCast::Short => ValueKind::Short,
+        IrIvcXsCast::Int => ValueKind::Int,
+        IrIvcXsCast::Long => ValueKind::Long,
+        IrIvcXsCast::UnsignedByte => ValueKind::UnsignedByte,
+        IrIvcXsCast::UnsignedShort => ValueKind::UnsignedShort,
+        IrIvcXsCast::UnsignedInt => ValueKind::UnsignedInt,
+        IrIvcXsCast::UnsignedLong => ValueKind::Long,
+        IrIvcXsCast::Float => ValueKind::Float,
+        IrIvcXsCast::Double => ValueKind::Double,
+        IrIvcXsCast::String => ValueKind::String,
+    }
+}
+
 fn eval_input_value_calc_expression(
     expr: &crate::ir::IrInputValueCalcExpression,
-    siblings: Option<&BTreeMap<String, SiblingState>>,
+    ctx: IvcEvalCtx<'_>,
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
-    root_element: &str,
+    target_kind: ValueKind,
+    target_props: &IrProps,
 ) -> Result<DfdlValue> {
     use crate::ir::IrInputValueCalcExpression;
     match expr {
@@ -6155,11 +6232,7 @@ fn eval_input_value_calc_expression(
             let mut sum = 0i64;
             for term in terms {
                 sum = sum.saturating_add(eval_input_value_calc_to_i64(
-                    term,
-                    siblings,
-                    strings,
-                    tunables,
-                    root_element,
+                    term, ctx, strings, tunables, target_kind, target_props,
                 )?);
             }
             Ok(DfdlValue::Integer(sum.to_string()))
@@ -6168,28 +6241,51 @@ fn eval_input_value_calc_expression(
             let mut product = 1i64;
             for term in terms {
                 product = product.saturating_mul(eval_input_value_calc_to_i64(
-                    term,
-                    siblings,
-                    strings,
-                    tunables,
-                    root_element,
+                    term, ctx, strings, tunables, target_kind, target_props,
                 )?);
             }
             Ok(DfdlValue::Integer(product.to_string()))
         }
-        IrInputValueCalcExpression::Path(steps) => {
-            eval_ivc_path_steps(steps, siblings, strings, tunables, root_element)
+        IrInputValueCalcExpression::Div(left, right) => {
+            let a = eval_input_value_calc_to_i64(
+                left, ctx, strings, tunables, target_kind, target_props,
+            )? as f64;
+            let b = eval_input_value_calc_to_i64(
+                right, ctx, strings, tunables, target_kind, target_props,
+            )? as f64;
+            Ok(DfdlValue::Float((a / b) as f32))
         }
+        IrInputValueCalcExpression::Path {
+            parent_root,
+            steps,
+        } => eval_ivc_path_steps(*parent_root, steps, ctx, strings, tunables),
         IrInputValueCalcExpression::StringOf(inner) => {
             let value = eval_input_value_calc_expression(
-                inner,
-                siblings,
-                strings,
-                tunables,
-                root_element,
+                inner, ctx, strings, tunables, target_kind, target_props,
             )?;
             let text = dfdl_value_to_string(&value);
             Ok(DfdlValue::String(StringValue::new(text)))
+        }
+        IrInputValueCalcExpression::Literal(v) => constant_input_value(target_kind, *v),
+        IrInputValueCalcExpression::LiteralLexical(id) => {
+            let text = strings.get(*id)?;
+            parse_ivc_lexical_for_kind(text, target_kind, target_props, strings)
+        }
+        IrInputValueCalcExpression::Cast { kind, inner } => {
+            let value = eval_input_value_calc_expression(
+                inner, ctx, strings, tunables, target_kind, target_props,
+            )?;
+            let cast_kind = ivc_cast_kind_to_value_kind(*kind);
+            if cast_kind == ValueKind::String {
+                let text = dfdl_value_to_string(&value);
+                return Ok(DfdlValue::String(StringValue::new(text)));
+            }
+            let text = dfdl_value_to_string(&value);
+            let mut cast_props = target_props.clone();
+            if *kind == crate::ir::IrIvcXsCast::UnsignedLong {
+                cast_props.unsigned_integer = true;
+            }
+            parse_ivc_lexical_for_kind(&text, cast_kind, &cast_props, strings)
         }
     }
 }
@@ -6211,12 +6307,15 @@ fn dfdl_value_to_string(value: &DfdlValue) -> String {
 
 fn eval_input_value_calc_to_i64(
     expr: &crate::ir::IrInputValueCalcExpression,
-    siblings: Option<&BTreeMap<String, SiblingState>>,
+    ctx: IvcEvalCtx<'_>,
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
-    root_element: &str,
+    target_kind: ValueKind,
+    target_props: &IrProps,
 ) -> Result<i64> {
-    let value = eval_input_value_calc_expression(expr, siblings, strings, tunables, root_element)?;
+    let value = eval_input_value_calc_expression(
+        expr, ctx, strings, tunables, target_kind, target_props,
+    )?;
     value.as_i64().ok_or_else(|| {
         VmError::InvalidValue {
             message: alloc::format!(
@@ -6228,16 +6327,23 @@ fn eval_input_value_calc_to_i64(
 }
 
 fn eval_ivc_path_steps(
+    parent_root: bool,
     steps: &[crate::ir::IrInputPathStep],
-    siblings: Option<&BTreeMap<String, SiblingState>>,
+    ctx: IvcEvalCtx<'_>,
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
-    root_element: &str,
 ) -> Result<DfdlValue> {
     let mut steps = steps;
-    if let Some(first) = steps.first() {
+    if parent_root {
+        if let Some(first) = steps.first() {
+            let local = strings.get(first.local)?;
+            if local == ctx.root_element {
+                steps = &steps[1..];
+            }
+        }
+    } else if let Some(first) = steps.first() {
         let local = strings.get(first.local)?;
-        if local == root_element {
+        if local == ctx.root_element {
             steps = &steps[1..];
         }
     }
@@ -6247,7 +6353,7 @@ fn eval_ivc_path_steps(
         }
         .into());
     }
-    eval_infoset_path_steps(steps, siblings, strings, tunables)
+    eval_infoset_path_steps(steps, ctx.siblings, strings, tunables)
 }
 
 fn eval_input_value_calc_path(

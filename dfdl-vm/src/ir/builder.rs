@@ -4138,11 +4138,42 @@ fn intern_input_value_calc_expression(
                 .map(|e| intern_input_value_calc_expression(e, strings))
                 .collect(),
         ),
-        InputValueCalcExpression::Path(steps) => {
-            IrInputValueCalcExpression::Path(intern_input_path_steps(steps, strings))
+        InputValueCalcExpression::Path { parent_root, steps } => {
+            IrInputValueCalcExpression::Path {
+                parent_root: *parent_root,
+                steps: intern_input_path_steps(steps, strings),
+            }
         }
         InputValueCalcExpression::StringOf(inner) => IrInputValueCalcExpression::StringOf(
             alloc::boxed::Box::new(intern_input_value_calc_expression(inner, strings)),
+        ),
+        InputValueCalcExpression::Literal(v) => IrInputValueCalcExpression::Literal(*v),
+        InputValueCalcExpression::LiteralLexical(text) => {
+            IrInputValueCalcExpression::LiteralLexical(strings.intern(text.clone()))
+        }
+        InputValueCalcExpression::Cast { kind, inner } => {
+            IrInputValueCalcExpression::Cast {
+                kind: match kind {
+                    crate::schema::IvcXsCast::Byte => crate::ir::IrIvcXsCast::Byte,
+                    crate::schema::IvcXsCast::Short => crate::ir::IrIvcXsCast::Short,
+                    crate::schema::IvcXsCast::Int => crate::ir::IrIvcXsCast::Int,
+                    crate::schema::IvcXsCast::Long => crate::ir::IrIvcXsCast::Long,
+                    crate::schema::IvcXsCast::UnsignedByte => crate::ir::IrIvcXsCast::UnsignedByte,
+                    crate::schema::IvcXsCast::UnsignedShort => {
+                        crate::ir::IrIvcXsCast::UnsignedShort
+                    }
+                    crate::schema::IvcXsCast::UnsignedInt => crate::ir::IrIvcXsCast::UnsignedInt,
+                    crate::schema::IvcXsCast::UnsignedLong => crate::ir::IrIvcXsCast::UnsignedLong,
+                    crate::schema::IvcXsCast::Float => crate::ir::IrIvcXsCast::Float,
+                    crate::schema::IvcXsCast::Double => crate::ir::IrIvcXsCast::Double,
+                    crate::schema::IvcXsCast::String => crate::ir::IrIvcXsCast::String,
+                },
+                inner: alloc::boxed::Box::new(intern_input_value_calc_expression(inner, strings)),
+            }
+        }
+        InputValueCalcExpression::Div(left, right) => IrInputValueCalcExpression::Div(
+            alloc::boxed::Box::new(intern_input_value_calc_expression(left, strings)),
+            alloc::boxed::Box::new(intern_input_value_calc_expression(right, strings)),
         ),
     }
 }

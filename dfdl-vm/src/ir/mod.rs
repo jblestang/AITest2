@@ -100,12 +100,40 @@ pub enum IrInputValueCalcSegment {
     InfosetPath(alloc::vec::Vec<IrInputPathStep>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrIvcXsCast {
+    Byte,
+    Short,
+    Int,
+    Long,
+    UnsignedByte,
+    UnsignedShort,
+    UnsignedInt,
+    UnsignedLong,
+    Float,
+    Double,
+    String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IrInputValueCalcExpression {
     Add(alloc::vec::Vec<IrInputValueCalcExpression>),
     Mul(alloc::vec::Vec<IrInputValueCalcExpression>),
-    Path(alloc::vec::Vec<IrInputPathStep>),
+    Div(
+        alloc::boxed::Box<IrInputValueCalcExpression>,
+        alloc::boxed::Box<IrInputValueCalcExpression>,
+    ),
+    Path {
+        parent_root: bool,
+        steps: alloc::vec::Vec<IrInputPathStep>,
+    },
     StringOf(alloc::boxed::Box<IrInputValueCalcExpression>),
+    Literal(i64),
+    LiteralLexical(StringId),
+    Cast {
+        kind: IrIvcXsCast,
+        inner: alloc::boxed::Box<IrInputValueCalcExpression>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

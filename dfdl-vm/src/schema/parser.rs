@@ -3181,18 +3181,21 @@ fn split_top_level_ivc_op(s: &str, op: char) -> Option<alloc::vec::Vec<alloc::st
 
 fn parse_ivc_path_steps(
     s: &str,
-) -> Option<
+) -> Option<(
+    bool,
     alloc::vec::Vec<(
         Option<alloc::string::String>,
         alloc::string::String,
         Option<u32>,
     )>,
-> {
+)> {
     let s = s.trim();
-    let rest = if let Some(r) = s.strip_prefix('/') {
-        r
+    let (parent_root, rest) = if let Some(r) = s.strip_prefix("parent::") {
+        (true, r)
+    } else if let Some(r) = s.strip_prefix('/') {
+        (false, r)
     } else if let Some(r) = s.strip_prefix("../") {
-        r
+        (false, r)
     } else {
         return None;
     };
@@ -3203,11 +3206,165 @@ fn parse_ivc_path_steps(
     for step in rest.split('/').filter(|p| !p.is_empty()) {
         steps.push(parse_infoset_path_step(step));
     }
-    Some(steps)
+    Some((parent_root, steps))
+}
+
+fn parse_ivc_xs_cast_kind(prefix: &str) -> Option<crate::schema::IvcXsCast> {
+    use crate::schema::IvcXsCast::*;
+    Some(match prefix {
+        "xs:byte" => Byte,
+        "xs:short" => Short,
+        "xs:int" => Int,
+        "xs:long" => Long,
+        "xs:unsignedByte" => UnsignedByte,
+        "xs:unsignedShort" => UnsignedShort,
+        "xs:unsignedInt" => UnsignedInt,
+        "xs:unsignedLong" => UnsignedLong,
+        "xs:float" => Float,
+        "xs:double" => Double,
+        "xs:string" => String,
+        _ => return None,
+    })
+}
+
+enum IvcIntegerLexical {
+    I64(i64),
+    Wide(alloc::string::String),
+}
+
+fn parse_ivc_integer_lexical(s: &str) -> Option<IvcIntegerLexical> {
+    let s = s.trim();
+    if s.is_empty() || !s.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '+') {
+        return None;
+    }
+    if let Ok(v) = s.parse::<i64>() {
+        return Some(IvcIntegerLexical::I64(v));
+    }
+    Some(IvcIntegerLexical::Wide(s.to_string()))
+}
+
+fn split_top_level_ivc_div(s: &str) -> Option<alloc::vec::Vec<alloc::string::String>> {
+    let s = s.trim();
+    let mut parts = alloc::vec::Vec::new();
+    let mut current = alloc::string::String::new();
+    let mut depth = 0i32;
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        match ch {
+            '(' | '[' | '{' => {
+                depth += 1;
+                current.push(ch);
+                i += 1;
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                current.push(ch);
+                i += 1;
+            }
+            _ if depth == 0 && s[i..].starts_with(" div ") => {
+                parts.push(current.trim().to_string());
+                current.clear();
+                i += 5;
+            }
+            _ => {
+                current.push(ch);
+                i += 1;
+            }
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    if parts.len() <= 1 {
+        return None;
+    }
+    Some(parts)
 }
 
 fn parse_ivc_path_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
-    Some(crate::schema::InputValueCalcExpression::Path(parse_ivc_path_steps(s)?))
+    let (parent_root, steps) = parse_ivc_path_steps(s)?;
+    Some(crate::schema::InputValueCalcExpression::Path {
+        parent_root,
+        steps,
+    })
+}
+
+fn parse_ivc_primary(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
+    let s = s.trim();
+    for (prefix, kind) in [
+        ("xs:byte(", crate::schema::IvcXsCast::Byte),
+        ("xs:short(", crate::schema::IvcXsCast::Short),
+        ("xs:int(", crate::schema::IvcXsCast::Int),
+        ("xs:long(", crate::schema::IvcXsCast::Long),
+        ("xs:unsignedByte(", crate::schema::IvcXsCast::UnsignedByte),
+        ("xs:unsignedShort(", crate::schema::IvcXsCast::UnsignedShort),
+        ("xs:unsignedInt(", crate::schema::IvcXsCast::UnsignedInt),
+        ("xs:unsignedLong(", crate::schema::IvcXsCast::UnsignedLong),
+        ("xs:float(", crate::schema::IvcXsCast::Float),
+        ("xs:double(", crate::schema::IvcXsCast::Double),
+        ("xs:string(", crate::schema::IvcXsCast::String),
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix).and_then(|r| r.strip_suffix(')')) {
+            let inner = parse_ivc_add_expr(rest.trim())?;
+            return Some(crate::schema::InputValueCalcExpression::Cast {
+                kind,
+                inner: alloc::boxed::Box::new(inner),
+            });
+        }
+    }
+    if let Some(rest) = s.strip_prefix('-') {
+        if let Some(lit) = parse_ivc_integer_lexical(rest) {
+            return Some(match lit {
+                IvcIntegerLexical::I64(v) => crate::schema::InputValueCalcExpression::Literal(-v),
+                IvcIntegerLexical::Wide(text) => {
+                    let mut neg = alloc::string::String::from("-");
+                    neg.push_str(text.trim_start_matches('+'));
+                    crate::schema::InputValueCalcExpression::LiteralLexical(neg)
+                }
+            });
+        }
+    }
+    if let Some(lit) = parse_ivc_integer_lexical(s) {
+        return Some(match lit {
+            IvcIntegerLexical::I64(v) => crate::schema::InputValueCalcExpression::Literal(v),
+            IvcIntegerLexical::Wide(text) => {
+                crate::schema::InputValueCalcExpression::LiteralLexical(text)
+            }
+        });
+    }
+    if s.len() >= 2
+        && ((s.starts_with('\'') && s.ends_with('\''))
+            || (s.starts_with('"') && s.ends_with('"')))
+    {
+        let inner = &s[1..s.len() - 1];
+        let unescaped = inner.replace("''", "'").replace("\"\"", "\"");
+        return Some(crate::schema::InputValueCalcExpression::LiteralLexical(
+            unescaped,
+        ));
+    }
+    parse_ivc_path_expr(s)
+}
+
+fn parse_ivc_unary_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
+    parse_ivc_primary(s)
+}
+
+fn parse_ivc_div_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
+    let s = s.trim();
+    if let Some(parts) = split_top_level_ivc_div(s) {
+        let mut left = parse_ivc_unary_expr(&parts[0])?;
+        for part in parts.iter().skip(1) {
+            let right = parse_ivc_unary_expr(part)?;
+            left = crate::schema::InputValueCalcExpression::Div(
+                alloc::boxed::Box::new(left),
+                alloc::boxed::Box::new(right),
+            );
+        }
+        return Some(left);
+    }
+    parse_ivc_unary_expr(s)
 }
 
 fn parse_ivc_mul_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
@@ -3215,11 +3372,11 @@ fn parse_ivc_mul_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression
     if let Some(parts) = split_top_level_ivc_op(s, '*') {
         let mut terms = alloc::vec::Vec::new();
         for part in parts {
-            terms.push(parse_ivc_path_expr(&part)?);
+            terms.push(parse_ivc_div_expr(&part)?);
         }
         return Some(crate::schema::InputValueCalcExpression::Mul(terms));
     }
-    parse_ivc_path_expr(s)
+    parse_ivc_div_expr(s)
 }
 
 fn parse_ivc_add_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
@@ -3241,7 +3398,7 @@ fn parse_input_value_calc_expression(value: &str) -> Option<crate::schema::Input
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
     if let Some(rest) = inner.strip_prefix("xs:string(").and_then(|r| r.strip_suffix(')')) {
-        let path = parse_ivc_mul_expr(rest.trim())?;
+        let path = parse_ivc_add_expr(rest.trim())?;
         return Some(crate::schema::InputValueCalcExpression::StringOf(
             alloc::boxed::Box::new(path),
         ));
@@ -3267,8 +3424,8 @@ fn parse_concat_arg_segment(part: &str) -> Option<alloc::vec::Vec<crate::schema:
             local_name_from_qname(name).to_string(),
         )]);
     }
-    if part.starts_with('/') {
-        if let Some(steps) = parse_ivc_path_steps(part) {
+    if part.starts_with('/') || part.starts_with("parent::") || part.starts_with("../") {
+        if let Some((_parent_root, steps)) = parse_ivc_path_steps(part) {
             return Some(alloc::vec![InputValueCalcSegment::InfosetPath(steps)]);
         }
     }
@@ -3505,6 +3662,16 @@ fn parse_input_value_calc(value: &str) -> Option<(InputValueCalc, Option<String>
     }
     if let Ok(v) = inner.parse::<i64>() {
         return Some((InputValueCalc::Constant(v), None, None));
+    }
+    if matches!(
+        parse_ivc_integer_lexical(inner),
+        Some(IvcIntegerLexical::Wide(_))
+    ) {
+        return Some((
+            InputValueCalc::ConstantLexical,
+            None,
+            Some(inner.trim().to_string()),
+        ));
     }
     let (func, rest) = inner.split_once('(')?;
     let args = rest.strip_suffix(')')?;

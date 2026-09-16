@@ -387,16 +387,45 @@ pub enum TextPadKind {
     PadChar,
 }
 
+/// XSD cast in `{ xs:int(...) }` style inputValueCalc expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IvcXsCast {
+    Byte,
+    Short,
+    Int,
+    Long,
+    UnsignedByte,
+    UnsignedShort,
+    UnsignedInt,
+    UnsignedLong,
+    Float,
+    Double,
+    String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputValueCalcExpression {
     Add(alloc::vec::Vec<InputValueCalcExpression>),
     Mul(alloc::vec::Vec<InputValueCalcExpression>),
-    Path(alloc::vec::Vec<(
-        Option<alloc::string::String>,
-        alloc::string::String,
-        Option<u32>,
-    )>),
+    Div(
+        alloc::boxed::Box<InputValueCalcExpression>,
+        alloc::boxed::Box<InputValueCalcExpression>,
+    ),
+    Path {
+        parent_root: bool,
+        steps: alloc::vec::Vec<(
+            Option<alloc::string::String>,
+            alloc::string::String,
+            Option<u32>,
+        )>,
+    },
     StringOf(alloc::boxed::Box<InputValueCalcExpression>),
+    Literal(i64),
+    LiteralLexical(alloc::string::String),
+    Cast {
+        kind: IvcXsCast,
+        inner: alloc::boxed::Box<InputValueCalcExpression>,
+    },
 }
 
 /// One segment of `{ fn:concat(...) }` in `dfdl:inputValueCalc`.
@@ -427,6 +456,8 @@ pub enum ParseUnparsePolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputValueCalc {
     Constant(i64),
+    /// Integer literal that does not fit in i64; lexical in [`DfdlProps::input_value_calc_literal`].
+    ConstantLexical,
     ContentLengthSelf(LengthUnits),
     ValueLengthSelf(LengthUnits),
     ContentLengthSibling(LengthUnits),

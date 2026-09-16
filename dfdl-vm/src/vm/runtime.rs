@@ -9123,8 +9123,15 @@ fn parse_int_typed_with_base_i64(
         return Err(parse_out_of_range(type_name, &decimal));
     }
     if sign < 0 {
-        Ok(-(abs as i64))
+        let signed = -(abs as i128);
+        if signed < i64::MIN as i128 || signed > i64::MAX as i128 {
+            return Err(parse_out_of_range(type_name, &decimal));
+        }
+        Ok(signed as i64)
     } else {
+        if abs > i64::MAX as u128 {
+            return Err(parse_out_of_range(type_name, &decimal));
+        }
         Ok(abs as i64)
     }
 }
