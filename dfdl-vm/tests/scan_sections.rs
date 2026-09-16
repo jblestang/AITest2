@@ -230,11 +230,11 @@ fn daffodil_section16_regression_gate() {
     let (pass, fail, skip, parse_fail, _) = scan_dir("section16");
     assert_eq!(parse_fail, 0, "section16 TDML parse errors");
     assert!(
-        pass >= 66,
-        "section16: expected at least 66 passing cases, got pass={pass} fail={fail} skip={skip}"
+        pass >= 70,
+        "section16: expected at least 70 passing cases, got pass={pass} fail={fail} skip={skip}"
     );
     assert!(
-        fail <= 21,
+        fail <= 17,
         "section16 regression: too many failures pass={pass} fail={fail} skip={skip}"
     );
 }

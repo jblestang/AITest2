@@ -736,6 +736,14 @@ impl<'a> Decoder<'a> {
                     if skip_sep_at_term {
                         break 'repeat_slot;
                     }
+                    if child_element_props.is_some_and(|cp| cp.occurs_min == 0)
+                        && cursor.is_empty()
+                        && idx > 0
+                        && props.separator_suppression_policy
+                            == Some(crate::schema::SeparatorSuppressionPolicy::TrailingEmpty)
+                    {
+                        break 'repeat_slot;
+                    }
                     let sep_alt = if inter_child_sep_consumed_by_prev {
                         inter_child_sep_consumed_by_prev = false;
                         None
@@ -797,6 +805,25 @@ impl<'a> Decoder<'a> {
                             {
                                 particle_stops.push(sib_props);
                             }
+                        }
+                    }
+                    if let Ok(IrNode::Element {
+                        props: cp,
+                        child: None,
+                        ..
+                    }) = self.ctx.program.node(child)
+                    {
+                        if self.trailing_empty_implicit_optional_empty_slot(
+                            props,
+                            cp,
+                            idx,
+                            children.len(),
+                            cursor,
+                            &particle_stops,
+                        )? {
+                            prev_absent_or_empty = true;
+                            inter_child_sep_consumed_by_prev = true;
+                            break 'repeat_slot;
                         }
                     }
                     let decode_result = if let Ok(IrNode::Sequence { children: hc, .. }) =
@@ -1087,6 +1114,12 @@ impl<'a> Decoder<'a> {
                         }
                     }
                     }
+                }
+                if props.separator_suppression_policy
+                    == Some(crate::schema::SeparatorSuppressionPolicy::TrailingEmpty)
+                    && props.separator_position == SeparatorPosition::Infix
+                {
+                    while self.consume_one_sequence_infix_separator(props, cursor)? {}
                 }
                 let mut terminator_alt = None;
                 if let Some(id) = props.terminator {
@@ -4268,6 +4301,93 @@ impl<'a> Decoder<'a> {
             }
         }
         Ok(())
+    }
+
+    fn consume_trailing_empty_position_separator(
+        &self,
+        seq_props: &IrProps,
+        child_props: &IrProps,
+        child_index: usize,
+        child_total: usize,
+        cursor: &mut Cursor<'_>,
+    ) -> Result<bool> {
+        use crate::schema::SeparatorSuppressionPolicy;
+        if seq_props.separator_suppression_policy
+            != Some(SeparatorSuppressionPolicy::TrailingEmpty)
+        {
+            return Ok(false);
+        }
+        if child_props.occurs_count_kind != OccursCountKind::Implicit
+            || child_props.occurs_min != 0
+        {
+            return Ok(false);
+        }
+        let last = child_index + 1 >= child_total;
+        if last && child_props.occurs_max.is_none() {
+            return Ok(false);
+        }
+        if !last {
+            return self.consume_one_sequence_infix_separator(seq_props, cursor);
+        }
+        Ok(false)
+    }
+
+    fn consume_one_sequence_infix_separator(
+        &self,
+        seq_props: &IrProps,
+        cursor: &mut Cursor<'_>,
+    ) -> Result<bool> {
+        if seq_props.separator_position != SeparatorPosition::Infix {
+            return Ok(false);
+        }
+        let Some(sep_id) = seq_props.separator else {
+            return Ok(false);
+        };
+        let pat = self.ctx.strings().get(sep_id)?;
+        if pat.is_empty() {
+            return Ok(false);
+        }
+        let enc = encoding_name(seq_props, self.ctx.strings()).ok();
+        Ok(cursor.consume_delimiter(pat, seq_props.ignore_case, enc.as_deref()))
+    }
+
+    fn trailing_empty_implicit_optional_empty_slot(
+        &self,
+        seq_props: &IrProps,
+        child_props: &IrProps,
+        child_index: usize,
+        child_total: usize,
+        cursor: &mut Cursor<'_>,
+        stop_sequences: &[&IrProps],
+    ) -> Result<bool> {
+        use crate::schema::SeparatorSuppressionPolicy;
+        if seq_props.separator_suppression_policy
+            != Some(SeparatorSuppressionPolicy::TrailingEmpty)
+        {
+            return Ok(false);
+        }
+        if child_props.occurs_count_kind != OccursCountKind::Implicit
+            || child_props.occurs_min != 0
+        {
+            return Ok(false);
+        }
+        let empty_slot = would_read_empty_delimited_field(
+            cursor,
+            child_props,
+            self.ctx.strings(),
+            stop_sequences,
+        )? || cursor_at_parent_infix_separator(cursor, Some(seq_props), self.ctx.strings())?;
+        if !empty_slot {
+            return Ok(false);
+        }
+        self.consume_trailing_empty_position_separator(
+            seq_props,
+            child_props,
+            child_index,
+            child_total,
+            cursor,
+        )?;
+        Ok(true)
     }
 
     fn consume_trailing_empty_infix_separators(
