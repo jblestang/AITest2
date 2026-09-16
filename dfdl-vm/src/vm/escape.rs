@@ -146,8 +146,7 @@ mod tests {
             escape_kind: EscapeKind::EscapeCharacter,
             escape_character: Some("#".into()),
             escape_escape_character: Some(String::new()),
-            escape_block_start: None,
-            escape_block_end: None,
+            ..Default::default()
         };
         assert_eq!(unescape_character("ab#,cd", &scheme), "ab,cd");
     }
@@ -158,8 +157,7 @@ mod tests {
             escape_kind: EscapeKind::EscapeCharacter,
             escape_character: Some("/".into()),
             escape_escape_character: Some("[".into()),
-            escape_block_start: None,
-            escape_block_end: None,
+            ..Default::default()
         };
         assert_eq!(unescape_character("word/", &scheme), "word");
     }

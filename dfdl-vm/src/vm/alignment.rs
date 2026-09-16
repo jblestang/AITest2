@@ -491,6 +491,7 @@ mod tests {
             &[],
             Some("one"),
             &DaffodilTunables::default(),
+            None,
         )
         .expect("read");
         assert!(matches!(v, crate::value::DfdlValue::UnsignedByte(3)));
@@ -649,6 +650,7 @@ mod tests {
             &[],
             None,
             &DaffodilTunables::default(),
+            None,
         )
         .expect("read");
         assert!(matches!(v, crate::value::DfdlValue::UnsignedLong(12_345_678)));

@@ -3,7 +3,7 @@ use crate::schema::BitOrder;
 use crate::length_validate::DaffodilTunables;
 use crate::schema::{expand_entities, expand_entities_str};
 use crate::vm::encoding::{bits_charset_spec, encode_document_text};
-use crate::xml_util::{attrs_to_map, local_name_str, XmlReader};
+use crate::xml_util::{attrs_to_map, local_name_str, normalize_tdml_xml_for_parse, XmlReader};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -132,7 +132,8 @@ pub enum DocumentKind {
 
 /// Parse a TDML test suite document.
 pub fn parse_tdml(input: &str) -> Result<TdmlSuite> {
-    let mut reader = XmlReader::new(input);
+    let normalized = normalize_tdml_xml_for_parse(input);
+    let mut reader = XmlReader::new(&normalized);
     let attrs = reader.expect_start("testSuite")?;
     let name = attrs
         .get("suiteName")

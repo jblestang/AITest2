@@ -299,6 +299,187 @@ pub fn namespace_prefix_map(namespace: &Namespace) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Normalize TDML/XML text before parsing (Daffodil suite quirks).
+pub fn normalize_tdml_xml_for_parse(input: &str) -> String {
+    let mut out = dedupe_xml_duplicate_attributes(input);
+    // Daffodil section07 escapeScheme.tdml uses non-standard `&quote;` after `&quot;` for `""`.
+    out = out.replace("&quote;", "&quot;");
+    out
+}
+
+/// Daffodil TDML/XSD fragments may repeat an attribute on one tag; last value wins.
+pub fn dedupe_xml_duplicate_attributes(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(rel) = rest.find('<') {
+        out.push_str(&rest[..rel]);
+        rest = &rest[rel..];
+        if rest.starts_with("<!--") {
+            if let Some(end) = rest.find("-->") {
+                out.push_str(&rest[..end + 3]);
+                rest = &rest[end + 3..];
+                continue;
+            }
+        }
+        if rest.starts_with("</") || rest.starts_with("<?") {
+            if let Some(end) = rest.find('>') {
+                out.push_str(&rest[..=end]);
+                rest = &rest[end + 1..];
+                continue;
+            }
+        }
+        let Some(tag_end) = find_unquoted_gt(rest) else {
+            out.push_str(rest);
+            break;
+        };
+        let tag = &rest[..=tag_end];
+        out.push_str(&rewrite_start_tag_attributes(tag));
+        rest = &rest[tag_end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn find_unquoted_gt(s: &str) -> Option<usize> {
+    let mut in_quote = None;
+    for (i, c) in s.char_indices() {
+        match c {
+            '\'' if in_quote == Some('"') => {}
+            '"' if in_quote == Some('\'') => {}
+            '\'' => {
+                in_quote = if in_quote == Some('\'') {
+                    None
+                } else {
+                    Some('\'')
+                };
+            }
+            '"' => {
+                in_quote = if in_quote == Some('"') {
+                    None
+                } else {
+                    Some('"')
+                };
+            }
+            '>' if in_quote.is_none() => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn rewrite_start_tag_attributes(tag: &str) -> String {
+    if tag.len() < 2 || !tag.starts_with('<') || !tag.ends_with('>') {
+        return tag.to_string();
+    }
+    let mut inner = &tag[1..tag.len() - 1];
+    let self_closing = inner.ends_with('/');
+    if self_closing {
+        inner = inner[..inner.len() - 1].trim_end();
+    }
+    let mut split = inner.splitn(2, char::is_whitespace);
+    let tag_name = split.next().unwrap_or("").trim();
+    let attr_text = split.next().unwrap_or("").trim();
+    if attr_text.is_empty() {
+        return tag.to_string();
+    }
+    let pairs = parse_xml_attribute_pairs(attr_text);
+    if pairs.is_empty() {
+        return tag.to_string();
+    }
+    let mut deduped = BTreeMap::new();
+    for (k, v) in pairs {
+        deduped.insert(k, v);
+    }
+    let mut out = String::new();
+    out.push('<');
+    out.push_str(tag_name);
+    for (k, v) in deduped {
+        out.push(' ');
+        out.push_str(&k);
+        out.push('=');
+        write_xml_attribute_value(&mut out, &v);
+    }
+    if self_closing {
+        out.push_str(" />");
+    } else {
+        out.push('>');
+    }
+    out
+}
+
+fn write_xml_attribute_value(out: &mut String, v: &str) {
+    if !v.contains('"') {
+        out.push('"');
+        out.push_str(v);
+        out.push('"');
+    } else if !v.contains('\'') {
+        out.push('\'');
+        out.push_str(v);
+        out.push('\'');
+    } else {
+        out.push('"');
+        for c in v.chars() {
+            match c {
+                '&' => out.push_str("&amp;"),
+                '"' => out.push_str("&quot;"),
+                _ => out.push(c),
+            }
+        }
+        out.push('"');
+    }
+}
+
+fn parse_xml_attribute_pairs(s: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let bytes = s.as_bytes();
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let name_start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' {
+            i += 1;
+        }
+        if name_start == i {
+            break;
+        }
+        let name = s[name_start..i].to_string();
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'=' {
+            break;
+        }
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let quote = bytes[i];
+        if quote != b'"' && quote != b'\'' {
+            break;
+        }
+        i += 1;
+        let val_start = i;
+        while i < bytes.len() && bytes[i] != quote {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let val = s[val_start..i].to_string();
+        i += 1;
+        out.push((name, val));
+    }
+    out
+}
+
 pub fn attrs_to_map(attrs: &[xml_no_std::attribute::OwnedAttribute]) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     for attr in attrs {
@@ -331,6 +512,17 @@ fn map_xml_err<T>(res: xml_no_std::reader::Result<T>) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dedupe_duplicate_attributes_last_wins() {
+        let raw = r#"<dfdl:escapeScheme escapeCharacter="/" extraEscapedCharacters="?" extraEscapedCharacters="" />"#;
+        let fixed = dedupe_xml_duplicate_attributes(raw);
+        assert!(!fixed.contains("extraEscapedCharacters=\"?\""));
+        assert!(fixed.contains("extraEscapedCharacters=\"\""));
+        let mut reader = XmlReader::new(&fixed);
+        let attrs = reader.take_start_attributes().expect("start");
+        assert_eq!(attrs.get("extraEscapedCharacters").map(String::as_str), Some(""));
+    }
 
     #[test]
     fn reads_tdml_define_schema() {
