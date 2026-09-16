@@ -1230,18 +1230,52 @@ impl<'a> Decoder<'a> {
         for (pick, &child_idx) in remaining.iter().enumerate() {
             let child = children[child_idx];
             let rewind = cursor.clone();
-            let child_has_following = remaining.len() > 1;
+            let child_has_following = remaining.len() > 1
+                || matches!(
+                    self.ctx.program.node(child),
+                    Ok(IrNode::Element { props: cp, .. })
+                        if unordered_backtrack_multi_occurrence(cp)
+                );
             let start = cursor.pos;
-            match self.decode_particle(
-                child,
-                cursor,
-                child_has_following,
-                Some(props),
-                Some(seq_siblings),
-                content_scope_bytes,
-                pattern_text_frame,
-                child_stops,
-            ) {
+            let decode_result = if let Ok(IrNode::Element { props: cp, .. }) =
+                self.ctx.program.node(child)
+            {
+                if unordered_backtrack_multi_occurrence(cp) {
+                    self.decode_one_element_occurrence(
+                        child,
+                        cursor,
+                        child_has_following,
+                        Some(props),
+                        Some(seq_siblings),
+                        content_scope_bytes,
+                        pattern_text_frame,
+                        child_stops,
+                    )
+                } else {
+                    self.decode_particle(
+                        child,
+                        cursor,
+                        child_has_following,
+                        Some(props),
+                        Some(seq_siblings),
+                        content_scope_bytes,
+                        pattern_text_frame,
+                        child_stops,
+                    )
+                }
+            } else {
+                self.decode_particle(
+                    child,
+                    cursor,
+                    child_has_following,
+                    Some(props),
+                    Some(seq_siblings),
+                    content_scope_bytes,
+                    pattern_text_frame,
+                    child_stops,
+                )
+            };
+            match decode_result {
                 Ok(child_value) => {
                     if let Ok(IrNode::Element { kind, props: cp, .. }) =
                         self.ctx.program.node(child)
@@ -1277,17 +1311,17 @@ impl<'a> Decoder<'a> {
                             *cursor = rewind.clone();
                             continue;
                         }
-                        if needs_facet_validation(cp) {
-                            if validate_decoded_facets_tdml(
+                        if needs_facet_validation(cp)
+                            || cp.facet_check_constraints
+                            || !cp.facet_pattern_groups.is_empty()
+                        {
+                            if !backtrack_decoded_facets_ok(
                                 &child_value,
                                 *kind,
                                 cp,
                                 self.ctx.strings(),
                                 &self.ctx.program.tunables,
-                                false,
-                            )
-                            .is_err()
-                            {
+                            ) {
                                 *cursor = rewind;
                                 continue;
                             }
@@ -1327,6 +1361,15 @@ impl<'a> Decoder<'a> {
                     self.insert_xpath_sibling(key, state);
                     let mut rest = remaining.to_vec();
                     rest.remove(pick);
+                    if let Ok(IrNode::Element { name, props: cp, .. }) =
+                        self.ctx.program.node(child)
+                    {
+                        let key = self.ctx.strings().get(*name)?.to_string();
+                        if unordered_backtrack_may_take_another(map, &key, cp, cursor.is_empty())
+                        {
+                            rest.push(child_idx);
+                        }
+                    }
                     match self.unordered_unseparated_backtrack(
                         children,
                         props,
@@ -1548,6 +1591,58 @@ impl<'a> Decoder<'a> {
                 }
                 let saved = cursor.clone();
                 let start = cursor.pos;
+                if props.sequence_kind == SequenceKind::Unordered {
+                    if let Ok(IrNode::Element { name, props: cp, .. }) =
+                        self.ctx.program.node(child)
+                    {
+                        if cp.nillable
+                            && cp.initiator.is_some()
+                            && !self.initiator_present_at_cursor(cursor, cp)?
+                        {
+                            let key = self.ctx.strings().get(*name)?.to_string();
+                            if !map.contains_key(&key) {
+                                let mut nil_cursor = cursor.clone();
+                                if crate::vm::runtime::try_consume_nillable_element_nil(
+                                    &mut nil_cursor,
+                                    cp,
+                                    Some(props),
+                                    self.ctx.strings(),
+                                    true,
+                                )? {
+                                    *cursor = nil_cursor;
+                                    insert_child(
+                                        &mut map,
+                                        child,
+                                        DfdlValue::Null,
+                                        self.ctx.program,
+                                    )?;
+                                    if let IrNode::Element { name, props: el_props, .. } =
+                                        self.ctx.program.node(child)?
+                                    {
+                                        let key = self.ctx.strings().get(*name)?.to_string();
+                                        seq_siblings.insert(
+                                            key.clone(),
+                                            SiblingState {
+                                                value: DfdlValue::Null,
+                                                content_bytes: 0,
+                                            },
+                                        );
+                                        self.insert_xpath_sibling(
+                                            key,
+                                            SiblingState {
+                                                value: DfdlValue::Null,
+                                                content_bytes: 0,
+                                            },
+                                        );
+                                        let _ = el_props;
+                                    }
+                                    round_progress = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
                 let decode_result = if props.sequence_kind == SequenceKind::Unordered {
                     if let Ok(IrNode::Element { props: cp, .. }) = self.ctx.program.node(child) {
                         if cp.occurs_max.map(|m| m > 1).unwrap_or(true) {
@@ -3744,6 +3839,9 @@ impl<'a> Decoder<'a> {
                         return Ok(None);
                     }
                 }
+                if self.at_enclosing_separator_stop(cursor, stop_sequences, None)? {
+                    return Ok(None);
+                }
                 return Err(VmError::InvalidValue {
                     message: alloc::format!(
                         "Parse Error. Failed to find infix separator. Separator '{pat}' not found"
@@ -4054,6 +4152,62 @@ fn element_kind(program: &IrProgram, node_id: u32) -> core::result::Result<Value
         IrNode::Element { kind, .. } => Ok(*kind),
         _ => Ok(ValueKind::Complex),
     }
+}
+
+fn backtrack_decoded_facets_ok(
+    value: &DfdlValue,
+    kind: ValueKind,
+    props: &IrProps,
+    strings: &StringPool,
+    tunables: &crate::length_validate::DaffodilTunables,
+) -> bool {
+    match value {
+        DfdlValue::Array(items) => items.iter().all(|item| {
+            validate_decoded_facets_tdml(item, kind, props, strings, tunables, false).is_ok()
+        }),
+        _ => validate_decoded_facets_tdml(value, kind, props, strings, tunables, false).is_ok(),
+    }
+}
+
+fn initiated_child_occurrence_count(
+    map: &BTreeMap<String, DfdlValue>,
+    key: &str,
+    props: &IrProps,
+) -> usize {
+    match map.get(key) {
+        Some(DfdlValue::Array(items)) => items.len(),
+        Some(DfdlValue::Null) if props.nillable => 1,
+        Some(DfdlValue::Null) => 0,
+        Some(_) => 1,
+        None => 0,
+    }
+}
+
+fn unordered_backtrack_multi_occurrence(props: &IrProps) -> bool {
+    props.occurs_min > 1
+        || props.occurs_max.map(|m| m > 1).unwrap_or(false)
+        || (props.occurs_count_kind == OccursCountKind::Parsed
+            && props.occurs_max.map(|m| m > 1).unwrap_or(false))
+}
+
+fn unordered_backtrack_may_take_another(
+    map: &BTreeMap<String, DfdlValue>,
+    key: &str,
+    props: &IrProps,
+    cursor_empty: bool,
+) -> bool {
+    if cursor_empty {
+        return false;
+    }
+    let schema_max = props.occurs_max.unwrap_or(1);
+    if props.occurs_count_kind == OccursCountKind::Parsed {
+        if schema_max <= 1 {
+            return false;
+        }
+        return true;
+    }
+    let count = initiated_child_occurrence_count(map, key, props);
+    (count as u64) < schema_max
 }
 
 fn insert_child(
