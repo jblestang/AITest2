@@ -3026,6 +3026,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.output_value_calc_scale.is_some() {
         base.output_value_calc_scale = overlay.output_value_calc_scale;
     }
+    if overlay.output_value_calc_segments.is_some() {
+        base.output_value_calc_segments = overlay.output_value_calc_segments.clone();
+    }
     if overlay.output_value_calc_conditional {
         base.output_value_calc_conditional = true;
     }
@@ -3556,6 +3559,19 @@ fn parse_concat_arg_segment(part: &str) -> Option<alloc::vec::Vec<crate::schema:
             length,
         }]);
     }
+    if part.starts_with("dfdl:valueLength(") && part.ends_with(')') {
+        let rest = part.strip_prefix("dfdl:valueLength(")?.strip_suffix(')')?;
+        let arg_parts = split_top_level_commas(rest.trim());
+        if arg_parts.len() != 2 {
+            return None;
+        }
+        let path = arg_parts[0].trim().strip_prefix("../")?;
+        let units = length_units_from_calc_args(arg_parts[1].trim());
+        return Some(alloc::vec![InputValueCalcSegment::ValueLength {
+            sibling: local_name_from_qname(path).to_string(),
+            units,
+        }]);
+    }
     None
 }
 
@@ -4005,6 +4021,34 @@ fn parse_decode_dfdl_entities_call(arg: &str) -> Option<String> {
     let inner = arg[prefix.len()..arg.len() - 1].trim();
     let lit = parse_xs_string_literal_arg(inner)?;
     Some(crate::schema::expand_entities_str(&lit))
+}
+
+fn parse_output_value_calc_fn_error(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    if inner == "fn:error()" {
+        return Some(inner.to_string());
+    }
+    if inner.starts_with("fn:error(") && inner.ends_with(')') {
+        return Some(inner.to_string());
+    }
+    if inner.starts_with("fn:round-half-to-even(") && inner.contains("fn:error(") {
+        return Some(inner.to_string());
+    }
+    None
+}
+
+fn parse_output_value_calc_xs_date_inner(value: &str) -> Option<alloc::string::String> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let rest = inner.strip_prefix("xs:date(")?.strip_suffix(')')?;
+    Some(rest.trim().to_string())
 }
 
 fn output_value_calc_strip_multiply(value: &str) -> (alloc::string::String, i64) {
@@ -4837,6 +4881,21 @@ fn props_from_attrs_with_variables(
                 let value = ovc_value.as_str();
                 if parse_repeat_indicator_output_value_calc(value) {
                     props.output_value_calc = Some(OutputValueCalc::RepeatIndicatorFromParentCount);
+                } else if let Some(expr) = parse_output_value_calc_fn_error(value) {
+                    props.output_value_calc = Some(OutputValueCalc::FnError);
+                    props.output_value_calc_literal = Some(expr);
+                } else if let Some(inner) = parse_output_value_calc_xs_date_inner(value) {
+                    if let Some(segments) =
+                        parse_input_value_calc_concat(&alloc::format!("{{{inner}}}"))
+                    {
+                        props.output_value_calc = Some(OutputValueCalc::FnConcat);
+                        props.output_value_calc_segments = Some(segments);
+                    } else {
+                        props.output_value_calc_conditional = true;
+                    }
+                } else if let Some(segments) = parse_input_value_calc_concat(value) {
+                    props.output_value_calc = Some(OutputValueCalc::FnConcat);
+                    props.output_value_calc_segments = Some(segments);
                 } else if value.contains("if (") {
                     props.output_value_calc_conditional = true;
                 } else if let Some((steps, units, addend)) =

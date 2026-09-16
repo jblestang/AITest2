@@ -4531,6 +4531,12 @@ impl<'a> Decoder<'a> {
                         )?;
                         out.push_str(&dfdl_value_to_string(&value));
                     }
+                    IrInputValueCalcSegment::ValueLength { .. } => {
+                        return Err(VmError::InvalidValue {
+                            message: "facet assert message valueLength not supported".into(),
+                        }
+                        .into());
+                    }
                 }
             }
             return Ok(out);
@@ -5617,6 +5623,12 @@ fn eval_input_value_calc_concat(
                     tunables,
                 )?;
                 out.push_str(&dfdl_value_to_string(&value));
+            }
+            IrInputValueCalcSegment::ValueLength { .. } => {
+                return Err(VmError::InvalidValue {
+                    message: "inputValueCalc valueLength segment not supported on parse".into(),
+                }
+                .into());
             }
         }
     }

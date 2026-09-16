@@ -547,22 +547,19 @@ fn format_grouped_integer(digits: &[u8], positive_pattern: &str, sep: &str) -> S
         return digits.iter().map(|n| (b'0' + n) as char).collect();
     }
     let segs = grouping_segment_slot_counts(int_part);
-    if segs.is_empty() {
+    let Some(&group_size) = segs.last() else {
+        return digits.iter().map(|n| (b'0' + n) as char).collect();
+    };
+    if group_size == 0 {
         return digits.iter().map(|n| (b'0' + n) as char).collect();
     }
     let mut idx = digits.len();
     let mut groups: Vec<Vec<u8>> = Vec::new();
-    for &seg in segs.iter().rev() {
-        if idx == 0 {
-            break;
-        }
-        let take = seg.min(idx);
+    while idx > 0 {
+        let take = group_size.min(idx);
         let start = idx - take;
         groups.push(digits[start..idx].to_vec());
         idx = start;
-    }
-    if idx > 0 {
-        groups.push(digits[0..idx].to_vec());
     }
     groups.reverse();
     groups
@@ -954,6 +951,16 @@ pub(crate) fn format_standard_text_number(
             .unwrap_or(positive.len())..];
         let exp_char = props.exponent_chars.chars().next().unwrap_or('E');
         let mut formatted = format_mantissa_pattern(mant_pattern, &mant, props, min_frac)?;
+        if mant.digits.len() == 1
+            && mant.scale == 0
+            && formatted.starts_with('0')
+            && formatted
+                .as_bytes()
+                .get(1)
+                .is_some_and(|b| !matches!(*b, b'.' | b','))
+        {
+            formatted = formatted[1..].to_string();
+        }
         if negative_input && !formatted.starts_with('-') {
             formatted.insert(0, '-');
         }

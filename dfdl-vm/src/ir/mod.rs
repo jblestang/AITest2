@@ -100,6 +100,10 @@ pub enum IrInputValueCalcSegment {
         length: u32,
     },
     InfosetPath(alloc::vec::Vec<IrInputPathStep>),
+    ValueLength {
+        sibling: StringId,
+        units: LengthUnits,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +287,7 @@ pub struct IrProps {
     pub output_value_calc_path: Option<Vec<IrInputPathStep>>,
     pub output_value_calc_path_addend: Option<i64>,
     pub output_value_calc_scale: Option<i64>,
+    pub output_value_calc_segments: Option<Vec<IrInputValueCalcSegment>>,
     pub output_value_calc_conditional: bool,
     pub text_string_justification: TextStringJustification,
     pub text_number_justification: TextNumberJustification,
@@ -475,6 +480,7 @@ impl Default for IrProps {
             output_value_calc_path: None,
             output_value_calc_path_addend: None,
             output_value_calc_scale: None,
+            output_value_calc_segments: None,
             output_value_calc_conditional: false,
             text_string_justification: TextStringJustification::Left,
             text_number_justification: TextNumberJustification::Right,

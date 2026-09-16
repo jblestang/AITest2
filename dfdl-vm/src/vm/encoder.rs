@@ -1307,7 +1307,8 @@ fn child_skips_encode(enc: &Encoder<'_>, node_id: u32) -> Result<bool> {
             props.input_value_calc.is_some()
                 || props.input_value_calc_sibling.is_some()
                 || props.input_value_calc_segments.is_some()
-                || props.input_value_calc_path.is_some(),
+                || props.input_value_calc_path.is_some()
+                || props.input_value_calc_expression.is_some(),
         ),
         _ => Ok(false),
     }
@@ -1520,7 +1521,15 @@ fn precompute_output_values<'a>(
                 parent_props,
             ) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(e) => {
+                    if matches!(
+                        entry.props.output_value_calc,
+                        Some(OutputValueCalc::FnError)
+                    ) {
+                        return Err(e);
+                    }
+                    continue;
+                }
             };
             let computed = ovc_value_for_element_kind(entry.kind, computed);
             let prev = effective.get(&entry.name_key);
@@ -1560,6 +1569,9 @@ fn ovc_value_for_element_kind(kind: crate::ir::ValueKind, value: DfdlValue) -> D
         (ValueKind::Float, DfdlValue::Long(n)) => DfdlValue::Float(n as f32),
         (ValueKind::Double, DfdlValue::Int(n)) => DfdlValue::Double(n as f64),
         (ValueKind::Double, DfdlValue::Long(n)) => DfdlValue::Double(n as f64),
+        (ValueKind::DateTime | ValueKind::Time, DfdlValue::String(s)) => {
+            DfdlValue::DateTime(s.text)
+        }
         (_, v) => v,
     }
 }
@@ -2215,6 +2227,141 @@ fn apply_output_value_calc_scale(props: &IrProps, len: i64) -> i64 {
     len.saturating_mul(props.output_value_calc_scale.unwrap_or(1))
 }
 
+fn split_top_level_commas_ovc(s: &str) -> alloc::vec::Vec<alloc::string::String> {
+    let mut out = alloc::vec::Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(s[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(s[start..].trim().to_string());
+    out
+}
+
+fn ovc_error_unquote_literal(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.len() >= 2 && s.starts_with('\'') && s.ends_with('\'') {
+        return Some(s[1..s.len() - 1].replace("''", "'"));
+    }
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        return Some(s[1..s.len() - 1].replace("\"\"", "\""));
+    }
+    None
+}
+
+fn eval_fn_error_ovc(
+    expr: &str,
+    map: &BTreeMap<String, DfdlValue>,
+    strings: &crate::ir::StringPool,
+) -> Result<DfdlValue> {
+    let expr = expr.trim();
+    let error_call = if let Some(rest) = expr.strip_prefix("fn:round-half-to-even(") {
+        rest.strip_suffix(')').unwrap_or(expr).trim()
+    } else {
+        expr
+    };
+    if error_call == "fn:error()" {
+        return Err(VmError::InvalidValue {
+            message: "Unparse Error: xqt-errors#FOER0000".into(),
+        }
+        .into());
+    }
+    let args_body = error_call
+        .strip_prefix("fn:error(")
+        .and_then(|a| a.strip_suffix(')'))
+        .ok_or_else(|| VmError::InvalidValue {
+            message: "invalid fn:error in outputValueCalc".into(),
+        })?;
+    let mut parts = alloc::vec!["Unparse Error".to_string()];
+    for arg in split_top_level_commas_ovc(args_body) {
+        let arg = arg.trim();
+        if let Some(lit) = ovc_error_unquote_literal(arg) {
+            parts.push(lit);
+        } else if let Some(path) = arg.strip_prefix("../") {
+            let local = path.rsplit(':').next().unwrap_or(path).trim();
+            let text = lookup_sibling_string_in_encode_map(map, local)?;
+            parts.push(text);
+        } else {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("unsupported fn:error argument `{arg}`"),
+            }
+            .into());
+        }
+    }
+    Err(VmError::InvalidValue {
+        message: parts.join(": "),
+    }
+    .into())
+}
+
+fn eval_ovc_concat_segments(
+    enc: &Encoder<'_>,
+    segments: &[crate::ir::IrInputValueCalcSegment],
+    map: &BTreeMap<String, DfdlValue>,
+    children: &[u32],
+) -> Result<String> {
+    use crate::ir::IrInputValueCalcSegment;
+    let strings = enc.ctx.strings();
+    let mut out = String::new();
+    for seg in segments {
+        match seg {
+            IrInputValueCalcSegment::Sibling(id) => {
+                let name = strings.get(*id)?;
+                let local = crate::xml_util::local_name_str(name);
+                let text = lookup_sibling_string_in_encode_map(map, local)?;
+                out.push_str(&text);
+            }
+            IrInputValueCalcSegment::Literal(id) => out.push_str(strings.get(*id)?),
+            IrInputValueCalcSegment::Substring {
+                sibling,
+                start,
+                length,
+            } => {
+                let name = strings.get(*sibling)?;
+                let local = crate::xml_util::local_name_str(name);
+                let text = lookup_sibling_string_in_encode_map(map, local)?;
+                let start0 = (*start as usize).saturating_sub(1);
+                for ch in text.chars().skip(start0).take(*length as usize) {
+                    out.push(ch);
+                }
+            }
+            IrInputValueCalcSegment::InfosetPath(steps) => {
+                let v = resolve_output_value_calc_path_value(enc, steps, children, map)?;
+                out.push_str(&dfdl_value_to_string_fragment(&v));
+            }
+            IrInputValueCalcSegment::ValueLength { sibling, units } => {
+                let sib_name = strings.get(*sibling)?;
+                let sib = sibling_from_map(Some(*sibling), map, strings)?;
+                let len = if let Some(child_id) = find_child_element_by_name(enc, children, sib_name)? {
+                    measure_value_length(enc, child_id, sib, *units, Some(map))?
+                } else {
+                    length_in_units(value_byte_length(sib)?, *units)?
+                };
+                out.push_str(&len.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn dfdl_value_to_string_fragment(value: &DfdlValue) -> String {
+    match value {
+        DfdlValue::String(s) => s.text.clone(),
+        DfdlValue::Int(n) => n.to_string(),
+        DfdlValue::Long(n) => n.to_string(),
+        DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => s.clone(),
+        other => alloc::format!("{other:?}"),
+    }
+}
+
 fn eval_output_value_calc(
     enc: &Encoder<'_>,
     props: &IrProps,
@@ -2227,6 +2374,22 @@ fn eval_output_value_calc(
         message: "missing outputValueCalc".into(),
     })?;
     match calc {
+        OutputValueCalc::FnError => {
+            let lit_id = props.output_value_calc_literal.ok_or_else(|| VmError::InvalidValue {
+                message: "missing outputValueCalc fn:error".into(),
+            })?;
+            let expr = strings.get(lit_id)?;
+            return eval_fn_error_ovc(expr, map, strings);
+        }
+        OutputValueCalc::FnConcat => {
+            let segments = props.output_value_calc_segments.as_ref().ok_or_else(|| {
+                VmError::InvalidValue {
+                    message: "missing outputValueCalc fn:concat segments".into(),
+                }
+            })?;
+            let text = eval_ovc_concat_segments(enc, segments, map, children)?;
+            return Ok(DfdlValue::string(text));
+        }
         OutputValueCalc::HexBinaryFromLexical => {
             let lit_id = props.output_value_calc_literal.ok_or_else(|| VmError::InvalidValue {
                 message: "missing outputValueCalc hex literal".into(),
@@ -2434,6 +2597,8 @@ fn eval_output_value_calc(
         | OutputValueCalc::InfosetPathAddend
         |         OutputValueCalc::OccursIndexPath { .. }
         | OutputValueCalc::FnCountPath
+        | OutputValueCalc::FnConcat
+        | OutputValueCalc::FnError
         | OutputValueCalc::ValueLengthInfosetPath(_, _) => {
             unreachable!("handled above")
         }

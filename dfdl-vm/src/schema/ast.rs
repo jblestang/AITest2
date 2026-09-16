@@ -237,6 +237,7 @@ pub struct DfdlProps {
     pub output_value_calc_path_addend: Option<i64>,
     /// Trailing `* N` on outputValueCalc (e.g. valueLength * 1000).
     pub output_value_calc_scale: Option<i64>,
+    pub output_value_calc_segments: Option<alloc::vec::Vec<InputValueCalcSegment>>,
     /// Arithmetic / absolute-path inputValueCalc (e.g. AC000 product expression).
     pub input_value_calc_expression: Option<InputValueCalcExpression>,
     pub text_bidi: Option<bool>,
@@ -457,6 +458,11 @@ pub enum InputValueCalcSegment {
         Option<u32>,
         bool,
     )>),
+    /// `dfdl:valueLength(../sib, 'bytes')` inside fn:concat.
+    ValueLength {
+        sibling: alloc::string::String,
+        units: LengthUnits,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -512,6 +518,10 @@ pub enum OutputValueCalc {
     OccursIndexPath { multiply: bool },
     /// `{ fn:count(../path) }` — path in [`DfdlProps::output_value_calc_path`].
     FnCountPath,
+    /// `{ fn:concat(...) }` — segments in [`DfdlProps::output_value_calc_segments`].
+    FnConcat,
+    /// `{ fn:error(...) }` — raw call in [`DfdlProps::output_value_calc_literal`].
+    FnError,
     /// `{ if (dfdl:occursIndex() lt fn:count(..)) then 1 else 0 }` on repeat indicators (GRI/FRI).
     RepeatIndicatorFromParentCount,
 }

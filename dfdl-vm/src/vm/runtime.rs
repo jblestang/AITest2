@@ -2473,6 +2473,11 @@ pub(crate) fn resolve_calendar_language(
                         message: "calendarLanguage infoset path not supported".into(),
                     });
                 }
+                IrInputValueCalcSegment::ValueLength { .. } => {
+                    return Err(crate::error::VmError::InvalidValue {
+                        message: "calendarLanguage valueLength segment not supported".into(),
+                    });
+                }
             }
         }
         if !calendar_language_is_valid(&out) {
