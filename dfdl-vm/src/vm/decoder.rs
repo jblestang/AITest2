@@ -432,6 +432,7 @@ impl<'a> Decoder<'a> {
                 let mut separator_alts = Vec::new();
                 let mut field_delim_meta = BTreeMap::new();
                 let mut prev_absent_or_empty = false;
+                let mut prev_child_empty_string = false;
                 let mut inter_child_sep_consumed_by_prev = false;
                 if props.initiated_content {
                     return self.decode_sequence_initiated_content(
@@ -571,7 +572,24 @@ impl<'a> Decoder<'a> {
                                 &children,
                                 idx,
                                 cursor,
-                            )?);
+                            )?)
+                        || (idx > 0
+                            && prev_child_empty_string
+                            && props.separator.is_some()
+                            && props.separator_position == SeparatorPosition::Infix
+                            && props.separator.and_then(|id| self.ctx.strings().get(id).ok())
+                                .is_some_and(|pat| {
+                                    crate::schema::match_delimiter_opts_for_encoding(
+                                        &cursor.data[cursor.pos..],
+                                        pat,
+                                        props.ignore_case,
+                                        encoding_name(props, self.ctx.strings())
+                                            .ok()
+                                            .as_deref(),
+                                    )
+                                    .unwrap_or(0)
+                                        == 0
+                                }));
                     let skip_sep_at_term = child_element_props.is_some_and(|cp| cp.occurs_min == 0)
                         && cursor_at_own_sequence_terminator(
                             cursor,
@@ -762,6 +780,10 @@ impl<'a> Decoder<'a> {
                                 seq_siblings.insert(key.clone(), state.clone());
                                 self.insert_xpath_sibling(key, state);
                             }
+                            prev_child_empty_string = matches!(
+                                &child_value,
+                                DfdlValue::String(s) if s.text.is_empty()
+                            );
                             insert_child(&mut map, child, child_value, self.ctx.program)?;
                             if idx + 1 < children.len() {
                                 if let Ok(IrNode::Element { props: cp, .. }) =
@@ -1143,8 +1165,11 @@ impl<'a> Decoder<'a> {
                             {
                                 return Ok(value);
                             }
-                            let name = self.ctx.strings().get(branch.name)?.to_string();
-                            return Ok(DfdlValue::choice(name, value));
+                            let discriminator = choice_branch_discriminator(
+                                branch,
+                                self.ctx.strings(),
+                            )?;
+                            return Ok(DfdlValue::choice(discriminator, value));
                         }
                         Err(e) => {
                             branch_errors.push(format_choice_branch_error(
@@ -4630,11 +4655,11 @@ fn insert_child(
             } = value
             {
                 if let Some(branch) = branches.iter().find(|b| {
-                    program
-                        .strings
-                        .get(b.name)
-                        .ok()
-                        .is_some_and(|n| n == discriminator.as_str())
+                    choice_branch_discriminator_matches_name(
+                        program,
+                        b,
+                        discriminator.as_str(),
+                    )
                 }) {
                     return insert_child(map, branch.node, *branch_value, program);
                 }
@@ -5771,6 +5796,37 @@ fn length_from_value(value: &DfdlValue, cast_long: bool) -> Result<u64> {
         }
         other => err(alloc::format!("length sibling has unsupported type: {other:?}")),
     }
+}
+
+fn choice_branch_discriminator(
+    branch: &ChoiceBranch,
+    strings: &StringPool,
+) -> Result<alloc::string::String> {
+    if let Some(id) = branch.branch_key {
+        if let Ok(k) = strings.get(id) {
+            return Ok(k.to_string());
+        }
+    }
+    Ok(strings.get(branch.name)?.to_string())
+}
+
+fn choice_branch_discriminator_matches_name(
+    program: &IrProgram,
+    branch: &ChoiceBranch,
+    discriminator: &str,
+) -> bool {
+    if branch
+        .branch_key
+        .and_then(|id| program.strings.get(id).ok())
+        .is_some_and(|k| k == discriminator)
+    {
+        return true;
+    }
+    program
+        .strings
+        .get(branch.name)
+        .ok()
+        .is_some_and(|n| n == discriminator)
 }
 
 fn format_choice_branch_error(branch: &ChoiceBranch, strings: &StringPool, err: &Error) -> String {

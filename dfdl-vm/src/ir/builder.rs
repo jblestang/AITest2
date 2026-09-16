@@ -756,7 +756,7 @@ impl<'a> IrBuilder<'a> {
                             branches.push(ChoiceBranch {
                                 name: self.strings.intern(&branch_name(branch)),
                                 initiator: branch_initiator(branch, &mut self.strings),
-                                branch_key: branch_choice_key(branch, &mut self.strings),
+                                branch_key: branch_choice_key(branch, self.schema, &mut self.strings),
                                 node,
                             });
                         }
@@ -896,7 +896,7 @@ impl<'a> IrBuilder<'a> {
                                 branches.push(ChoiceBranch {
                                     name: self.strings.intern(&branch_name(branch)),
                                     initiator: branch_initiator(branch, &mut self.strings),
-                                    branch_key: branch_choice_key(branch, &mut self.strings),
+                                    branch_key: branch_choice_key(branch, self.schema, &mut self.strings),
                                     node,
                                 });
                             }
@@ -953,7 +953,7 @@ impl<'a> IrBuilder<'a> {
                     branches.push(ChoiceBranch {
                         name: self.strings.intern(&name),
                         initiator,
-                        branch_key: branch_choice_key(branch, &mut self.strings),
+                        branch_key: branch_choice_key(branch, self.schema, &mut self.strings),
                         node,
                     });
                 }
@@ -1102,7 +1102,7 @@ impl<'a> IrBuilder<'a> {
                     branches.push(ChoiceBranch {
                         name: self.strings.intern(branch_name(branch)),
                         initiator: branch_initiator(branch, &mut self.strings),
-                        branch_key: branch_choice_key(branch, &mut self.strings),
+                        branch_key: branch_choice_key(branch, self.schema, &mut self.strings),
                         node,
                     });
                 }
@@ -2868,12 +2868,32 @@ fn branch_initiator(particle: &Particle, strings: &mut StringPool) -> Option<Str
     raw.map(|s| strings.intern(s))
 }
 
-fn branch_choice_key(particle: &Particle, strings: &mut StringPool) -> Option<StringId> {
+fn branch_choice_key(
+    particle: &Particle,
+    schema: &SchemaDocument,
+    strings: &mut StringPool,
+) -> Option<StringId> {
     let raw = match particle {
         Particle::Element(e) => e.props.choice_branch_key.as_deref(),
         Particle::Sequence(s) => s.props.choice_branch_key.as_deref(),
         Particle::Choice(c) => c.props.choice_branch_key.as_deref(),
-        Particle::GroupRef(gr) => gr.props.choice_branch_key.as_deref(),
+        Particle::GroupRef(gr) => gr
+            .props
+            .choice_branch_key
+            .as_deref()
+            .or_else(|| {
+                schema
+                    .groups
+                    .get(group_local_name(&gr.name))
+                    .and_then(|group| match group {
+                        crate::schema::GroupDecl::Sequence(s) => {
+                            s.props.choice_branch_key.as_deref()
+                        }
+                        crate::schema::GroupDecl::Choice(c) => {
+                            c.props.choice_branch_key.as_deref()
+                        }
+                    })
+            }),
     };
     raw.map(|s| strings.intern(s))
 }
