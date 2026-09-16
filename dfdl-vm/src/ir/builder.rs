@@ -1517,6 +1517,21 @@ fn finalize_element_props(
         }
         .into());
     }
+    if ir.default_value.is_some() {
+        let max = ir.occurs_max.unwrap_or(u64::MAX);
+        if ir.occurs_min > 0 && max != 1 {
+            let default_text = ir
+                .default_value
+                .and_then(|id| strings.get(id).ok())
+                .unwrap_or("?");
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error. subset: XSD default='{default_text}' is not implemented."
+                ),
+            }
+            .into());
+        }
+    }
     if ir.object_kind == ObjectKind::Bytes && ir.length_kind != LengthKind::Explicit {
         return Err(SchemaError::InvalidProperty {
             message: "Schema Definition Error: objectKind='bytes' must have dfdl:lengthKind='explicit'"

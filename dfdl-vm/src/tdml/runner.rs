@@ -624,11 +624,13 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
             el.contains("element end")
                 || el.contains("element start")
                 || el.contains("expected element")
+                || el.contains("expected one of")
                 || el.contains("schema definition error")
                 || el.contains("no global element")
+                || el.contains("not implemented")
         })
     }) {
-        crate::unparse_validate::validate_unparse_infoset_cardinality(
+        crate::unparse_validate::validate_unparse_infoset_nodes(
             spec.schema(),
             spec.program(),
             &test.root,

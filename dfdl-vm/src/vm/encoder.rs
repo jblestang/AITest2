@@ -117,7 +117,17 @@ impl<'a> Encoder<'a> {
                 )?;
             }
             _ => {
-                self.encode_node(branch_node, value, out, bit_count)?;
+                let encode_value = if value.sequence_fields().is_some() {
+                    value.clone()
+                } else if matches!(
+                    self.ctx.program.node(branch_node),
+                    Ok(IrNode::Sequence { .. })
+                ) {
+                    DfdlValue::sequence(parent_map.clone())
+                } else {
+                    value.clone()
+                };
+                self.encode_node(branch_node, &encode_value, out, bit_count)?;
             }
         }
         pad_choice_explicit_frame(self, choice_props, out, bit_count, start)?;
@@ -489,7 +499,7 @@ impl<'a> Encoder<'a> {
             } => {
                 let key = self.ctx.strings().get(*name)?;
                 let field_delim = seq_meta.field_delimiters.get(key);
-                let value = match self.element_encode_value(props, key, map) {
+                let mut value = match self.element_encode_value(props, key, map) {
                     Ok(v) => v,
                     Err(Error::Vm(VmError::MissingField { .. })) if props.occurs_min == 0 => {
                         return Ok(());
@@ -505,6 +515,15 @@ impl<'a> Encoder<'a> {
                     }
                     Err(e) => return Err(e),
                 };
+                if props.hidden
+                    && child.is_none()
+                    && matches!(
+                        value,
+                        DfdlValue::Sequence(ref s) if s.fields.is_empty()
+                    )
+                {
+                    value = DfdlValue::string("");
+                }
                 let mut resolved = resolve_length_props_encode(props, map, self.ctx.strings())?;
                 resolved = resolve_encoding_for_encode(&resolved, map, self.ctx.strings())?;
                 validate_fill_byte_for_encode(&resolved, self.ctx.strings())?;
@@ -769,7 +788,10 @@ impl<'a> Encoder<'a> {
             return eval_output_value_calc(self, props, map, &[], props);
         }
         if props.hidden {
-            // Hidden particles are not in the infoset; encode complex children via OVC/defaults only.
+            if let Some(default_id) = props.default_value {
+                let text = self.ctx.strings().get(default_id)?;
+                return Ok(DfdlValue::string(text));
+            }
             return Ok(DfdlValue::sequence(BTreeMap::new()));
         }
         if let Some(v) = map.get(key) {

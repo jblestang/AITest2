@@ -530,8 +530,41 @@ fn validate_infoset_particle(
                     );
                 }
             }
+            let mut expected = Vec::new();
+            for branch in branches {
+                if ir_particle_can_absent_from_unparse_infoset(program, branch.node).unwrap_or(false)
+                {
+                    continue;
+                }
+                if let Some(local) = choice_branch_infoset_local_key(program, branch.node) {
+                    expected.push(local);
+                } else {
+                    let branch_name = program.strings.get(branch.name).map_err(|e| e.to_string())?;
+                    expected.push(crate::xml_util::local_name_str(branch_name).to_string());
+                }
+            }
+            if expected.is_empty() {
+                return Err(format!(
+                    "Unparse Error: infoset does not match any choice branch under `{parent_name}`"
+                ));
+            }
+            let mut found = Vec::new();
+            for key in node.children.keys() {
+                let local = crate::xml_util::local_name_str(key);
+                if !expected.iter().any(|e| e == local) {
+                    found.push(local.to_string());
+                }
+            }
+            if !found.is_empty() {
+                return Err(format!(
+                    "Unparse Error: Found {}, expected one of {} at {parent_name}",
+                    found.join(", "),
+                    expected.join(", ")
+                ));
+            }
             Err(format!(
-                "Unparse Error: infoset does not match any choice branch under `{parent_name}`"
+                "Unparse Error: Expected one of {} at {parent_name}",
+                expected.join(", ")
             ))
         }
     }
