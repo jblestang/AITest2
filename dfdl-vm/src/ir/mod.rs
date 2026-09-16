@@ -265,6 +265,7 @@ pub struct IrProps {
     /// `dfdl:discriminator` body for choice branch filtering.
     pub discriminator_test: Option<StringId>,
     pub facet_assert_message: Option<StringId>,
+    pub facet_assert_message_segments: Option<Vec<IrInputValueCalcSegment>>,
     /// Prepend Daffodil `Assertion failed: ` to custom assert messages (derived simple types).
     pub facet_assert_daffodil_prefix: bool,
     pub prefix_length: Option<alloc::boxed::Box<IrPrefixLength>>,
@@ -443,6 +444,7 @@ impl Default for IrProps {
             assert_int_eq: None,
             discriminator_test: None,
             facet_assert_message: None,
+            facet_assert_message_segments: None,
             facet_assert_daffodil_prefix: false,
             prefix_length: None,
             prefix_includes_prefix_length: false,

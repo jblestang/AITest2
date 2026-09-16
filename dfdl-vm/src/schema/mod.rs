@@ -33,6 +33,7 @@ pub use entities::{
     normalize_delimiter_pattern, parse_delimiter_literal_value, unescape_dfdl_open_braces,
     validate_delimiter_property_value, validate_delimiter_schema_attribute,
     delimited_terminator_expression_uses_es_literal, eval_discriminator_expression,
+    unquote_xpath_string_literal,
     eval_runtime_delimiter_expression,
     validate_runtime_delimiter_expression,
     runtime_delimiter_expression_may_be_zero_length, delimiter_alt_allows_trailing_input,

@@ -233,6 +233,89 @@ impl<'a> Decoder<'a> {
         self.xpath_ancestor_frames.borrow_mut().pop();
     }
 
+    fn sibling_map_for_discriminator_up(&self, up: usize) -> BTreeMap<String, SiblingState> {
+        if up == 0 {
+            return self.xpath_siblings_snapshot();
+        }
+        let frames = self.xpath_ancestor_frames.borrow();
+        if up <= frames.len() {
+            return frames[frames.len() - up].clone();
+        }
+        self.xpath_siblings_snapshot()
+    }
+
+    fn eval_discriminator_xpath_eq(&self, inner: &str, dot: &str) -> Result<Option<bool>> {
+        if inner.contains('*') || inner.contains('(') {
+            return Ok(None);
+        }
+        let mut rest = inner.trim();
+        let mut up = 0usize;
+        while rest.starts_with("../") {
+            up += 1;
+            rest = &rest[3..];
+        }
+        let Some(eq_idx) = rest.find(" eq ") else {
+            return Ok(None);
+        };
+        let path = rest[..eq_idx].trim();
+        let lit = crate::schema::unquote_xpath_string_literal(rest[eq_idx + 4..].trim());
+        if path.contains('/') || path.contains('[') || up > 0 {
+            let Some(actual) = self
+                .xpath_discriminator_path_string(up, path)
+                .ok()
+                .flatten()
+            else {
+                return Ok(Some(false));
+            };
+            return Ok(Some(actual == lit));
+        }
+        if path == "." {
+            return Ok(Some(dot == lit));
+        }
+        if path.starts_with('$') || path.contains('(') {
+            return Ok(None);
+        }
+        let local = path.rsplit(':').next().unwrap_or(path).trim();
+        let Some(sib) = self.lookup_xpath_sibling_state(local, up.saturating_sub(1)) else {
+            return Ok(Some(false));
+        };
+        Ok(Some(dfdl_value_dispatch_string(&sib.value) == lit))
+    }
+
+    fn xpath_discriminator_path_string(
+        &self,
+        up: usize,
+        path: &str,
+    ) -> Result<Option<alloc::string::String>> {
+        let map = self.sibling_map_for_discriminator_up(up);
+        let mut value: Option<DfdlValue> = None;
+        for (i, step) in path.split('/').filter(|s| !s.is_empty()).enumerate() {
+            let (local, index) = parse_discriminator_path_step(step)?;
+            if i == 0 {
+                let state = map
+                    .iter()
+                    .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
+                    .map(|(_, v)| v.clone())
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: alloc::format!(
+                            "Schema Definition Error: No element corresponding to step {local} found."
+                        ),
+                    })?;
+                value = Some(if let Some(idx) = index {
+                    array_item_at(&state.value, idx)?
+                } else {
+                    state.value.clone()
+                });
+            } else {
+                let cur = value.ok_or_else(|| VmError::InvalidValue {
+                    message: "discriminator path step without root".into(),
+                })?;
+                value = Some(navigate_discriminator_path_step(&cur, local, index)?);
+            }
+        }
+        Ok(value.as_ref().map(dfdl_value_dispatch_string))
+    }
+
     fn lookup_xpath_sibling_state(&self, local: &str, up_levels: usize) -> Option<SiblingState> {
         if up_levels == 0 {
             return self
@@ -1075,12 +1158,7 @@ impl<'a> Decoder<'a> {
                     let mut list: alloc::vec::Vec<&ChoiceBranch> = branches.iter().collect();
                     if let Some(ref dot) = dot_peek {
                         list.retain(|b| {
-                            choice_branch_discriminator_matches(
-                                self.ctx.program,
-                                b.node,
-                                dot,
-                                self.ctx.strings(),
-                            )
+                            self.choice_branch_discriminator_matches(b.node, dot)
                         });
                     }
                     if props.initiated_content {
@@ -3891,6 +3969,9 @@ impl<'a> Decoder<'a> {
         if let Some(b) = crate::schema::eval_discriminator_expression(expr, dot) {
             return Ok(b);
         }
+        if let Ok(Some(b)) = self.eval_discriminator_xpath_eq(inner, dot) {
+            return Ok(b);
+        }
         let compact: alloc::string::String =
             inner.chars().filter(|c| !c.is_whitespace()).collect();
         if compact.starts_with("xs:boolean(") && compact.ends_with(')') {
@@ -3961,6 +4042,56 @@ impl<'a> Decoder<'a> {
         numeric_value_from_dfdl(&sib.value)
     }
 
+    fn eval_facet_assert_message(&self, props: &IrProps) -> Result<alloc::string::String> {
+        use crate::ir::IrInputValueCalcSegment;
+        if let Some(segments) = &props.facet_assert_message_segments {
+            let siblings = self.xpath_siblings_snapshot();
+            let siblings = Some(&siblings);
+            let strings = self.ctx.strings();
+            let mut out = alloc::string::String::new();
+            for seg in segments {
+                match seg {
+                    IrInputValueCalcSegment::Sibling(id) => {
+                        let name = strings.get(*id)?;
+                        out.push_str(&sibling_string_value(siblings, name)?);
+                    }
+                    IrInputValueCalcSegment::Literal(id) => {
+                        out.push_str(strings.get(*id)?);
+                    }
+                    IrInputValueCalcSegment::Substring {
+                        sibling,
+                        start,
+                        length,
+                    } => {
+                        let name = strings.get(*sibling)?;
+                        let text = sibling_string_value(siblings, name)?;
+                        let start = (*start as usize).saturating_sub(1);
+                        for ch in text.chars().skip(start).take(*length as usize) {
+                            out.push(ch);
+                        }
+                    }
+                    IrInputValueCalcSegment::InfosetPath(steps) => {
+                        let value = eval_ivc_path_steps(
+                            steps,
+                            siblings,
+                            strings,
+                            &self.ctx.program.tunables,
+                            "",
+                        )?;
+                        out.push_str(&dfdl_value_to_string(&value));
+                    }
+                }
+            }
+            return Ok(out);
+        }
+        if let Some(msg_id) = props.facet_assert_message {
+            if let Ok(msg) = self.ctx.strings().get(msg_id) {
+                return Ok(msg.to_string());
+            }
+        }
+        Ok(alloc::string::String::new())
+    }
+
     fn validate_particle_discriminator(&self, props: &IrProps, dot: &str) -> Result<()> {
         let Some(id) = props.discriminator_test else {
             return Ok(());
@@ -3969,18 +4100,43 @@ impl<'a> Decoder<'a> {
         if self.eval_particle_assert_expression(expr, dot)? {
             return Ok(());
         }
-        if let Some(msg_id) = props.facet_assert_message {
-            if let Ok(msg) = self.ctx.strings().get(msg_id) {
-                return Err(VmError::InvalidValue {
-                    message: alloc::format!("Parse Error. Assertion failed: {msg}"),
-                }
-                .into());
+        let msg = self.eval_facet_assert_message(props)?;
+        if !msg.is_empty() {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("Parse Error. Assertion failed: {msg}"),
             }
+            .into());
         }
         Err(VmError::InvalidValue {
             message: alloc::format!("Assertion Failed {expr}"),
         }
         .into())
+    }
+
+    fn choice_branch_discriminator_matches(&self, branch_node: u32, dot: &str) -> bool {
+        let Some(props) = choice_branch_element_props(self.ctx.program, branch_node) else {
+            return true;
+        };
+        let Some(id) = props.discriminator_test else {
+            return true;
+        };
+        let Ok(expr) = self.ctx.strings().get(id) else {
+            return false;
+        };
+        if let Some(b) = crate::schema::eval_discriminator_expression(expr, dot) {
+            return b;
+        }
+        if let Ok(Some(b)) = self.eval_discriminator_xpath_eq(
+            expr.trim()
+                .strip_prefix('{')
+                .and_then(|s| s.strip_suffix('}'))
+                .unwrap_or(expr)
+                .trim(),
+            dot,
+        ) {
+            return b;
+        }
+        false
     }
 
     fn consume_initiator(&self, props: &IrProps, cursor: &mut Cursor<'_>) -> Result<()> {
@@ -5124,23 +5280,6 @@ fn element_discriminator_always_false(props: &IrProps, strings: &StringPool) -> 
     matches!(inner, "fn:false()" | "false()")
 }
 
-fn choice_branch_discriminator_matches(
-    program: &IrProgram,
-    branch_node: u32,
-    dot: &str,
-    strings: &StringPool,
-) -> bool {
-    let Some(props) = choice_branch_element_props(program, branch_node) else {
-        return true;
-    };
-    let Some(id) = props.discriminator_test else {
-        return true;
-    };
-    let Ok(expr) = strings.get(id) else {
-        return false;
-    };
-    crate::schema::eval_discriminator_expression(expr, dot).unwrap_or(false)
-}
 
 fn choice_branch_element_props(program: &IrProgram, node: u32) -> Option<&IrProps> {
     match &program.nodes[node as usize] {
@@ -5240,6 +5379,75 @@ fn choice_dispatch_key_string(
         }
     }
     Ok(None)
+}
+
+fn parse_discriminator_path_step(step: &str) -> Result<(&str, Option<usize>)> {
+    let step = step.trim();
+    if let Some(open) = step.find('[') {
+        if !step.ends_with(']') {
+            return Err(VmError::InvalidValue {
+                message: "invalid discriminator path step".into(),
+            }
+            .into());
+        }
+        let local = step[..open].trim();
+        let idx: usize = step[open + 1..step.len() - 1]
+            .trim()
+            .parse()
+            .map_err(|_| VmError::InvalidValue {
+                message: "invalid discriminator array index".into(),
+            })?;
+        return Ok((local, Some(idx)));
+    }
+    Ok((step, None))
+}
+
+fn array_item_at(value: &DfdlValue, one_based_index: usize) -> Result<DfdlValue> {
+    let DfdlValue::Array(items) = value else {
+        return Err(VmError::InvalidValue {
+            message: "Schema Definition Error: Indexing is only allowed on arrays".into(),
+        }
+        .into());
+    };
+    let idx = one_based_index
+        .checked_sub(1)
+        .ok_or_else(|| VmError::InvalidValue {
+            message: "invalid discriminator array index".into(),
+        })?;
+    items.get(idx).cloned().ok_or_else(|| {
+        VmError::InvalidValue {
+            message: alloc::format!(
+                "Schema Definition Error: No element corresponding to step index {one_based_index} found."
+            ),
+        }
+        .into()
+    })
+}
+
+fn navigate_discriminator_path_step(
+    value: &DfdlValue,
+    local: &str,
+    index: Option<usize>,
+) -> Result<DfdlValue> {
+    let field = sequence_field_by_local_value(value, local).ok_or_else(|| {
+        VmError::InvalidValue {
+            message: alloc::format!(
+                "Schema Definition Error: No element corresponding to step {local} found."
+            ),
+        }
+    })?;
+    if let Some(idx) = index {
+        array_item_at(field, idx)
+    } else {
+        Ok(field.clone())
+    }
+}
+
+fn sequence_field_by_local_value<'a>(value: &'a DfdlValue, local: &str) -> Option<&'a DfdlValue> {
+    match value {
+        DfdlValue::Sequence(seq) => sequence_field_by_local(&seq.fields, local),
+        _ => None,
+    }
 }
 
 fn dfdl_value_dispatch_string(value: &DfdlValue) -> alloc::string::String {

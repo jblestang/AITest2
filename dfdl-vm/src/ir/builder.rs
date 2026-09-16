@@ -2939,6 +2939,10 @@ fn apply_restriction_facets(
     if let Some(msg) = &element_props.assert_message {
         props.facet_assert_message = Some(strings.intern(msg.clone()));
     }
+    if let Some(segs) = &element_props.assert_message_segments {
+        props.facet_assert_message_segments =
+            Some(intern_input_value_calc_segments(segs, strings));
+    }
     if let Some(n) = element_props.assert_int_eq {
         props.assert_int_eq = Some(n);
     }
@@ -3989,6 +3993,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.facet_assert_message.is_some() {
         out.facet_assert_message = overlay.facet_assert_message;
+    }
+    if overlay.facet_assert_message_segments.is_some() {
+        out.facet_assert_message_segments = overlay.facet_assert_message_segments.clone();
     }
     if overlay.facet_assert_daffodil_prefix {
         out.facet_assert_daffodil_prefix = true;

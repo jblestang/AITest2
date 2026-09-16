@@ -713,7 +713,7 @@ pub fn runtime_delimiter_expression_may_be_zero_length(expr: &str) -> bool {
     false
 }
 
-fn unquote_xpath_string_literal(raw: &str) -> String {
+pub fn unquote_xpath_string_literal(raw: &str) -> String {
     let t = raw.trim();
     if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
         return t[1..t.len() - 1].replace("''", "'");

@@ -2021,6 +2021,9 @@ impl<'a> XsdParser<'a> {
             props.has_statement_annotation = true;
             if let Some(msg) = attrs.get("message") {
                 props.assert_message = Some(msg.clone());
+                if let Some(segments) = parse_input_value_calc_concat(msg) {
+                    props.assert_message_segments = Some(segments);
+                }
             }
             if let Some(test) = attrs.get("test") {
                 apply_dfdl_assert_test(&mut props, test);
@@ -3026,6 +3029,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.assert_message.is_some() {
         base.assert_message = overlay.assert_message.clone();
+    }
+    if overlay.assert_message_segments.is_some() {
+        base.assert_message_segments = overlay.assert_message_segments.clone();
     }
     if overlay.facet_check_constraints {
         base.facet_check_constraints = true;

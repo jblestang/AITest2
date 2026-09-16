@@ -191,6 +191,8 @@ pub struct DfdlProps {
     pub has_statement_annotation: bool,
     /// `dfdl:assert/@message` when present (facet tests use checkConstraints).
     pub assert_message: Option<alloc::string::String>,
+    /// Parsed `{ fn:concat(...) }` assert message (evaluated at runtime on failure).
+    pub assert_message_segments: Option<alloc::vec::Vec<InputValueCalcSegment>>,
     /// True when `dfdl:assert/@test` references `dfdl:checkConstraints`.
     pub facet_check_constraints: bool,
     /// `{ xs:int(.) eq N }` on `dfdl:assert` (section 02 assert tests).
