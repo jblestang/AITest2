@@ -847,7 +847,7 @@ impl<'a> IrBuilder<'a> {
                         particle,
                         &child_inherited,
                         &prior_element_names,
-                        false,
+                        hidden,
                     )?);
                     if let Particle::Element(el) = particle {
                         prior_element_names.push(el.name.clone());
@@ -865,7 +865,8 @@ impl<'a> IrBuilder<'a> {
                     particle_inherited_for_children(inherited, &choice.props, &self.defaults);
                 let mut branches = Vec::new();
                 for branch in &choice.branches {
-                    let node = self.compile_particle(branch, &child_inherited, &[])?;
+                    let node =
+                        self.compile_particle_inner(branch, &child_inherited, &[], hidden)?;
                     let name = branch_name(branch);
                     let initiator = branch_initiator(branch, &mut self.strings);
                     branches.push(ChoiceBranch {

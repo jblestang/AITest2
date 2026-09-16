@@ -4284,6 +4284,45 @@ fn unordered_backtrack_may_take_another(
     (count as u64) < schema_max
 }
 
+fn sequence_value_for_child(
+    child_id: u32,
+    fields: &BTreeMap<String, DfdlValue>,
+    program: &IrProgram,
+) -> Result<Option<DfdlValue>> {
+    match program.node(child_id)? {
+        IrNode::Element { name, .. } => {
+            let key = program.strings.get(*name)?;
+            let local = crate::xml_util::local_name_str(key);
+            Ok(fields
+                .iter()
+                .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
+                .map(|(_, v)| v.clone()))
+        }
+        IrNode::Sequence { children, .. } => {
+            let mut nested = BTreeMap::new();
+            for &gc in children {
+                if let Some(v) = sequence_value_for_child(gc, fields, program)? {
+                    insert_child(&mut nested, gc, v, program)?;
+                }
+            }
+            if nested.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(DfdlValue::sequence(nested)))
+            }
+        }
+        IrNode::Choice { branches, .. } => {
+            for branch in branches {
+                if let Some(v) = sequence_value_for_child(branch.node, fields, program)? {
+                    let disc = program.strings.get(branch.name)?.to_string();
+                    return Ok(Some(DfdlValue::choice(disc, v)));
+                }
+            }
+            Ok(None)
+        }
+    }
+}
+
 fn insert_child(
     map: &mut BTreeMap<String, DfdlValue>,
     node_id: u32,
@@ -4299,10 +4338,12 @@ fn insert_child(
             insert_field(map, key, value);
             Ok(())
         }
-        IrNode::Sequence { .. } => {
+        IrNode::Sequence { children, .. } => {
             if let DfdlValue::Sequence(seq) = value {
-                for (k, v) in seq.fields {
-                    map.insert(k, v);
+                for &child_id in children {
+                    if let Some(v) = sequence_value_for_child(child_id, &seq.fields, program)? {
+                        insert_child(map, child_id, v, program)?;
+                    }
                 }
                 Ok(())
             } else {
@@ -4331,11 +4372,19 @@ fn insert_child(
                     DfdlValue::Sequence(seq)
                         if discriminator == "sequence" || discriminator == "choice" =>
                     {
-                        for (k, v) in seq.fields {
-                            insert_field(map, k, v);
+                        if let Some(branch) = branches.first() {
+                            insert_child(
+                                map,
+                                branch.node,
+                                DfdlValue::Sequence(seq),
+                                program,
+                            )?;
                         }
                     }
                     other => {
+                        if props_hidden_choice_branch_other(program, branches, &discriminator) {
+                            return Ok(());
+                        }
                         map.insert(discriminator, other);
                     }
                 }
@@ -4347,6 +4396,34 @@ fn insert_child(
                 .into())
             }
         }
+    }
+}
+
+fn props_hidden_choice_branch_other(
+    program: &IrProgram,
+    branches: &[ChoiceBranch],
+    discriminator: &str,
+) -> bool {
+    branches.iter().any(|b| {
+        program
+            .strings
+            .get(b.name)
+            .ok()
+            .is_some_and(|n| n == discriminator)
+            && branch_root_hidden(program, b.node)
+    })
+}
+
+fn branch_root_hidden(program: &IrProgram, node_id: u32) -> bool {
+    match program.node(node_id) {
+        Ok(IrNode::Element { props, .. }) => props.hidden,
+        Ok(IrNode::Sequence { children, .. }) => children
+            .iter()
+            .all(|&c| branch_root_hidden(program, c)),
+        Ok(IrNode::Choice { branches, .. }) => branches
+            .iter()
+            .all(|b| branch_root_hidden(program, b.node)),
+        _ => false,
     }
 }
 
