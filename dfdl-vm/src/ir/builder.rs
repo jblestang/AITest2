@@ -7,7 +7,8 @@ use crate::length_validate::{
     validate_signed_one_bit_length_schema, validate_text_alignment_schema, DaffodilTunables,
 };
 use crate::schema::{
-    BuiltinType, ComplexContent, DfdlProps, ElementDecl, GroupDecl, LengthKind, LengthUnits,
+    BuiltinType, ComplexContent, DfdlProps, ElementDecl, GlobalElement, GroupDecl, LengthKind,
+    LengthUnits,
     OccursCountKind, Particle, Representation, SchemaDocument, SimpleBase, TextTrimKind, TypeDef,
     TypeName, get_global_element,
     expand_entities_str,
@@ -126,11 +127,79 @@ impl<'a> IrBuilder<'a> {
     }
 
     fn build(mut self, root_name: &str) -> Result<IrProgram> {
-        let root_element = crate::schema::get_global_element(&self.schema, root_name)
-            .ok_or_else(|| SchemaError::UndefinedType {
+        let root = if let Some(root_element) =
+            crate::schema::get_global_element(&self.schema, root_name)
+        {
+            self.build_root_element_node(root_name, root_element)?
+        } else if let Some(type_def) = self
+            .schema
+            .resolve_type(&TypeName::new(root_name))
+        {
+            match type_def {
+                TypeDef::Complex { .. } => {
+                    let type_name = TypeName::new(root_name);
+                    let child = self.compile_type(
+                        &type_name,
+                        &DfdlProps::default(),
+                        Some(root_name),
+                        false,
+                    )?;
+                    let defaults = self.defaults.clone();
+                    let mut ir_props = self.merge_props_full(
+                        &defaults,
+                        &DfdlProps::default(),
+                        &DfdlProps::default(),
+                    )?;
+                    if self.defaults.length_kind_defined {
+                        ir_props.length_kind = self.defaults.length_kind;
+                    }
+                    let ir_props = finalize_element_props(
+                        ValueKind::Complex,
+                        ir_props,
+                        &mut self.strings,
+                        self.tunables,
+                        Some(self.schema),
+                        Some(root_name),
+                    )?;
+                    let name = self.strings.intern(root_name);
+                    self.push(IrNode::Element {
+                        name,
+                        kind: ValueKind::Complex,
+                        props: ir_props,
+                        child: Some(child),
+                    })
+                }
+                _ => {
+                    return Err(SchemaError::UndefinedType {
+                        name: root_name.to_string(),
+                    }
+                    .into());
+                }
+            }
+        } else {
+            return Err(SchemaError::UndefinedType {
                 name: root_name.to_string(),
-            })?;
+            }
+            .into());
+        };
 
+        let program = IrProgram {
+            root_element: root_name.to_string(),
+            root,
+            nodes: self.nodes,
+            strings: self.strings,
+            tunables: self.tunables,
+            variables: self.schema.variables.clone(),
+        };
+        validate_program_sequence_bit_orders(&program)?;
+        Ok(program)
+    }
+
+    fn build_root_element_node(
+        &mut self,
+        root_name: &str,
+        root_element: &GlobalElement,
+    ) -> Result<u32> {
         let root = if let Some(builtin) =
             builtin_for_element_type_name(&self.schema, &root_element.type_name)
         {
@@ -247,16 +316,7 @@ impl<'a> IrBuilder<'a> {
                 })
             }
         };
-        let program = IrProgram {
-            root_element: root_name.to_string(),
-            root,
-            nodes: self.nodes,
-            strings: self.strings,
-            tunables: self.tunables,
-            variables: self.schema.variables.clone(),
-        };
-        validate_program_sequence_bit_orders(&program)?;
-        Ok(program)
+        Ok(root)
     }
 
     fn compile_type(
@@ -860,6 +920,14 @@ impl<'a> IrBuilder<'a> {
             }
             Particle::Choice(choice) => {
                 validate_model_group_occurs("choice", &choice.props)?;
+                if choice.branches.is_empty() {
+                    return Err(SchemaError::InvalidProperty {
+                        message:
+                            "Schema Definition Error. choice element must contain one or more branches"
+                                .into(),
+                    }
+                    .into());
+                }
                 let ir_props = self.merge_props_full(inherited, &choice.props, &DfdlProps::default())?;
                 let child_inherited =
                     particle_inherited_for_children(inherited, &choice.props, &self.defaults);
@@ -999,6 +1067,14 @@ impl<'a> IrBuilder<'a> {
             }
             ComplexContent::Choice(choice) => {
                 validate_model_group_occurs("choice", &choice.props)?;
+                if choice.branches.is_empty() {
+                    return Err(SchemaError::InvalidProperty {
+                        message:
+                            "Schema Definition Error. choice element must contain one or more branches"
+                                .into(),
+                    }
+                    .into());
+                }
                 let ir_props = self.merge_props_full(
                     type_base,
                     &choice.props,

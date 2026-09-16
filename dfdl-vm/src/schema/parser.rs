@@ -1166,6 +1166,16 @@ impl<'a> XsdParser<'a> {
 
     fn parse_choice(&mut self, attrs: BTreeMap<String, String>) -> Result<ChoiceDecl> {
         let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("choice", &attrs, None)?;
+        if xsd_attr(&attrs, "minOccurs").is_some() {
+            self.doc.schema_diagnostics.push(
+                "Attribute 'minOccurs' is not allowed to appear in element 'xs:choice'".into(),
+            );
+        }
+        if xsd_attr(&attrs, "maxOccurs").is_some() {
+            self.doc.schema_diagnostics.push(
+                "Attribute 'maxOccurs' is not allowed to appear in element 'xs:choice'".into(),
+            );
+        }
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &attrs);

@@ -1032,12 +1032,27 @@ impl<'a> Decoder<'a> {
                         });
                     }
                     if props.initiated_content {
-                        list.retain(|b| {
-                            self.choice_branch_lacks_initiator(b.node).unwrap_or(false)
-                                || self
-                                    .choice_branch_initiator_present(cursor, b.node)
-                                    .unwrap_or(false)
+                        let any_initiator_branch = list.iter().any(|b| {
+                            !self
+                                .choice_branch_lacks_initiator(b.node)
+                                .unwrap_or(true)
                         });
+                        if any_initiator_branch {
+                            list.retain(|b| {
+                                !self
+                                    .choice_branch_lacks_initiator(b.node)
+                                    .unwrap_or(true)
+                                    && self
+                                        .choice_branch_initiator_present(cursor, b.node)
+                                        .unwrap_or(false)
+                            });
+                            if list.is_empty() && !cursor.is_empty() {
+                                return Err(VmError::InvalidValue {
+                                    message: "initiator mismatch".into(),
+                                }
+                                .into());
+                            }
+                        }
                     }
                     list
                 };
@@ -1193,15 +1208,7 @@ impl<'a> Decoder<'a> {
 
     fn choice_branch_lacks_initiator(&self, branch_node: u32) -> Result<bool> {
         match self.ctx.program.node(branch_node)? {
-            IrNode::Element { props, child, .. } => {
-                if props.initiator.is_some() {
-                    return Ok(false);
-                }
-                if let Some(c) = *child {
-                    return self.choice_branch_lacks_initiator(c);
-                }
-                Ok(true)
-            }
+            IrNode::Element { props, .. } => Ok(props.initiator.is_none()),
             IrNode::Sequence { children, props, .. } => {
                 if props.initiator.is_some() {
                     return Ok(false);
@@ -1220,7 +1227,15 @@ impl<'a> Decoder<'a> {
         branch_node: u32,
     ) -> Result<bool> {
         match self.ctx.program.node(branch_node)? {
-            IrNode::Element { props, .. } => self.initiator_present_at_cursor(cursor, props),
+            IrNode::Element { props, child, .. } => {
+                if props.initiator.is_some() {
+                    return self.initiator_present_at_cursor(cursor, props);
+                }
+                if let Some(c) = *child {
+                    return self.choice_branch_initiator_present(cursor, c);
+                }
+                Ok(true)
+            }
             IrNode::Sequence { children, props, .. } => {
                 if props.initiator.is_some() {
                     return self.initiator_present_at_cursor(cursor, props);
@@ -2657,6 +2672,18 @@ impl<'a> Decoder<'a> {
                             &e,
                         )? {
                             continue;
+                        }
+                        let err_msg = e.to_string();
+                        if err_msg.contains("initiator mismatch") && !rewind.is_empty() {
+                            return Err(
+                                element_parse_error(
+                                    node_id,
+                                    self.ctx.program,
+                                    self.ctx.strings(),
+                                    e,
+                                )
+                                .into(),
+                            );
                         }
                         // Failed attempt may have consumed an occurrence separator that
                         // belongs to following content (implicit or unbounded repetition).
