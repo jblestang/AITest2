@@ -696,7 +696,9 @@ impl<'a> IrBuilder<'a> {
             }
             Particle::Sequence(sequence) => {
                 if sequence.props.hidden_group_ref.is_some()
-                    && (!sequence.particles.is_empty() || sequence.had_markup_before_particles)
+                    && (sequence.props.hidden_group_ref_from_appinfo_sequence
+                        || !sequence.particles.is_empty()
+                        || sequence.had_markup_before_particles)
                 {
                     return Err(SchemaError::InvalidProperty {
                         message:
@@ -890,7 +892,9 @@ impl<'a> IrBuilder<'a> {
         match content {
             ComplexContent::Sequence(sequence) => {
                 if sequence.props.hidden_group_ref.is_some()
-                    && (!sequence.particles.is_empty() || sequence.had_markup_before_particles)
+                    && (sequence.props.hidden_group_ref_from_appinfo_sequence
+                        || !sequence.particles.is_empty()
+                        || sequence.had_markup_before_particles)
                 {
                     return Err(SchemaError::InvalidProperty {
                         message:

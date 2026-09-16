@@ -2130,10 +2130,14 @@ impl<'a> XsdParser<'a> {
             return Ok(props);
         }
         if local == "sequence" {
+            if props.hidden_group_ref.is_some() {
+                props.hidden_group_ref_from_appinfo_sequence = true;
+            }
             if self.reader.peek_is_end("sequence")? {
                 self.expect_end_local("sequence")?;
                 return Ok(props);
             }
+            let mut appinfo_sequence_had_property_child = false;
             loop {
                 self.reader.skip_insignificant_ws()?;
                 match self.reader.peek()? {
@@ -2153,6 +2157,7 @@ impl<'a> XsdParser<'a> {
                             child_ns.as_deref(),
                         ) && child_local == "property"
                         {
+                            appinfo_sequence_had_property_child = true;
                             let prop_name = child_attrs.get("name").cloned().ok_or_else(|| {
                                 ParseError::InvalidXml {
                                     message: "dfdl:property missing name".into(),
@@ -2161,7 +2166,11 @@ impl<'a> XsdParser<'a> {
                             let value = self.read_simple_element_text("property")?;
                             let mut map = BTreeMap::new();
                             map.insert(prop_name.clone(), value);
-                            props = merge_dfdl_props(props, props_from_attrs(&map)?);
+                            let child_props = props_from_attrs(&map)?;
+                            if child_props.hidden_group_ref.is_some() {
+                                props.hidden_group_ref_from_appinfo_sequence = true;
+                            }
+                            props = merge_dfdl_props(props, child_props);
                         } else {
                             self.skip_element_body(&child_local)?;
                         }
@@ -2179,6 +2188,9 @@ impl<'a> XsdParser<'a> {
                         .into());
                     }
                 }
+            }
+            if appinfo_sequence_had_property_child && props.hidden_group_ref.is_some() {
+                props.hidden_group_ref_from_appinfo_sequence = true;
             }
             return Ok(props);
         }
@@ -2689,6 +2701,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.hidden_group_ref.is_some() {
         base.hidden_group_ref = overlay.hidden_group_ref.clone();
+    }
+    if overlay.hidden_group_ref_from_appinfo_sequence {
+        base.hidden_group_ref_from_appinfo_sequence = true;
     }
     if overlay.initiated_content.is_some() {
         base.initiated_content = overlay.initiated_content;
@@ -5412,6 +5427,46 @@ mod tests {
 </xs:schema>"#;
         let doc = parse_schema(xsd).expect("annotated group parses");
         assert!(doc.groups.contains_key("sequenceGroup"));
+    }
+
+    #[test]
+    fn hidden_group_ref_appinfo_attribute_notation_is_sde() {
+        let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/" xmlns:ex="http://example.com">
+  <xs:group name="ab">
+    <xs:sequence dfdl:separator=":">
+      <xs:element name="a" dfdl:length="1" dfdl:lengthKind="explicit" type="xs:int" />
+      <xs:element name="b" dfdl:length="1" dfdl:lengthKind="explicit" type="xs:int" />
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="e">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:annotation>
+          <xs:appinfo source="http://www.ogf.org/dfdl/">
+            <dfdl:sequence hiddenGroupRef="ex:ab"/>
+          </xs:appinfo>
+        </xs:annotation>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"#;
+        let doc = parse_schema(xsd).expect("parse");
+        let el = get_global_element(&doc, "e").expect("e");
+        let TypeDef::Complex { content, .. } = doc.resolve_type(&el.type_name).unwrap() else {
+            panic!("complex");
+        };
+        let ComplexContent::Sequence(seq) = content else {
+            panic!("seq");
+        };
+        assert!(
+            seq.props.hidden_group_ref_from_appinfo_sequence,
+            "flag should be set: {:?}",
+            seq.props
+        );
+        let err = crate::ir::compile_named(&doc, Some("e")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("cannot have children"), "{msg}");
     }
 
     #[test]

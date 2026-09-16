@@ -166,6 +166,8 @@ pub struct DfdlProps {
     pub occurs_count_fn_path: Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>>,
     /// `dfdl:hiddenGroupRef` on a sequence (inline hidden model group).
     pub hidden_group_ref: Option<String>,
+    /// Set when `hiddenGroupRef` came from appinfo `dfdl:sequence` (attribute or property form).
+    pub hidden_group_ref_from_appinfo_sequence: bool,
     /// When true, initiator/terminator/separator matching ignores ASCII case.
     pub ignore_case: Option<bool>,
     pub initiated_content: Option<bool>,

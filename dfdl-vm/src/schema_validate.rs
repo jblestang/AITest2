@@ -74,8 +74,85 @@ pub fn validate_compiled_schema(
     validate_discriminators_in_reachable_schema(schema, root)?;
     validate_reachable_complex_type_model_groups(schema, root)?;
     validate_group_definitions_no_hidden_group_ref(schema)?;
+    validate_hidden_group_ref_notation(schema)?;
     if let Err(msg) = crate::unparse_validate::validate_hidden_groups_unparse(schema, root) {
         return Err(SchemaError::InvalidProperty { message: msg });
+    }
+    Ok(())
+}
+
+const HIDDEN_GROUP_REF_CANNOT_HAVE_CHILDREN: &str =
+    "Schema Definition Error: A sequence with hiddenGroupRef cannot have children.";
+
+fn sequence_hidden_group_ref_notation_ok(
+    schema: &SchemaDocument,
+    seq: &crate::schema::SequenceDecl,
+) -> Result<(), SchemaError> {
+    if seq.props.hidden_group_ref.is_some()
+        && (seq.props.hidden_group_ref_from_appinfo_sequence
+            || !seq.particles.is_empty()
+            || seq.had_markup_before_particles)
+    {
+        return Err(SchemaError::InvalidProperty {
+            message: HIDDEN_GROUP_REF_CANNOT_HAVE_CHILDREN.into(),
+        });
+    }
+    for particle in &seq.particles {
+        validate_particle_hidden_group_ref_notation(schema, particle)?;
+    }
+    Ok(())
+}
+
+fn validate_particle_hidden_group_ref_notation(
+    schema: &SchemaDocument,
+    particle: &Particle,
+) -> Result<(), SchemaError> {
+    match particle {
+        Particle::Sequence(seq) => sequence_hidden_group_ref_notation_ok(schema, seq),
+        Particle::Choice(ch) => {
+            for branch in &ch.branches {
+                validate_particle_hidden_group_ref_notation(schema, branch)?;
+            }
+            Ok(())
+        }
+        Particle::GroupRef(gr) => {
+            let local = gr.name.rsplit(':').next().unwrap_or(gr.name.as_str());
+            match schema.groups.get(local) {
+                Some(GroupDecl::Sequence(seq)) => {
+                    for p in &seq.particles {
+                        validate_particle_hidden_group_ref_notation(schema, p)?;
+                    }
+                }
+                Some(GroupDecl::Choice(ch)) => {
+                    for branch in &ch.branches {
+                        validate_particle_hidden_group_ref_notation(schema, branch)?;
+                    }
+                }
+                None => {}
+            }
+            Ok(())
+        }
+        Particle::Element(_) => Ok(()),
+    }
+}
+
+fn validate_hidden_group_ref_notation(schema: &SchemaDocument) -> Result<(), SchemaError> {
+    for td in schema.types.values() {
+        if let TypeDef::Complex { content, .. } = td {
+            if let ComplexContent::Sequence(seq) = content {
+                sequence_hidden_group_ref_notation_ok(schema, seq)?;
+            }
+        }
+    }
+    for group in schema.groups.values() {
+        match group {
+            GroupDecl::Sequence(seq) => sequence_hidden_group_ref_notation_ok(schema, seq)?,
+            GroupDecl::Choice(ch) => {
+                for branch in &ch.branches {
+                    validate_particle_hidden_group_ref_notation(schema, branch)?;
+                }
+            }
+        }
     }
     Ok(())
 }
