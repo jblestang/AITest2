@@ -1828,6 +1828,7 @@ impl<'a> Decoder<'a> {
             let key = self.ctx.strings().get(*name)?.to_string();
             let count = match map.get(&key) {
                 Some(DfdlValue::Array(items)) => items.len(),
+                Some(DfdlValue::Null) if props.nillable => 1,
                 Some(DfdlValue::Null) => 0,
                 Some(_) => 1,
                 None => 0,
@@ -3550,7 +3551,10 @@ impl<'a> Decoder<'a> {
             .next()
             .unwrap_or(rest)
             .trim();
-        let sib = self.lookup_xpath_sibling_state(local, up).ok_or_else(|| {
+        // One `../` step uses the current seeded sibling map (ordered ancestors + in-sequence peers).
+        let sib = self
+            .lookup_xpath_sibling_state(local, up.saturating_sub(1))
+            .ok_or_else(|| {
             VmError::InvalidValue {
                 message: alloc::format!(
                     "Schema Definition Error: No element corresponding to step {local} found."
