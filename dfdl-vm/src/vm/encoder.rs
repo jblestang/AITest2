@@ -660,6 +660,19 @@ impl<'a> Encoder<'a> {
                 {
                     value = DfdlValue::string("");
                 }
+                value = value_for_occurrence_encode(
+                    self,
+                    props,
+                    value,
+                    &value_map,
+                    sequence_children,
+                )?;
+                if props.occurs_count_kind == OccursCountKind::Expression
+                    && matches!(value, DfdlValue::Array(ref a) if a.is_empty())
+                    && props.occurs_min == 0
+                {
+                    return Ok(());
+                }
                 let mut resolved = resolve_length_props_encode(props, map, self.ctx.strings())?;
                 resolved = resolve_encoding_for_encode(&resolved, map, self.ctx.strings())?;
                 resolved = resolve_byte_order_for_encode(&resolved, map, self.ctx.strings())?;
@@ -1415,6 +1428,51 @@ fn collect_ovc_elements_in_subtree(
         IrNode::Sequence { children, .. } => collect_ovc_elements_in_sequence_subtree(enc, children, out),
         IrNode::Element { child: Some(c), .. } => collect_ovc_elements_in_subtree(enc, *c, out),
         _ => Ok(()),
+    }
+}
+
+fn count_dfdl_value_for_fn_count(value: &DfdlValue) -> i64 {
+    match value {
+        DfdlValue::Array(items) => items.len() as i64,
+        DfdlValue::Null => 0,
+        DfdlValue::Int(n) => *n as i64,
+        DfdlValue::Long(n) => *n,
+        _ => 1,
+    }
+}
+
+fn eval_occurs_count_for_encode(
+    enc: &Encoder<'_>,
+    steps: &[crate::ir::IrInputPathStep],
+    map: &BTreeMap<String, DfdlValue>,
+    sequence_children: &[u32],
+) -> Result<u64> {
+    let value = resolve_output_value_calc_path_value(enc, steps, sequence_children, map)?;
+    Ok(count_dfdl_value_for_fn_count(&value).max(0) as u64)
+}
+
+fn value_for_occurrence_encode(
+    enc: &Encoder<'_>,
+    props: &IrProps,
+    value: DfdlValue,
+    map: &BTreeMap<String, DfdlValue>,
+    sequence_children: &[u32],
+) -> Result<DfdlValue> {
+    if props.occurs_count_kind != OccursCountKind::Expression {
+        return Ok(value);
+    }
+    let Some(steps) = props.occurs_count_fn_path.as_ref() else {
+        return Ok(value);
+    };
+    let n = eval_occurs_count_for_encode(enc, steps, map, sequence_children)? as usize;
+    if n == 0 {
+        return Ok(DfdlValue::Array(alloc::vec::Vec::new()));
+    }
+    match value {
+        DfdlValue::Array(items) if items.len() > n => {
+            Ok(DfdlValue::Array(items.into_iter().take(n).collect()))
+        }
+        other => Ok(other),
     }
 }
 
@@ -2189,6 +2247,16 @@ fn eval_output_value_calc(
                 message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
             })?));
         }
+        OutputValueCalc::FnCountPath => {
+            let steps = props.output_value_calc_path.as_ref().ok_or_else(|| VmError::InvalidValue {
+                message: "missing outputValueCalc fn:count path".into(),
+            })?;
+            let value = resolve_output_value_calc_path_value(enc, steps, children, map)?;
+            let n = count_dfdl_value_for_fn_count(&value);
+            return Ok(DfdlValue::Int(i32::try_from(n).map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("fn:count result `{n}` out of range for int"),
+            })?));
+        }
         OutputValueCalc::OccursIndexPath { multiply } => {
             let (idx, _) = enc.array_occurrence_for_ovc.get().ok_or_else(|| VmError::InvalidValue {
                 message: "occursIndex outputValueCalc missing occurrence context".into(),
@@ -2334,7 +2402,8 @@ fn eval_output_value_calc(
         | OutputValueCalc::HexBinaryFromShort(_)
         | OutputValueCalc::HexBinaryFromByteSibling
         | OutputValueCalc::InfosetPathAddend
-        | OutputValueCalc::OccursIndexPath { .. }
+        |         OutputValueCalc::OccursIndexPath { .. }
+        | OutputValueCalc::FnCountPath
         | OutputValueCalc::ValueLengthInfosetPath(_, _) => {
             unreachable!("handled above")
         }

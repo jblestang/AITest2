@@ -508,6 +508,8 @@ pub enum OutputValueCalc {
     ValueLengthInfosetPath(LengthUnits, i64),
     /// `{ dfdl:occursIndex() (+|*) ../path (+ N)? }` — path in [`DfdlProps::output_value_calc_path`].
     OccursIndexPath { multiply: bool },
+    /// `{ fn:count(../path) }` — path in [`DfdlProps::output_value_calc_path`].
+    FnCountPath,
     /// `{ if (dfdl:occursIndex() lt fn:count(..)) then 1 else 0 }` on repeat indicators (GRI/FRI).
     RepeatIndicatorFromParentCount,
 }

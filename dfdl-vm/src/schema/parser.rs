@@ -3647,6 +3647,15 @@ fn parse_infoset_path_step(step: &str) -> InfosetPathStepParsed {
     (prefix, local, index, index_from_occurs)
 }
 
+fn parse_output_value_calc_fn_count(value: &str) -> Option<alloc::vec::Vec<InfosetPathStepParsed>> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    parse_fn_count_path(inner)
+}
+
 fn parse_output_value_calc_occurs_index(
     value: &str,
 ) -> Option<(
@@ -4811,6 +4820,9 @@ fn props_from_attrs_with_variables(
                 {
                     props.output_value_calc =
                         Some(OutputValueCalc::ValueLengthInfosetPath(units, addend));
+                    props.output_value_calc_path = Some(steps);
+                } else if let Some(steps) = parse_output_value_calc_fn_count(value) {
+                    props.output_value_calc = Some(OutputValueCalc::FnCountPath);
                     props.output_value_calc_path = Some(steps);
                 } else if let Some((steps, addend)) = parse_output_value_calc_infoset_path(value) {
                     props.output_value_calc = Some(OutputValueCalc::InfosetPathAddend);
