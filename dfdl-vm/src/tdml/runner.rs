@@ -99,12 +99,13 @@ pub fn run_parser_test_with_options(
         }
     };
 
-    let tunables = test
+    let tdml_config = test
         .config
         .as_ref()
         .and_then(|name| suite.configs.get(name))
-        .copied()
+        .cloned()
         .unwrap_or_default();
+    let tunables = tdml_config.tunables;
 
     let schema_label = external_schema_label(&test.model);
     let spec = match compile_tdml_schema(
@@ -195,6 +196,7 @@ pub fn run_parser_test_with_options(
         strict_eos: true,
         enable_facet_validation,
         defer_facet_validation,
+        runtime_variable_overrides: tdml_config.external_variables,
         ..RuntimeConfig::default()
     };
 
@@ -547,12 +549,13 @@ pub fn run_unparser_test(suite: &TdmlSuite, test: &UnparserTestCase) -> Result<T
         }
     };
 
-    let tunables = test
+    let tdml_config = test
         .config
         .as_ref()
         .and_then(|name| suite.configs.get(name))
-        .copied()
+        .cloned()
         .unwrap_or_default();
+    let tunables = tdml_config.tunables;
 
     let schema_label = external_schema_label(&test.model);
     let spec = match compile_tdml_schema(

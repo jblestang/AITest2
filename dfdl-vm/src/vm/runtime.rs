@@ -12,6 +12,7 @@ use super::packed_decimal::{
     ibm4690_to_digit_string, packed_to_digit_string,
     PackedSignCodes,
 };
+use alloc::collections::BTreeMap;
 use crate::schema::BinaryNumberCheckPolicy;
 use crate::length_validate::{
     binary_length_validation_applies, is_packed_binary_rep, validate_data_length_vm,
@@ -47,6 +48,8 @@ pub struct RuntimeConfig {
     pub encode_pua_codepoints_as_utf8: bool,
     /// TDML unparser tests: per-region transmission bit order while encoding.
     pub encode_tdml_bit_regions: Option<alloc::vec::Vec<(BitOrder, usize)>>,
+    /// TDML `<daf:bind>` overrides for `dfdl:defineVariable` during decode.
+    pub runtime_variable_overrides: BTreeMap<String, String>,
 }
 
 impl Default for RuntimeConfig {
@@ -57,6 +60,7 @@ impl Default for RuntimeConfig {
             defer_facet_validation: false,
             encode_pua_codepoints_as_utf8: false,
             encode_tdml_bit_regions: None,
+            runtime_variable_overrides: BTreeMap::new(),
         }
     }
 }

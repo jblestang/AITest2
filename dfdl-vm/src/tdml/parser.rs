@@ -27,12 +27,19 @@ pub enum RoundTrip {
     TwoPass,
 }
 
+/// Named TDML `<tdml:defineConfig>` (tunables + optional external variable bindings).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TdmlConfig {
+    pub tunables: DaffodilTunables,
+    pub external_variables: BTreeMap<String, String>,
+}
+
 /// Parsed TDML test suite.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TdmlSuite {
     pub name: String,
     pub schemas: BTreeMap<String, TdmlSchema>,
-    pub configs: BTreeMap<String, DaffodilTunables>,
+    pub configs: BTreeMap<String, TdmlConfig>,
     pub tests: Vec<ParserTestCase>,
     pub unparser_tests: Vec<UnparserTestCase>,
     pub default_round_trip: RoundTrip,
@@ -211,13 +218,32 @@ fn parse_define_schema(attrs: BTreeMap<String, String>, reader: &mut XmlReader<'
 fn parse_define_config(
     attrs: BTreeMap<String, String>,
     reader: &mut XmlReader<'_>,
-) -> Result<(String, DaffodilTunables)> {
+) -> Result<(String, TdmlConfig)> {
     let name = attrs.get("name").cloned().ok_or_else(|| ParseError::MissingAttribute {
         element: "defineConfig".into(),
         attribute: "name".into(),
     })?;
     let mut tunables = DaffodilTunables::default();
+    let mut external_variables = BTreeMap::new();
     reader.for_each_child("defineConfig", |local, _, r| match local {
+        "externalVariableBindings" => {
+            r.for_each_child("externalVariableBindings", |local, attrs, r| {
+                if local == "bind" {
+                    let var_name = attrs.get("name").cloned().ok_or_else(|| {
+                        ParseError::MissingAttribute {
+                            element: "bind".into(),
+                            attribute: "name".into(),
+                        }
+                    })?;
+                    let value = r.read_text_until_end("bind")?;
+                    external_variables.insert(var_name, value.trim().to_string());
+                } else {
+                    r.skip_current_subtree()?;
+                }
+                Ok(())
+            })?;
+            Ok(())
+        }
         "tunables" => {
             r.for_each_child("tunables", |local, _, r| {
                 match local {
@@ -281,7 +307,13 @@ fn parse_define_config(
         }
         _ => r.skip_current_subtree(),
     })?;
-    Ok((name, tunables))
+    Ok((
+        name,
+        TdmlConfig {
+            tunables,
+            external_variables,
+        },
+    ))
 }
 
 fn parse_parser_test_case(

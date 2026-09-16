@@ -3494,6 +3494,12 @@ fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if props.choice_dispatch_sibling_int.is_some() {
+        base.choice_dispatch_sibling_int = props
+            .choice_dispatch_sibling_int
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
     if props.discriminator_test.is_some() {
         base.discriminator_test = props
             .discriminator_test

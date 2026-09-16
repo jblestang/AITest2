@@ -13,7 +13,7 @@ pub use infoset::{
 };
 pub use parser::{
     effective_round_trip, effective_validation, parse_tdml, ParserTestCase, RoundTrip,
-    TdmlDocument, TdmlSchema, TdmlSuite, TdmlValidationMode, UnparserTestCase,
+    TdmlConfig, TdmlDocument, TdmlSchema, TdmlSuite, TdmlValidationMode, UnparserTestCase,
 };
 pub use validation::{
     collect_post_decode_validation_errors, collect_post_decode_validation_errors_with_document,

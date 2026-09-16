@@ -296,6 +296,8 @@ pub struct IrProps {
     pub choice_dispatch_path: Option<Vec<IrInputPathStep>>,
     /// Literal choice dispatch key (`{ xs:string('…') }`).
     pub choice_dispatch_literal: Option<StringId>,
+    /// `{ xs:string(xs:int(sibling)) }` choice dispatch.
+    pub choice_dispatch_sibling_int: Option<StringId>,
     /// `dfdl:setVariable` pairs applied when this sequence node is entered.
     pub set_variables: alloc::vec::Vec<(StringId, StringId)>,
 }
@@ -462,6 +464,7 @@ impl Default for IrProps {
             choice_dispatch_sibling: None,
             choice_dispatch_path: None,
             choice_dispatch_literal: None,
+            choice_dispatch_sibling_int: None,
             set_variables: alloc::vec::Vec::new(),
         }
     }

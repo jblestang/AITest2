@@ -91,6 +91,7 @@ fn choice_dispatch_active(props: &crate::schema::DfdlProps) -> bool {
     props.choice_dispatch_sibling.is_some()
         || props.choice_dispatch_path.is_some()
         || props.choice_dispatch_literal.is_some()
+        || props.choice_dispatch_sibling_int.is_some()
 }
 
 fn particle_element_name(particle: &Particle) -> Option<String> {

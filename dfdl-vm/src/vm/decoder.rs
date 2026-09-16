@@ -343,7 +343,15 @@ impl<'a> Decoder<'a> {
             }
         };
         cursor.tdml_bit_order_regions = tdml_bit_order_regions;
-        *self.runtime_variables.borrow_mut() = self.ctx.program.variables.clone();
+        let mut vars = self.ctx.program.variables.clone();
+        for (k, v) in &self.ctx.config.runtime_variable_overrides {
+            vars.insert(k.clone(), v.clone());
+            let local = k.rsplit(':').next().unwrap_or(k.as_str());
+            if local != k.as_str() {
+                vars.insert(local.to_string(), v.clone());
+            }
+        }
+        *self.runtime_variables.borrow_mut() = vars;
         self.xpath_siblings.borrow_mut().clear();
         self.xpath_ancestor_frames.borrow_mut().clear();
         let value = self.decode_node(
@@ -1165,8 +1173,9 @@ impl<'a> Decoder<'a> {
                             {
                                 return Ok(value);
                             }
-                            let discriminator = choice_branch_discriminator(
+                            let discriminator = choice_branch_discriminator_for_infoset(
                                 branch,
+                                branches,
                                 self.ctx.strings(),
                             )?;
                             return Ok(DfdlValue::choice(discriminator, value));
@@ -3894,6 +3903,17 @@ impl<'a> Decoder<'a> {
             }
             .into());
         }
+        if inner.starts_with('$') {
+            let name = inner.trim_start_matches('$').trim();
+            let local = name.rsplit(':').next().unwrap_or(name);
+            let vars = self.runtime_variables.borrow();
+            let val = vars
+                .get(name)
+                .or_else(|| vars.get(local))
+                .map(|s| s.as_str())
+                .unwrap_or("false");
+            return Ok(val == "true" || val == "1");
+        }
         if compact.contains("*") && compact.contains("eq") {
             let eq_parts: alloc::vec::Vec<_> = compact.split("eq").collect();
             if eq_parts.len() == 2 {
@@ -5178,9 +5198,29 @@ fn choice_dispatch_key_string(
     if props.choice_dispatch_literal.is_some()
         || props.choice_dispatch_sibling.is_some()
         || props.choice_dispatch_path.is_some()
+        || props.choice_dispatch_sibling_int.is_some()
     {
         if let Some(id) = props.choice_dispatch_literal {
             return Ok(Some(strings.get(id)?.to_string()));
+        }
+        if let Some(id) = props.choice_dispatch_sibling_int {
+            let name = strings.get(id)?;
+            let value = siblings
+                .and_then(|m| m.get(name))
+                .map(|s| &s.value)
+                .ok_or_else(|| VmError::InvalidValue {
+                    message: alloc::format!(
+                        "choice dispatch sibling `{name}` not available"
+                    ),
+                })?;
+            let text = dfdl_value_dispatch_string(value);
+            let trimmed = text.trim();
+            let n: i64 = trimmed.parse().map_err(|_| VmError::InvalidValue {
+                message: alloc::format!(
+                    "Parse Error. Cannot convert `{trimmed}` to xs:int"
+                ),
+            })?;
+            return Ok(Some(n.to_string()));
         }
         if let Some(id) = props.choice_dispatch_sibling {
             let name = strings.get(id)?;
@@ -5798,13 +5838,24 @@ fn length_from_value(value: &DfdlValue, cast_long: bool) -> Result<u64> {
     }
 }
 
-fn choice_branch_discriminator(
+fn choice_branch_names_collide(branches: &[ChoiceBranch], name: StringId) -> bool {
+    branches
+        .iter()
+        .filter(|b| b.name == name)
+        .count()
+        > 1
+}
+
+fn choice_branch_discriminator_for_infoset(
     branch: &ChoiceBranch,
+    branches: &[ChoiceBranch],
     strings: &StringPool,
 ) -> Result<alloc::string::String> {
-    if let Some(id) = branch.branch_key {
-        if let Ok(k) = strings.get(id) {
-            return Ok(k.to_string());
+    if choice_branch_names_collide(branches, branch.name) {
+        if let Some(id) = branch.branch_key {
+            if let Ok(k) = strings.get(id) {
+                return Ok(k.to_string());
+            }
         }
     }
     Ok(strings.get(branch.name)?.to_string())

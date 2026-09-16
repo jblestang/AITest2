@@ -116,6 +116,8 @@ pub struct DfdlProps {
     >,
     /// Literal dispatch key from `{ xs:string('…') }` in choiceDispatchKey.
     pub choice_dispatch_literal: Option<String>,
+    /// `{ xs:string(xs:int(sibling)) }` — parse prior sibling text as xs:int for dispatch.
+    pub choice_dispatch_sibling_int: Option<String>,
     /// Branch discriminator for choice dispatch (`dfdl:choiceBranchKey`).
     pub choice_branch_key: Option<String>,
     pub length_pattern: Option<String>,

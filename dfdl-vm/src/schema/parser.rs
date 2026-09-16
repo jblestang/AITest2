@@ -2869,6 +2869,7 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
         base.choice_dispatch_sibling = overlay.choice_dispatch_sibling.clone();
         base.choice_dispatch_path = overlay.choice_dispatch_path.clone();
         base.choice_dispatch_literal = overlay.choice_dispatch_literal.clone();
+        base.choice_dispatch_sibling_int = overlay.choice_dispatch_sibling_int.clone();
     }
     if overlay.choice_branch_key.is_some() {
         base.choice_branch_key = overlay.choice_branch_key.clone();
@@ -3647,6 +3648,7 @@ fn apply_choice_dispatch_key_parse(props: &mut DfdlProps, value: &str) {
     props.choice_dispatch_sibling = None;
     props.choice_dispatch_path = None;
     props.choice_dispatch_literal = None;
+    props.choice_dispatch_sibling_int = None;
     if let Some(steps) = parse_input_value_calc_relative_path(value) {
         props.choice_dispatch_path = Some(steps);
         return;
@@ -3673,6 +3675,15 @@ fn apply_choice_dispatch_key_parse(props: &mut DfdlProps, value: &str) {
     }
     if inner.starts_with("xs:string(") && inner.ends_with(')') {
         let arg = inner["xs:string(".len()..inner.len() - 1].trim();
+        if let Some(name) = arg
+            .strip_prefix("xs:int(")
+            .and_then(|r| r.strip_suffix(')'))
+            .map(|s| s.trim())
+        {
+            props.choice_dispatch_sibling_int =
+                Some(local_name_from_qname(name).to_string());
+            return;
+        }
         if let Some(rest) = arg.strip_prefix("./") {
             props.choice_dispatch_sibling =
                 Some(local_name_from_qname(rest).to_string());
