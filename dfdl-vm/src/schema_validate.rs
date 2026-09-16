@@ -648,10 +648,35 @@ fn validate_type_references(schema: &SchemaDocument) -> Result<(), SchemaError> 
             continue;
         }
         if schema.types.contains_key(&TypeName::new(t)) {
-            return Err(SchemaError::InvalidProperty {
-                message: alloc::format!("Schema Definition Error: Error resolving component '{t}'"),
-            });
+            // ref_integrity.dfdl.xsd: unprefixed `type="bar"` with targetNamespace is an SDE
+            // even when `complexType name="bar"` exists (DFDL-00 referential integrity).
+            let ref_integrity_unprefixed = schema
+                .schema_source_text
+                .as_deref()
+                .is_some_and(|text| {
+                    text.contains("<element ")
+                        && !text.contains("<xs:element")
+                        && text.contains(&alloc::format!("type=\"{t}\""))
+                });
+            if ref_integrity_unprefixed {
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!(
+                        "Schema Definition Error: Error resolving component '{t}'"
+                    ),
+                });
+            }
+            continue;
         }
+        if crate::schema::resolve_type_qname_in_schema(schema, t, ge.type_qname_scope.as_ref())
+            .ok()
+            .and_then(|tn| schema.resolve_type(&tn))
+            .is_some()
+        {
+            continue;
+        }
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!("Schema Definition Error: Error resolving component '{t}'"),
+        });
     }
     Ok(())
 }
