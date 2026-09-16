@@ -221,30 +221,37 @@ impl<'a> Encoder<'a> {
                     );
                 }
                 if let Some(map) = value.sequence_fields() {
-                    if let Some(branch) = self.select_choice_branch(branches, map)? {
-                        let key = self.ctx.strings().get(branch.name)?;
-                        let branch_value = map
-                            .get(key)
-                            .cloned()
-                            .unwrap_or_else(|| DfdlValue::sequence(BTreeMap::new()));
-                        self.write_initiator(choice_props, out, bit_count, None)?;
-                        return self.encode_choice_matched_branch(
-                            choice_props,
-                            branch.node,
-                            &branch_value,
-                            map,
-                            out,
-                            bit_count,
-                        );
-                    }
                     for branch in branches {
-                        let key = self.ctx.strings().get(branch.name)?;
-                        if let Some(branch_value) = map.get(key) {
+                        if let Some(key) = choice_branch_data_key(self, branch.node, map) {
+                            let val = map.get(&key).ok_or(VmError::MissingField {
+                                name: key.clone(),
+                            })?;
                             self.write_initiator(choice_props, out, bit_count, None)?;
                             return self.encode_choice_matched_branch(
                                 choice_props,
                                 branch.node,
-                                branch_value,
+                                val,
+                                map,
+                                out,
+                                bit_count,
+                            );
+                        }
+                    }
+                    if !choice_branches_are_all_hidden(self, branches)? {
+                        if let Some(branch) = self.select_choice_branch(branches, map)? {
+                            self.write_initiator(choice_props, out, bit_count, None)?;
+                            let branch_name = self.ctx.strings().get(branch.name)?;
+                            let local = crate::xml_util::local_name_str(branch_name);
+                            let map_key = map_has_local_key(map, local)
+                                .unwrap_or_else(|| branch_name.to_string());
+                            let branch_value = map
+                                .get(&map_key)
+                                .cloned()
+                                .unwrap_or_else(|| DfdlValue::sequence(BTreeMap::new()));
+                            return self.encode_choice_matched_branch(
+                                choice_props,
+                                branch.node,
+                                &branch_value,
                                 map,
                                 out,
                                 bit_count,
@@ -259,7 +266,10 @@ impl<'a> Encoder<'a> {
                             choice_props,
                             branch.node,
                             &DfdlValue::sequence(BTreeMap::new()),
-                            &BTreeMap::new(),
+                            value
+                                .sequence_fields()
+                                .map(|m| m as &BTreeMap<_, _>)
+                                .unwrap_or(&BTreeMap::new()),
                             out,
                             bit_count,
                         );
@@ -628,9 +638,12 @@ impl<'a> Encoder<'a> {
                 if !choice_branches_are_all_hidden(self, branches)? {
                     if let Some(branch) = self.select_choice_branch(branches, map)? {
                         self.write_initiator(choice_props, out, bit_count, None)?;
-                        let key = self.ctx.strings().get(branch.name)?;
+                        let branch_name = self.ctx.strings().get(branch.name)?;
+                        let local = crate::xml_util::local_name_str(branch_name);
+                        let map_key = map_has_local_key(map, local)
+                            .unwrap_or_else(|| branch_name.to_string());
                         let branch_value = map
-                            .get(key)
+                            .get(&map_key)
                             .cloned()
                             .unwrap_or_else(|| DfdlValue::sequence(BTreeMap::new()));
                         return self.encode_choice_matched_branch(
@@ -1288,8 +1301,14 @@ fn map_has_local_key(map: &BTreeMap<String, DfdlValue>, local: &str) -> Option<S
 }
 
 fn ir_props_encodable_without_infoset(props: &IrProps) -> bool {
-    props.hidden
-        || props.output_value_calc.is_some()
+    if props.input_value_calc.is_some()
+        || props.input_value_calc_sibling.is_some()
+        || props.input_value_calc_segments.is_some()
+        || props.input_value_calc_path.is_some()
+    {
+        return false;
+    }
+    props.output_value_calc.is_some()
         || props.output_value_calc_literal.is_some()
         || props.output_value_calc_sibling.is_some()
         || props.output_value_calc_conditional

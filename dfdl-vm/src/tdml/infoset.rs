@@ -101,40 +101,84 @@ fn infoset_node_to_ir_value(
             let Some(child_id) = child else {
                 return Ok(DfdlValue::sequence(BTreeMap::new()));
             };
-            infoset_particle_to_value(program, *child_id, node)
+            match program.node(*child_id).map_err(|e| e.to_string())? {
+                IrNode::Choice { branches, .. } => {
+                    choice_matched_branch_value(program, branches, node)
+                }
+                _ => infoset_particle_to_value(program, *child_id, node),
+            }
         }
         IrNode::Sequence { children, .. } => {
             infoset_sequence_children_to_value(program, children, node)
         }
         IrNode::Choice { branches, .. } => {
-            for branch in branches {
-                let branch_name = program
-                    .strings
-                    .get(branch.name)
-                    .map_err(|e| e.to_string())?;
-                let local = local_name_str(branch_name);
-                let branch_nodes = find_infoset_children(node, local);
-                if !branch_nodes.is_empty() {
-                    if branch_nodes.len() == 1 {
-                        return infoset_node_to_ir_value(program, branch.node, branch_nodes[0]);
-                    }
-                    return infoset_particle_to_value(program, branch.node, node);
-                }
-            }
-            for branch in branches {
-                if matches!(
-                    program.node(branch.node).ok(),
-                    Some(IrNode::Sequence { children, .. }) if children.is_empty()
-                ) {
-                    return Ok(DfdlValue::sequence(BTreeMap::new()));
-                }
-            }
-            Err(alloc::format!(
-                "infoset does not match any choice branch under `{}`",
-                node.name
-            ))
+            choice_matched_branch_value(program, branches, node)
         }
     }
+}
+
+fn insert_choice_branch_value(
+    program: &IrProgram,
+    branch_node: u32,
+    branch_name: &str,
+    value: DfdlValue,
+    map: &mut BTreeMap<String, DfdlValue>,
+) -> Result<(), String> {
+    match value {
+        DfdlValue::Sequence(nested) => {
+            let hoist = matches!(
+                program.node(branch_node),
+                Ok(IrNode::Sequence { .. })
+            );
+            if hoist {
+                map.extend(nested.fields);
+            } else {
+                map.insert(branch_name.to_string(), DfdlValue::Sequence(nested));
+            }
+        }
+        other => {
+            map.insert(branch_name.to_string(), other);
+        }
+    }
+    Ok(())
+}
+
+fn choice_matched_branch_value(
+    program: &IrProgram,
+    branches: &[crate::ir::ChoiceBranch],
+    node: &InfosetNode,
+) -> Result<DfdlValue, String> {
+    for branch in branches {
+        let branch_name = program
+            .strings
+            .get(branch.name)
+            .map_err(|e| e.to_string())?;
+        let local = local_name_str(branch_name);
+        if find_infoset_children(node, local).is_empty() {
+            continue;
+        }
+        let branch_nodes = find_infoset_children(node, local);
+        let value = if branch_nodes.len() == 1 {
+            infoset_node_to_ir_value(program, branch.node, branch_nodes[0])?
+        } else {
+            infoset_particle_to_value(program, branch.node, node)?
+        };
+        let mut map = BTreeMap::new();
+        insert_choice_branch_value(program, branch.node, branch_name, value, &mut map)?;
+        return Ok(DfdlValue::sequence(map));
+    }
+    for branch in branches {
+        if matches!(
+            program.node(branch.node).ok(),
+            Some(IrNode::Sequence { children, .. }) if children.is_empty()
+        ) {
+            return Ok(DfdlValue::sequence(BTreeMap::new()));
+        }
+    }
+    Err(alloc::format!(
+        "infoset does not match any choice branch under `{}`",
+        node.name
+    ))
 }
 
 fn infoset_particle_to_value(
@@ -203,37 +247,10 @@ fn infoset_sequence_children_to_value(
                 }
             }
             IrNode::Choice { branches, .. } => {
-                let mut matched = false;
-                for branch in branches {
-                    let branch_name = program.strings.get(branch.name).map_err(|e| e.to_string())?;
-                    let local = local_name_str(branch_name);
-                    if find_infoset_children(node, local).is_empty() {
-                        continue;
-                    }
-                    matched = true;
-                    let branch_nodes = find_infoset_children(node, local);
-                    let value = if branch_nodes.len() == 1 {
-                        infoset_node_to_ir_value(program, branch.node, branch_nodes[0])?
-                    } else {
-                        infoset_particle_to_value(program, branch.node, node)?
-                    };
-                    match value {
-                        DfdlValue::Sequence(nested) => map.extend(nested.fields),
-                        other => {
-                            map.insert(branch_name.to_string(), other);
-                        }
-                    }
-                    break;
-                }
-                if !matched {
-                    for branch in branches {
-                        if matches!(
-                            program.node(branch.node).ok(),
-                            Some(IrNode::Sequence { children, .. }) if children.is_empty()
-                        ) {
-                            break;
-                        }
-                    }
+                if let Ok(DfdlValue::Sequence(matched)) =
+                    choice_matched_branch_value(program, branches, node)
+                {
+                    map.extend(matched.fields);
                 }
             }
         }
