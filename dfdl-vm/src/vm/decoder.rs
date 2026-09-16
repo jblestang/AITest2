@@ -656,7 +656,7 @@ impl<'a> Decoder<'a> {
                 if let Some(id) = props.initiator {
                     let pat = self.resolve_delimiter_property(
                         self.ctx.strings().get(id)?,
-                        self.delimiter_occurrence_index_for_sequence(),
+                        self.current_delimiter_occurrence_index(),
                     );
                     if !pat.is_empty() {
                         let enc = encoding_name(props, self.ctx.strings()).ok();
@@ -763,30 +763,32 @@ impl<'a> Decoder<'a> {
                                         self.ctx.strings(),
                                     );
                                 }
-                                if let Some(term_id) = prev_props.terminator {
-                                    if let Ok(term) = self.ctx.strings().get(term_id) {
-                                        if !term.is_empty() {
-                                            let enc =
-                                                encoding_name(prev_props, self.ctx.strings()).ok();
-                                            let sep_enc =
-                                                encoding_name(props, self.ctx.strings()).ok();
-                                            let sep_n = crate::schema::match_delimiter_opts_for_encoding(
-                                                &cursor.data[cursor.pos..],
-                                                pat,
-                                                props.ignore_case,
-                                                sep_enc.as_deref(),
-                                            )
-                                            .unwrap_or(0);
-                                            let term_n = crate::schema::delimiter_match_len_at(
-                                                &cursor.data[cursor.pos..],
-                                                term,
-                                                prev_props.ignore_case,
-                                                enc.as_deref(),
-                                            )
-                                            .unwrap_or(0);
-                                            if term_n > sep_n {
-                                                self.consume_terminator(prev_props, cursor)?;
-                                            }
+                                if prev_props.terminator.is_some() {
+                                    let term = self.resolve_delimiter_property(
+                                        self.ctx.strings().get(prev_props.terminator.unwrap())?,
+                                        self.delimiter_occurrence_index_for_sequence(),
+                                    );
+                                    if !term.is_empty() {
+                                        let enc =
+                                            encoding_name(prev_props, self.ctx.strings()).ok();
+                                        let sep_enc =
+                                            encoding_name(props, self.ctx.strings()).ok();
+                                        let sep_n = crate::schema::match_delimiter_opts_for_encoding(
+                                            &cursor.data[cursor.pos..],
+                                            pat,
+                                            props.ignore_case,
+                                            sep_enc.as_deref(),
+                                        )
+                                        .unwrap_or(0);
+                                        let term_n = crate::schema::delimiter_match_len_at(
+                                            &cursor.data[cursor.pos..],
+                                            &term,
+                                            prev_props.ignore_case,
+                                            enc.as_deref(),
+                                        )
+                                        .unwrap_or(0);
+                                        if term_n > sep_n {
+                                            self.consume_terminator(prev_props, cursor)?;
                                         }
                                     }
                                 }

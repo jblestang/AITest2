@@ -5345,7 +5345,7 @@ pub(crate) fn read_text_scalar(
                 scan_ctx,
             )?;
             if has_non_empty_terminator(props, strings)?
-                && field_terminator_matches_at_cursor(cursor, props, strings)?
+                && field_terminator_matches_at_cursor(cursor, props, strings, scan_ctx)?
                     .is_none()
                 && !cursor.is_empty()
             {
@@ -9056,17 +9056,29 @@ fn delimited_trailing_fraction_at_cursor(
     {
         return false;
     }
+    if let Some(tid) = props.terminator {
+        if let Ok(term) = stop_delimiter_literal(tid, strings, scan_ctx) {
+            if crate::schema::match_delimiter_opts(
+                &cursor.data[cursor.pos..],
+                &term,
+                props.ignore_case,
+            )
+            .is_some()
+            {
+                return false;
+            }
+        }
+    }
     if let Some(ctx) = scan_ctx {
         if let Some(sep_id) = ctx.parent_sequence.separator {
             if ctx.parent_sequence.separator_position == SeparatorPosition::Infix {
-                if let Ok(sep) = strings.get(sep_id) {
-                    if sep == "."
-                        && crate::schema::match_delimiter_opts(
-                            &cursor.data[cursor.pos..],
-                            sep,
-                            ctx.parent_sequence.ignore_case,
-                        )
-                        .is_some()
+                if let Ok(sep_lit) = stop_delimiter_literal(sep_id, strings, Some(ctx)) {
+                    if crate::schema::match_delimiter_opts(
+                        &cursor.data[cursor.pos..],
+                        &sep_lit,
+                        ctx.parent_sequence.ignore_case,
+                    )
+                    .is_some()
                     {
                         return false;
                     }
@@ -9523,18 +9535,19 @@ fn field_terminator_matches_at_cursor(
     cursor: &Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<Option<usize>, crate::error::VmError> {
     let Some(tid) = props.terminator else {
         return Ok(None);
     };
-    let pat = strings.get(tid)?;
+    let pat = stop_delimiter_literal(tid, strings, scan_ctx)?;
     if pat.is_empty() {
         return Ok(None);
     }
     let enc = encoding_name(props, strings).ok();
     Ok(crate::schema::match_delimiter_opts_for_encoding(
         &cursor.data[cursor.pos..],
-        pat,
+        &pat,
         props.ignore_case,
         enc.as_deref(),
     ))
@@ -9586,23 +9599,25 @@ fn defer_delimited_enclosing_consume(
     if ambiguous_delimiter_prefix_at_cursor(cursor, props, strings, stop_sequences)? {
         // When the field terminator fully matches at the cursor (e.g. pipes2 `|||` after `||`
         // initiator), consume it even if a shorter sibling delimiter (separator `|`) is a prefix.
-        if field_terminator_matches_at_cursor(cursor, props, strings)?.is_some_and(|n| n > 0) {
+        if field_terminator_matches_at_cursor(cursor, props, strings, scan_ctx)?
+            .is_some_and(|n| n > 0)
+        {
             return Ok(false);
         }
         return Ok(true);
     }
     for id in delimiter_pattern_ids(props) {
-        let pat = strings.get(id)?;
+        let pat = stop_delimiter_literal(id, strings, scan_ctx)?;
         if let Some(n) = crate::schema::match_delimiter_opts(
             &cursor.data[cursor.pos..],
-            pat,
+            &pat,
             props.ignore_case,
         ) {
             if n == 0 {
                 continue;
             }
             let after_first = cursor.pos.saturating_add(n);
-            if crate::schema::match_delimiter_opts(&cursor.data[after_first..], pat, props.ignore_case)
+            if crate::schema::match_delimiter_opts(&cursor.data[after_first..], &pat, props.ignore_case)
                 .is_some()
             {
                 let after_second = after_first.saturating_add(n);

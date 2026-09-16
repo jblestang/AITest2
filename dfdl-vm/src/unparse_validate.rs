@@ -929,6 +929,9 @@ fn effective_occurs_max_for_unparse(
     parent: &InfosetNode,
 ) -> Result<u64, String> {
     if props.occurs_count_kind == OccursCountKind::Expression {
+        if props.occurs_min == 0 {
+            return Ok(u64::MAX);
+        }
         if let Some(steps) = props.occurs_count_fn_path.as_ref() {
             return eval_occurs_count_from_infoset(program, steps, parent);
         }
