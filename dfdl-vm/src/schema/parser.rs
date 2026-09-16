@@ -2302,6 +2302,15 @@ impl<'a> XsdParser<'a> {
         }
         self.in_define_format = false;
 
+        if format_name.is_none() {
+            return Err(crate::error::SchemaError::InvalidProperty {
+                message:
+                    "Schema Definition Error: Attribute 'name' must appear on element 'dfdl:defineFormat'."
+                        .into(),
+            }
+            .into());
+        }
+
         if let Some(name) = format_name {
             let key = format_storage_key(&name, self.doc.target_namespace.as_deref());
             if self.doc.named_formats.contains_key(&key) {

@@ -2445,7 +2445,11 @@ fn is_simple_literal_pattern(pat: &str) -> bool {
         match c {
             '.' | '*' | '+' | '?' | '[' | '(' | ')' | '|' | '^' | '$' | '{' | '}' => return false,
             '\\' => {
-                if chars.next().is_none() {
+                let Some(next) = chars.next() else {
+                    return false;
+                };
+                // ECMAScript regex escapes (e.g. \d, \p{L}) are not literal byte patterns.
+                if next.is_ascii_alphabetic() || next == 'p' || next == 'P' {
                     return false;
                 }
             }
@@ -2842,6 +2846,21 @@ mod tests {
         assert_eq!(super::parse_delimiter_literal_value("{{"), "{");
         assert_eq!(super::parse_delimiter_literal_value("{{{"), "{{");
         assert_eq!(super::parse_delimiter_literal_value("{{ {{ ["), "{{ {{ [");
+    }
+
+    #[test]
+    fn length_pattern_backslash_d_on_ascii_digits() {
+        assert_eq!(match_length_pattern(b"43:", r"\d\d"), Some(2));
+    }
+
+    #[test]
+    fn terminator_colon_space_comma_matches_colon_alt() {
+        assert_eq!(delimiter_alternatives(": ,"), vec![":", ","]);
+        assert_eq!(
+            match_delimiter_with_alt(b":rest", ": ,", false),
+            Some((1, 0))
+        );
+        assert_eq!(match_delimiter(b":", ": ,"), Some(1));
     }
 
     #[test]
