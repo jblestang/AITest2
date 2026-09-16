@@ -433,7 +433,10 @@ impl<'a> Decoder<'a> {
                         initiator_alt,
                     );
                 }
-                for (idx, &child) in children.iter().enumerate() {
+                let mut idx = 0usize;
+                let mut single_child_infix_reps = 0u32;
+                'seq_children: while idx < children.len() {
+                    let child = children[idx];
                     let child_has_following = self.following_sibling_consumes_input(children, idx);
                     let child_element_props = match self.ctx.program.node(child) {
                         Ok(IrNode::Element { props: cp, .. }) => Some(cp),
@@ -501,7 +504,8 @@ impl<'a> Decoder<'a> {
                             && element_discriminator_always_false(cp, self.ctx.strings())
                         {
                             prev_absent_or_empty = true;
-                            continue;
+                            idx += 1;
+                            continue 'seq_children;
                         }
                     }
                     let suppress_sep = child_element_props
@@ -662,7 +666,8 @@ impl<'a> Decoder<'a> {
                                     )?
                                 {
                                     prev_absent_or_empty = true;
-                                    continue;
+                                    idx += 1;
+                                    continue 'seq_children;
                                 }
                             }
                             prev_absent_or_empty = child_element_props
@@ -740,6 +745,51 @@ impl<'a> Decoder<'a> {
                                     field_delim_meta.insert(key, meta);
                                 }
                             }
+                            let single_complex_child = children.len() == 1
+                                && matches!(
+                                    self.ctx.program.node(child),
+                                    Ok(IrNode::Element { child: Some(_), .. })
+                                );
+                            if single_complex_child
+                                && props.separator.is_some()
+                                && props.separator_position == SeparatorPosition::Infix
+                            {
+                                if cursor.is_empty() {
+                                    break 'seq_children;
+                                }
+                                if self.at_enclosing_terminator_stop(cursor, child_stops)? {
+                                    break 'seq_children;
+                                }
+                                let saved_rep = cursor.clone();
+                                let before_sep = cursor.pos;
+                                match self.consume_separator(
+                                    props,
+                                    cursor,
+                                    1,
+                                    1,
+                                    &mut infix_sep_newline_prefix,
+                                    child_stops,
+                                    false,
+                                ) {
+                                    Ok(alt) => {
+                                        if cursor.pos <= before_sep
+                                            || cursor.pos <= start
+                                            || single_child_infix_reps >= 256
+                                        {
+                                            *cursor = saved_rep;
+                                            break 'seq_children;
+                                        }
+                                        single_child_infix_reps += 1;
+                                        separator_alts.push(alt);
+                                        continue 'seq_children;
+                                    }
+                                    Err(_) => {
+                                        *cursor = saved_rep;
+                                        break 'seq_children;
+                                    }
+                                }
+                            }
+                            idx += 1;
                         }
                         Err(e) if is_element_absent(&e) => {
                             cursor.frame_bit_limit = saved_frame_limit;
@@ -761,7 +811,8 @@ impl<'a> Decoder<'a> {
                                     )?;
                                     let _ = key;
                                     prev_absent_or_empty = true;
-                                    continue;
+                                    idx += 1;
+                                    continue 'seq_children;
                                 }
                             }
                             prev_absent_or_empty = true;
@@ -769,6 +820,7 @@ impl<'a> Decoder<'a> {
                             if cursor.pos == saved.pos {
                                 *cursor = saved;
                             }
+                            idx += 1;
                         }
                         Err(e) => {
                             cursor.frame_bit_limit = saved_frame_limit;
@@ -809,7 +861,8 @@ impl<'a> Decoder<'a> {
                                                 false,
                                             )?;
                                         }
-                                        continue;
+                                        idx += 1;
+                                        continue 'seq_children;
                                     }
                                 }
                             }
