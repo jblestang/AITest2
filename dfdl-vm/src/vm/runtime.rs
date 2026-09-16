@@ -11208,7 +11208,7 @@ pub fn resolve_output_new_line_for_encode(
     Ok(Some(raw.to_string()))
 }
 
-fn encode_framing_delimiter_bytes(
+pub(crate) fn encode_framing_delimiter_bytes(
     pattern: &str,
     output_new_line: Option<&str>,
     encoding: &str,

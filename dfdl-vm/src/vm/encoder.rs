@@ -1,6 +1,7 @@
 use super::runtime::{
-    decode_hex_binary, encoding_name, hex_binary_from_integer, int_bytes,
-    is_suppressible_empty_representation, nil_unparse_bytes_for_encode, write_alignment,
+    decode_hex_binary, encode_framing_delimiter_bytes, encoding_name, hex_binary_from_integer,
+    int_bytes, is_suppressible_empty_representation, nil_unparse_bytes_for_encode,
+    resolve_encode_property_pattern, resolve_output_new_line_for_encode, write_alignment,
     write_alignment_for_kind, write_alignment_with_config, write_byte_aligned,
     write_framed_payload, write_simple, validate_explicit_decimal_before_encode,
     trailing_suppressed_count, should_suppress_occurrence_separator, RuntimeConfig, VmContext,
@@ -22,11 +23,6 @@ use core::cell::Cell;
 
 fn schema_context_field_name(local_name: &str) -> String {
     alloc::format!("ex:{local_name}")
-}
-
-/// Initiators like `[s1:` are literal text, not DFDL delimiter regex character classes.
-fn encode_element_framing_literal(pattern: &str) -> Vec<u8> {
-    crate::schema::encode_framing_property_literal(pattern).unwrap_or_else(|| encode_delimiter(pattern))
 }
 
 /// DFDL encoder VM — executes compiled IR to serialize logical values.
@@ -196,7 +192,13 @@ impl<'a> Encoder<'a> {
                 let scope_lookup = merged_encode_lookup(encode_scope, map);
                 let effective = precompute_output_values(self, children, map, props)?;
                 let separator_lookup = merged_encode_lookup(Some(&scope_lookup), &effective);
-                self.write_initiator(props, out, bit_count, seq.meta.initiator_alt)?;
+                self.write_initiator(
+                    props,
+                    out,
+                    bit_count,
+                    seq.meta.initiator_alt,
+                    Some(&separator_lookup),
+                )?;
                 let mut wrote_particle = false;
                 for (idx, &child) in children.iter().enumerate() {
                     if child_skips_encode(self, child)? {
@@ -262,7 +264,13 @@ impl<'a> Encoder<'a> {
                     )?;
                     wrote_particle = true;
                 }
-                self.write_terminator(props, out, bit_count, seq.meta.terminator_alt)?;
+                self.write_terminator(
+                    props,
+                    out,
+                    bit_count,
+                    seq.meta.terminator_alt,
+                    Some(&separator_lookup),
+                )?;
                 Ok(())
             }
             IrNode::Choice { branches, props: choice_props, .. } => {
@@ -294,7 +302,7 @@ impl<'a> Encoder<'a> {
                             let val = map.get(&key).ok_or(VmError::MissingField {
                                 name: key.clone(),
                             })?;
-                            self.write_initiator(choice_props, out, bit_count, None)?;
+                            self.write_initiator(choice_props, out, bit_count, None, None)?;
                             return self.encode_choice_matched_branch(
                                 choice_props,
                                 branch.node,
@@ -307,7 +315,7 @@ impl<'a> Encoder<'a> {
                     }
                     if !choice_branches_are_all_hidden(self, branches)? {
                         if let Some(branch) = self.select_choice_branch(branches, map)? {
-                            self.write_initiator(choice_props, out, bit_count, None)?;
+                            self.write_initiator(choice_props, out, bit_count, None, None)?;
                             let branch_name = self.ctx.strings().get(branch.name)?;
                             let local = crate::xml_util::local_name_str(branch_name);
                             let map_key = map_has_local_key(map, local)
@@ -327,7 +335,7 @@ impl<'a> Encoder<'a> {
                         }
                     }
                 }
-                self.write_initiator(choice_props, out, bit_count, None)?;
+                self.write_initiator(choice_props, out, bit_count, None, None)?;
                 for branch in branches {
                     if matches!(
                         self.ctx.program.node(branch.node).ok(),
@@ -436,6 +444,7 @@ impl<'a> Encoder<'a> {
                             bit_count,
                             props,
                             encode_scope,
+                            encode_scope,
                         )
                     }
                 } else {
@@ -495,12 +504,14 @@ impl<'a> Encoder<'a> {
             }
             write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
             if let Some(id) = props.initiator {
-                let pat = self.ctx.strings().get(id)?;
-                if !pat.is_empty() {
-                    let bytes = match delim_meta.and_then(|m| m.initiator_alt) {
-                        Some(a) => encode_delimiter_by_alt(pat, a),
-                        None => encode_element_framing_literal(pat),
-                    };
+                let raw = self.ctx.strings().get(id)?;
+                if !raw.is_empty() {
+                    let bytes = self.encode_framing_property_pattern(
+                        raw,
+                        props,
+                        encode_siblings,
+                        delim_meta.and_then(|m| m.initiator_alt),
+                    )?;
                     write_byte_aligned(out, bit_count, &bytes).map_err(Error::from)?;
                 }
             }
@@ -545,6 +556,7 @@ impl<'a> Encoder<'a> {
         bit_count: &mut u8,
         sep_props: &IrProps,
         encode_scope: Option<&BTreeMap<String, DfdlValue>>,
+        encode_siblings: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
@@ -567,7 +579,7 @@ impl<'a> Encoder<'a> {
                 }
             }
             write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
-            self.write_initiator(props, out, bit_count, None)?;
+            self.write_initiator(props, out, bit_count, None, encode_siblings)?;
             if matches!(item, DfdlValue::Null) {
                 let nil_bytes =
                     nil_unparse_bytes_for_encode(props, self.ctx.strings()).map_err(Error::from)?;
@@ -577,7 +589,7 @@ impl<'a> Encoder<'a> {
                     self.encode_node(node_id, item, out, bit_count, encode_scope)
                 })?;
             }
-            self.write_terminator(props, out, bit_count, None)?;
+            self.write_terminator(props, out, bit_count, None, encode_siblings)?;
             if sep_props.separator_position == SeparatorPosition::Postfix {
                 if !should_suppress_occurrence_separator(
                     sep_props,
@@ -710,6 +722,7 @@ impl<'a> Encoder<'a> {
                             bit_count,
                             parent_props,
                             encode_scope,
+                            Some(&sibling_lookup),
                         )
                     }
                 } else {
@@ -737,7 +750,13 @@ impl<'a> Encoder<'a> {
                 let effective =
                     precompute_output_values(self, children, map, inner_props)?;
                 let separator_lookup = merged_encode_lookup(Some(&scope_lookup), &effective);
-                self.write_initiator(inner_props, out, bit_count, None)?;
+                self.write_initiator(
+                    inner_props,
+                    out,
+                    bit_count,
+                    None,
+                    Some(&separator_lookup),
+                )?;
                 let mut wrote_particle = false;
                 for (idx, &child) in children.iter().enumerate() {
                     if child_skips_encode(self, child)? {
@@ -805,7 +824,13 @@ impl<'a> Encoder<'a> {
                     )?;
                     wrote_particle = true;
                 }
-                self.write_terminator(inner_props, out, bit_count, None)?;
+                self.write_terminator(
+                    inner_props,
+                    out,
+                    bit_count,
+                    None,
+                    Some(&separator_lookup),
+                )?;
                 Ok(())
             }
             IrNode::Choice { branches, props: choice_props, .. } => {
@@ -822,7 +847,7 @@ impl<'a> Encoder<'a> {
                         let val = map.get(&key).ok_or(VmError::MissingField {
                             name: key.clone(),
                         })?;
-                        self.write_initiator(choice_props, out, bit_count, None)?;
+                        self.write_initiator(choice_props, out, bit_count, None, None)?;
                         return self.encode_choice_matched_branch(
                             choice_props,
                             branch.node,
@@ -835,7 +860,7 @@ impl<'a> Encoder<'a> {
                 }
                 if !choice_branches_are_all_hidden(self, branches)? {
                     if let Some(branch) = self.select_choice_branch(branches, map)? {
-                        self.write_initiator(choice_props, out, bit_count, None)?;
+                        self.write_initiator(choice_props, out, bit_count, None, None)?;
                         let branch_name = self.ctx.strings().get(branch.name)?;
                         let local = crate::xml_util::local_name_str(branch_name);
                         let map_key = map_has_local_key(map, local)
@@ -854,7 +879,7 @@ impl<'a> Encoder<'a> {
                         );
                     }
                 }
-                self.write_initiator(choice_props, out, bit_count, None)?;
+                self.write_initiator(choice_props, out, bit_count, None, None)?;
                 for branch in branches {
                     if matches!(
                         self.ctx.program.node(branch.node).ok(),
@@ -1011,23 +1036,39 @@ impl<'a> Encoder<'a> {
         Err(VmError::MissingField { name: key.into() }.into())
     }
 
+    fn encode_framing_property_pattern(
+        &self,
+        raw: &str,
+        props: &IrProps,
+        siblings: Option<&BTreeMap<String, DfdlValue>>,
+        alt: Option<u8>,
+    ) -> Result<Vec<u8>> {
+        let pat = resolve_encode_property_pattern(raw, siblings);
+        if let Some(a) = alt {
+            return Ok(encode_delimiter_by_alt(&pat, a));
+        }
+        let encoding = encoding_name(props, self.ctx.strings())?;
+        let output_nl = resolve_output_new_line_for_encode(props, siblings, self.ctx.strings())?;
+        Ok(encode_framing_delimiter_bytes(
+            &pat,
+            output_nl.as_deref(),
+            encoding,
+            None,
+        ))
+    }
+
     fn write_initiator(
         &self,
         props: &IrProps,
         out: &mut Vec<u8>,
         bit_count: &mut u8,
         alt: Option<u8>,
+        siblings: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<()> {
         if let Some(id) = props.initiator {
-            let pat = self.ctx.strings().get(id)?;
-            if !pat.is_empty() {
-                let output_nl = props
-                    .output_new_line
-                    .and_then(|id| self.ctx.strings().get(id).ok());
-                let bytes = match alt {
-                    Some(a) => encode_delimiter_by_alt(pat, a),
-                    None => encode_property_delimiter(pat, output_nl),
-                };
+            let raw = self.ctx.strings().get(id)?;
+            if !raw.is_empty() {
+                let bytes = self.encode_framing_property_pattern(raw, props, siblings, alt)?;
                 write_byte_aligned(out, bit_count, &bytes).map_err(Error::from)?;
             }
         }
@@ -1040,17 +1081,12 @@ impl<'a> Encoder<'a> {
         out: &mut Vec<u8>,
         bit_count: &mut u8,
         alt: Option<u8>,
+        siblings: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<()> {
         if let Some(id) = props.terminator {
-            let pat = self.ctx.strings().get(id)?;
-            if !pat.is_empty() {
-                let output_nl = props
-                    .output_new_line
-                    .and_then(|id| self.ctx.strings().get(id).ok());
-                let bytes = match alt {
-                    Some(a) => encode_delimiter_by_alt(pat, a),
-                    None => encode_property_delimiter(pat, output_nl),
-                };
+            let raw = self.ctx.strings().get(id)?;
+            if !raw.is_empty() {
+                let bytes = self.encode_framing_property_pattern(raw, props, siblings, alt)?;
                 write_byte_aligned(out, bit_count, &bytes).map_err(Error::from)?;
             }
         }
@@ -1154,10 +1190,10 @@ impl<'a> Encoder<'a> {
         bit_count: &mut u8,
     ) -> Result<()> {
         write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config)).map_err(Error::from)?;
-        self.write_initiator(props, out, bit_count, None)?;
+        self.write_initiator(props, out, bit_count, None, None)?;
         let payload = nil_unparse_bytes_for_encode(props, self.ctx.strings()).map_err(Error::from)?;
         write_byte_aligned(out, bit_count, &payload).map_err(Error::from)?;
-        self.write_terminator(props, out, bit_count, None)?;
+        self.write_terminator(props, out, bit_count, None, None)?;
         Ok(())
     }
 }
@@ -1380,12 +1416,6 @@ fn precompute_output_values<'a>(
     for _pass in 0..max_passes {
         let mut progress = false;
         for entry in &ovc_entries {
-            if map_has_local_key(map, &entry.local).is_some() {
-                continue;
-            }
-            if effective.get(&entry.name_key).is_some() {
-                continue;
-            }
             let computed = match eval_output_value_calc(
                 enc,
                 &entry.props,
@@ -1397,6 +1427,10 @@ fn precompute_output_values<'a>(
                 Err(_) => continue,
             };
             let computed = ovc_value_for_element_kind(entry.kind, computed);
+            let prev = effective.get(&entry.name_key);
+            if prev == Some(&computed) {
+                continue;
+            }
             effective.insert(entry.name_key.clone(), computed);
             progress = true;
         }
@@ -1405,9 +1439,6 @@ fn precompute_output_values<'a>(
         }
     }
     for entry in &ovc_entries {
-        if map_has_local_key(map, &entry.local).is_some() {
-            continue;
-        }
         if effective.get(&entry.name_key).is_none() {
             let elem = &entry.local;
             return Err(VmError::InvalidValue {
