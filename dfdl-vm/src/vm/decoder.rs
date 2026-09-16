@@ -1001,6 +1001,19 @@ impl<'a> Decoder<'a> {
                     self.ctx.strings(),
                     &self.ctx.program.tunables,
                 )?;
+                let using_dispatch = dispatch_key.is_some();
+                if using_dispatch
+                    && dispatch_key
+                        .as_ref()
+                        .is_some_and(|k| k.is_empty())
+                {
+                    return Err(VmError::InvalidValue {
+                        message:
+                            "Runtime Schema Definition Error: Non-empty string required for choice dispatch key"
+                                .into(),
+                    }
+                    .into());
+                }
                 let branches_iter: alloc::vec::Vec<&ChoiceBranch> = if let Some(ref key) =
                     dispatch_key
                 {
@@ -1015,7 +1028,7 @@ impl<'a> Decoder<'a> {
                     if matched.is_empty() {
                         return Err(VmError::InvalidValue {
                             message: alloc::format!(
-                                "choice dispatch key `{key}` did not match any choiceBranchKey"
+                                "Parse Error. Choice dispatch key `{key}` failed to match any branch key."
                             ),
                         }
                         .into());
@@ -1151,6 +1164,9 @@ impl<'a> Decoder<'a> {
                 }
                 if let Some(frame) = choice_frame_bytes {
                     cursor.pos = choice_start.saturating_add(frame);
+                }
+                if using_dispatch && !branch_errors.is_empty() {
+                    branch_errors.insert(0, "Choice dispatch branch failed".into());
                 }
                 Err(VmError::InvalidChoice { branch_errors }.into())
             }
@@ -2690,6 +2706,20 @@ impl<'a> Decoder<'a> {
                         )? {
                             continue;
                         }
+                        if props.initiator.is_some()
+                            && cursor.pos > rewind.pos
+                            && (items.len() as u64) < max
+                        {
+                            return Err(
+                                element_parse_error(
+                                    node_id,
+                                    self.ctx.program,
+                                    self.ctx.strings(),
+                                    e,
+                                )
+                                .into(),
+                            );
+                        }
                         let err_msg = e.to_string();
                         if err_msg.contains("initiator mismatch") && !rewind.is_empty() {
                             return Err(
@@ -3903,7 +3933,7 @@ impl<'a> Decoder<'a> {
             }
         }
         Err(VmError::InvalidValue {
-            message: "Assertion test failed".into(),
+            message: alloc::format!("Assertion Failed {expr}"),
         }
         .into())
     }

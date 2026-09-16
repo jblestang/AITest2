@@ -2873,7 +2873,7 @@ fn branch_choice_key(particle: &Particle, strings: &mut StringPool) -> Option<St
         Particle::Element(e) => e.props.choice_branch_key.as_deref(),
         Particle::Sequence(s) => s.props.choice_branch_key.as_deref(),
         Particle::Choice(c) => c.props.choice_branch_key.as_deref(),
-        Particle::GroupRef(_) => None,
+        Particle::GroupRef(gr) => gr.props.choice_branch_key.as_deref(),
     };
     raw.map(|s| strings.intern(s))
 }

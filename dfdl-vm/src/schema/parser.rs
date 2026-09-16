@@ -3656,6 +3656,21 @@ fn apply_choice_dispatch_key_parse(props: &mut DfdlProps, value: &str) {
         return;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
+    if let Some(rest) = inner.strip_prefix("./") {
+        if !rest.is_empty() {
+            if rest.contains('/') {
+                let mut steps = alloc::vec::Vec::new();
+                for step in rest.split('/').filter(|s| !s.is_empty()) {
+                    steps.push(parse_infoset_path_step(step));
+                }
+                props.choice_dispatch_path = Some(steps);
+            } else {
+                props.choice_dispatch_sibling =
+                    Some(local_name_from_qname(rest).to_string());
+            }
+        }
+        return;
+    }
     if inner.starts_with("xs:string(") && inner.ends_with(')') {
         let arg = inner["xs:string(".len()..inner.len() - 1].trim();
         if let Some(rest) = arg.strip_prefix("./") {
