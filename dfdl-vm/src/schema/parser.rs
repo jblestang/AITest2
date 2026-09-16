@@ -4641,6 +4641,7 @@ fn props_from_attrs_with_variables(
                     if let Ok(n) = inner.parse::<u64>() {
                         props.occurs_min = Some(n);
                         props.occurs_max = Some(n);
+                        props.max_occurs_specified = true;
                         props.occurs_count_kind = Some(OccursCountKind::Expression);
                     } else if let Some(steps) = parse_fn_count_path(inner) {
                         props.occurs_count_fn_path = Some(steps);

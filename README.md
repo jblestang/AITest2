@@ -66,6 +66,8 @@ let v2 = dec.decode(input_b)?;
 | Daffodil Section 12 lengthKind conformance (305 TDML cases) | ✅ |
 | Daffodil Section 12 length_properties (44/60 parser cases gated) | ✅ subset |
 | Daffodil Section 13 binary/text numbers & nillable (83 cases gated) | ✅ subset |
+| Daffodil Section 15 choice groups (168 TDML cases gated) | ✅ |
+| Daffodil Section 16 arrays/optional (58+ cases gated, in progress) | 🚧 subset |
 | Other Daffodil sections (section00–31, etc.) | 🚧 in progress |
 
 ## Daffodil conformance

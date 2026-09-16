@@ -1,8 +1,8 @@
 use crate::error::VmError;
-use crate::ir::{IrNode, IrProgram, IrProps};
+use crate::ir::{IrInputPathStep, IrNode, IrProgram, IrProps};
 use crate::schema::{
-    BuiltinType, ComplexContent, DfdlProps, ElementDecl, GroupDecl, Particle, SchemaDocument,
-    TypeDef,
+    BuiltinType, ComplexContent, DfdlProps, ElementDecl, GroupDecl, OccursCountKind, Particle,
+    SchemaDocument, TypeDef,
 };
 use crate::tdml::InfosetNode;
 use crate::value::DfdlValue;
@@ -608,7 +608,7 @@ fn validate_sequence_children(
         }
         let elem_name = program.strings.get(*name).map_err(|e| e.to_string())?;
         let local = crate::xml_util::local_name_str(elem_name);
-        let max = props.occurs_max.unwrap_or(u64::MAX);
+        let max = effective_occurs_max_for_unparse(program, props, node)?;
         let min = props.occurs_min;
         let infoset_children = find_infoset_children(node, local);
         let count = infoset_children.len() as u64;
@@ -624,6 +624,11 @@ fn validate_sequence_children(
             } else {
                 element_qname_in_errors(parent_name, tns)
             };
+            if max > 1 || props.occurs_count_kind != OccursCountKind::Parsed {
+                return Err(format!(
+                    "Unparse Error: Expected array end event for {elem_qname}, but received element start event for {elem_qname} at {parent_q}"
+                ));
+            }
             return Err(format!(
                 "Unparse Error: {elem_qname} expected element end, but received start event for {elem_qname} at {parent_q}"
             ));
@@ -908,6 +913,49 @@ fn choice_branch_infoset_matches(
         return false;
     };
     !find_infoset_children(node, &local).is_empty()
+}
+
+fn effective_occurs_max_for_unparse(
+    program: &IrProgram,
+    props: &IrProps,
+    parent: &InfosetNode,
+) -> Result<u64, String> {
+    if props.occurs_count_kind == OccursCountKind::Expression {
+        if let Some(steps) = props.occurs_count_fn_path.as_ref() {
+            return eval_occurs_count_from_infoset(program, steps, parent);
+        }
+    }
+    Ok(props.occurs_max.unwrap_or(u64::MAX))
+}
+
+fn eval_occurs_count_from_infoset(
+    program: &IrProgram,
+    steps: &[IrInputPathStep],
+    parent: &InfosetNode,
+) -> Result<u64, String> {
+    let strings = &program.strings;
+    let step = steps.first().ok_or_else(|| "empty occursCount path".to_string())?;
+    let local = strings
+        .get(step.local)
+        .map_err(|e| e.to_string())?;
+    let local = crate::xml_util::local_name_str(local);
+    let matches = find_infoset_children(parent, local);
+    let value = if let Some(idx) = step.index {
+        matches
+            .get((idx as usize).saturating_sub(1))
+            .ok_or_else(|| format!("occursCount path missing `{local}[{idx}]`"))?
+    } else {
+        matches
+            .first()
+            .ok_or_else(|| format!("occursCount path missing `{local}`"))?
+    };
+    if let Some(text) = value.text.as_deref() {
+        return text
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("occursCount path `{local}` not numeric"));
+    }
+    Ok(matches.len() as u64)
 }
 
 fn find_infoset_children<'a>(node: &'a InfosetNode, local: &str) -> Vec<&'a InfosetNode> {

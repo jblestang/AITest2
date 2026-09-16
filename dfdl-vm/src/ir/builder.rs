@@ -3392,6 +3392,10 @@ fn overlay_dfdl_to_ir(
     }
     if props.max_occurs_specified {
         base.occurs_max = props.occurs_max;
+    } else if props.occurs_count_kind == Some(OccursCountKind::Expression)
+        && props.occurs_max.is_some()
+    {
+        base.occurs_max = props.occurs_max;
     } else if props.occurs_count_kind == Some(OccursCountKind::Parsed)
         && props.occurs_min.unwrap_or(1) == 0
     {
