@@ -880,7 +880,10 @@ impl<'a> Decoder<'a> {
                     let sep_alt = if inter_child_sep_consumed_by_prev {
                         inter_child_sep_consumed_by_prev = false;
                         None
-                    } else if suppress_sep || !self.particle_consumes_input(child) {
+                    } else if suppress_sep
+                        || !self.particle_consumes_input(child)
+                        || !self.any_preceding_particle_consumes_input(children, idx)
+                    {
                         None
                     } else if props.separator_position == SeparatorPosition::Postfix && idx > 0 {
                         // Postfix separators are consumed after each prior occurrence
@@ -4887,6 +4890,12 @@ impl<'a> Decoder<'a> {
             .any(|&child| self.particle_consumes_input(child))
     }
 
+    fn any_preceding_particle_consumes_input(&self, children: &[u32], idx: usize) -> bool {
+        children[..idx]
+            .iter()
+            .any(|&child| self.particle_consumes_input(child))
+    }
+
     fn particle_consumes_input(&self, node_id: u32) -> bool {
         match self.ctx.program.node(node_id) {
             Ok(IrNode::Element { props, .. }) => {
@@ -5762,6 +5771,8 @@ fn constant_input_value(kind: ValueKind, value: i64) -> Result<DfdlValue> {
             }),
         Long => Ok(DfdlValue::Long(value)),
         Integer => Ok(DfdlValue::Integer(value.to_string())),
+        Float => Ok(DfdlValue::Float(value as f32)),
+        Double => Ok(DfdlValue::Double(value as f64)),
         other => Err(VmError::InvalidValue {
             message: alloc::format!("inputValueCalc constant unsupported for `{other:?}`"),
         }),
@@ -6249,10 +6260,16 @@ fn eval_input_value_calc_expression(
         IrInputValueCalcExpression::Div(left, right) => {
             let a = eval_input_value_calc_to_i64(
                 left, ctx, strings, tunables, target_kind, target_props,
-            )? as f64;
+            )?;
             let b = eval_input_value_calc_to_i64(
                 right, ctx, strings, tunables, target_kind, target_props,
-            )? as f64;
+            )?;
+            if b == 0 {
+                return Err(VmError::InvalidValue {
+                    message: "divide by zero".into(),
+                }
+                .into());
+            }
             Ok(DfdlValue::Float((a / b) as f32))
         }
         IrInputValueCalcExpression::Path {
@@ -6366,8 +6383,8 @@ fn eval_input_value_calc_path(
         message: "missing inputValueCalc path".into(),
     })?;
     let value = eval_infoset_path_steps(steps, siblings, strings, tunables)?;
-    let text = dfdl_value_text(&value);
-    Ok(DfdlValue::String(StringValue::new(text.to_string())))
+    let text = dfdl_value_to_string(&value);
+    Ok(DfdlValue::String(StringValue::new(text)))
 }
 
 fn eval_occurs_count_expression(

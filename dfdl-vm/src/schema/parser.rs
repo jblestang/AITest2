@@ -3283,6 +3283,24 @@ fn split_top_level_ivc_div(s: &str) -> Option<alloc::vec::Vec<alloc::string::Str
     Some(parts)
 }
 
+fn extract_ivc_paren_argument(s: &str, open_prefix: &str) -> Option<alloc::string::String> {
+    let rest = s.strip_prefix(open_prefix)?;
+    let mut depth = 1i32;
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(rest[..i].trim().to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn parse_ivc_path_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
     let (parent_root, steps) = parse_ivc_path_steps(s)?;
     Some(crate::schema::InputValueCalcExpression::Path {
@@ -3306,8 +3324,8 @@ fn parse_ivc_primary(s: &str) -> Option<crate::schema::InputValueCalcExpression>
         ("xs:double(", crate::schema::IvcXsCast::Double),
         ("xs:string(", crate::schema::IvcXsCast::String),
     ] {
-        if let Some(rest) = s.strip_prefix(prefix).and_then(|r| r.strip_suffix(')')) {
-            let inner = parse_ivc_add_expr(rest.trim())?;
+        if let Some(arg) = extract_ivc_paren_argument(s, prefix) {
+            let inner = parse_ivc_add_expr(&arg)?;
             return Some(crate::schema::InputValueCalcExpression::Cast {
                 kind,
                 inner: alloc::boxed::Box::new(inner),
@@ -5876,5 +5894,15 @@ mod tests {
         let err = parse_schema(xsd).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("cannot have children"), "{msg}");
+    }
+
+    #[test]
+    fn input_value_calc_float_div_expression() {
+        assert!(
+            parse_input_value_calc_expression(
+                "{ xs:float(xs:int(../ex:e2) div xs:int(../ex:e3)) }"
+            )
+            .is_some()
+        );
     }
 }

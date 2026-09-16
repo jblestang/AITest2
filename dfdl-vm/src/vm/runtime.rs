@@ -5655,9 +5655,10 @@ pub(crate) fn read_text_scalar(
         }
         Float => {
             if props.length_kind == LengthKind::Delimited
-                && trimmed
-                    .chars()
-                    .any(|c| c.is_ascii_alphabetic() || c == ':')
+                && (trimmed.contains(':')
+                    || trimmed.chars().any(|c| {
+                        c.is_ascii_alphabetic() && c != 'e' && c != 'E'
+                    }))
             {
                 return Err(unable_parse_from_text("xs:float", trimmed));
             }
@@ -5672,9 +5673,10 @@ pub(crate) fn read_text_scalar(
         }
         Double => {
             if props.length_kind == LengthKind::Delimited
-                && trimmed
-                    .chars()
-                    .any(|c| c.is_ascii_alphabetic() || c == ':')
+                && (trimmed.contains(':')
+                    || trimmed.chars().any(|c| {
+                        c.is_ascii_alphabetic() && c != 'e' && c != 'E'
+                    }))
             {
                 return Err(unable_parse_from_text("xs:double", trimmed));
             }

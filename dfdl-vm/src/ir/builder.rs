@@ -467,6 +467,9 @@ impl<'a> IrBuilder<'a> {
         match particle {
             Particle::Element(element) => {
                 let element_props = dfdl_props_for_element_ref(self.schema, element);
+                if let Some(ref expr) = element_props.input_value_calc_expression {
+                    validate_schema_ivc_expression_prefixes(expr, self.schema)?;
+                }
                 if let Some(ref test) = element_props.discriminator_test {
                     let empty = alloc::collections::BTreeMap::new();
                     let prefixes = element_props
@@ -1997,7 +2000,153 @@ fn finalize_element_props(
         })?;
     }
     validate_bit_order_byte_order(kind, &ir)?;
+    validate_input_value_calc_compile(kind, &ir, strings)?;
     Ok(ir)
+}
+
+fn validate_input_value_calc_compile(
+    kind: ValueKind,
+    ir: &IrProps,
+    strings: &StringPool,
+) -> Result<()> {
+    use crate::ir::IrInputValueCalcExpression;
+    use crate::schema::InputValueCalc;
+    let type_label = if kind == ValueKind::Long && ir.unsigned_integer {
+        "UnsignedLong"
+    } else if kind == ValueKind::Integer && ir.non_negative_integer {
+        "NonNegativeInteger"
+    } else {
+        match kind {
+            ValueKind::Byte => "Byte",
+            ValueKind::Short => "Short",
+            ValueKind::Int => "Int",
+            ValueKind::Long => "Long",
+            ValueKind::UnsignedByte => "UnsignedByte",
+            ValueKind::UnsignedShort => "UnsignedShort",
+            ValueKind::UnsignedInt => "UnsignedInt",
+            ValueKind::Float => "Float",
+            ValueKind::Double => "Double",
+            _ => value_kind_type_name(kind),
+        }
+    };
+    let sde_out_of_range = |value: &str| -> SchemaError {
+        SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: {value} is not in the allowed range for type {type_label}"
+            ),
+        }
+    };
+    let check_i64 = |v: i64| -> Result<()> {
+        if ir.unsigned_integer && v < 0 {
+            return Err(sde_out_of_range(&v.to_string()).into());
+        }
+        let out_of_range = || Err::<(), SchemaError>(sde_out_of_range(&v.to_string())).into();
+        match kind {
+            ValueKind::Byte => {
+                i8::try_from(v).map(|_| ()).or_else(|_| out_of_range())?;
+            }
+            ValueKind::Short => {
+                i16::try_from(v).map(|_| ()).or_else(|_| out_of_range())?;
+            }
+            ValueKind::Int => {
+                i32::try_from(v).map(|_| ()).or_else(|_| out_of_range())?;
+            }
+            ValueKind::UnsignedByte => {
+                u8::try_from(v).map(|_| ()).or_else(|_| out_of_range())?;
+            }
+            ValueKind::UnsignedShort => {
+                u16::try_from(v).map(|_| ()).or_else(|_| out_of_range())?;
+            }
+            ValueKind::UnsignedInt => {
+                u32::try_from(v).map(|_| ()).or_else(|_| out_of_range())?;
+            }
+            _ => {}
+        }
+        Ok(())
+    };
+    let check_lexical = |text: &str| -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(());
+        }
+        if let Ok(v) = text.parse::<i64>() {
+            return check_i64(v);
+        }
+        if kind == ValueKind::Long && ir.unsigned_integer {
+            if text.parse::<u64>().is_err() {
+                return Err(sde_out_of_range(text).into());
+            }
+            return Ok(());
+        }
+        if text.parse::<i128>().is_err() {
+            return Err(sde_out_of_range(text).into());
+        }
+        Ok(())
+    };
+    if let Some(InputValueCalc::Constant(v)) = ir.input_value_calc {
+        check_i64(v)?;
+    }
+    if ir.input_value_calc == Some(InputValueCalc::ConstantLexical) {
+        if let Some(id) = ir.input_value_calc_literal {
+            let text = strings.get(id).map_err(|e| SchemaError::InvalidProperty {
+                message: e.to_string(),
+            })?;
+            check_lexical(text)?;
+        }
+    }
+    if let Some(expr) = &ir.input_value_calc_expression {
+        match expr {
+            IrInputValueCalcExpression::Literal(v) => check_i64(*v)?,
+            IrInputValueCalcExpression::LiteralLexical(id) => {
+                let text = strings.get(*id).map_err(|e| SchemaError::InvalidProperty {
+                    message: e.to_string(),
+                })?;
+                check_lexical(text)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_schema_ivc_expression_prefixes(
+    expr: &crate::schema::InputValueCalcExpression,
+    schema: &SchemaDocument,
+) -> Result<()> {
+    use crate::schema::InputValueCalcExpression;
+    match expr {
+        InputValueCalcExpression::Path { steps, .. } => {
+            for (prefix, _, _) in steps {
+                if let Some(p) = prefix {
+                    if !schema.namespace_prefixes.contains_key(p) {
+                        return Err(SchemaError::InvalidProperty {
+                            message: alloc::format!(
+                                "Schema Definition Error: The prefix `{p}` has no corresponding namespace declaration in the schema."
+                            ),
+                        }
+                        .into());
+                    }
+                }
+            }
+        }
+        InputValueCalcExpression::Cast { inner, .. } => {
+            validate_schema_ivc_expression_prefixes(inner, schema)?;
+        }
+        InputValueCalcExpression::Div(left, right) => {
+            validate_schema_ivc_expression_prefixes(left, schema)?;
+            validate_schema_ivc_expression_prefixes(right, schema)?;
+        }
+        InputValueCalcExpression::Add(items) | InputValueCalcExpression::Mul(items) => {
+            for item in items {
+                validate_schema_ivc_expression_prefixes(item, schema)?;
+            }
+        }
+        InputValueCalcExpression::StringOf(inner) => {
+            validate_schema_ivc_expression_prefixes(inner, schema)?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn binary_value_kind_requires_byte_order(kind: ValueKind) -> bool {
