@@ -2290,6 +2290,7 @@ impl<'a> Decoder<'a> {
                                     Some(props),
                                     self.ctx.strings(),
                                     true,
+                                    child_stops,
                                 )? {
                                     *cursor = nil_cursor;
                                     insert_child(
@@ -2995,17 +2996,27 @@ impl<'a> Decoder<'a> {
                 self.ctx.strings(),
             )?;
             if min == 0 && at_empty_slot {
-                let sep_pos = cursor.pos;
-                self.consume_occurrence_separator(
-                    parent_sequence,
-                    Some(props),
-                    Some(items.as_slice()),
-                    cursor,
-                )?;
-                if never_optional_array.is_some() && cursor.pos > sep_pos {
-                    never_infix_separators_consumed += 1;
+                let optional_complex = matches!(
+                    self.ctx.program.node(node_id),
+                    Ok(IrNode::Element {
+                        child: Some(_),
+                        kind: ValueKind::Complex,
+                        ..
+                    })
+                );
+                if !optional_complex {
+                    let sep_pos = cursor.pos;
+                    self.consume_occurrence_separator(
+                        parent_sequence,
+                        Some(props),
+                        Some(items.as_slice()),
+                        cursor,
+                    )?;
+                    if never_optional_array.is_some() && cursor.pos > sep_pos {
+                        never_infix_separators_consumed += 1;
+                    }
+                    continue;
                 }
-                continue;
             }
             if min > 0
                 && (items.len() as u64) < min
@@ -3504,6 +3515,7 @@ impl<'a> Decoder<'a> {
                             parent_sequence,
                             self.ctx.strings(),
                             true,
+                            stop_sequences,
                         )?
                     {
                         return Ok(wrap_named(
@@ -3965,6 +3977,7 @@ impl<'a> Decoder<'a> {
                             parent_sequence,
                             self.ctx.strings(),
                             false,
+                            stop_sequences,
                         )?
                     {
                         return Ok(wrap_named(

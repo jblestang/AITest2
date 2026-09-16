@@ -5117,6 +5117,34 @@ pub(crate) fn validate_nil_value_runtime(
     Ok(())
 }
 
+pub(crate) fn enclosing_terminator_at_cursor(
+    cursor: &Cursor<'_>,
+    stop_sequences: &[&IrProps],
+    strings: &StringPool,
+) -> Result<bool, crate::error::VmError> {
+    for stop in stop_sequences {
+        let Some(id) = stop.terminator else {
+            continue;
+        };
+        let pat = strings.get(id)?;
+        if pat.is_empty() {
+            continue;
+        }
+        let enc = encoding_name(stop, strings).ok();
+        if crate::schema::match_delimiter_opts_for_encoding(
+            &cursor.data[cursor.pos..],
+            pat,
+            stop.ignore_case,
+            enc.as_deref(),
+        )
+        .is_some_and(|n| n > 0)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) fn try_consume_nillable_element_nil(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
@@ -5124,6 +5152,7 @@ pub(crate) fn try_consume_nillable_element_nil(
     strings: &StringPool,
     // When true, empty nil may consume the enclosing sequence separator (complex `/after` nil).
     empty_nil_at_parent_separator: bool,
+    enclosing_stops: &[&IrProps],
 ) -> Result<bool, crate::error::VmError> {
     use crate::error::VmError;
     use crate::schema::NilKind;
@@ -5234,12 +5263,16 @@ pub(crate) fn try_consume_nillable_element_nil(
                                 )
                             });
                             if term_follows {
+                                let before = cursor.pos;
                                 let enc = encoding_name(parent, strings).ok();
                                 let _ = cursor.consume_delimiter(
                                     sep,
                                     parent.ignore_case,
                                     enc.as_deref(),
                                 );
+                                if cursor.pos <= before {
+                                    return Ok(true);
+                                }
                                 continue;
                             }
                             let after_is_sep = crate::schema::match_delimiter_opts(
@@ -5251,9 +5284,13 @@ pub(crate) fn try_consume_nillable_element_nil(
                             if after_is_sep || after_sep >= cursor.data.len() {
                                 return Ok(true);
                             }
+                            let before = cursor.pos;
                             let enc = encoding_name(parent, strings).ok();
                             let _ =
                                 cursor.consume_delimiter(sep, parent.ignore_case, enc.as_deref());
+                            if cursor.pos <= before {
+                                return Ok(true);
+                            }
                             continue;
                         }
                     }
@@ -5273,6 +5310,9 @@ pub(crate) fn try_consume_nillable_element_nil(
                 }
             }
             if cursor.pos >= cursor.data.len() {
+                return Ok(true);
+            }
+            if enclosing_terminator_at_cursor(cursor, enclosing_stops, strings)? {
                 return Ok(true);
             }
         }
