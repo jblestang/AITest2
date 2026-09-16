@@ -882,7 +882,7 @@ impl<'a> Decoder<'a> {
                         None
                     } else if suppress_sep
                         || !self.particle_consumes_input(child)
-                        || !self.any_preceding_particle_consumes_input(children, idx)
+                        || (idx > 0 && !self.particle_consumes_input(children[idx - 1]))
                     {
                         None
                     } else if props.separator_position == SeparatorPosition::Postfix && idx > 0 {
@@ -4886,12 +4886,6 @@ impl<'a> Decoder<'a> {
 
     fn following_sibling_consumes_input(&self, children: &[u32], idx: usize) -> bool {
         children[idx + 1..]
-            .iter()
-            .any(|&child| self.particle_consumes_input(child))
-    }
-
-    fn any_preceding_particle_consumes_input(&self, children: &[u32], idx: usize) -> bool {
-        children[..idx]
             .iter()
             .any(|&child| self.particle_consumes_input(child))
     }
