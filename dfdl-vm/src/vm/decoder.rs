@@ -1199,6 +1199,19 @@ impl<'a> Decoder<'a> {
                                             *cursor = saved_rep;
                                             break 'repeat_slot;
                                         }
+                                        let repeat_same_slot =
+                                            if let Ok(IrNode::Element { props: cp, .. }) =
+                                                self.ctx.program.node(child)
+                                            {
+                                                cp.initiator.is_none()
+                                                    || self.initiator_present_at_cursor(cursor, cp)?
+                                            } else {
+                                                false
+                                            };
+                                        if !repeat_same_slot {
+                                            *cursor = saved_rep;
+                                            break 'repeat_slot;
+                                        }
                                         single_child_infix_reps += 1;
                                         separator_alts.push(alt);
                                         continue 'repeat_slot;
