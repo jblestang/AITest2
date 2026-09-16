@@ -513,6 +513,22 @@ fn validate_infoset_particle(
                 if choice_branch_is_empty_sequence(program, branch.node) {
                     return Ok(());
                 }
+                if ir_particle_can_absent_from_unparse_infoset(program, branch.node)? {
+                    return Ok(());
+                }
+            }
+            for branch in branches {
+                if choice_branch_infoset_matches(program, branch.node, node) {
+                    return validate_infoset_particle(
+                        program,
+                        branch.node,
+                        node,
+                        qualified,
+                        tns,
+                        parent_name,
+                        enforce_element_form,
+                    );
+                }
             }
             Err(format!(
                 "Unparse Error: infoset does not match any choice branch under `{parent_name}`"
@@ -652,6 +668,96 @@ fn choice_branch_is_empty_sequence(program: &IrProgram, node_id: u32) -> bool {
         program.node(node_id).ok(),
         Some(IrNode::Sequence { children, .. }) if children.is_empty()
     )
+}
+
+fn ir_props_can_absent_from_unparse_infoset(props: &IrProps) -> bool {
+    props.hidden
+        || props.output_value_calc.is_some()
+        || props.output_value_calc_literal.is_some()
+        || props.output_value_calc_sibling.is_some()
+        || props.output_value_calc_conditional
+        || props.occurs_min == 0
+}
+
+fn ir_particle_can_absent_from_unparse_infoset(
+    program: &IrProgram,
+    node_id: u32,
+) -> Result<bool, String> {
+    match program.node(node_id).map_err(|e| e.to_string())? {
+        IrNode::Element {
+            props,
+            child,
+            kind,
+            ..
+        } => {
+            if ir_props_can_absent_from_unparse_infoset(props) {
+                return Ok(true);
+            }
+            if *kind == crate::ir::ValueKind::Complex {
+                if let Some(child_id) = child {
+                    return ir_particle_can_absent_from_unparse_infoset(program, *child_id);
+                }
+            }
+            Ok(false)
+        }
+        IrNode::Sequence { children, .. } => {
+            for &cid in children {
+                if !ir_particle_can_absent_from_unparse_infoset(program, cid)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        IrNode::Choice { branches, .. } => {
+            for branch in branches {
+                if ir_particle_can_absent_from_unparse_infoset(program, branch.node)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn choice_branch_infoset_local_key(program: &IrProgram, branch_node: u32) -> Option<String> {
+    match program.node(branch_node).ok()? {
+        IrNode::Element { name, props, .. } => {
+            if ir_props_can_absent_from_unparse_infoset(props) {
+                return None;
+            }
+            let ename = program.strings.get(*name).ok()?;
+            Some(crate::xml_util::local_name_str(ename).to_string())
+        }
+        IrNode::Sequence { children, .. } => {
+            for &cid in children {
+                if let Some(k) = choice_branch_infoset_local_key(program, cid) {
+                    return Some(k);
+                }
+            }
+            None
+        }
+        IrNode::Choice { branches, .. } => {
+            for branch in branches {
+                if let Some(k) = choice_branch_infoset_local_key(program, branch.node) {
+                    return Some(k);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn choice_branch_infoset_matches(
+    program: &IrProgram,
+    branch_node: u32,
+    node: &InfosetNode,
+) -> bool {
+    let Some(local) = choice_branch_infoset_local_key(program, branch_node) else {
+        return false;
+    };
+    !find_infoset_children(node, &local).is_empty()
 }
 
 fn find_infoset_children<'a>(node: &'a InfosetNode, local: &str) -> Vec<&'a InfosetNode> {
