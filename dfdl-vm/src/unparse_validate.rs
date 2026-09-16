@@ -494,16 +494,24 @@ fn validate_infoset_particle(
         IrNode::Choice { branches, .. } => {
             for branch in branches {
                 let branch_name = program.strings.get(branch.name).map_err(|e| e.to_string())?;
-                if !find_infoset_children(node, branch_name).is_empty() {
-                    return validate_infoset_particle(
-                        program,
-                        branch.node,
-                        node,
-                        qualified,
-                        tns,
-                        branch_name,
-                        enforce_element_form,
-                    );
+                let branch_children = find_infoset_children(node, branch_name);
+                if !branch_children.is_empty() {
+                    for child_node in branch_children {
+                        return validate_infoset_particle(
+                            program,
+                            branch.node,
+                            child_node,
+                            qualified,
+                            tns,
+                            branch_name,
+                            enforce_element_form,
+                        );
+                    }
+                }
+            }
+            for branch in branches {
+                if choice_branch_is_empty_sequence(program, branch.node) {
+                    return Ok(());
                 }
             }
             Err(format!(
@@ -637,6 +645,13 @@ fn sequence_allows_child_local(program: &IrProgram, children: &[u32], local: &st
         }
     }
     false
+}
+
+fn choice_branch_is_empty_sequence(program: &IrProgram, node_id: u32) -> bool {
+    matches!(
+        program.node(node_id).ok(),
+        Some(IrNode::Sequence { children, .. }) if children.is_empty()
+    )
 }
 
 fn find_infoset_children<'a>(node: &'a InfosetNode, local: &str) -> Vec<&'a InfosetNode> {

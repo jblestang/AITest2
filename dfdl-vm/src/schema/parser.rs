@@ -2986,6 +2986,12 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.output_value_calc_sibling.is_some() {
         base.output_value_calc_sibling = overlay.output_value_calc_sibling;
     }
+    if overlay.output_value_calc_path.is_some() {
+        base.output_value_calc_path = overlay.output_value_calc_path.clone();
+    }
+    if overlay.output_value_calc_path_addend.is_some() {
+        base.output_value_calc_path_addend = overlay.output_value_calc_path_addend;
+    }
     if overlay.output_value_calc_conditional {
         base.output_value_calc_conditional = true;
     }
@@ -3113,7 +3119,15 @@ fn split_top_level_ivc_op(s: &str, op: char) -> Option<alloc::vec::Vec<alloc::st
     Some(parts)
 }
 
-fn parse_ivc_path_steps(s: &str) -> Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>> {
+fn parse_ivc_path_steps(
+    s: &str,
+) -> Option<
+    alloc::vec::Vec<(
+        Option<alloc::string::String>,
+        alloc::string::String,
+        Option<u32>,
+    )>,
+> {
     let s = s.trim();
     let rest = if let Some(r) = s.strip_prefix('/') {
         r
@@ -3127,12 +3141,7 @@ fn parse_ivc_path_steps(s: &str) -> Option<alloc::vec::Vec<(Option<alloc::string
     }
     let mut steps = alloc::vec::Vec::new();
     for step in rest.split('/').filter(|p| !p.is_empty()) {
-        let (prefix, local) = if let Some((p, l)) = step.split_once(':') {
-            (Some(p.to_string()), l.to_string())
-        } else {
-            (None, step.to_string())
-        };
-        steps.push((prefix, local));
+        steps.push(parse_infoset_path_step(step));
     }
     Some(steps)
 }
@@ -3270,7 +3279,13 @@ fn parse_parse_unparse_policy(value: &str) -> Result<ParseUnparsePolicy> {
 
 fn parse_fn_count_path(
     inner: &str,
-) -> Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>> {
+) -> Option<
+    alloc::vec::Vec<(
+        Option<alloc::string::String>,
+        alloc::string::String,
+        Option<u32>,
+    )>,
+> {
     let inner = inner.trim();
     let path = inner.strip_prefix("fn:count(")?.strip_suffix(')')?.trim();
     let mut rest = path;
@@ -3282,19 +3297,37 @@ fn parse_fn_count_path(
     }
     let mut steps = alloc::vec::Vec::new();
     for step in rest.split('/').filter(|s| !s.is_empty()) {
-        let (prefix, local) = if let Some((p, l)) = step.split_once(':') {
-            (Some(p.to_string()), l.to_string())
-        } else {
-            (None, step.to_string())
-        };
-        steps.push((prefix, local));
+        steps.push(parse_infoset_path_step(step));
     }
     Some(steps)
 }
 
+fn parse_infoset_path_step(step: &str) -> (Option<alloc::string::String>, alloc::string::String, Option<u32>) {
+    let (head, index) = if let Some(open) = step.find('[') {
+        let idx = step[open + 1..]
+            .strip_suffix(']')
+            .and_then(|s| s.parse::<u32>().ok());
+        (&step[..open], idx)
+    } else {
+        (step, None)
+    };
+    let (prefix, local) = if let Some((p, l)) = head.split_once(':') {
+        (Some(p.to_string()), l.to_string())
+    } else {
+        (None, head.to_string())
+    };
+    (prefix, local, index)
+}
+
 fn parse_input_value_calc_relative_path(
     value: &str,
-) -> Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>> {
+) -> Option<
+    alloc::vec::Vec<(
+        Option<alloc::string::String>,
+        alloc::string::String,
+        Option<u32>,
+    )>,
+> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;
@@ -3306,14 +3339,40 @@ fn parse_input_value_calc_relative_path(
     }
     let mut steps = alloc::vec::Vec::new();
     for step in rest.split('/').filter(|s| !s.is_empty()) {
-        let (prefix, local) = if let Some((p, l)) = step.split_once(':') {
-            (Some(p.to_string()), l.to_string())
-        } else {
-            (None, step.to_string())
-        };
-        steps.push((prefix, local));
+        steps.push(parse_infoset_path_step(step));
     }
     Some(steps)
+}
+
+fn parse_output_value_calc_infoset_path(
+    value: &str,
+) -> Option<(
+    alloc::vec::Vec<(
+        Option<alloc::string::String>,
+        alloc::string::String,
+        Option<u32>,
+    )>,
+    i64,
+)> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    let (path_expr, addend) = if let Some((left, right)) = inner.rsplit_once('+') {
+        (left.trim(), right.trim().parse::<i64>().ok()?)
+    } else {
+        return None;
+    };
+    let rest = path_expr.strip_prefix("../")?;
+    if rest.is_empty() {
+        return None;
+    }
+    let mut steps = alloc::vec::Vec::new();
+    for step in rest.split('/').filter(|s| !s.is_empty()) {
+        steps.push(parse_infoset_path_step(step));
+    }
+    Some((steps, addend))
 }
 
 fn length_units_from_calc_args(args: &str) -> LengthUnits {
@@ -4175,6 +4234,10 @@ fn props_from_attrs_with_variables(
             "outputValueCalc" => {
                 if value.contains("if (") {
                     props.output_value_calc_conditional = true;
+                } else if let Some((steps, addend)) = parse_output_value_calc_infoset_path(value) {
+                    props.output_value_calc = Some(OutputValueCalc::InfosetPathAddend);
+                    props.output_value_calc_path = Some(steps);
+                    props.output_value_calc_path_addend = Some(addend);
                 } else if let Some(calc) = parse_output_value_calc(value) {
                     props.output_value_calc = Some(calc.0);
                     props.output_value_calc_sibling = calc.1;

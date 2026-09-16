@@ -3443,12 +3443,74 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
+    fn eval_particle_assert_expression(&self, expr: &str, dot: &str) -> Result<bool> {
+        let inner = expr
+            .trim()
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .unwrap_or(expr)
+            .trim();
+        if let Some(b) = crate::schema::eval_discriminator_expression(expr, dot) {
+            return Ok(b);
+        }
+        let compact: alloc::string::String =
+            inner.chars().filter(|c| !c.is_whitespace()).collect();
+        if compact.starts_with("xs:boolean(") && compact.ends_with(')') {
+            let path = &compact["xs:boolean(".len()..compact.len() - 1];
+            return Ok(self.xpath_sibling_path_truthy(path));
+        }
+        if compact.contains('[') {
+            return Err(VmError::InvalidValue {
+                message: "Schema Definition Error: Indexing is only allowed on arrays".into(),
+            }
+            .into());
+        }
+        if compact.contains("*") && compact.contains("eq") {
+            let eq_parts: alloc::vec::Vec<_> = compact.split("eq").collect();
+            if eq_parts.len() == 2 {
+                if let Ok(expected) = eq_parts[1].parse::<i64>() {
+                    let mut product = 1i64;
+                    for factor in eq_parts[0].split('*').filter(|s| !s.is_empty()) {
+                        let val = self.xpath_path_int_value(factor)?;
+                        product = product.saturating_mul(val);
+                    }
+                    return Ok(product == expected);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn xpath_sibling_path_truthy(&self, path: &str) -> bool {
+        self.xpath_path_int_value(path).unwrap_or(0) != 0
+    }
+
+    fn xpath_path_int_value(&self, path: &str) -> Result<i64> {
+        let trimmed = path.trim();
+        let mut rest = trimmed;
+        while rest.starts_with("../") {
+            rest = &rest[3..];
+        }
+        let local = rest
+            .rsplit(':')
+            .next()
+            .unwrap_or(rest)
+            .trim();
+        let guard = self.xpath_siblings.borrow();
+        let sib = guard.get(local).ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!(
+                "Schema Definition Error: No element corresponding to step {local} found."
+            ),
+        })?;
+        numeric_value_from_dfdl(&sib.value)
+    }
+
     fn validate_particle_discriminator(&self, props: &IrProps, dot: &str) -> Result<()> {
         let Some(id) = props.discriminator_test else {
             return Ok(());
         };
         let expr = self.ctx.strings().get(id)?;
-        if crate::schema::eval_discriminator_expression(expr, dot).unwrap_or(false) {
+        if self.eval_particle_assert_expression(expr, dot)? {
             return Ok(());
         }
         if let Some(msg_id) = props.facet_assert_message {
@@ -4723,7 +4785,7 @@ fn eval_infoset_path_steps(
     for step in steps.iter().skip(1) {
         let local = strings.get(step.local)?;
         check_path_step(step.prefix.is_some(), local, tunables.unqualified_path_step_policy)?;
-        value = navigate_to_child(value, local)?;
+        value = navigate_to_child(value, local, step.index)?;
     }
     Ok(value.clone())
 }
@@ -4756,15 +4818,55 @@ fn check_path_step(
     }
 }
 
-fn navigate_to_child<'a>(value: &'a DfdlValue, local: &str) -> Result<&'a DfdlValue> {
+fn numeric_value_from_dfdl(value: &DfdlValue) -> Result<i64> {
     match value {
-        DfdlValue::Sequence(seq) => seq
-            .fields
-            .get(local)
-            .ok_or_else(|| VmError::InvalidValue {
-                message: alloc::format!("Schema Definition Error: no child `{local}`"),
-            })
-            .map_err(Into::into),
+        DfdlValue::Int(v) => Ok(*v as i64),
+        DfdlValue::Long(v) => Ok(*v),
+        DfdlValue::Short(v) => Ok(*v as i64),
+        DfdlValue::Byte(v) => Ok(*v as i64),
+        DfdlValue::Integer(s) => s
+            .parse::<i64>()
+            .map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("invalid integer `{s}`"),
+            }),
+        DfdlValue::String(s) => s.text.parse::<i64>().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid integer `{text}`", text = s.text),
+        }),
+        _ => Err(VmError::InvalidValue {
+            message: "numeric path value required".into(),
+        }),
+    }
+    .map_err(Into::into)
+}
+
+fn navigate_to_child<'a>(
+    value: &'a DfdlValue,
+    local: &str,
+    index: Option<u32>,
+) -> Result<&'a DfdlValue> {
+    match value {
+        DfdlValue::Sequence(seq) => {
+            let child = seq.fields.get(local).ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!(
+                    "Schema Definition Error: No element corresponding to step {local} found."
+                ),
+            })?;
+            match (index, child) {
+                (Some(n), DfdlValue::Array(items)) => {
+                    let idx = (n as usize).saturating_sub(1);
+                    items.get(idx).ok_or_else(|| VmError::InvalidValue {
+                        message: alloc::format!(
+                            "Schema Definition Error: no child `{local}[{n}]`"
+                        ),
+                    })
+                }
+                (Some(_), _) => Err(VmError::InvalidValue {
+                    message: alloc::format!("Schema Definition Error: no child `{local}[{index:?}]`"),
+                }),
+                (None, v) => Ok(v),
+            }
+            .map_err(Into::into)
+        }
         DfdlValue::Choice { .. } => Err(VmError::InvalidValue {
             message: "inputValueCalc path through choice unsupported".into(),
         }

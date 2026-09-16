@@ -84,6 +84,8 @@ pub struct IrPrefixLength {
 pub struct IrInputPathStep {
     pub prefix: Option<StringId>,
     pub local: StringId,
+    /// 1-based array index from `name[n]` in an infoset path step.
+    pub index: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,6 +232,8 @@ pub struct IrProps {
     pub output_value_calc: Option<OutputValueCalc>,
     pub output_value_calc_literal: Option<StringId>,
     pub output_value_calc_sibling: Option<StringId>,
+    pub output_value_calc_path: Option<Vec<IrInputPathStep>>,
+    pub output_value_calc_path_addend: Option<i64>,
     pub output_value_calc_conditional: bool,
     pub text_string_justification: TextStringJustification,
     pub text_number_justification: TextNumberJustification,
@@ -407,6 +411,8 @@ impl Default for IrProps {
             output_value_calc: None,
             output_value_calc_literal: None,
             output_value_calc_sibling: None,
+            output_value_calc_path: None,
+            output_value_calc_path_addend: None,
             output_value_calc_conditional: false,
             text_string_justification: TextStringJustification::Left,
             text_number_justification: TextNumberJustification::Right,

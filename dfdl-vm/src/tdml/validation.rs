@@ -568,7 +568,9 @@ fn walk_particle(
                         let min = props.occurs_min;
                         let max = props.occurs_max.unwrap_or(u64::MAX);
                         if count < min || (props.occurs_max.is_some() && count > max) {
-                            if full_xerces_style {
+                            if props.facet_check_constraints {
+                                errors.push(alloc::format!("Element ex:{key} failed check"));
+                            } else if full_xerces_style {
                                 if props.occurs_max.is_some() && count > max {
                                     errors.push(key.to_string());
                                     errors.push(alloc::format!("{count} occur"));

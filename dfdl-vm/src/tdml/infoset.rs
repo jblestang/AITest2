@@ -116,6 +116,14 @@ fn infoset_node_to_ir_value(
                     return infoset_particle_to_value(program, branch.node, node);
                 }
             }
+            for branch in branches {
+                if matches!(
+                    program.node(branch.node).ok(),
+                    Some(IrNode::Sequence { children, .. }) if children.is_empty()
+                ) {
+                    return Ok(DfdlValue::sequence(BTreeMap::new()));
+                }
+            }
             Err(alloc::format!(
                 "infoset does not match any choice branch under `{}`",
                 node.name

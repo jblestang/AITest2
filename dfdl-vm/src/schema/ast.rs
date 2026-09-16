@@ -107,7 +107,13 @@ pub struct DfdlProps {
     /// Parsed sibling from `{ xs:string(./name) }` or `{ xs:string(../name) }` in choiceDispatchKey.
     pub choice_dispatch_sibling: Option<String>,
     /// Parsed `{ ../a/b }` path in choiceDispatchKey (no xs:string wrapper).
-    pub choice_dispatch_path: Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>>,
+    pub choice_dispatch_path: Option<
+        alloc::vec::Vec<(
+            Option<alloc::string::String>,
+            alloc::string::String,
+            Option<u32>,
+        )>,
+    >,
     /// Literal dispatch key from `{ xs:string('…') }` in choiceDispatchKey.
     pub choice_dispatch_literal: Option<String>,
     /// Branch discriminator for choice dispatch (`dfdl:choiceBranchKey`).
@@ -163,7 +169,13 @@ pub struct DfdlProps {
     pub empty_element_parse_policy: Option<EmptyElementParsePolicy>,
     pub occurs_count_kind: Option<OccursCountKind>,
     /// Steps after `fn:count(` / parent `../` segments for `{ fn:count(../../a/b) }`.
-    pub occurs_count_fn_path: Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>>,
+    pub occurs_count_fn_path: Option<
+        alloc::vec::Vec<(
+            Option<alloc::string::String>,
+            alloc::string::String,
+            Option<u32>,
+        )>,
+    >,
     /// `dfdl:hiddenGroupRef` on a sequence (inline hidden model group).
     pub hidden_group_ref: Option<String>,
     /// Set when `hiddenGroupRef` came from appinfo `dfdl:sequence` (attribute or property form).
@@ -188,7 +200,22 @@ pub struct DfdlProps {
     /// `dfdlx:parseUnparsePolicy` (`both` / `parseOnly` / `unparseOnly`).
     pub parse_unparse_policy: Option<ParseUnparsePolicy>,
     /// `{ ../ex:a/b }` style inputValueCalc (path after `../`).
-    pub input_value_calc_path: Option<alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>>,
+    pub input_value_calc_path: Option<
+        alloc::vec::Vec<(
+            Option<alloc::string::String>,
+            alloc::string::String,
+            Option<u32>,
+        )>,
+    >,
+    /// `{ ../ex:a/b + N }` on outputValueCalc.
+    pub output_value_calc_path: Option<
+        alloc::vec::Vec<(
+            Option<alloc::string::String>,
+            alloc::string::String,
+            Option<u32>,
+        )>,
+    >,
+    pub output_value_calc_path_addend: Option<i64>,
     /// Arithmetic / absolute-path inputValueCalc (e.g. AC000 product expression).
     pub input_value_calc_expression: Option<InputValueCalcExpression>,
     pub text_bidi: Option<bool>,
@@ -345,7 +372,11 @@ pub enum TextPadKind {
 pub enum InputValueCalcExpression {
     Add(alloc::vec::Vec<InputValueCalcExpression>),
     Mul(alloc::vec::Vec<InputValueCalcExpression>),
-    Path(alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>),
+    Path(alloc::vec::Vec<(
+        Option<alloc::string::String>,
+        alloc::string::String,
+        Option<u32>,
+    )>),
     StringOf(alloc::boxed::Box<InputValueCalcExpression>),
 }
 
@@ -359,7 +390,11 @@ pub enum InputValueCalcSegment {
         start: usize,
         length: usize,
     },
-    InfosetPath(alloc::vec::Vec<(Option<alloc::string::String>, alloc::string::String)>),
+    InfosetPath(alloc::vec::Vec<(
+        Option<alloc::string::String>,
+        alloc::string::String,
+        Option<u32>,
+    )>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,6 +440,8 @@ pub enum OutputValueCalc {
     HexBinaryFromShort(i16),
     /// `{ dfdl:hexBinary(xs:byte(../sibling)) }`.
     HexBinaryFromByteSibling,
+    /// `{ ../path/to/elem + N }` — path in [`DfdlProps::output_value_calc_path`], addend stored separately.
+    InfosetPathAddend,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

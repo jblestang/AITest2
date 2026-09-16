@@ -501,12 +501,33 @@ impl<'a> Encoder<'a> {
                 self.write_terminator(inner_props, out, bit_count, None)?;
                 Ok(())
             }
-            IrNode::Choice { .. } => {
-                for (discriminator, value) in map {
-                    if branches_contain(self.ctx.program, node_id, discriminator) {
+            IrNode::Choice { branches, props: choice_props, .. } => {
+                for branch in branches {
+                    if map_has_local_key(map, "r2").is_some()
+                        && matches!(
+                            self.ctx.program.node(branch.node).ok(),
+                            Some(IrNode::Sequence { children, .. }) if children.is_empty()
+                        )
+                    {
+                        continue;
+                    }
+                    if let Some(key) = choice_branch_data_key(self, branch.node, map) {
+                        let val = map.get(&key).ok_or(VmError::MissingField {
+                            name: key.clone(),
+                        })?;
+                        self.write_initiator(choice_props, out, bit_count, None)?;
+                        return self.encode_node(branch.node, val, out, bit_count);
+                    }
+                }
+                self.write_initiator(choice_props, out, bit_count, None)?;
+                for branch in branches {
+                    if matches!(
+                        self.ctx.program.node(branch.node).ok(),
+                        Some(IrNode::Sequence { children, .. }) if children.is_empty()
+                    ) {
                         return self.encode_node(
-                            node_id,
-                            &DfdlValue::choice(discriminator.clone(), value.clone()),
+                            branch.node,
+                            &DfdlValue::sequence(BTreeMap::new()),
                             out,
                             bit_count,
                         );
@@ -889,6 +910,174 @@ fn encoded_value_length_bits(byte_len: usize, bit_count: u8) -> usize {
     }
 }
 
+fn eval_output_infoset_path(
+    enc: &Encoder<'_>,
+    steps: &[crate::ir::IrInputPathStep],
+    sequence_children: &[u32],
+    map: &BTreeMap<String, DfdlValue>,
+) -> Result<i64> {
+    let strings = enc.ctx.strings();
+    let first = steps.first().ok_or_else(|| VmError::InvalidValue {
+        message: "empty outputValueCalc path".into(),
+    })?;
+    let first_local = strings.get(first.local)?;
+    let mut value = resolve_path_step_value(enc, sequence_children, map, first_local)?;
+    for step in steps.iter().skip(1) {
+        let local = strings.get(step.local)?;
+        value = match value {
+            DfdlValue::Sequence(seq) => {
+                let child = seq.fields.get(local).ok_or_else(|| VmError::InvalidValue {
+                    message: alloc::format!("outputValueCalc path missing `{local}`"),
+                })?;
+                match (step.index, child) {
+                    (Some(n), DfdlValue::Array(items)) => items
+                        .get((n as usize).saturating_sub(1))
+                        .cloned()
+                        .ok_or_else(|| VmError::InvalidValue {
+                            message: alloc::format!("outputValueCalc path missing `{local}[{n}]`"),
+                        })?,
+                    (None, v) => v.clone(),
+                    _ => {
+                        return Err(VmError::InvalidValue {
+                            message: alloc::format!("outputValueCalc path invalid index on `{local}`"),
+                        }
+                        .into())
+                    }
+                }
+            }
+            _ => {
+                return Err(VmError::InvalidValue {
+                    message: "outputValueCalc path requires sequence".into(),
+                }
+                .into())
+            }
+        };
+    }
+    numeric_from_dfdl_value(&value)
+}
+
+fn resolve_path_step_value(
+    enc: &Encoder<'_>,
+    sequence_children: &[u32],
+    map: &BTreeMap<String, DfdlValue>,
+    local: &str,
+) -> Result<DfdlValue> {
+    if let Some(v) = map.get(local) {
+        return Ok(v.clone());
+    }
+    for &child_id in sequence_children {
+        let IrNode::Element { name, props, .. } = enc.ctx.program.node(child_id)? else {
+            continue;
+        };
+        let ename = enc.ctx.strings().get(*name)?;
+        if crate::xml_util::local_name_str(ename) != crate::xml_util::local_name_str(local) {
+            continue;
+        }
+        if props.output_value_calc.is_some() {
+            return eval_output_value_calc(enc, props, map, sequence_children, props);
+        }
+        if let IrNode::Element { child: Some(cid), .. } = enc.ctx.program.node(child_id)? {
+            return synthesize_element_subtree_value(enc, *cid, map, sequence_children);
+        }
+    }
+    Err(VmError::InvalidValue {
+        message: alloc::format!("outputValueCalc path missing `{local}`"),
+    }
+    .into())
+}
+
+fn synthesize_element_subtree_value(
+    enc: &Encoder<'_>,
+    node_id: u32,
+    map: &BTreeMap<String, DfdlValue>,
+    sequence_children: &[u32],
+) -> Result<DfdlValue> {
+    match enc.ctx.program.node(node_id)? {
+        IrNode::Sequence {
+            children,
+            props: seq_props,
+        } => {
+            let nested = precompute_output_values(enc, children, map, seq_props)?;
+            Ok(DfdlValue::Sequence(crate::value::SequenceValue::new(nested)))
+        }
+        IrNode::Element {
+            name,
+            kind: _,
+            props,
+            child,
+        } => {
+            let key = enc.ctx.strings().get(*name)?;
+            if let Some(v) = map.get(key) {
+                return Ok(v.clone());
+            }
+            if props.output_value_calc.is_some() {
+                return eval_output_value_calc(enc, props, map, sequence_children, props);
+            }
+            if let Some(cid) = child {
+                return synthesize_element_subtree_value(enc, *cid, map, sequence_children);
+            }
+            Err(VmError::InvalidValue {
+                message: alloc::format!("outputValueCalc path missing `{key}`"),
+            }
+            .into())
+        }
+        _ => Err(VmError::InvalidValue {
+            message: "outputValueCalc path unsupported particle".into(),
+        }
+        .into()),
+    }
+}
+
+fn numeric_from_dfdl_value(value: &DfdlValue) -> Result<i64> {
+    match value {
+        DfdlValue::Int(v) => Ok(*v as i64),
+        DfdlValue::Long(v) => Ok(*v),
+        DfdlValue::Byte(v) => Ok(*v as i64),
+        DfdlValue::Short(v) => Ok(*v as i64),
+        DfdlValue::Integer(s) => s.parse::<i64>().map_err(|_| {
+            VmError::InvalidValue {
+                message: alloc::format!("invalid integer `{s}`"),
+            }
+            .into()
+        }),
+        _ => Err(VmError::InvalidValue {
+            message: "outputValueCalc path numeric required".into(),
+        }
+        .into()),
+    }
+}
+
+fn map_has_local_key(map: &BTreeMap<String, DfdlValue>, local: &str) -> Option<String> {
+    for key in map.keys() {
+        if crate::xml_util::local_name_str(key) == local {
+            return Some(key.clone());
+        }
+    }
+    None
+}
+
+fn choice_branch_data_key(
+    enc: &Encoder<'_>,
+    branch_node: u32,
+    map: &BTreeMap<String, DfdlValue>,
+) -> Option<String> {
+    match enc.ctx.program.node(branch_node).ok()? {
+        IrNode::Element { name, .. } => {
+            let ename = enc.ctx.strings().get(*name).ok()?;
+            map_has_local_key(map, crate::xml_util::local_name_str(ename))
+        }
+        IrNode::Sequence { children, .. } => {
+            for &cid in children {
+                if let Some(k) = choice_branch_data_key(enc, cid, map) {
+                    return Some(k);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn find_child_element_by_name(
     enc: &Encoder<'_>,
     children: &[u32],
@@ -1024,6 +1213,17 @@ fn eval_output_value_calc(
         OutputValueCalc::HexBinaryFromShort(v) => {
             return Ok(DfdlValue::HexBinary(int_bytes(i64::from(v), 2, false)));
         }
+        OutputValueCalc::InfosetPathAddend => {
+            let steps = props.output_value_calc_path.as_ref().ok_or_else(|| VmError::InvalidValue {
+                message: "missing outputValueCalc path".into(),
+            })?;
+            let addend = props.output_value_calc_path_addend.unwrap_or(0);
+            let base = eval_output_infoset_path(enc, steps, children, map)?;
+            let len = base.saturating_add(addend);
+            return Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {
+                message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
+            })?));
+        }
         OutputValueCalc::HexBinaryFromByteSibling => {
             let sib = sibling_from_map(props.output_value_calc_sibling, map, strings)?;
             let byte = match sib {
@@ -1108,7 +1308,8 @@ fn eval_output_value_calc(
         OutputValueCalc::HexBinaryFromLexical
         | OutputValueCalc::HexBinaryFromInteger(_)
         | OutputValueCalc::HexBinaryFromShort(_)
-        | OutputValueCalc::HexBinaryFromByteSibling => {
+        | OutputValueCalc::HexBinaryFromByteSibling
+        | OutputValueCalc::InfosetPathAddend => {
             unreachable!("handled above")
         }
     };

@@ -3263,6 +3263,10 @@ fn overlay_dfdl_to_ir(
     }
     if props.max_occurs_specified {
         base.occurs_max = props.occurs_max;
+    } else if props.occurs_count_kind == Some(OccursCountKind::Parsed)
+        && props.occurs_min.unwrap_or(1) == 0
+    {
+        base.occurs_max = None;
     }
     if props.length_pattern.is_some() {
         base.length_pattern = props
@@ -3336,15 +3340,7 @@ fn overlay_dfdl_to_ir(
         base.input_value_calc_segments = Some(intern_input_value_calc_segments(segments, strings));
     }
     if let Some(steps) = &props.input_value_calc_path {
-        base.input_value_calc_path = Some(
-            steps
-                .iter()
-                .map(|(prefix, local)| crate::ir::IrInputPathStep {
-                    prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
-                    local: strings.intern(local.clone()),
-                })
-                .collect(),
-        );
+        base.input_value_calc_path = Some(intern_input_path_steps(steps, strings));
     }
     if let Some(expr) = &props.input_value_calc_expression {
         base.input_value_calc_expression = Some(intern_input_value_calc_expression(expr, strings));
@@ -3356,26 +3352,10 @@ fn overlay_dfdl_to_ir(
             .map(|s| strings.intern(s.clone()));
     }
     if let Some(steps) = &props.choice_dispatch_path {
-        base.choice_dispatch_path = Some(
-            steps
-                .iter()
-                .map(|(prefix, local)| crate::ir::IrInputPathStep {
-                    prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
-                    local: strings.intern(local.clone()),
-                })
-                .collect(),
-        );
+        base.choice_dispatch_path = Some(intern_input_path_steps(steps, strings));
     }
     if let Some(steps) = &props.occurs_count_fn_path {
-        base.occurs_count_fn_path = Some(
-            steps
-                .iter()
-                .map(|(prefix, local)| crate::ir::IrInputPathStep {
-                    prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
-                    local: strings.intern(local.clone()),
-                })
-                .collect(),
-        );
+        base.occurs_count_fn_path = Some(intern_input_path_steps(steps, strings));
     }
     if props.choice_dispatch_literal.is_some() {
         base.choice_dispatch_literal = props
@@ -3412,6 +3392,12 @@ fn overlay_dfdl_to_ir(
             .output_value_calc_sibling
             .as_ref()
             .map(|s| strings.intern(s.clone()));
+    }
+    if let Some(steps) = &props.output_value_calc_path {
+        base.output_value_calc_path = Some(intern_input_path_steps(steps, strings));
+    }
+    if props.output_value_calc_path_addend.is_some() {
+        base.output_value_calc_path_addend = props.output_value_calc_path_addend;
     }
     if let Some(v) = props.text_string_justification {
         base.text_string_justification = v;
@@ -3794,6 +3780,12 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     out.output_value_calc = overlay.output_value_calc;
     out.output_value_calc_literal = overlay.output_value_calc_literal;
     out.output_value_calc_sibling = overlay.output_value_calc_sibling;
+    if overlay.output_value_calc_path.is_some() {
+        out.output_value_calc_path = overlay.output_value_calc_path.clone();
+    }
+    if overlay.output_value_calc_path_addend.is_some() {
+        out.output_value_calc_path_addend = overlay.output_value_calc_path_addend;
+    }
     if overlay.output_value_calc_conditional {
         out.output_value_calc_conditional = true;
     }
@@ -3927,6 +3919,41 @@ pub fn compile_named_with_tunables(
     IrBuilder::new(schema, tunables)?.build(&root_name)
 }
 
+fn intern_input_path_steps(
+    steps: &[(
+        Option<alloc::string::String>,
+        alloc::string::String,
+        Option<u32>,
+    )],
+    strings: &mut StringPool,
+) -> alloc::vec::Vec<crate::ir::IrInputPathStep> {
+    steps
+        .iter()
+        .map(|(prefix, local, index)| crate::ir::IrInputPathStep {
+            prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
+            local: strings.intern(local.clone()),
+            index: *index,
+        })
+        .collect()
+}
+
+fn intern_input_path_steps_legacy(
+    steps: &[(
+        Option<alloc::string::String>,
+        alloc::string::String,
+    )],
+    strings: &mut StringPool,
+) -> alloc::vec::Vec<crate::ir::IrInputPathStep> {
+    steps
+        .iter()
+        .map(|(prefix, local)| crate::ir::IrInputPathStep {
+            prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
+            local: strings.intern(local.clone()),
+            index: None,
+        })
+        .collect()
+}
+
 fn intern_input_value_calc_expression(
     expr: &crate::schema::InputValueCalcExpression,
     strings: &mut crate::ir::StringPool,
@@ -3946,15 +3973,9 @@ fn intern_input_value_calc_expression(
                 .map(|e| intern_input_value_calc_expression(e, strings))
                 .collect(),
         ),
-        InputValueCalcExpression::Path(steps) => IrInputValueCalcExpression::Path(
-            steps
-                .iter()
-                .map(|(prefix, local)| crate::ir::IrInputPathStep {
-                    prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
-                    local: strings.intern(local.clone()),
-                })
-                .collect(),
-        ),
+        InputValueCalcExpression::Path(steps) => {
+            IrInputValueCalcExpression::Path(intern_input_path_steps(steps, strings))
+        }
         InputValueCalcExpression::StringOf(inner) => IrInputValueCalcExpression::StringOf(
             alloc::boxed::Box::new(intern_input_value_calc_expression(inner, strings)),
         ),
@@ -3984,15 +4005,9 @@ fn intern_input_value_calc_segments(
                 length: *length as u32,
             },
             crate::schema::InputValueCalcSegment::InfosetPath(steps) => {
-                crate::ir::IrInputValueCalcSegment::InfosetPath(
-                    steps
-                        .iter()
-                        .map(|(prefix, local)| crate::ir::IrInputPathStep {
-                            prefix: prefix.as_ref().map(|p| strings.intern(p.clone())),
-                            local: strings.intern(local.clone()),
-                        })
-                        .collect(),
-                )
+                crate::ir::IrInputValueCalcSegment::InfosetPath(intern_input_path_steps(
+                    steps, strings,
+                ))
             }
         })
         .collect()

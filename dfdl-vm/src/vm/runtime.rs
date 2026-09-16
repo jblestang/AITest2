@@ -24,7 +24,8 @@ use crate::schema::{
     encode_delimiter, encode_delimiter_by_alt, encode_property_delimiter, match_length_pattern,
     BinaryNumberRep, BitOrder,
     ByteOrder,
-    EncodingErrorPolicy, LengthKind, LengthUnits, NilKind, Representation, SeparatorPosition,
+    EncodingErrorPolicy, LengthKind, LengthUnits, NilKind, Representation, SequenceKind,
+    SeparatorPosition,
     SeparatorSuppressionPolicy, TextNumberJustification, TextNumberRep, TextPadKind,
     TextStringJustification, TextTrimKind,
 };
@@ -7375,6 +7376,10 @@ fn should_defer_infix_sequence_separator(
     field_props: &IrProps,
     strings: &StringPool,
 ) -> Result<bool, crate::error::VmError> {
+    // Initiator-discriminated fields in unordered sequences still end at the parent infix separator.
+    if field_props.initiator.is_some() && seq_props.sequence_kind == SequenceKind::Unordered {
+        return Ok(false);
+    }
     Ok(seq_props.separator_position == SeparatorPosition::Infix
         && seq_props.separator == Some(separator_id)
         && !has_non_empty_terminator(field_props, strings)?)
