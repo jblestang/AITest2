@@ -126,6 +126,9 @@ impl DfdlValue {
         match self {
             DfdlValue::Long(v) => Some(*v),
             DfdlValue::Int(v) => Some(*v as i64),
+            DfdlValue::Short(v) => Some(*v as i64),
+            DfdlValue::Byte(v) => Some(*v as i64),
+            DfdlValue::Integer(text) => text.parse().ok(),
             _ => None,
         }
     }

@@ -214,6 +214,14 @@ impl<'a> IrBuilder<'a> {
         root_name: &str,
         root_element: &GlobalElement,
     ) -> Result<u32> {
+        if dfdl_props_has_input_value_calc(&root_element.props)
+            && builtin_for_element_type_name(&self.schema, &root_element.type_name).is_some()
+        {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error: Placeholder".into(),
+            }
+            .into());
+        }
         let root = if let Some(builtin) =
             builtin_for_element_type_name(&self.schema, &root_element.type_name)
         {
@@ -2068,6 +2076,9 @@ fn validate_input_value_calc_compile(
     let check_lexical = |text: &str| -> Result<()> {
         let text = text.trim();
         if text.is_empty() {
+            return Ok(());
+        }
+        if matches!(kind, ValueKind::String | ValueKind::HexBinary) {
             return Ok(());
         }
         if let Ok(v) = text.parse::<i64>() {

@@ -2650,6 +2650,7 @@ impl<'a> Decoder<'a> {
         let _occurrence_depth =
             OccurrenceDecodeDepthGuard(&self.occurrence_decode_depth);
 
+        let orig_occurs_min = props.occurs_min;
         let mut min = props.occurs_min;
         let mut max = props.occurs_max.unwrap_or(u64::MAX);
         let mut occurs_from_expression = false;
@@ -2671,7 +2672,29 @@ impl<'a> Decoder<'a> {
             if !occurs_from_expression {
                 min = 0;
             }
-            if cursor.is_empty() && min == 0 {
+            if crate::ir::ir_props_has_input_value_calc(props) {
+                let v = self.decode_single_element(
+                    node_id,
+                    cursor,
+                    has_following_sibling,
+                    parent_sequence,
+                    siblings,
+                    content_scope_bytes,
+                    pattern_text_frame,
+                    stop_sequences,
+                    false,
+                )?;
+                return Ok(v);
+            }
+            let required_complex_shell = matches!(
+                self.ctx.program.node(node_id),
+                Ok(IrNode::Element {
+                    child: Some(_),
+                    kind: ValueKind::Complex,
+                    ..
+                })
+            ) && orig_occurs_min > 0;
+            if cursor.is_empty() && min == 0 && !required_complex_shell {
                 return Ok(DfdlValue::Array(Vec::new()));
             }
         }
@@ -2738,16 +2761,23 @@ impl<'a> Decoder<'a> {
                 DelimiterOccurrenceGuard(&self.delimiter_occurrence_stack);
             if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
                 let kind = element_kind(self.ctx.program, node_id)?;
-                validate_explicit_decimal_before_decode(
-                    kind,
-                    props,
-                    &self.ctx.program.tunables,
-                    self.ctx.strings(),
-                )?;
-                if kind != ValueKind::Decimal
-                    && binary_length_validation_applies(kind, props.binary_number_rep)
-                {
-                    validate_data_length_vm(kind, 0, props.length_units, props.binary_number_rep)?;
+                if !crate::ir::ir_props_has_input_value_calc(props) {
+                    validate_explicit_decimal_before_decode(
+                        kind,
+                        props,
+                        &self.ctx.program.tunables,
+                        self.ctx.strings(),
+                    )?;
+                    if kind != ValueKind::Decimal
+                        && binary_length_validation_applies(kind, props.binary_number_rep)
+                    {
+                        validate_data_length_vm(
+                            kind,
+                            0,
+                            props.length_units,
+                            props.binary_number_rep,
+                        )?;
+                    }
                 }
                 let more_array_occurrences = (items.len() as u64).saturating_add(1) < max;
                 let parent_infix_consumed_by_occurrence_loop = more_array_occurrences
@@ -3320,21 +3350,23 @@ impl<'a> Decoder<'a> {
                 )?;
                 let props = self.resolve_conditional_byte_order(&props)?;
                 if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
-                    validate_explicit_decimal_before_decode(
-                        *kind,
-                        &props,
-                        &self.ctx.program.tunables,
-                        self.ctx.strings(),
-                    )?;
-                    if *kind != ValueKind::Decimal
-                        && binary_length_validation_applies(*kind, props.binary_number_rep)
-                    {
-                        validate_data_length_vm(
+                    if !crate::ir::ir_props_has_input_value_calc(&props) {
+                        validate_explicit_decimal_before_decode(
                             *kind,
-                            0,
-                            props.length_units,
-                            props.binary_number_rep,
+                            &props,
+                            &self.ctx.program.tunables,
+                            self.ctx.strings(),
                         )?;
+                        if *kind != ValueKind::Decimal
+                            && binary_length_validation_applies(*kind, props.binary_number_rep)
+                        {
+                            validate_data_length_vm(
+                                *kind,
+                                0,
+                                props.length_units,
+                                props.binary_number_rep,
+                            )?;
+                        }
                     }
                 }
                 if pattern_text_frame
@@ -3765,6 +3797,8 @@ impl<'a> Decoder<'a> {
                         ValueKind::Complex,
                     ))
                 } else if props.input_value_calc_expression.is_some() {
+                    let ivc_element =
+                        Some(crate::xml_util::local_name_str(self.ctx.strings().get(*name)?));
                     let sib_snap = self.xpath_siblings_snapshot();
                     let ancestor_frames = self.xpath_ancestor_frames.borrow();
                     let value = eval_input_value_calc_expression(
@@ -3775,6 +3809,7 @@ impl<'a> Decoder<'a> {
                             root_element: self.ctx.program.root_element.as_str(),
                             define_variables: &self.ctx.program.variables,
                             runtime_variables: &self.runtime_variables.borrow(),
+                            element_name: ivc_element,
                         },
                         self.ctx.strings(),
                         &self.ctx.program.tunables,
@@ -3783,12 +3818,15 @@ impl<'a> Decoder<'a> {
                     )?;
                     self.finalize_ivc_value(value, *kind, &props)
                 } else if props.input_value_calc_path.is_some() {
+                    let ivc_element =
+                        Some(crate::xml_util::local_name_str(self.ctx.strings().get(*name)?));
                     let sib_snap = self.xpath_siblings_snapshot();
                     let value = eval_input_value_calc_path(
                         &props,
                         Some(&sib_snap),
                         self.ctx.strings(),
                         &self.ctx.program.tunables,
+                        ivc_element,
                     )?;
                     self.finalize_ivc_value(value, *kind, &props)
                 } else if props.input_value_calc_segments.is_some() {
@@ -3802,6 +3840,8 @@ impl<'a> Decoder<'a> {
                     )?;
                     self.finalize_ivc_value(value, *kind, &props)
                 } else if props.input_value_calc.is_some() {
+                    let ivc_element =
+                        Some(crate::xml_util::local_name_str(self.ctx.strings().get(*name)?));
                     let value = eval_input_value_calc(
                         &props,
                         *kind,
@@ -3810,6 +3850,7 @@ impl<'a> Decoder<'a> {
                         self.ctx.strings(),
                         content_scope_bytes,
                         &self.runtime_variables.borrow(),
+                        ivc_element,
                     )?;
                     self.finalize_ivc_value(value, *kind, &props)
                 } else {
@@ -4483,6 +4524,7 @@ impl<'a> Decoder<'a> {
                                 root_element: "",
                                 define_variables: &BTreeMap::new(),
                                 runtime_variables: &BTreeMap::new(),
+                                element_name: None,
                             },
                             strings,
                             &self.ctx.program.tunables,
@@ -5569,6 +5611,7 @@ fn eval_input_value_calc_concat(
                         root_element: root_element,
                         define_variables: &BTreeMap::new(),
                         runtime_variables: &BTreeMap::new(),
+                        element_name: None,
                     },
                     strings,
                     tunables,
@@ -5588,6 +5631,7 @@ fn eval_input_value_calc(
     strings: &crate::ir::StringPool,
     content_scope_bytes: Option<usize>,
     runtime_variables: &BTreeMap<String, String>,
+    element_name: Option<&str>,
 ) -> Result<DfdlValue> {
     let calc = props.input_value_calc.ok_or_else(|| VmError::InvalidValue {
         message: "missing inputValueCalc".into(),
@@ -5598,7 +5642,10 @@ fn eval_input_value_calc(
         })?;
         let name = strings.get(name_id)?;
         let text = runtime_variables.get(name).cloned().ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Schema Definition Error: variable `{name}` is not defined"),
+            message: ivc_sde_message(
+                element_name,
+                alloc::format!("variable `{name}` is not defined"),
+            ),
         })?;
         if kind == ValueKind::String {
             return Ok(DfdlValue::String(StringValue::new(text)));
@@ -5922,7 +5969,7 @@ fn choice_dispatch_key_string(
             return Ok(Some(dfdl_value_dispatch_string(value)));
         }
         if let Some(steps) = props.choice_dispatch_path.as_ref() {
-            let value = eval_infoset_path_steps(steps, siblings, strings, tunables)?;
+            let value = eval_infoset_path_steps(steps, siblings, strings, tunables, None)?;
             return Ok(Some(dfdl_value_dispatch_string(&value)));
         }
     }
@@ -6187,6 +6234,15 @@ struct IvcEvalCtx<'a> {
     root_element: &'a str,
     define_variables: &'a BTreeMap<String, String>,
     runtime_variables: &'a BTreeMap<String, String>,
+    /// Local name of the element whose `inputValueCalc` is being evaluated (for SDEs).
+    element_name: Option<&'a str>,
+}
+
+fn ivc_sde_message(element_name: Option<&str>, detail: impl core::fmt::Display) -> alloc::string::String {
+    match element_name {
+        Some(el) => alloc::format!("Schema Definition Error: {detail} Element `{el}`."),
+        None => alloc::format!("Schema Definition Error: {detail}"),
+    }
 }
 
 fn resolve_ivc_variable(name: &str, ctx: IvcEvalCtx<'_>) -> Result<String> {
@@ -6206,7 +6262,7 @@ fn resolve_ivc_variable(name: &str, ctx: IvcEvalCtx<'_>) -> Result<String> {
         }
     }
     Err(VmError::InvalidValue {
-        message: alloc::format!("Schema Definition Error: variable `{name}` is not defined"),
+        message: ivc_sde_message(ctx.element_name, alloc::format!("variable `{name}` is not defined")),
     }
     .into())
 }
@@ -6502,7 +6558,7 @@ fn eval_ivc_path_steps(
         }
         .into());
     }
-    eval_infoset_path_steps(steps, ctx.siblings, strings, tunables)
+    eval_infoset_path_steps(steps, ctx.siblings, strings, tunables, ctx.element_name)
 }
 
 fn eval_input_value_calc_path(
@@ -6510,11 +6566,12 @@ fn eval_input_value_calc_path(
     siblings: Option<&BTreeMap<String, SiblingState>>,
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
+    element_name: Option<&str>,
 ) -> Result<DfdlValue> {
     let steps = props.input_value_calc_path.as_ref().ok_or_else(|| VmError::InvalidValue {
         message: "missing inputValueCalc path".into(),
     })?;
-    let value = eval_infoset_path_steps(steps, siblings, strings, tunables)?;
+    let value = eval_infoset_path_steps(steps, siblings, strings, tunables, element_name)?;
     let text = dfdl_value_to_string(&value);
     Ok(DfdlValue::String(StringValue::new(text)))
 }
@@ -6525,7 +6582,7 @@ fn eval_occurs_count_expression(
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
 ) -> Result<u64> {
-    let value = eval_infoset_path_steps(steps, siblings, strings, tunables)?;
+    let value = eval_infoset_path_steps(steps, siblings, strings, tunables, None)?;
     if let Some(n) = value.as_i64() {
         if n >= 0 {
             return Ok(n as u64);
@@ -6556,6 +6613,7 @@ fn eval_infoset_path_steps(
     siblings: Option<&BTreeMap<String, SiblingState>>,
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
+    element_name: Option<&str>,
 ) -> Result<DfdlValue> {
     if steps.is_empty() {
         return Err(VmError::InvalidValue {
@@ -6574,8 +6632,9 @@ fn eval_infoset_path_steps(
                     "Schema Definition Error: expression evaluation error: {first_local} does not exist"
                 )
             } else if steps.len() == 1 {
-                alloc::format!(
-                    "Schema Definition Error: No element corresponding to step {first_local} found."
+                ivc_sde_message(
+                    element_name,
+                    alloc::format!("No element corresponding to step {first_local} found."),
                 )
             } else {
                 alloc::format!(
@@ -6587,7 +6646,7 @@ fn eval_infoset_path_steps(
     for step in steps.iter().skip(1) {
         let local = strings.get(step.local)?;
         check_path_step(step.prefix.is_some(), local, tunables.unqualified_path_step_policy)?;
-        value = navigate_to_child(value, local, step.index)?;
+        value = navigate_to_child(value, local, step.index, element_name)?;
     }
     Ok(value.clone())
 }
@@ -6665,13 +6724,15 @@ fn navigate_to_child<'a>(
     value: &'a DfdlValue,
     local: &str,
     index: Option<u32>,
+    element_name: Option<&str>,
 ) -> Result<&'a DfdlValue> {
     match value {
         DfdlValue::Sequence(seq) => {
             let child = sequence_field_by_local(&seq.fields, local).ok_or_else(|| {
                 VmError::InvalidValue {
-                    message: alloc::format!(
-                        "Schema Definition Error: No element corresponding to step {local} found."
+                    message: ivc_sde_message(
+                        element_name,
+                        alloc::format!("No element corresponding to step {local} found."),
                     ),
                 }
             })?;
