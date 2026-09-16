@@ -2884,7 +2884,10 @@ fn particle_inherited_for_children(
 ) -> IrProps {
     // Group-level delimiter and ignoreCase properties apply to the group node, not descendants.
     let mut inherited = parent_inherited.clone();
-    if group_props.length_kind.is_none() && defaults.length_kind_defined {
+    if group_props.length_kind.is_none()
+        && defaults.length_kind_defined
+        && !inherited.length_kind_defined
+    {
         inherited.length_kind = defaults.length_kind;
         inherited.length_kind_defined = true;
     }
