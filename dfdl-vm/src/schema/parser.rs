@@ -3408,12 +3408,34 @@ fn parse_variable_length_expr(value: &str, vars: &BTreeMap<String, String>) -> O
     vars.get(name)?.parse().ok()
 }
 
+fn looks_like_xpath_output_value_calc(value: &str) -> bool {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return false;
+    }
+    let inner = trimmed[1..trimmed.len() - 1].trim();
+    inner.contains("../")
+        || inner.starts_with("fn:")
+        || inner.contains("xs:int(")
+        || inner.contains("xs:string(")
+        || inner.contains("xs:long(")
+}
+
 fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<String>, Option<String>)> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
+    if let Some(lit) = parse_xs_string_literal_arg(inner) {
+        return Some((OutputValueCalc::Constant(0), None, Some(lit)));
+    }
+    if inner.starts_with("xs:string(") && inner.ends_with(')') {
+        let arg = inner["xs:string(".len()..inner.len() - 1].trim();
+        if let Some(lit) = parse_xs_string_literal_arg(arg) {
+            return Some((OutputValueCalc::Constant(0), None, Some(lit)));
+        }
+    }
     if let Some(hex) = parse_output_value_calc_hex(inner) {
         return Some(hex);
     }
@@ -4142,6 +4164,9 @@ fn props_from_attrs_with_variables(
                     props.output_value_calc = Some(calc.0);
                     props.output_value_calc_sibling = calc.1;
                     props.output_value_calc_literal = calc.2;
+                } else if looks_like_xpath_output_value_calc(value) {
+                    // e.g. `{ xs:int(../ex:x) }` — computed on unparse, satisfies hidden-group rules.
+                    props.output_value_calc_conditional = true;
                 }
             }
             "inputValueCalc" => {

@@ -535,6 +535,7 @@ impl<'a> Decoder<'a> {
                             children.len(),
                             &mut infix_sep_newline_prefix,
                             child_stops,
+                            false,
                         )?
                     };
                     separator_alts.push(sep_alt);
@@ -805,6 +806,7 @@ impl<'a> Decoder<'a> {
                                                 children.len(),
                                                 &mut infix_sep_newline_prefix,
                                                 &particle_stops,
+                                                false,
                                             )?;
                                         }
                                         continue;
@@ -1395,6 +1397,7 @@ impl<'a> Decoder<'a> {
                     children.len(),
                     &mut infix_sep_newline_prefix,
                     child_stops,
+                    false,
                 );
             }
             while cursor.pos < cursor.data.len() {
@@ -1420,7 +1423,17 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 let child_has_following = self.following_sibling_consumes_input(children, idx);
-                if let Ok(IrNode::Element { props: cp, .. }) = self.ctx.program.node(child) {
+                if let Ok(IrNode::Element { name, props: cp, .. }) = self.ctx.program.node(child) {
+                    if cp.initiator.is_some()
+                        && !self.initiator_present_at_cursor(cursor, cp)?
+                        && committed_child != Some(child)
+                    {
+                        let key = self.ctx.strings().get(*name).ok();
+                        let already = key.and_then(|k| map.get(k)).is_some();
+                        if cp.occurs_min == 0 || already {
+                            continue;
+                        }
+                    }
                     if cp.occurs_min == 0
                         && !self.initiator_present_at_cursor(cursor, cp)?
                         && committed_child != Some(child)
@@ -1582,6 +1595,7 @@ impl<'a> Decoder<'a> {
                                 children.len(),
                                 &mut infix_sep_newline_prefix,
                                 child_stops,
+                                idx.saturating_add(1) >= children.len(),
                             )?;
                         }
                         round_progress = true;
@@ -3503,6 +3517,7 @@ impl<'a> Decoder<'a> {
         total: usize,
         infix_sep_newline_prefix: &mut Vec<bool>,
         stop_sequences: &[&IrProps],
+        allow_missing_infix_after_last_slot: bool,
     ) -> Result<Option<u8>> {
         if !should_write_separator(props.separator_position, index, total) {
             return Ok(None);
@@ -3545,6 +3560,20 @@ impl<'a> Decoder<'a> {
             let found_display =
                 format_found_at_cursor(&cursor.data, cursor.pos, enc.as_deref());
             if props.separator_position == SeparatorPosition::Infix {
+                if allow_missing_infix_after_last_slot {
+                    let sep_at_cursor = crate::schema::match_delimiter_opts_for_encoding(
+                        &cursor.data[cursor.pos..],
+                        pat,
+                        props.ignore_case,
+                        enc.as_deref(),
+                    )
+                    .is_some();
+                    if !sep_at_cursor
+                        && self.at_enclosing_terminator_stop(cursor, stop_sequences)?
+                    {
+                        return Ok(None);
+                    }
+                }
                 return Err(VmError::InvalidValue {
                     message: alloc::format!(
                         "Parse Error. Failed to find infix separator. Separator '{pat}' not found"
