@@ -5349,7 +5349,7 @@ pub(crate) fn read_text_scalar(
                     .is_none()
                 && !cursor.is_empty()
             {
-                let terms = non_empty_delimiter_scan_patterns(props, strings)?
+                let terms = non_empty_delimiter_scan_patterns(props, strings, scan_ctx)?
                     .iter()
                     .map(|p| alloc::format!("`{}`", format_delimiter_for_error(&p.pat)))
                     .collect::<alloc::vec::Vec<_>>()
@@ -7304,7 +7304,7 @@ pub(crate) fn has_non_empty_terminator(
     Ok(false)
 }
 
-fn delimiter_pattern_ids(props: &IrProps) -> alloc::vec::Vec<StringId> {
+pub(crate) fn delimiter_pattern_ids(props: &IrProps) -> alloc::vec::Vec<StringId> {
     let mut ids = alloc::vec::Vec::new();
     if let Some(t) = props.terminator {
         ids.push(t);
@@ -7346,11 +7346,12 @@ fn push_delimiter_scan_patterns(
 fn non_empty_delimiter_scan_patterns(
     props: &IrProps,
     strings: &StringPool,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<alloc::vec::Vec<DelimScanPattern>, crate::error::VmError> {
     let mut patterns = alloc::vec::Vec::new();
     for id in delimiter_pattern_ids(props) {
-        let pat = strings.get(id)?;
-        push_delimiter_scan_patterns(&mut patterns, pat, props.ignore_case);
+        let pat = stop_delimiter_literal(id, strings, scan_ctx)?;
+        push_delimiter_scan_patterns(&mut patterns, &pat, props.ignore_case);
     }
     Ok(patterns)
 }
@@ -7363,6 +7364,23 @@ pub(crate) struct SequenceChildScanContext<'a> {
     /// Parent infix separates further occurrences of a repeating particle; the occurrence
     /// loop consumes that separator, not delimited field trailing consume.
     pub parent_infix_consumed_by_occurrence_loop: bool,
+    /// Runtime-resolved delimiter literals for `{...}` separator/terminator on stop sequences.
+    pub resolved_stop_delimiters: Option<&'a [(StringId, alloc::string::String)]>,
+}
+
+fn stop_delimiter_literal(
+    id: StringId,
+    strings: &StringPool,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    if let Some(ctx) = scan_ctx {
+        if let Some(lits) = ctx.resolved_stop_delimiters {
+            if let Some((_, lit)) = lits.iter().find(|(i, _)| *i == id) {
+                return Ok(lit.clone());
+            }
+        }
+    }
+    Ok(strings.get(id)?.to_string())
 }
 
 fn include_stop_sequence_delimiter_in_field_scan(
@@ -7396,7 +7414,7 @@ fn enclosing_delimiter_scan_patterns(
     stop_sequences: &[&IrProps],
     scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<alloc::vec::Vec<DelimScanPattern>, crate::error::VmError> {
-    let mut patterns = non_empty_delimiter_scan_patterns(props, strings)?;
+    let mut patterns = non_empty_delimiter_scan_patterns(props, strings, scan_ctx)?;
     for seq in stop_sequences {
         for id in delimiter_pattern_ids(seq) {
             if !include_stop_sequence_delimiter_in_field_scan(
@@ -7404,8 +7422,8 @@ fn enclosing_delimiter_scan_patterns(
             )? {
                 continue;
             }
-            let pat = strings.get(id)?;
-            push_delimiter_scan_patterns(&mut patterns, pat, seq.ignore_case);
+            let pat = stop_delimiter_literal(id, strings, scan_ctx)?;
+            push_delimiter_scan_patterns(&mut patterns, &pat, seq.ignore_case);
         }
     }
     Ok(patterns)
@@ -7980,7 +7998,7 @@ pub(crate) fn consume_enclosing_delimiter(
     if cursor.is_empty() {
         return Ok(());
     }
-    let field_patterns = non_empty_delimiter_scan_patterns(props, strings)?;
+    let field_patterns = non_empty_delimiter_scan_patterns(props, strings, scan_ctx)?;
     if let Ok(enc) = encoding_name(props, strings) {
         if let Some(spec) = bits_charset_spec(&enc) {
             if consume_bits_charset_delimiter(cursor, &field_patterns, spec)? {
@@ -7990,8 +8008,8 @@ pub(crate) fn consume_enclosing_delimiter(
                 for seq in stop_sequences {
                     let mut parent_patterns = alloc::vec::Vec::new();
                     for id in delimiter_pattern_ids(seq) {
-                        let pat = strings.get(id)?;
-                        push_delimiter_scan_patterns(&mut parent_patterns, pat, seq.ignore_case);
+                        let pat = stop_delimiter_literal(id, strings, scan_ctx)?;
+                        push_delimiter_scan_patterns(&mut parent_patterns, &pat, seq.ignore_case);
                     }
                     if consume_bits_charset_delimiter(cursor, &parent_patterns, spec)? {
                         return Ok(());
@@ -8024,11 +8042,11 @@ pub(crate) fn consume_enclosing_delimiter(
     if !should_defer_parent_stop_delimiter(props) {
         for seq in stop_sequences {
             for id in delimiter_pattern_ids(seq) {
-                let pat = strings.get(id)?;
+                let pat = stop_delimiter_literal(id, strings, scan_ctx)?;
                 if !pat.is_empty() {
                     if let Some(n) = crate::schema::match_delimiter_opts_for_encoding(
                         &cursor.data[cursor.pos..],
-                        pat,
+                        &pat,
                         seq.ignore_case,
                         enc.as_deref(),
                     ) {
@@ -9615,11 +9633,11 @@ pub(crate) fn read_simple(
 
     let encoding = encoding_name(props, strings)?;
     if let Some(id) = props.initiator {
-        let pat = strings.get(id)?;
+        let pat = stop_delimiter_literal(id, strings, scan_ctx)?;
         if !pat.is_empty() {
             crate::vm::alignment::align_cursor_to_text_encoding(cursor, props, encoding)?;
             let Some((_n, alt)) =
-                cursor.consume_delimiter_with_alt(pat, props.ignore_case, Some(encoding))
+                cursor.consume_delimiter_with_alt(&pat, props.ignore_case, Some(encoding))
             else {
                 let found_display =
                     format_found_at_cursor(&cursor.data, cursor.pos, Some(encoding));
@@ -9691,20 +9709,20 @@ pub(crate) fn read_simple(
     {
         // Terminator consumed in read_text_scalar for fixed/explicit text fields.
     } else if let Some(id) = props.terminator {
-        let pat = strings.get(id)?;
+        let pat = stop_delimiter_literal(id, strings, scan_ctx)?;
         if !pat.is_empty() {
             crate::vm::alignment::align_cursor_to_text_encoding(cursor, props, encoding)?;
             if let Some((n, alt)) =
-                cursor.consume_delimiter_with_alt(pat, props.ignore_case, Some(encoding))
+                cursor.consume_delimiter_with_alt(&pat, props.ignore_case, Some(encoding))
             {
                 if n == 0
                     && !cursor.is_empty()
-                    && !crate::schema::delimiter_alt_allows_trailing_input(pat, alt)
+                    && !crate::schema::delimiter_alt_allows_trailing_input(&pat, alt)
                 {
                     return Err(VmError::InvalidValue {
                         message: alloc::format!(
                             "terminator mismatch: expected `{}`",
-                            format_delimiter_for_error(pat)
+                            format_delimiter_for_error(&pat)
                         ),
                     });
                 }
@@ -9714,11 +9732,11 @@ pub(crate) fn read_simple(
             } else if !cursor.is_empty() {
                 return Err(VmError::InvalidValue {
                     message: if cursor.is_empty() {
-                        alloc::format!("terminator `{}` not found", format_delimiter_for_error(pat))
+                        alloc::format!("terminator `{}` not found", format_delimiter_for_error(&pat))
                     } else {
                         alloc::format!(
                             "terminator mismatch: expected `{}`",
-                            format_delimiter_for_error(pat)
+                            format_delimiter_for_error(&pat)
                         )
                     },
                 });

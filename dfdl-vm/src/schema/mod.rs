@@ -35,7 +35,7 @@ pub use entities::{
     validate_delimiter_property_value, validate_delimiter_schema_attribute,
     delimited_terminator_expression_uses_es_literal, eval_discriminator_expression,
     unquote_xpath_string_literal,
-    eval_runtime_delimiter_expression,
+    eval_runtime_delimiter_expression, eval_path_indexed_delimiter_expression,
     validate_runtime_delimiter_expression,
     runtime_delimiter_expression_may_be_zero_length, delimiter_alt_allows_trailing_input,
     is_zero_length_delimiter, validate_length_pattern,

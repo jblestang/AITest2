@@ -632,7 +632,7 @@ fn validate_sequence_children(
             } else {
                 element_qname_in_errors(parent_name, ns_for_qname)
             };
-            if max > 1 || props.occurs_count_kind != OccursCountKind::Parsed {
+            if max > 1 {
                 return Err(format!(
                     "Unparse Error: Expected array end event for {elem_qname}, but received element start event for {elem_qname} at {parent_q}"
                 ));

@@ -847,6 +847,63 @@ pub fn eval_runtime_delimiter_expression(
     Some(if ok { then_s } else { else_s })
 }
 
+fn delimiter_path_step_local(step: &str) -> (&str, bool) {
+    let step = step.trim();
+    let indexed = step.contains("dfdl:occursIndex()");
+    let local = step
+        .split('[')
+        .next()
+        .unwrap_or(step)
+        .rsplit(':')
+        .next()
+        .unwrap_or(step)
+        .trim();
+    (local, indexed)
+}
+
+/// Evaluate `{ xs:string(/ex:root/ex:field[xs:int(dfdl:occursIndex())]) }` using decoded values.
+pub fn eval_path_indexed_delimiter_expression(
+    expr: &str,
+    occurs_index_1based: u64,
+    values: &alloc::collections::BTreeMap<alloc::string::String, crate::value::DfdlValue>,
+) -> Option<alloc::string::String> {
+    let inner = expr
+        .trim()
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))?
+        .trim();
+    let path_body = inner
+        .strip_prefix("xs:string(")
+        .and_then(|s| s.strip_suffix(')'))
+        .unwrap_or(inner)
+        .trim();
+    if !path_body.starts_with('/') {
+        return None;
+    }
+    let segments: alloc::vec::Vec<&str> = path_body
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let (local, indexed) = delimiter_path_step_local(segments.last()?);
+    let entry = values.iter().find(|(k, _)| {
+        crate::xml_util::local_name_str(k) == local
+            || k.rsplit(':').next() == Some(local)
+    })?;
+    let value = &entry.1;
+    if indexed {
+        let idx = (occurs_index_1based as usize).saturating_sub(1);
+        return match value {
+            crate::value::DfdlValue::Array(items) => items.get(idx).and_then(|v| v.as_str().map(|s| s.to_string())),
+            _ => value.as_str().map(|s| s.to_string()),
+        };
+    }
+    value.as_str().map(|s| s.to_string())
+}
+
 /// Validate `{...}` delimiter property expressions at schema compile time.
 pub fn validate_runtime_delimiter_expression(prop: &str, expr: &str) -> Result<(), String> {
     for lit in delimiter_expression_string_literals(expr) {

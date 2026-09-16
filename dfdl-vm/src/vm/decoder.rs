@@ -206,6 +206,8 @@ pub struct Decoder<'a> {
     xpath_ancestor_frames: RefCell<Vec<BTreeMap<String, SiblingState>>>,
     /// Set when a choice branch discriminator evaluates true (commits outer choice).
     discriminator_committed_branch: Cell<bool>,
+    /// 1-based array occurrence stack for `{ ... dfdl:occursIndex() ... }` delimiter properties.
+    delimiter_occurrence_stack: RefCell<Vec<u64>>,
 }
 
 impl<'a> Decoder<'a> {
@@ -228,7 +230,98 @@ impl<'a> Decoder<'a> {
             xpath_siblings: RefCell::new(BTreeMap::new()),
             xpath_ancestor_frames: RefCell::new(Vec::new()),
             discriminator_committed_branch: Cell::new(false),
+            delimiter_occurrence_stack: RefCell::new(alloc::vec![1]),
         }
+    }
+
+    fn current_delimiter_occurrence_index(&self) -> u64 {
+        self.delimiter_occurrence_stack
+            .borrow()
+            .last()
+            .copied()
+            .unwrap_or(1)
+    }
+
+    fn xpath_delimiter_value_map(&self) -> BTreeMap<String, DfdlValue> {
+        let mut out = BTreeMap::new();
+        for frame in self.xpath_ancestor_frames.borrow().iter() {
+            for (k, v) in frame {
+                out.insert(k.clone(), v.value.clone());
+            }
+        }
+        for (k, v) in self.xpath_siblings.borrow().iter() {
+            out.insert(k.clone(), v.value.clone());
+        }
+        out
+    }
+
+    fn delimiter_occurrence_index_for_sequence(&self) -> u64 {
+        let stack = self.delimiter_occurrence_stack.borrow();
+        match stack.len() {
+            0 => 1,
+            1 => stack[0],
+            2 => stack[1],
+            n => stack[n - 2],
+        }
+    }
+
+    fn build_resolved_stop_delimiter_literals(
+        &self,
+        stop_sequences: &[&IrProps],
+        parent_sequence: Option<&IrProps>,
+    ) -> alloc::vec::Vec<(StringId, String)> {
+        use alloc::collections::BTreeSet;
+        let mut seen = BTreeSet::new();
+        let mut out = alloc::vec::Vec::new();
+        let mut collect = |props: &IrProps| {
+            for id in super::runtime::delimiter_pattern_ids(props) {
+                if !seen.insert(id) {
+                    continue;
+                }
+                let Ok(raw) = self.ctx.strings().get(id) else {
+                    continue;
+                };
+                if raw.trim().starts_with('{') {
+                    out.push((
+                        id,
+                        self.resolve_delimiter_property(
+                            raw,
+                            self.delimiter_occurrence_index_for_sequence(),
+                        ),
+                    ));
+                }
+            }
+        };
+        for stop in stop_sequences {
+            collect(stop);
+        }
+        if let Some(parent) = parent_sequence {
+            collect(parent);
+        }
+        out
+    }
+
+    fn resolve_delimiter_property(&self, pat: &str, occurs_index: u64) -> String {
+        if !pat.trim().starts_with('{') {
+            return pat.to_string();
+        }
+        let values = self.xpath_delimiter_value_map();
+        let idx = occurs_index;
+        if let Some(s) =
+            crate::schema::eval_path_indexed_delimiter_expression(pat, idx, &values)
+        {
+            return s;
+        }
+        let mut sib_text = BTreeMap::new();
+        for (k, v) in &values {
+            if let Some(s) = v.as_str() {
+                sib_text.insert(k.clone(), s.to_string());
+            }
+        }
+        if let Some(s) = crate::schema::eval_runtime_delimiter_expression(pat, &sib_text) {
+            return s;
+        }
+        pat.to_string()
     }
 
     fn push_xpath_ancestor_frame(&self, siblings: Option<&BTreeMap<String, SiblingState>>) {
@@ -542,6 +635,14 @@ impl<'a> Decoder<'a> {
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
+                self.push_xpath_ancestor_frame(siblings);
+                struct XpathAncestorGuard<'a>(&'a Decoder<'a>);
+                impl Drop for XpathAncestorGuard<'_> {
+                    fn drop(&mut self) {
+                        self.0.pop_xpath_ancestor_frame();
+                    }
+                }
+                let _xpath_ancestor_guard = XpathAncestorGuard(self);
                 self.seed_xpath_siblings(siblings);
                 *self.seq_bit_order.borrow_mut() = None;
                 for (name_id, val_id) in &props.set_variables {
@@ -553,12 +654,15 @@ impl<'a> Decoder<'a> {
                 }
                 let mut initiator_alt = None;
                 if let Some(id) = props.initiator {
-                    let pat = self.ctx.strings().get(id)?;
+                    let pat = self.resolve_delimiter_property(
+                        self.ctx.strings().get(id)?,
+                        self.delimiter_occurrence_index_for_sequence(),
+                    );
                     if !pat.is_empty() {
                         let enc = encoding_name(props, self.ctx.strings()).ok();
                         let alt = cursor
                             .consume_delimiter_with_alt(
-                                pat,
+                                &pat,
                                 props.ignore_case,
                                 enc.as_deref(),
                             )
@@ -821,6 +925,12 @@ impl<'a> Decoder<'a> {
                         ..
                     }) = self.ctx.program.node(child)
                     {
+                        if cp.occurs_min == 0 && cp.initiator.is_some() {
+                            if !self.initiator_present_at_cursor(cursor, cp)? {
+                                prev_absent_or_empty = true;
+                                break 'repeat_slot;
+                            }
+                        }
                         if props.separator_suppression_policy
                             == Some(crate::schema::SeparatorSuppressionPolicy::TrailingEmptyStrict)
                             && props.separator_position == SeparatorPosition::Infix
@@ -2560,6 +2670,18 @@ impl<'a> Decoder<'a> {
             )?;
         }
         while (items.len() as u64) < max {
+            let delim_idx = items.len() as u64 + 1;
+            self.delimiter_occurrence_stack
+                .borrow_mut()
+                .push(delim_idx);
+            struct DelimiterOccurrenceGuard<'a>(&'a RefCell<Vec<u64>>);
+            impl Drop for DelimiterOccurrenceGuard<'_> {
+                fn drop(&mut self) {
+                    let _ = self.0.borrow_mut().pop();
+                }
+            }
+            let _delim_occ_guard =
+                DelimiterOccurrenceGuard(&self.delimiter_occurrence_stack);
             if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
                 let kind = element_kind(self.ctx.program, node_id)?;
                 validate_explicit_decimal_before_decode(
@@ -3647,6 +3769,30 @@ impl<'a> Decoder<'a> {
                         &sibling_bytes_map,
                     );
                     self.runtime_check_bit_order_change(&props, cursor)?;
+                    let mut resolved_stop_delimiters =
+                        self.build_resolved_stop_delimiter_literals(
+                            stop_sequences,
+                            parent_sequence,
+                        );
+                    for id in super::runtime::delimiter_pattern_ids(&props) {
+                        let Ok(raw) = self.ctx.strings().get(id) else {
+                            continue;
+                        };
+                        if !raw.trim().starts_with('{') {
+                            continue;
+                        }
+                        let lit = self.resolve_delimiter_property(
+                            raw,
+                            self.current_delimiter_occurrence_index(),
+                        );
+                        if let Some(entry) =
+                            resolved_stop_delimiters.iter_mut().find(|(i, _)| *i == id)
+                        {
+                            entry.1 = lit;
+                        } else {
+                            resolved_stop_delimiters.push((id, lit));
+                        }
+                    }
                     let scan_ctx = parent_sequence.map(|parent| {
                         let nested_under_repeating_particle = self.occurrence_decode_depth.get() > 1
                             && parent.separator.is_some()
@@ -3658,6 +3804,11 @@ impl<'a> Decoder<'a> {
                                 parent_infix_consumed_by_occurrence_loop
                                     || self.parent_infix_consumed_by_occurrence_loop.get()
                                     || nested_under_repeating_particle,
+                            resolved_stop_delimiters: if resolved_stop_delimiters.is_empty() {
+                                None
+                            } else {
+                                Some(resolved_stop_delimiters.as_slice())
+                            },
                         }
                     });
                     let value = read_simple(
@@ -3850,14 +4001,17 @@ impl<'a> Decoder<'a> {
             if parent_sep == Some(sep_id) && !parent_postfix {
                 continue;
             }
-            let pat = self.ctx.strings().get(sep_id)?;
+            let pat = self.resolve_delimiter_property(
+                self.ctx.strings().get(sep_id)?,
+                self.delimiter_occurrence_index_for_sequence(),
+            );
             if pat.is_empty() {
                 continue;
             }
             let enc = encoding_name(stop, self.ctx.strings()).ok();
             if crate::schema::match_delimiter_opts_for_encoding(
                 &cursor.data[cursor.pos..],
-                pat,
+                &pat,
                 stop.ignore_case,
                 enc.as_deref(),
             )
@@ -4014,7 +4168,11 @@ impl<'a> Decoder<'a> {
         let Some(id) = props.separator else {
             return Ok(());
         };
-        let pat = self.ctx.strings().get(id)?;
+        let pat_owned = self.resolve_delimiter_property(
+            self.ctx.strings().get(id)?,
+            self.delimiter_occurrence_index_for_sequence(),
+        );
+        let pat = pat_owned.as_str();
         let enc = encoding_name(props, self.ctx.strings()).ok();
         if let (Some(ip), Some(items)) = (item_props, items) {
             if !items.is_empty()
@@ -4318,10 +4476,13 @@ impl<'a> Decoder<'a> {
 
     fn consume_initiator(&self, props: &IrProps, cursor: &mut Cursor<'_>) -> Result<()> {
         if let Some(id) = props.initiator {
-            let pat = self.ctx.strings().get(id)?;
+            let pat = self.resolve_delimiter_property(
+                self.ctx.strings().get(id)?,
+                self.current_delimiter_occurrence_index(),
+            );
             let enc = encoding_name(props, self.ctx.strings()).ok();
             if !pat.is_empty() {
-                if !cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+                if !cursor.consume_delimiter(&pat, props.ignore_case, enc.as_deref()) {
                     if pat.ends_with('[')
                         && !pat.starts_with('[')
                         && cursor.data.get(cursor.pos) == Some(&b'[')
@@ -4341,12 +4502,15 @@ impl<'a> Decoder<'a> {
 
     fn consume_terminator(&self, props: &IrProps, cursor: &mut Cursor<'_>) -> Result<()> {
         if let Some(id) = props.terminator {
-            let pat = self.ctx.strings().get(id)?;
+            let pat = self.resolve_delimiter_property(
+                self.ctx.strings().get(id)?,
+                self.current_delimiter_occurrence_index(),
+            );
             if pat.is_empty() {
                 return Ok(());
             }
             let enc = encoding_name(props, self.ctx.strings()).ok();
-            if !cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+            if !cursor.consume_delimiter(&pat, props.ignore_case, enc.as_deref()) {
                 if cursor.is_empty() {
                     return Ok(());
                 }
@@ -4507,7 +4671,11 @@ impl<'a> Decoder<'a> {
             return Ok(None);
         }
         if let Some(id) = props.separator {
-            let pat = self.ctx.strings().get(id)?;
+            let pat_owned = self.resolve_delimiter_property(
+                self.ctx.strings().get(id)?,
+                self.delimiter_occurrence_index_for_sequence(),
+            );
+            let pat = pat_owned.as_str();
             if let Some(err) =
                 self.separator_enclosing_delimiter_conflict(props, pat, cursor, stop_sequences)
             {
