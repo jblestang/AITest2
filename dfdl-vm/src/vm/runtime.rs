@@ -11118,7 +11118,7 @@ fn sibling_string_from_encode_map(
     }
 }
 
-fn resolve_encode_property_pattern(
+pub(crate) fn resolve_encode_property_pattern(
     raw: &str,
     siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
 ) -> alloc::string::String {

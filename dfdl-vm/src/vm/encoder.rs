@@ -74,7 +74,7 @@ impl<'a> Encoder<'a> {
             &self.ctx.program,
         );
         let mut bit_count = 0u8;
-        self.encode_node(self.ctx.program.root, value, output, &mut bit_count)?;
+        self.encode_node(self.ctx.program.root, value, output, &mut bit_count, None)?;
         Ok(bit_count)
     }
 
@@ -130,6 +130,7 @@ impl<'a> Encoder<'a> {
                     out,
                     bit_count,
                     &meta,
+                    Some(&map),
                 )?;
             }
             _ => {
@@ -143,7 +144,7 @@ impl<'a> Encoder<'a> {
                 } else {
                     value.clone()
                 };
-                self.encode_node(branch_node, &encode_value, out, bit_count)?;
+                self.encode_node(branch_node, &encode_value, out, bit_count, Some(parent_map))?;
             }
         }
         pad_choice_explicit_frame(self, choice_props, out, bit_count, start)?;
@@ -156,6 +157,7 @@ impl<'a> Encoder<'a> {
         value: &DfdlValue,
         out: &mut Vec<u8>,
         bit_count: &mut u8,
+        encode_scope: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<()> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
@@ -191,7 +193,9 @@ impl<'a> Encoder<'a> {
                     }
                 };
                 let map = &seq.fields;
+                let scope_lookup = merged_encode_lookup(encode_scope, map);
                 let effective = precompute_output_values(self, children, map, props)?;
+                let separator_lookup = merged_encode_lookup(Some(&scope_lookup), &effective);
                 self.write_initiator(props, out, bit_count, seq.meta.initiator_alt)?;
                 let mut wrote_particle = false;
                 for (idx, &child) in children.iter().enumerate() {
@@ -214,6 +218,7 @@ impl<'a> Encoder<'a> {
                                 idx,
                                 children.len(),
                                 &seq.meta,
+                                Some(&separator_lookup),
                             )?;
                             wrote_particle = true;
                         }
@@ -221,7 +226,9 @@ impl<'a> Encoder<'a> {
                     }
                     let defer_sep = sequence_separator_deferred_to_child_occurrences(self, child)?;
                     if !defer_sep {
-                        if wrote_particle {
+                        if wrote_particle
+                            || props.separator_position == SeparatorPosition::Prefix
+                        {
                             self.write_sequence_separator(
                                 props,
                                 out,
@@ -229,6 +236,7 @@ impl<'a> Encoder<'a> {
                                 idx,
                                 children.len(),
                                 &seq.meta,
+                                Some(&separator_lookup),
                             )?;
                         }
                     } else if idx > 0 && props.separator_position == SeparatorPosition::Infix {
@@ -240,9 +248,18 @@ impl<'a> Encoder<'a> {
                             idx,
                             children.len(),
                             &seq.meta,
+                            Some(&separator_lookup),
                         )?;
                     }
-                    self.encode_sequence_particle(child, &effective, props, out, bit_count, &seq.meta)?;
+                    self.encode_sequence_particle(
+                        child,
+                        &effective,
+                        props,
+                        out,
+                        bit_count,
+                        &seq.meta,
+                        Some(&scope_lookup),
+                    )?;
                     wrote_particle = true;
                 }
                 self.write_terminator(props, out, bit_count, seq.meta.terminator_alt)?;
@@ -321,6 +338,7 @@ impl<'a> Encoder<'a> {
                             &DfdlValue::sequence(BTreeMap::new()),
                             out,
                             bit_count,
+                            encode_scope,
                         );
                     }
                 }
@@ -405,9 +423,19 @@ impl<'a> Encoder<'a> {
                             bit_count,
                             Some(&schema_ctx),
                             None,
+                            encode_scope,
+                            false,
                         )
                     } else {
-                        self.encode_element_occurrences(*child_id, props, field, out, bit_count, props)
+                        self.encode_element_occurrences(
+                            *child_id,
+                            props,
+                            field,
+                            out,
+                            bit_count,
+                            props,
+                            encode_scope,
+                        )
                     }
                 } else {
                     write_leading_skip(out, bit_count, props).map_err(Error::from)?;
@@ -450,6 +478,8 @@ impl<'a> Encoder<'a> {
         bit_count: &mut u8,
         field_name: Option<&str>,
         delim_meta: Option<&crate::value::FieldDelimiterMeta>,
+        encode_scope: Option<&BTreeMap<String, DfdlValue>>,
+        sequence_particle: bool,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
@@ -458,7 +488,9 @@ impl<'a> Encoder<'a> {
         let suppressed = trailing_suppressed_count(items, props, self.ctx.strings(), None)?;
         let encode_len = items.len().saturating_sub(suppressed);
         for (idx, item) in items.iter().take(encode_len).enumerate() {
-            self.write_occurrence_separator(props, out, bit_count, idx, encode_len)?;
+            if !sequence_particle || encode_len > 1 {
+                self.write_occurrence_separator(props, out, bit_count, idx, encode_len)?;
+            }
             write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
             if let Some(id) = props.initiator {
                 let pat = self.ctx.strings().get(id)?;
@@ -478,7 +510,13 @@ impl<'a> Encoder<'a> {
                 write_byte_aligned(&mut payload, &mut payload_bit_count, &nil_bytes)
                     .map_err(Error::from)?;
             } else {
-                self.encode_node(child_id, item, &mut payload, &mut payload_bit_count)?;
+                self.encode_node(
+                    child_id,
+                    item,
+                    &mut payload,
+                    &mut payload_bit_count,
+                    encode_scope,
+                )?;
             }
             write_framed_payload(
                 out,
@@ -503,6 +541,7 @@ impl<'a> Encoder<'a> {
         out: &mut Vec<u8>,
         bit_count: &mut u8,
         sep_props: &IrProps,
+        encode_scope: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
@@ -532,7 +571,7 @@ impl<'a> Encoder<'a> {
                 write_byte_aligned(out, bit_count, &nil_bytes).map_err(Error::from)?;
             } else {
                 self.with_array_occurrence(idx + 1, encode_len, || {
-                    self.encode_node(node_id, item, out, bit_count)
+                    self.encode_node(node_id, item, out, bit_count, encode_scope)
                 })?;
             }
             self.write_terminator(props, out, bit_count, None)?;
@@ -560,6 +599,7 @@ impl<'a> Encoder<'a> {
         out: &mut Vec<u8>,
         bit_count: &mut u8,
         seq_meta: &crate::value::SequenceMeta,
+        encode_scope: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<()> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element {
@@ -625,6 +665,8 @@ impl<'a> Encoder<'a> {
                             field_delim,
                             parent_props,
                             Some(map),
+                            encode_scope,
+                            true,
                         );
                     }
                     if resolved.trailing_skip == 0 {
@@ -651,6 +693,8 @@ impl<'a> Encoder<'a> {
                             bit_count,
                             Some(&schema_ctx),
                             field_delim,
+                            encode_scope,
+                            true,
                         )
                     } else {
                         self.encode_element_occurrences(
@@ -660,6 +704,7 @@ impl<'a> Encoder<'a> {
                             out,
                             bit_count,
                             parent_props,
+                            encode_scope,
                         )
                     }
                 } else {
@@ -674,6 +719,8 @@ impl<'a> Encoder<'a> {
                         field_delim,
                         parent_props,
                         Some(map),
+                        encode_scope,
+                        true,
                     )
                 }
             }
@@ -681,12 +728,66 @@ impl<'a> Encoder<'a> {
                 children,
                 props: inner_props,
             } => {
+                let scope_lookup = merged_encode_lookup(encode_scope, map);
                 let effective =
                     precompute_output_values(self, children, map, inner_props)?;
+                let separator_lookup = merged_encode_lookup(Some(&scope_lookup), &effective);
                 self.write_initiator(inner_props, out, bit_count, None)?;
-                for &child in children.iter() {
+                let mut wrote_particle = false;
+                for (idx, &child) in children.iter().enumerate() {
                     if child_skips_encode(self, child)? {
                         continue;
+                    }
+                    if optional_sequence_particle_absent(self, child, &effective)? {
+                        if trailing_empty_absent_position_slot(
+                            self,
+                            inner_props,
+                            child,
+                            children,
+                            idx,
+                            &effective,
+                        )? {
+                            self.write_sequence_separator(
+                                inner_props,
+                                out,
+                                bit_count,
+                                idx,
+                                children.len(),
+                                seq_meta,
+                                Some(&separator_lookup),
+                            )?;
+                            wrote_particle = true;
+                        }
+                        continue;
+                    }
+                    let defer_sep =
+                        sequence_separator_deferred_to_child_occurrences(self, child)?;
+                    if !defer_sep {
+                        if wrote_particle
+                            || inner_props.separator_position == SeparatorPosition::Prefix
+                        {
+                            self.write_sequence_separator(
+                                inner_props,
+                                out,
+                                bit_count,
+                                idx,
+                                children.len(),
+                                seq_meta,
+                                Some(&separator_lookup),
+                            )?;
+                        }
+                    } else if idx > 0
+                        && inner_props.separator_position == SeparatorPosition::Infix
+                    {
+                        self.write_sequence_separator(
+                            inner_props,
+                            out,
+                            bit_count,
+                            idx,
+                            children.len(),
+                            seq_meta,
+                            Some(&separator_lookup),
+                        )?;
                     }
                     self.encode_sequence_particle(
                         child,
@@ -695,7 +796,9 @@ impl<'a> Encoder<'a> {
                         out,
                         bit_count,
                         seq_meta,
+                        Some(&scope_lookup),
                     )?;
+                    wrote_particle = true;
                 }
                 self.write_terminator(inner_props, out, bit_count, None)?;
                 Ok(())
@@ -757,6 +860,7 @@ impl<'a> Encoder<'a> {
                             &DfdlValue::sequence(BTreeMap::new()),
                             out,
                             bit_count,
+                            encode_scope,
                         );
                     }
                 }
@@ -803,6 +907,8 @@ impl<'a> Encoder<'a> {
         delim_meta: Option<&crate::value::FieldDelimiterMeta>,
         sep_props: &IrProps,
         encode_siblings: Option<&BTreeMap<String, DfdlValue>>,
+        encode_scope: Option<&BTreeMap<String, DfdlValue>>,
+        sequence_particle: bool,
     ) -> Result<()> {
         let items = match value {
             DfdlValue::Array(items) => items.as_slice(),
@@ -811,6 +917,11 @@ impl<'a> Encoder<'a> {
         let suppressed =
             trailing_suppressed_count(items, props, self.ctx.strings(), Some(sep_props))?;
         let encode_len = items.len().saturating_sub(suppressed);
+        let empty = BTreeMap::new();
+        let sibling_lookup = merged_encode_lookup(
+            encode_scope,
+            encode_siblings.unwrap_or(&empty),
+        );
         for (idx, item) in items.iter().take(encode_len).enumerate() {
             if sep_props.separator_position != SeparatorPosition::Postfix {
                 let suppress = should_suppress_occurrence_separator(
@@ -821,7 +932,7 @@ impl<'a> Encoder<'a> {
                     true,
                     self.ctx.strings(),
                 )? || is_suppressible_empty_representation(item, props, self.ctx.strings())?;
-                if !suppress {
+                if !suppress && (!sequence_particle || encode_len > 1) {
                     self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
                 }
             }
@@ -844,7 +955,7 @@ impl<'a> Encoder<'a> {
                 &self.ctx.config,
                 field_name,
                 delim_meta,
-                encode_siblings,
+                Some(&sibling_lookup),
             )
             .map_err(Error::from)?;
             if sep_props.separator_position == SeparatorPosition::Postfix {
@@ -855,7 +966,8 @@ impl<'a> Encoder<'a> {
                     idx,
                     false,
                     self.ctx.strings(),
-                )? {
+                )? && (!sequence_particle || encode_len > 1)
+                {
                     self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
                 }
             }
@@ -948,6 +1060,7 @@ impl<'a> Encoder<'a> {
         index: usize,
         total: usize,
         meta: &crate::value::SequenceMeta,
+        sibling_map: Option<&BTreeMap<String, DfdlValue>>,
     ) -> Result<()> {
         if !should_emit_separator(props.separator_position, index, total, false) {
             return Ok(());
@@ -955,7 +1068,9 @@ impl<'a> Encoder<'a> {
         let Some(id) = props.separator else {
             return Ok(());
         };
-        let pat = self.ctx.strings().get(id)?;
+        let raw = self.ctx.strings().get(id)?;
+        let pat = super::runtime::resolve_encode_property_pattern(raw, sibling_map);
+        let pat = pat.as_str();
         let sep_alt = meta.separator_alts.get(index).and_then(|a| *a);
         if let Some(alt) = sep_alt {
             write_byte_aligned(out, bit_count, &encode_delimiter_by_alt(pat, alt))
@@ -1180,74 +1295,116 @@ fn ovc_length_cycle_error(
     Ok(())
 }
 
+struct OvcPrecomputeEntry {
+    node_id: u32,
+    name_key: alloc::string::String,
+    local: alloc::string::String,
+    kind: crate::ir::ValueKind,
+    props: IrProps,
+}
+
+fn collect_ovc_elements_in_sequence_subtree(
+    enc: &Encoder<'_>,
+    children: &[u32],
+    out: &mut Vec<OvcPrecomputeEntry>,
+) -> Result<()> {
+    for &cid in children {
+        match enc.ctx.program.node(cid)? {
+            IrNode::Element {
+                name,
+                kind,
+                props,
+                child,
+                ..
+            } => {
+                if props.output_value_calc_conditional {
+                    let elem = enc.ctx.strings().get(*name)?;
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!(
+                            "Unparse Error: Element `{elem}` does not have a value, due to a circular dependency"
+                        ),
+                    }
+                    .into());
+                }
+                if props.output_value_calc.is_some() {
+                    let key = enc.ctx.strings().get(*name)?.to_string();
+                    out.push(OvcPrecomputeEntry {
+                        node_id: cid,
+                        local: crate::xml_util::local_name_str(&key).to_string(),
+                        name_key: key,
+                        kind: *kind,
+                        props: props.clone(),
+                    });
+                }
+                if let Some(inner) = child {
+                    collect_ovc_elements_in_subtree(enc, *inner, out)?;
+                }
+            }
+            IrNode::Sequence { children: nested, .. } => {
+                collect_ovc_elements_in_sequence_subtree(enc, nested, out)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn collect_ovc_elements_in_subtree(
+    enc: &Encoder<'_>,
+    node_id: u32,
+    out: &mut Vec<OvcPrecomputeEntry>,
+) -> Result<()> {
+    match enc.ctx.program.node(node_id)? {
+        IrNode::Sequence { children, .. } => collect_ovc_elements_in_sequence_subtree(enc, children, out),
+        IrNode::Element { child: Some(c), .. } => collect_ovc_elements_in_subtree(enc, *c, out),
+        _ => Ok(()),
+    }
+}
+
 fn precompute_output_values<'a>(
     enc: &Encoder<'a>,
     children: &[u32],
     map: &BTreeMap<String, DfdlValue>,
     parent_props: &IrProps,
 ) -> Result<BTreeMap<String, DfdlValue>> {
-    // Cycle detection is conservative; precompute multi-pass resolves OVC order when acyclic.
     let _ = ovc_length_cycle_error(enc, children);
-    for &child in children {
-        let IrNode::Element { name, props, .. } = enc.ctx.program.node(child)? else {
-            continue;
-        };
-        if props.output_value_calc_conditional {
-            let elem = enc.ctx.strings().get(*name)?;
-            return Err(VmError::InvalidValue {
-                message: alloc::format!(
-                    "Unparse Error: Element `{elem}` does not have a value, due to a circular dependency"
-                ),
-            }
-            .into());
-        }
-    }
+    let mut ovc_entries = Vec::new();
+    collect_ovc_elements_in_sequence_subtree(enc, children, &mut ovc_entries)?;
     let mut effective = map.clone();
-    let max_passes = children.len().saturating_mul(2).max(4);
+    let max_passes = ovc_entries.len().saturating_mul(2).max(4);
     for _pass in 0..max_passes {
         let mut progress = false;
-        for &child in children {
-            let IrNode::Element { name, kind, props, .. } = enc.ctx.program.node(child)? else {
-                continue;
-            };
-            if props.output_value_calc.is_none() {
+        for entry in &ovc_entries {
+            if map_has_local_key(map, &entry.local).is_some() {
                 continue;
             }
-            let key = enc.ctx.strings().get(*name)?.to_string();
-            let local = crate::xml_util::local_name_str(&key);
-            if map_has_local_key(map, local).is_some() {
+            if effective.get(&entry.name_key).is_some() {
                 continue;
             }
-            if effective.get(&key).is_some() {
-                continue;
-            }
-            let computed = match eval_output_value_calc(enc, props, &effective, children, parent_props)
-            {
+            let computed = match eval_output_value_calc(
+                enc,
+                &entry.props,
+                &effective,
+                children,
+                parent_props,
+            ) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let computed = ovc_value_for_element_kind(*kind, computed);
-            effective.insert(key, computed);
+            let computed = ovc_value_for_element_kind(entry.kind, computed);
+            effective.insert(entry.name_key.clone(), computed);
             progress = true;
         }
         if !progress {
             break;
         }
     }
-    for &child in children {
-        let IrNode::Element { name, props, .. } = enc.ctx.program.node(child)? else {
-            continue;
-        };
-        if props.output_value_calc.is_none() {
+    for entry in &ovc_entries {
+        if map_has_local_key(map, &entry.local).is_some() {
             continue;
         }
-        let key = enc.ctx.strings().get(*name)?.to_string();
-        let local = crate::xml_util::local_name_str(&key);
-        if map_has_local_key(map, local).is_some() {
-            continue;
-        }
-        if effective.get(&key).is_none() {
-            let elem = enc.ctx.strings().get(*name)?;
+        if effective.get(&entry.name_key).is_none() {
+            let elem = &entry.local;
             return Err(VmError::InvalidValue {
                 message: alloc::format!(
                     "Unparse Error: Element `{elem}` does not have a value, due to a circular dependency"
@@ -1729,20 +1886,46 @@ fn choice_branch_data_key(
     }
 }
 
+fn find_descendant_element_by_local(
+    enc: &Encoder<'_>,
+    node_id: u32,
+    local_name: &str,
+) -> Result<Option<u32>> {
+    let sib_local = crate::xml_util::local_name_str(local_name);
+    match enc.ctx.program.node(node_id)? {
+        IrNode::Element { name, child, .. } => {
+            let n = enc.ctx.strings().get(*name)?;
+            let n_local = crate::xml_util::local_name_str(n);
+            if n == local_name || n_local == local_name || n_local == sib_local {
+                return Ok(Some(node_id));
+            }
+            if let Some(c) = child {
+                if let Some(found) = find_descendant_element_by_local(enc, *c, local_name)? {
+                    return Ok(Some(found));
+                }
+            }
+            Ok(None)
+        }
+        IrNode::Sequence { children, .. } => {
+            for &c in children {
+                if let Some(found) = find_descendant_element_by_local(enc, c, local_name)? {
+                    return Ok(Some(found));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
 fn find_child_element_by_name(
     enc: &Encoder<'_>,
     children: &[u32],
     local_name: &str,
 ) -> Result<Option<u32>> {
     for &child in children {
-        let IrNode::Element { name, .. } = enc.ctx.program.node(child)? else {
-            continue;
-        };
-        let n = enc.ctx.strings().get(*name)?;
-        let n_local = crate::xml_util::local_name_str(n);
-        let sib_local = crate::xml_util::local_name_str(local_name);
-        if n == local_name || n_local == local_name || n_local == sib_local {
-            return Ok(Some(child));
+        if let Some(found) = find_descendant_element_by_local(enc, child, local_name)? {
+            return Ok(Some(found));
         }
     }
     Ok(None)
@@ -1812,7 +1995,7 @@ fn measure_value_length(
     } else {
         node_id
     };
-    enc.encode_node(encode_id, value, &mut buf, &mut bit_count)?;
+    enc.encode_node(encode_id, value, &mut buf, &mut bit_count, None)?;
     match units {
         LengthUnits::Bits => Ok(encoded_value_length_bits(buf.len(), bit_count)),
         LengthUnits::Bytes => {
@@ -2128,7 +2311,8 @@ fn lookup_encoding_string_id(pool: &crate::ir::StringPool, enc: &str) -> Option<
         "US-ASCII" | "ASCII" | "ISO646-US" => "US-ASCII",
         "UTF8" => "UTF-8",
         "UTF16" | "UTF_16" => "UTF-16",
-        "UTF32" | "UTF_32" => "UTF-32",
+        "UTF32" | "UTF_32" => "UTF-32BE",
+        "UTF-32" => "UTF-32BE",
         "ISO8859-1" | "ISO_8859-1" | "LATIN1" => "ISO-8859-1",
         _ => return None,
     };
@@ -2272,6 +2456,39 @@ fn apply_length_sibling_adjust_encode(len: u64, adjust: i64) -> Result<u64> {
     Ok(len.saturating_add(adjust as u64))
 }
 
+fn merged_encode_lookup(
+    outer: Option<&BTreeMap<String, DfdlValue>>,
+    inner: &BTreeMap<String, DfdlValue>,
+) -> BTreeMap<String, DfdlValue> {
+    let mut merged = BTreeMap::new();
+    if let Some(o) = outer {
+        for (k, v) in o {
+            merged.insert(k.clone(), v.clone());
+        }
+    }
+    for (k, v) in inner {
+        merged.insert(k.clone(), v.clone());
+    }
+    merged
+}
+
+fn lookup_sibling_value_in_map<'a>(
+    map: &'a BTreeMap<String, DfdlValue>,
+    local: &str,
+) -> Option<&'a DfdlValue> {
+    if let Some(k) = map_has_local_key(map, local) {
+        return map.get(&k);
+    }
+    for v in map.values() {
+        if let DfdlValue::Sequence(seq) = v {
+            if let Some(found) = lookup_sibling_value_in_map(&seq.fields, local) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 fn sibling_from_map<'a>(
     id: Option<crate::ir::StringId>,
     map: &'a BTreeMap<String, DfdlValue>,
@@ -2281,13 +2498,9 @@ fn sibling_from_map<'a>(
         message: "outputValueCalc sibling missing".into(),
     })?;
     let name = strings.get(id)?;
-    map.get(name)
-        .or_else(|| map.get(crate::xml_util::local_name_str(name)))
-        .or_else(|| {
-            map.iter()
-                .find(|(k, _)| crate::xml_util::local_name_str(k) == name)
-                .map(|(_, v)| v)
-        })
+    let local = crate::xml_util::local_name_str(name);
+    lookup_sibling_value_in_map(map, local)
+        .or_else(|| lookup_sibling_value_in_map(map, name))
         .ok_or_else(|| VmError::InvalidValue {
             message: alloc::format!("outputValueCalc sibling `{name}` not available"),
         })

@@ -256,6 +256,7 @@ pub(crate) fn resolve_encoding_with_byte_order(name: &str, byte_order: ByteOrder
             ByteOrder::BigEndian => "utf-16be",
         }
     } else if eq_ascii_ignore_case(name, "utf-32") || eq_ascii_ignore_case(name, "utf_32") {
+        // Default UTF-32 document encoding is big-endian unless byteOrder says otherwise.
         match byte_order {
             ByteOrder::LittleEndian => "utf-32le",
             ByteOrder::BigEndian => "utf-32be",
@@ -267,6 +268,10 @@ pub(crate) fn resolve_encoding_with_byte_order(name: &str, byte_order: ByteOrder
 
 pub(crate) fn normalize_encoding_name(name: &str) -> Option<&'static str> {
     if eq_ascii_ignore_case(name, "utf-32be") || eq_ascii_ignore_case(name, "utf_32be") {
+        Some("utf-32be")
+    } else if eq_ascii_ignore_case(name, "utf-32le") || eq_ascii_ignore_case(name, "utf_32le") {
+        Some("utf-32le")
+    } else if eq_ascii_ignore_case(name, "utf-32") || eq_ascii_ignore_case(name, "utf_32") {
         Some("utf-32be")
     } else if eq_ascii_ignore_case(name, "utf-16be") || eq_ascii_ignore_case(name, "utf_16be") {
         Some("utf-16be")
@@ -470,10 +475,36 @@ pub(crate) fn encode_document_text(text: &str, encoding: &str) -> Result<Vec<u8>
         Some("ebcdic-cp-us") => encode_ebcdic_cp_us(text),
         Some("utf-16be") => Ok(encode_utf16be(text)),
         Some("utf-16le") => Ok(encode_utf16le(text)),
+        Some("utf-32be") => Ok(encode_utf32be(text)),
+        Some("utf-32le") => Ok(encode_utf32le(text)),
         _ => Err(VmError::UnsupportedOperation {
             op: alloc::format!("document encoding `{encoding}`"),
         }),
     }
+}
+
+fn encode_utf32be(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() * 4);
+    for ch in text.chars() {
+        let u = ch as u32;
+        out.push((u >> 24) as u8);
+        out.push((u >> 16) as u8);
+        out.push((u >> 8) as u8);
+        out.push(u as u8);
+    }
+    out
+}
+
+fn encode_utf32le(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() * 4);
+    for ch in text.chars() {
+        let u = ch as u32;
+        out.push(u as u8);
+        out.push((u >> 8) as u8);
+        out.push((u >> 16) as u8);
+        out.push((u >> 24) as u8);
+    }
+    out
 }
 
 pub(crate) fn decode_text_bytes(
