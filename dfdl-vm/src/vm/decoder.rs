@@ -433,11 +433,10 @@ impl<'a> Decoder<'a> {
                         initiator_alt,
                     );
                 }
-                let mut idx = 0usize;
-                let mut single_child_infix_reps = 0u32;
-                'seq_children: while idx < children.len() {
-                    let child = children[idx];
+                for (idx, &child) in children.iter().enumerate() {
                     let child_has_following = self.following_sibling_consumes_input(children, idx);
+                    let mut single_child_infix_reps = 0u32;
+                    'repeat_slot: loop {
                     let child_element_props = match self.ctx.program.node(child) {
                         Ok(IrNode::Element { props: cp, .. }) => Some(cp),
                         _ => None,
@@ -504,8 +503,7 @@ impl<'a> Decoder<'a> {
                             && element_discriminator_always_false(cp, self.ctx.strings())
                         {
                             prev_absent_or_empty = true;
-                            idx += 1;
-                            continue 'seq_children;
+                            break 'repeat_slot;
                         }
                     }
                     let suppress_sep = child_element_props
@@ -520,7 +518,7 @@ impl<'a> Decoder<'a> {
                             self.ctx.strings(),
                         )?;
                     if skip_sep_at_term {
-                        break;
+                        break 'repeat_slot;
                     }
                     let sep_alt = if inter_child_sep_consumed_by_prev {
                         inter_child_sep_consumed_by_prev = false;
@@ -666,8 +664,7 @@ impl<'a> Decoder<'a> {
                                     )?
                                 {
                                     prev_absent_or_empty = true;
-                                    idx += 1;
-                                    continue 'seq_children;
+                                    break 'repeat_slot;
                                 }
                             }
                             prev_absent_or_empty = child_element_props
@@ -755,10 +752,10 @@ impl<'a> Decoder<'a> {
                                 && props.separator_position == SeparatorPosition::Infix
                             {
                                 if cursor.is_empty() {
-                                    break 'seq_children;
+                                    break 'repeat_slot;
                                 }
                                 if self.at_enclosing_terminator_stop(cursor, child_stops)? {
-                                    break 'seq_children;
+                                    break 'repeat_slot;
                                 }
                                 let saved_rep = cursor.clone();
                                 let before_sep = cursor.pos;
@@ -777,19 +774,19 @@ impl<'a> Decoder<'a> {
                                             || single_child_infix_reps >= 256
                                         {
                                             *cursor = saved_rep;
-                                            break 'seq_children;
+                                            break 'repeat_slot;
                                         }
                                         single_child_infix_reps += 1;
                                         separator_alts.push(alt);
-                                        continue 'seq_children;
+                                        continue 'repeat_slot;
                                     }
                                     Err(_) => {
                                         *cursor = saved_rep;
-                                        break 'seq_children;
+                                        break 'repeat_slot;
                                     }
                                 }
                             }
-                            idx += 1;
+                            break 'repeat_slot;
                         }
                         Err(e) if is_element_absent(&e) => {
                             cursor.frame_bit_limit = saved_frame_limit;
@@ -811,8 +808,7 @@ impl<'a> Decoder<'a> {
                                     )?;
                                     let _ = key;
                                     prev_absent_or_empty = true;
-                                    idx += 1;
-                                    continue 'seq_children;
+                                    break 'repeat_slot;
                                 }
                             }
                             prev_absent_or_empty = true;
@@ -820,7 +816,7 @@ impl<'a> Decoder<'a> {
                             if cursor.pos == saved.pos {
                                 *cursor = saved;
                             }
-                            idx += 1;
+                            break 'repeat_slot;
                         }
                         Err(e) => {
                             cursor.frame_bit_limit = saved_frame_limit;
@@ -861,13 +857,13 @@ impl<'a> Decoder<'a> {
                                                 false,
                                             )?;
                                         }
-                                        idx += 1;
-                                        continue 'seq_children;
+                                        break 'repeat_slot;
                                     }
                                 }
                             }
                             return Err(e);
                         }
+                    }
                     }
                 }
                 let mut terminator_alt = None;
