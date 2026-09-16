@@ -7317,6 +7317,9 @@ fn non_empty_delimiter_scan_patterns(
 pub(crate) struct SequenceChildScanContext<'a> {
     pub parent_sequence: &'a IrProps,
     pub has_following_sibling: bool,
+    /// Parent infix separates further occurrences of a repeating particle; the occurrence
+    /// loop consumes that separator, not delimited field trailing consume.
+    pub parent_infix_consumed_by_occurrence_loop: bool,
 }
 
 fn include_stop_sequence_delimiter_in_field_scan(
@@ -7339,9 +7342,8 @@ fn include_stop_sequence_delimiter_in_field_scan(
     if should_defer_infix_sequence_separator(seq, pattern_id, field_props, strings)? {
         return Ok(false);
     }
-    if should_defer_postfix_sequence_separator(seq, pattern_id, field_props, strings)? {
-        return Ok(false);
-    }
+    // Postfix sequence separators trail each particle (including the last) and must
+    // bound delimited content; consumption after decode is separate.
     Ok(true)
 }
 
@@ -7929,6 +7931,7 @@ pub(crate) fn consume_enclosing_delimiter(
     props: &IrProps,
     strings: &StringPool,
     stop_sequences: &[&IrProps],
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     if cursor.is_empty() {
@@ -7990,6 +7993,11 @@ pub(crate) fn consume_enclosing_delimiter(
                             continue;
                         }
                         if should_defer_sequence_stop_delimiter_in_field(seq, id, props, strings)? {
+                            return Ok(());
+                        }
+                        if scan_ctx.is_some_and(|ctx| ctx.parent_infix_consumed_by_occurrence_loop)
+                            && seq.separator_position == SeparatorPosition::Infix
+                        {
                             return Ok(());
                         }
                         cursor.advance(n);
@@ -9439,8 +9447,32 @@ fn defer_delimited_enclosing_consume(
     strings: &StringPool,
     value: &crate::value::DfdlValue,
     stop_sequences: &[&IrProps],
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<bool, crate::error::VmError> {
     use crate::value::DfdlValue;
+    if let Some(ctx) = scan_ctx {
+        if ctx.parent_infix_consumed_by_occurrence_loop {
+            let enc = encoding_name(props, strings).ok();
+            for seq in stop_sequences {
+                if seq.separator_position != SeparatorPosition::Infix {
+                    continue;
+                }
+                for id in delimiter_pattern_ids(seq) {
+                    let pat = strings.get(id)?;
+                    if crate::schema::match_delimiter_opts_for_encoding(
+                        &cursor.data[cursor.pos..],
+                        pat,
+                        seq.ignore_case,
+                        enc.as_deref(),
+                    )
+                    .is_some()
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
     if props.representation == Representation::Binary {
         // Binary delimited scalars must always consume the enclosing delimiter so
         // unbounded sequences advance (BCD/4690/packed hex); text may still defer.
@@ -9557,10 +9589,21 @@ pub(crate) fn read_simple(
         )?
     };
     if props.length_kind == LengthKind::Delimited {
-        let defer = !consume_delimited_enclosing
-            && defer_delimited_enclosing_consume(cursor, props, strings, &value, stop_sequences)?;
-        if consume_delimited_enclosing || !defer {
-            consume_enclosing_delimiter(cursor, props, strings, stop_sequences)?;
+        let skip_parent_infix_consume = scan_ctx
+            .is_some_and(|ctx| ctx.parent_infix_consumed_by_occurrence_loop);
+        if !skip_parent_infix_consume {
+            let defer = !consume_delimited_enclosing
+                && defer_delimited_enclosing_consume(
+                    cursor,
+                    props,
+                    strings,
+                    &value,
+                    stop_sequences,
+                    scan_ctx,
+                )?;
+            if consume_delimited_enclosing || !defer {
+                consume_enclosing_delimiter(cursor, props, strings, stop_sequences, scan_ctx)?;
+            }
         }
     } else if props.representation == Representation::Text
         && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)

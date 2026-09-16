@@ -187,6 +187,8 @@ pub struct Decoder<'a> {
     occurrence_decode_depth: Cell<u32>,
     /// Parent postfix separator consumed by the most recent separator-bounded complex decode.
     postfix_bounded_parent_sep_consumed: Cell<bool>,
+    /// Parent infix between array occurrences is consumed by the occurrence loop, not fields.
+    parent_infix_consumed_by_occurrence_loop: Cell<bool>,
     /// Runtime DFDL variable values (`defineVariable` + `setVariable`).
     runtime_variables: RefCell<BTreeMap<String, String>>,
     /// XPath sibling context for the active sequence decode (includes hidden elements).
@@ -210,6 +212,7 @@ impl<'a> Decoder<'a> {
             parent_postfix_sep_consumed: RefCell::new(false),
             occurrence_decode_depth: Cell::new(0),
             postfix_bounded_parent_sep_consumed: Cell::new(false),
+            parent_infix_consumed_by_occurrence_loop: Cell::new(false),
             runtime_variables: RefCell::new(BTreeMap::new()),
             xpath_siblings: RefCell::new(BTreeMap::new()),
             xpath_ancestor_frames: RefCell::new(Vec::new()),
@@ -2162,15 +2165,22 @@ impl<'a> Decoder<'a> {
                 {
                     validate_data_length_vm(kind, 0, props.length_units, props.binary_number_rep)?;
                 }
+                let more_array_occurrences = (items.len() as u64).saturating_add(1) < max;
+                let parent_infix_consumed_by_occurrence_loop = more_array_occurrences
+                    && parent_sequence.is_some_and(|p| {
+                        p.separator.is_some()
+                            && p.separator_position == SeparatorPosition::Infix
+                    });
                 let v = self.decode_single_element(
                     node_id,
                     cursor,
-                    has_following_sibling,
+                    has_following_sibling || more_array_occurrences,
                     parent_sequence,
                     siblings,
                     content_scope_bytes,
                     pattern_text_frame,
                     delimiter_stops.as_slice(),
+                    parent_infix_consumed_by_occurrence_loop,
                 )?;
                 items.push(v);
                 if parent_sequence.is_some_and(|p| {
@@ -2338,8 +2348,25 @@ impl<'a> Decoder<'a> {
                     continue;
                 }
             }
-            let require_delimiter = has_following_sibling;
+            let more_array_occurrences = (items.len() as u64).saturating_add(1) < max;
+            let require_delimiter = has_following_sibling || more_array_occurrences;
+            let parent_infix_consumed_by_occurrence_loop = more_array_occurrences
+                && parent_sequence.is_some_and(|p| {
+                    p.separator.is_some()
+                        && p.separator_position == SeparatorPosition::Infix
+                });
             let saved = cursor.clone();
+            struct ParentInfixDeferGuard<'a>(&'a Cell<bool>, bool);
+            impl Drop for ParentInfixDeferGuard<'_> {
+                fn drop(&mut self) {
+                    self.0.set(self.1);
+                }
+            }
+            let prev_infix_defer = self.parent_infix_consumed_by_occurrence_loop.get();
+            self.parent_infix_consumed_by_occurrence_loop
+                .set(parent_infix_consumed_by_occurrence_loop || prev_infix_defer);
+            let _infix_defer_guard =
+                ParentInfixDeferGuard(&self.parent_infix_consumed_by_occurrence_loop, prev_infix_defer);
             match self.decode_single_element(
                 node_id,
                 cursor,
@@ -2349,6 +2376,7 @@ impl<'a> Decoder<'a> {
                 content_scope_bytes,
                 pattern_text_frame,
                 delimiter_stops.as_slice(),
+                parent_infix_consumed_by_occurrence_loop,
             ) {
                 Ok(v) => {
                     if max == u64::MAX
@@ -2637,6 +2665,7 @@ impl<'a> Decoder<'a> {
         content_scope_bytes: Option<usize>,
         pattern_text_frame: bool,
         stop_sequences: &[&IrProps],
+        parent_infix_consumed_by_occurrence_loop: bool,
     ) -> Result<DfdlValue> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element {
@@ -2852,6 +2881,7 @@ impl<'a> Decoder<'a> {
                                 &props,
                                 self.ctx.strings(),
                                 stop_sequences,
+                                None,
                             )?;
                             let mut sub = Cursor::new(&bytes);
                             let scope = bytes.len();
@@ -3163,9 +3193,16 @@ impl<'a> Decoder<'a> {
                     );
                     self.runtime_check_bit_order_change(&props, cursor)?;
                     let scan_ctx = parent_sequence.map(|parent| {
+                        let nested_under_repeating_particle = self.occurrence_decode_depth.get() > 1
+                            && parent.separator.is_some()
+                            && parent.separator_position == SeparatorPosition::Infix;
                         super::runtime::SequenceChildScanContext {
                             parent_sequence: parent,
                             has_following_sibling: require_delimiter,
+                            parent_infix_consumed_by_occurrence_loop:
+                                parent_infix_consumed_by_occurrence_loop
+                                    || self.parent_infix_consumed_by_occurrence_loop.get()
+                                    || nested_under_repeating_particle,
                         }
                     });
                     let value = read_simple(
@@ -3457,6 +3494,7 @@ impl<'a> Decoder<'a> {
                 content_scope_bytes,
                 pattern_text_frame,
                 stop_sequences,
+                false,
             ) {
                 Ok(_) => {
                     return Err(VmError::InvalidValue {
@@ -3530,6 +3568,12 @@ impl<'a> Decoder<'a> {
                 && (items.len() as u64) < ip.occurs_min
             {
                 if cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+                    return Ok(());
+                }
+                let nested_infix_occurrence = self.parent_infix_consumed_by_occurrence_loop.get()
+                    || self.occurrence_decode_depth.get() > 1;
+                if nested_infix_occurrence && !cursor.is_empty() {
+                    // Delimited nested fields may already have consumed the separator.
                     return Ok(());
                 }
                 return Err(VmError::InvalidValue {
@@ -3624,7 +3668,7 @@ impl<'a> Decoder<'a> {
         if let IrNode::Element { props, child, .. } = node {
             if !cursor.is_empty() {
                 if child.is_none() && props.length_kind == LengthKind::Delimited {
-                    consume_enclosing_delimiter(cursor, props, self.ctx.strings(), &[])?;
+                    consume_enclosing_delimiter(cursor, props, self.ctx.strings(), &[], None)?;
                 } else if child.is_some() && props.terminator.is_some() {
                     let _ = self.consume_terminator(props, cursor);
                 }
