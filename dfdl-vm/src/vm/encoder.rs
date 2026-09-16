@@ -484,6 +484,7 @@ impl<'a> Encoder<'a> {
                         Some(&schema_ctx),
                         None,
                         encode_scope,
+                        None,
                     )
                     .map_err(Into::into)
                 }
@@ -1023,6 +1024,7 @@ impl<'a> Encoder<'a> {
                 field_name,
                 delim_meta,
                 Some(&sibling_lookup),
+                Some(sep_props),
             )
             .map_err(Error::from)?;
             if sep_props.separator_position == SeparatorPosition::Postfix {

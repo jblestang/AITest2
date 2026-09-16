@@ -5576,7 +5576,10 @@ pub(crate) fn read_text_scalar(
     };
     let trimmed = trim_text_value(&text, kind, props.text_trim_kind, props, strings);
     let trimmed = if kind == crate::ir::ValueKind::String {
-        if let Some(ref scheme) = props.escape_scheme {
+        let scheme = scan_ctx
+            .and_then(|ctx| ctx.resolved_escape_scheme.as_ref())
+            .or(props.escape_scheme.as_ref());
+        if let Some(scheme) = scheme {
             crate::vm::escape::unescape_field_text(trimmed, scheme)?
         } else {
             trimmed.to_string()
@@ -6967,6 +6970,7 @@ pub(crate) fn write_text_scalar(
     config: &RuntimeConfig,
     field_name: Option<&str>,
     encode_siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
+    encode_escape_parent: Option<&IrProps>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     use crate::ir::ValueKind::*;
@@ -7087,13 +7091,11 @@ pub(crate) fn write_text_scalar(
         )
     {
         let scheme = props.escape_scheme.as_ref().unwrap();
-        let resolved = resolve_escape_scheme_for_encode(scheme, encode_siblings);
-        let delim = props
-            .terminator
-            .and_then(|id| strings.get(id).ok())
-            .map(|raw| resolve_encode_property_pattern(raw, encode_siblings))
-            .unwrap_or_default();
-        crate::vm::escape::escape_field_text(&text, &resolved, delim.as_bytes())
+        let resolved = resolve_escape_scheme_runtime(scheme, encode_siblings);
+        let markup =
+            delimited_field_escape_markup(props, encode_escape_parent, strings, encode_siblings);
+        let markup_refs: alloc::vec::Vec<&str> = markup.iter().map(|s| s.as_str()).collect();
+        crate::vm::escape::escape_field_text(&text, &resolved, &markup_refs)
     } else {
         text
     };
@@ -7505,6 +7507,8 @@ pub(crate) struct SequenceChildScanContext<'a> {
     pub parent_infix_consumed_by_occurrence_loop: bool,
     /// Runtime-resolved delimiter literals for `{...}` separator/terminator on stop sequences.
     pub resolved_stop_delimiters: Option<&'a [(StringId, alloc::string::String)]>,
+    /// Escape scheme with runtime-resolved property expressions (Section 7).
+    pub resolved_escape_scheme: Option<crate::schema::EscapeSchemeDef>,
 }
 
 fn stop_delimiter_literal(
@@ -7841,13 +7845,16 @@ pub(crate) fn read_until_delimiters(
         cursor.bit_count = 0;
         return Ok(rest);
     }
+    let escape_scheme = scan_ctx
+        .and_then(|ctx| ctx.resolved_escape_scheme.as_ref())
+        .or(props.escape_scheme.as_ref());
     read_until_any_delimiter(
         cursor,
         &patterns,
         require_delimiter,
         encoding,
         !stop_sequences.is_empty(),
-        props.escape_scheme.as_ref(),
+        escape_scheme,
     )
 }
 
@@ -11162,6 +11169,7 @@ pub(crate) fn write_simple(
     field_name: Option<&str>,
     delim_meta: Option<&crate::value::FieldDelimiterMeta>,
     encode_siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
+    encode_escape_parent: Option<&IrProps>,
 ) -> Result<(), crate::error::VmError> {
     validate_unparse_scalar_lexical(value, kind, props, strings)?;
     let value = coerce_value_for_kind(value, kind)?;
@@ -11230,6 +11238,7 @@ pub(crate) fn write_simple(
                 &config,
                 field_name,
                 encode_siblings,
+                encode_escape_parent,
             )?
         }
     }
@@ -11295,7 +11304,46 @@ fn sibling_string_from_encode_map(
     }
 }
 
-fn resolve_escape_scheme_for_encode(
+pub(crate) fn delimited_field_escape_markup(
+    field: &IrProps,
+    parent_seq: Option<&IrProps>,
+    strings: &StringPool,
+    siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
+) -> alloc::vec::Vec<alloc::string::String> {
+    use crate::schema::LengthKind;
+    let mut out = alloc::vec::Vec::new();
+    let mut push_resolved = |raw: &str| {
+        let pat = resolve_encode_property_pattern(raw, siblings);
+        for alt in crate::schema::delimiter_alternatives(&pat) {
+            if !alt.is_empty() && !out.iter().any(|x| x == &alt) {
+                out.push(alt);
+            }
+        }
+    };
+    if field.length_kind != LengthKind::Delimited {
+        return out;
+    }
+    if let Some(id) = field.initiator {
+        if let Ok(raw) = strings.get(id) {
+            push_resolved(raw);
+        }
+    }
+    if let Some(id) = field.terminator {
+        if let Ok(raw) = strings.get(id) {
+            push_resolved(raw);
+        }
+    }
+    if let Some(seq) = parent_seq {
+        if let Some(id) = seq.separator {
+            if let Ok(raw) = strings.get(id) {
+                push_resolved(raw);
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn resolve_escape_scheme_runtime(
     scheme: &crate::schema::EscapeSchemeDef,
     siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
 ) -> crate::schema::EscapeSchemeDef {

@@ -31,6 +31,7 @@ pub use entities::{
     parse_text_standard_separator_list,
     parse_text_standard_zero_rep_list,
     match_length_pattern, match_nl_comma_space_separator_with_flag, match_pattern,
+    delimiter_alternatives,
     nil_value_alternatives,
     normalize_delimiter_pattern, parse_delimiter_literal_value, unescape_dfdl_open_braces,
     validate_delimiter_property_value, validate_delimiter_schema_attribute,

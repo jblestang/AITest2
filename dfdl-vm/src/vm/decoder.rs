@@ -3913,6 +3913,14 @@ impl<'a> Decoder<'a> {
                             resolved_stop_delimiters.push((id, lit));
                         }
                     }
+                    let sib_snap = self.xpath_siblings_snapshot();
+                    let sib_values: BTreeMap<String, DfdlValue> = sib_snap
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.value.clone()))
+                        .collect();
+                    let resolved_escape = props.escape_scheme.as_ref().map(|s| {
+                        super::runtime::resolve_escape_scheme_runtime(s, Some(&sib_values))
+                    });
                     let scan_ctx = parent_sequence.map(|parent| {
                         let nested_under_repeating_particle = self.occurrence_decode_depth.get() > 1
                             && parent.separator.is_some()
@@ -3929,6 +3937,7 @@ impl<'a> Decoder<'a> {
                             } else {
                                 Some(resolved_stop_delimiters.as_slice())
                             },
+                            resolved_escape_scheme: resolved_escape.clone(),
                         }
                     });
                     let value = read_simple(
