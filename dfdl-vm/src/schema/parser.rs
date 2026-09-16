@@ -3741,10 +3741,16 @@ fn parse_output_value_calc_infoset_path(
         return None;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
-    let (path_expr, addend) = if let Some((left, right)) = inner.rsplit_once('+') {
-        (left.trim(), right.trim().parse::<i64>().ok()?)
-    } else {
-        return None;
+    let (path_expr, addend) = match inner.rsplit_once('+') {
+        Some((left, right)) => {
+            let right = right.trim();
+            if let Ok(n) = right.parse::<i64>() {
+                (left.trim(), n)
+            } else {
+                (inner, 0)
+            }
+        }
+        None => (inner, 0),
     };
     let rest = path_expr.strip_prefix("../")?;
     if rest.is_empty() {

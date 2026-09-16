@@ -1608,6 +1608,16 @@ fn finalize_element_props(
     element_name: Option<&str>,
 ) -> Result<IrProps> {
     use crate::schema::{NilKind, ObjectKind, TextPadKind, TextTrimKind};
+    if kind == ValueKind::Complex
+        && (ir.output_value_calc.is_some() || ir.output_value_calc_conditional)
+    {
+        return Err(SchemaError::InvalidProperty {
+            message:
+                "Schema Definition Error. dfdl:outputValueCalc cannot be defined on complexType elements."
+                    .into(),
+        }
+        .into());
+    }
     if kind == ValueKind::Complex && ir.length_kind == LengthKind::Delimited {
         ir.length_kind = LengthKind::Implicit;
     }

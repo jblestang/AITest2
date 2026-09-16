@@ -12,8 +12,8 @@ use crate::length_validate::validate_fill_byte_schema;
 use crate::ir::{IrNode, IrProgram, IrProps};
 use crate::schema::{
     encode_delimiter, encode_delimiter_by_alt, encode_property_delimiter, encode_sequence_separator,
-    ChoiceLengthKind, LengthKind, LengthUnits, OccursCountKind, Representation,
-    SeparatorSuppressionPolicy, TextPadKind, OutputValueCalc, SeparatorPosition,
+    ByteOrder, ChoiceLengthKind, LengthKind, LengthUnits, OccursCountKind,
+    Representation, SeparatorSuppressionPolicy, TextPadKind, OutputValueCalc, SeparatorPosition,
 };
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
@@ -652,6 +652,7 @@ impl<'a> Encoder<'a> {
                 }
                 let mut resolved = resolve_length_props_encode(props, map, self.ctx.strings())?;
                 resolved = resolve_encoding_for_encode(&resolved, map, self.ctx.strings())?;
+                resolved = resolve_byte_order_for_encode(&resolved, map, self.ctx.strings())?;
                 validate_fill_byte_for_encode(&resolved, self.ctx.strings())?;
                 validate_explicit_decimal_before_encode(
                     *kind,
@@ -2290,6 +2291,57 @@ fn parse_sibling_property_expr(raw: &str) -> Option<String> {
     )
 }
 
+fn lookup_sibling_string_in_encode_map(
+    map: &BTreeMap<String, DfdlValue>,
+    sibling: &str,
+) -> Result<String> {
+    let sib_val = map
+        .iter()
+        .find(|(k, _)| crate::xml_util::local_name_str(k) == sibling)
+        .map(|(_, v)| v)
+        .or_else(|| map.get(sibling))
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("property sibling `{sibling}` not available"),
+        })?;
+    match sib_val {
+        DfdlValue::String(s) => Ok(s.text.clone()),
+        DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => Ok(s.clone()),
+        other => Err(VmError::InvalidValue {
+            message: alloc::format!("property sibling must be string, got `{other:?}`"),
+        }
+        .into()),
+    }
+}
+
+fn resolve_byte_order_for_encode(
+    props: &IrProps,
+    map: &BTreeMap<String, DfdlValue>,
+    strings: &crate::ir::StringPool,
+) -> Result<IrProps> {
+    let Some(test_id) = props.byte_order_conditional_test else {
+        return Ok(props.clone());
+    };
+    let raw = strings.get(test_id)?;
+    let Some(sibling) = parse_sibling_property_expr(raw) else {
+        return Ok(props.clone());
+    };
+    let text = lookup_sibling_string_in_encode_map(map, &sibling)?;
+    let order = match text.as_str() {
+        "bigEndian" => ByteOrder::BigEndian,
+        "littleEndian" => ByteOrder::LittleEndian,
+        other => {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!("unknown byteOrder `{other}`"),
+            }
+            .into());
+        }
+    };
+    let mut resolved = props.clone();
+    resolved.byte_order = order;
+    resolved.byte_order_defined = true;
+    Ok(resolved)
+}
+
 fn resolve_encoding_for_encode(
     props: &IrProps,
     map: &BTreeMap<String, DfdlValue>,
@@ -2299,27 +2351,7 @@ fn resolve_encoding_for_encode(
     let Some(sibling) = parse_sibling_property_expr(raw) else {
         return Ok(props.clone());
     };
-    let sib_val = map
-        .get(&sibling)
-        .or_else(|| map.get(crate::xml_util::local_name_str(&sibling)))
-        .or_else(|| {
-            map.iter()
-                .find(|(k, _)| crate::xml_util::local_name_str(k) == sibling)
-                .map(|(_, v)| v)
-        })
-        .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("encoding sibling `{sibling}` not available"),
-        })?;
-    let enc = match sib_val {
-        DfdlValue::String(s) => s.text.clone(),
-        DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => s.clone(),
-        other => {
-            return Err(VmError::InvalidValue {
-                message: alloc::format!("encoding sibling must be string, got `{other:?}`"),
-            }
-            .into())
-        }
-    };
+    let enc = lookup_sibling_string_in_encode_map(map, &sibling)?;
     let mut resolved = props.clone();
     resolved.encoding = lookup_encoding_string_id(strings, &enc).ok_or_else(|| {
         VmError::InvalidValue {
