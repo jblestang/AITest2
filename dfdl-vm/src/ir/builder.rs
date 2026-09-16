@@ -3318,6 +3318,12 @@ fn overlay_dfdl_to_ir(
     if let Some(v) = props.sequence_kind {
         base.sequence_kind = v;
     }
+    if let Some(v) = props.choice_length_kind {
+        base.choice_length_kind = v;
+    }
+    if props.choice_length.is_some() {
+        base.choice_length = props.choice_length;
+    }
     if let Some(v) = props.object_kind {
         base.object_kind = v;
     }

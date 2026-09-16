@@ -2919,6 +2919,12 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.sequence_kind.is_some() {
         base.sequence_kind = overlay.sequence_kind;
     }
+    if overlay.choice_length_kind.is_some() {
+        base.choice_length_kind = overlay.choice_length_kind;
+    }
+    if overlay.choice_length.is_some() {
+        base.choice_length = overlay.choice_length;
+    }
     if overlay.fill_byte.is_some() {
         base.fill_byte = overlay.fill_byte;
     }
@@ -3905,6 +3911,8 @@ fn is_dfdl_property(name: &str) -> bool {
             | "leadingSkip"
             | "trailingSkip"
             | "sequenceKind"
+            | "choiceLengthKind"
+            | "choiceLength"
             | "fillByte"
             | "ref"
             | "format"
@@ -4655,6 +4663,23 @@ fn props_from_attrs_with_variables(
                         .into())
                     }
                 });
+            }
+            "choiceLengthKind" => {
+                props.choice_length_kind = Some(match value.as_str() {
+                    "implicit" => ChoiceLengthKind::Implicit,
+                    "explicit" => ChoiceLengthKind::Explicit,
+                    other => {
+                        return Err(ParseError::InvalidXml {
+                            message: alloc::format!("unknown choiceLengthKind `{other}`"),
+                        }
+                        .into())
+                    }
+                });
+            }
+            "choiceLength" => {
+                props.choice_length = Some(value.parse().map_err(|_| ParseError::InvalidXml {
+                    message: alloc::format!("invalid choiceLength `{value}`"),
+                })?);
             }
             "fillByte" => {
                 props.fill_byte_raw = Some(value.to_string());

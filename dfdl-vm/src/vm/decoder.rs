@@ -18,8 +18,8 @@ use crate::length_validate::{binary_length_validation_applies, validate_data_len
 use crate::error::{Error, Result, VmError};
 use crate::ir::{ChoiceBranch, IrNode, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
-    match_length_pattern, BitOrder, EmptyElementParsePolicy, InputValueCalc, LengthKind,
-    LengthUnits, OccursCountKind, Representation, SeparatorPosition, SequenceKind,
+    match_length_pattern, BitOrder, ChoiceLengthKind, EmptyElementParsePolicy, InputValueCalc,
+    LengthKind, LengthUnits, OccursCountKind, Representation, SeparatorPosition, SequenceKind,
 };
 use crate::value::{DfdlValue, StringValue};
 use alloc::collections::BTreeMap;
@@ -971,6 +971,12 @@ impl<'a> Decoder<'a> {
                 }))
             }
             IrNode::Choice { branches, props } => {
+                let choice_start = cursor.pos;
+                let choice_frame_bytes = choice_explicit_frame_bytes(
+                    props,
+                    cursor,
+                    self.ctx.strings(),
+                )?;
                 let dispatch_key = choice_dispatch_key_string(
                     props,
                     siblings,
@@ -1021,13 +1027,14 @@ impl<'a> Decoder<'a> {
                 let mut branch_errors = Vec::new();
                 for branch in branches_iter {
                     let saved = cursor.clone();
+                    let branch_scope = choice_frame_bytes.or(content_scope_bytes);
                     match self.decode_node(
                         branch.node,
                         cursor,
                         has_following_sibling,
                         parent_sequence,
                         siblings,
-                        content_scope_bytes,
+                        branch_scope,
                         pattern_text_frame,
                         stop_sequences,
                     ) {
@@ -1043,6 +1050,9 @@ impl<'a> Decoder<'a> {
                                     *cursor = saved;
                                     continue;
                                 }
+                            }
+                            if let Some(frame) = choice_frame_bytes {
+                                cursor.pos = choice_start.saturating_add(frame);
                             }
                             let name = self.ctx.strings().get(branch.name)?.to_string();
                             return Ok(DfdlValue::choice(name, value));
@@ -4152,6 +4162,44 @@ fn element_kind(program: &IrProgram, node_id: u32) -> core::result::Result<Value
         IrNode::Element { kind, .. } => Ok(*kind),
         _ => Ok(ValueKind::Complex),
     }
+}
+
+fn choice_explicit_frame_bytes(
+    props: &IrProps,
+    cursor: &Cursor<'_>,
+    strings: &StringPool,
+) -> Result<Option<usize>> {
+    if props.choice_length_kind != ChoiceLengthKind::Explicit {
+        return Ok(None);
+    }
+    let Some(units) = props.choice_length else {
+        return Err(VmError::InvalidValue {
+            message: "choiceLengthKind explicit requires choiceLength".into(),
+        }
+        .into());
+    };
+    let n = units as usize;
+    if n == 0 {
+        return Ok(Some(0));
+    }
+    let span = match props.length_units {
+        LengthUnits::Bytes => n,
+        LengthUnits::Characters => {
+            let enc = encoding_name(props, strings)?;
+            super::encoding::character_span_byte_length(n, &enc)?
+        }
+        LengthUnits::Bits => n.saturating_add(7) / 8,
+    };
+    if cursor.pos.saturating_add(span) > cursor.data.len() {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "choice explicit length {n} {:?} exceeds remaining input",
+                props.length_units
+            ),
+        }
+        .into());
+    }
+    Ok(Some(span))
 }
 
 fn backtrack_decoded_facets_ok(

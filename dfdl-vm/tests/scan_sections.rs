@@ -194,6 +194,7 @@ scan_test!(scan_section08, "section08/property_scoping");
 scan_test!(scan_section05, "section05");
 scan_test!(scan_section13, "section13");
 scan_test!(scan_section14, "section14");
+scan_test!(scan_section15, "section15");
 
 #[test]
 fn daffodil_section14_regression_gate() {
@@ -206,5 +207,19 @@ fn daffodil_section14_regression_gate() {
     assert_eq!(
         fail, 0,
         "section14 regression: expected 0 failures pass={pass} fail={fail} skip={skip}"
+    );
+}
+
+#[test]
+fn daffodil_section15_regression_gate() {
+    let (pass, fail, skip, parse_fail, _) = scan_dir("section15");
+    assert_eq!(parse_fail, 0, "section15 TDML parse errors");
+    assert!(
+        pass >= 68,
+        "section15: expected at least 68 passing cases, got pass={pass} fail={fail} skip={skip}"
+    );
+    assert!(
+        fail <= 100,
+        "section15 regression: too many failures pass={pass} fail={fail} skip={skip}"
     );
 }

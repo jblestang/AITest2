@@ -6,7 +6,7 @@ use crate::schema::{
     BinaryFloatRep, BinaryNumberCheckPolicy, BinaryNumberRep, BitOrder, ByteOrder,
     EncodingErrorPolicy, EscapeSchemeDef, InputValueCalc, InputValueCalcSegment,
     LengthKind, LengthUnits, NilKind, ObjectKind, OccursCountKind, OutputValueCalc,
-    Representation, SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind,
+    ChoiceLengthKind, Representation, SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind,
     TextNumberJustification, TextPadKind, TextStringJustification, TextTrimKind,
 };
 use alloc::string::String;
@@ -204,6 +204,8 @@ pub struct IrProps {
     pub binary_boolean_false_rep_defined: bool,
     pub default_value: Option<StringId>,
     pub sequence_kind: SequenceKind,
+    pub choice_length_kind: ChoiceLengthKind,
+    pub choice_length: Option<u64>,
     pub alignment: u64,
     pub alignment_implicit: bool,
     pub alignment_units: LengthUnits,
@@ -389,6 +391,8 @@ impl Default for IrProps {
             binary_boolean_false_rep_defined: false,
             default_value: None,
             sequence_kind: SequenceKind::Ordered,
+            choice_length_kind: ChoiceLengthKind::Implicit,
+            choice_length: None,
             alignment: 0,
             alignment_implicit: false,
             alignment_units: LengthUnits::Bytes,

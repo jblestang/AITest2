@@ -137,6 +137,8 @@ pub struct DfdlProps {
     pub leading_skip: Option<u64>,
     pub trailing_skip: Option<u64>,
     pub sequence_kind: Option<SequenceKind>,
+    pub choice_length_kind: Option<ChoiceLengthKind>,
+    pub choice_length: Option<u64>,
     pub fill_byte: Option<Vec<u8>>,
     /// Raw `dfdl:fillByte` attribute before entity expansion (compile-time checks).
     pub fill_byte_raw: Option<String>,
@@ -305,6 +307,13 @@ pub enum SeparatorPosition {
 pub enum SequenceKind {
     Ordered,
     Unordered,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChoiceLengthKind {
+    #[default]
+    Implicit,
+    Explicit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
