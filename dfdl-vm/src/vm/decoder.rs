@@ -564,7 +564,14 @@ impl<'a> Decoder<'a> {
                         .map(|cp| {
                             should_suppress_decode_infix_separator(props, cp, prev_absent_or_empty)
                         })
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        || (idx > 0
+                            && self.skip_infix_sep_after_parsed_unbounded_array(
+                                props,
+                                &children,
+                                idx,
+                                cursor,
+                            )?);
                     let skip_sep_at_term = child_element_props.is_some_and(|cp| cp.occurs_min == 0)
                         && cursor_at_own_sequence_terminator(
                             cursor,
@@ -889,7 +896,8 @@ impl<'a> Decoder<'a> {
                                                 crate::schema::SeparatorSuppressionPolicy::AnyEmpty,
                                             )
                                         && msg.contains("Parse Error");
-                                    if msg.contains("Init('")
+                                    if (msg.contains("Init('")
+                                        && optional_element_may_absorb_initiator_failure(cp))
                                         || (msg.contains("initiator mismatch")
                                             && optional_element_may_absorb_initiator_failure(cp))
                                         || msg.contains("Delimiter not found")
@@ -1234,7 +1242,7 @@ impl<'a> Decoder<'a> {
                 if let Some(c) = *child {
                     return self.choice_branch_initiator_present(cursor, c);
                 }
-                Ok(true)
+                Ok(false)
             }
             IrNode::Sequence { children, props, .. } => {
                 if props.initiator.is_some() {
@@ -1251,7 +1259,10 @@ impl<'a> Decoder<'a> {
                 }
                 Ok(false)
             }
-            IrNode::Choice { branches, .. } => {
+            IrNode::Choice { branches, props, .. } => {
+                if props.initiator.is_some() {
+                    return self.initiator_present_at_cursor(cursor, props);
+                }
                 for branch in branches {
                     if self.choice_branch_initiator_present(cursor, branch.node)? {
                         return Ok(true);
@@ -1963,7 +1974,8 @@ impl<'a> Decoder<'a> {
                                 continue;
                             }
                             let msg = e.to_string();
-                            if msg.contains("Init('")
+                            if (msg.contains("Init('")
+                                && optional_element_may_absorb_initiator_failure(cp))
                                 || (msg.contains("initiator mismatch")
                                     && optional_element_may_absorb_initiator_failure(cp))
                                 || msg.contains("Delimiter not found")
@@ -2659,6 +2671,21 @@ impl<'a> Decoder<'a> {
                                 continue;
                             }
                             return Err(VmError::ElementAbsent.into());
+                        }
+                        let err_msg = e.to_string();
+                        if err_msg.contains("initiator mismatch")
+                            && !optional_element_may_absorb_initiator_failure(props)
+                            && !rewind.is_empty()
+                        {
+                            return Err(
+                                element_parse_error(
+                                    node_id,
+                                    self.ctx.program,
+                                    self.ctx.strings(),
+                                    e,
+                                )
+                                .into(),
+                            );
                         }
                         break;
                     }
@@ -4327,6 +4354,46 @@ fn optional_element_may_absorb_initiator_failure(props: &IrProps) -> bool {
         return false;
     }
     !props.occurs_max.map(|m| m > 1).unwrap_or(true)
+}
+
+impl<'a> Decoder<'a> {
+    /// Parsed unbounded arrays may end without a trailing infix separator before the next sibling.
+    fn skip_infix_sep_after_parsed_unbounded_array(
+        &self,
+        seq_props: &IrProps,
+        children: &[u32],
+        index: usize,
+        cursor: &Cursor<'_>,
+    ) -> Result<bool> {
+        if index == 0 || cursor.is_empty() {
+            return Ok(false);
+        }
+        if seq_props.separator_position != SeparatorPosition::Infix {
+            return Ok(false);
+        }
+        let Some(sep_id) = seq_props.separator else {
+            return Ok(false);
+        };
+        let prev = children[index - 1];
+        let IrNode::Element { props: prev_props, .. } = self.ctx.program.node(prev)? else {
+            return Ok(false);
+        };
+        let parsed_repeating = prev_props.occurs_count_kind == OccursCountKind::Parsed
+            && prev_props.occurs_max.map(|m| m > 1).unwrap_or(true);
+        if !parsed_repeating {
+            return Ok(false);
+        }
+        let pat = self.ctx.strings().get(sep_id)?;
+        let enc = encoding_name(seq_props, self.ctx.strings()).ok();
+        let at_sep = crate::schema::match_delimiter_opts_for_encoding(
+            &cursor.data[cursor.pos..],
+            pat,
+            seq_props.ignore_case,
+            enc.as_deref(),
+        )
+        .is_some();
+        Ok(!at_sep)
+    }
 }
 
 fn is_pattern_length_mismatch(err: &Error) -> bool {
