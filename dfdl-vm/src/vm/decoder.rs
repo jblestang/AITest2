@@ -257,9 +257,13 @@ impl<'a> Decoder<'a> {
         let Some(eq_idx) = rest.find(" eq ") else {
             return Ok(None);
         };
-        let path = rest[..eq_idx].trim();
+        let mut path = rest[..eq_idx].trim();
         let lit = crate::schema::unquote_xpath_string_literal(rest[eq_idx + 4..].trim());
-        if path.contains('/') || path.contains('[') || up > 0 {
+        let query_style = path.starts_with("./");
+        if let Some(stripped) = path.strip_prefix("./") {
+            path = stripped;
+        }
+        if path.contains('/') || path.contains('[') {
             let Some(actual) = self
                 .xpath_discriminator_path_string(up, path)
                 .ok()
@@ -276,10 +280,37 @@ impl<'a> Decoder<'a> {
             return Ok(None);
         }
         let local = path.rsplit(':').next().unwrap_or(path).trim();
-        let Some(sib) = self.lookup_xpath_sibling_state(local, up.saturating_sub(1)) else {
+        return self.eval_sibling_name_eq_literal(local, &lit, up, query_style);
+    }
+
+    fn eval_sibling_name_eq_literal(
+        &self,
+        local: &str,
+        lit: &str,
+        up: usize,
+        query_style: bool,
+    ) -> Result<Option<bool>> {
+        let up_levels = up.saturating_sub(1);
+        let mut values = alloc::vec::Vec::new();
+        if let Some(sib) = self.lookup_xpath_sibling_state(local, up_levels) {
+            values.extend(sibling_discriminator_values(&sib.value));
+        }
+        if values.is_empty() {
             return Ok(Some(false));
-        };
-        Ok(Some(dfdl_value_dispatch_string(&sib.value) == lit))
+        }
+        if query_style && values.len() > 1 {
+            let all_same = values.iter().all(|v| v == &values[0]);
+            let any_match = values.iter().any(|v| v == lit);
+            if !all_same || (any_match && values.iter().any(|v| v != lit)) {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Schema Definition Error: query-style path expression `./{local}` is ambiguous."
+                    ),
+                }
+                .into());
+            }
+        }
+        Ok(Some(values.iter().any(|v| v == lit)))
     }
 
     fn xpath_discriminator_path_string(
@@ -358,7 +389,18 @@ impl<'a> Decoder<'a> {
     }
 
     fn insert_xpath_sibling(&self, key: String, state: SiblingState) {
-        self.xpath_siblings.borrow_mut().insert(key, state);
+        let mut map = self.xpath_siblings.borrow_mut();
+        if let Some(existing) = map.remove(&key) {
+            map.insert(
+                key,
+                SiblingState {
+                    value: append_value(existing.value, state.value),
+                    content_bytes: state.content_bytes,
+                },
+            );
+        } else {
+            map.insert(key, state);
+        }
     }
 
     fn xpath_siblings_snapshot(&self) -> BTreeMap<String, SiblingState> {
@@ -780,7 +822,7 @@ impl<'a> Decoder<'a> {
                                         value: gc_value.clone(),
                                         content_bytes: consumed,
                                     };
-                                    seq_siblings.insert(key.clone(), state.clone());
+                                    insert_seq_sibling(&mut seq_siblings,key.clone(), state.clone());
                                     self.insert_xpath_sibling(key, state);
                                     let _ = gp;
                                 }
@@ -868,7 +910,7 @@ impl<'a> Decoder<'a> {
                                     value: child_value.clone(),
                                     content_bytes,
                                 };
-                                seq_siblings.insert(key.clone(), state.clone());
+                                insert_seq_sibling(&mut seq_siblings,key.clone(), state.clone());
                                 self.insert_xpath_sibling(key, state);
                             }
                             prev_child_empty_string = matches!(
@@ -1098,6 +1140,7 @@ impl<'a> Decoder<'a> {
             IrNode::Choice { branches, props } => {
                 let choice_start = cursor.pos;
                 self.consume_initiator(props, cursor)?;
+                validate_choice_branches_non_optional_runtime(self.ctx.program, branches)?;
                 let mut choice_stops = stop_sequences.to_vec();
                 if props.terminator.is_some() {
                     choice_stops.push(props);
@@ -1639,7 +1682,7 @@ impl<'a> Decoder<'a> {
                     let saved_map = map.clone();
                     let saved_siblings = seq_siblings.clone();
                     insert_child(map, child, child_value, self.ctx.program)?;
-                    seq_siblings.insert(key.clone(), state.clone());
+                    insert_seq_sibling(seq_siblings, key.clone(), state.clone());
                     self.insert_xpath_sibling(key, state);
                     let mut rest = remaining.to_vec();
                     rest.remove(pick);
@@ -1902,7 +1945,7 @@ impl<'a> Decoder<'a> {
                                         self.ctx.program.node(child)?
                                     {
                                         let key = self.ctx.strings().get(*name)?.to_string();
-                                        seq_siblings.insert(
+                                        insert_seq_sibling(&mut seq_siblings,
                                             key.clone(),
                                             SiblingState {
                                                 value: DfdlValue::Null,
@@ -2004,7 +2047,7 @@ impl<'a> Decoder<'a> {
                             } else {
                                 consumed
                             };
-                            seq_siblings.insert(
+                            insert_seq_sibling(&mut seq_siblings,
                                 key,
                                 SiblingState {
                                     value: child_value.clone(),
@@ -2734,6 +2777,9 @@ impl<'a> Decoder<'a> {
                 }
                 Err(e) => {
                     if implicit_empty_probe {
+                        return Err(e);
+                    }
+                    if is_schema_definition_error(&e) {
                         return Err(e);
                     }
                     let rewind = saved.clone();
@@ -3971,7 +4017,7 @@ impl<'a> Decoder<'a> {
         if let Some(b) = crate::schema::eval_discriminator_expression(expr, dot) {
             return Ok(b);
         }
-        if let Ok(Some(b)) = self.eval_discriminator_xpath_eq(inner, dot) {
+        if let Some(b) = self.eval_discriminator_xpath_eq(inner, dot)? {
             return Ok(b);
         }
         let compact: alloc::string::String =
@@ -4572,6 +4618,15 @@ fn is_element_absent(err: &Error) -> bool {
     matches!(err, Error::Vm(VmError::ElementAbsent))
 }
 
+fn is_schema_definition_error(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::Vm(VmError::InvalidValue { message })
+            if message.starts_with("Schema Definition Error")
+                || message.starts_with("Runtime Schema Definition Error")
+    )
+}
+
 /// Optional single-occurrence elements may treat initiator failures as absent; repeating or
 /// `occursCountKind="parsed"` arrays must surface the error (e.g. e1a initiated-content choice).
 fn optional_element_may_absorb_initiator_failure(props: &IrProps) -> bool {
@@ -4905,6 +4960,20 @@ fn should_write_separator(position: SeparatorPosition, index: usize, total: usiz
         SeparatorPosition::Prefix => index < total,
         SeparatorPosition::Infix => index > 0,
         SeparatorPosition::Postfix => index > 0 && index < total,
+    }
+}
+
+fn insert_seq_sibling(map: &mut BTreeMap<String, SiblingState>, key: String, state: SiblingState) {
+    if let Some(existing) = map.remove(&key) {
+        map.insert(
+            key,
+            SiblingState {
+                value: append_value(existing.value, state.value),
+                content_bytes: state.content_bytes,
+            },
+        );
+    } else {
+        map.insert(key, state);
     }
 }
 
@@ -5381,6 +5450,57 @@ fn choice_dispatch_key_string(
         }
     }
     Ok(None)
+}
+
+fn sibling_discriminator_values(value: &DfdlValue) -> alloc::vec::Vec<alloc::string::String> {
+    match value {
+        DfdlValue::Array(items) => items.iter().flat_map(sibling_discriminator_values).collect(),
+        other => alloc::vec![dfdl_value_dispatch_string(other)],
+    }
+}
+
+/// Matches Apache Daffodil `ParticleMixin.isOptional` (choice branch SDE at activation).
+fn ir_props_is_dfdl_optional(props: &IrProps) -> bool {
+    match (props.occurs_min, props.occurs_max) {
+        (1, Some(1)) => false,
+        (1, None) => false,
+        (0, max) => match props.occurs_count_kind {
+            OccursCountKind::Parsed | OccursCountKind::Expression => false,
+            OccursCountKind::Implicit | OccursCountKind::Fixed => max == Some(1),
+        },
+        _ => false,
+    }
+}
+
+fn choice_branch_term_node(program: &IrProgram, node_id: u32) -> Result<u32> {
+    match program.node(node_id)? {
+        IrNode::Sequence { children, .. } if children.len() == 1 => Ok(children[0]),
+        _ => Ok(node_id),
+    }
+}
+
+fn choice_branch_is_optional_element(program: &IrProgram, branch_node: u32) -> Result<bool> {
+    let term = choice_branch_term_node(program, branch_node)?;
+    match program.node(term)? {
+        IrNode::Element { props, .. } => Ok(ir_props_is_dfdl_optional(props)),
+        _ => Ok(false),
+    }
+}
+
+fn validate_choice_branches_non_optional_runtime(
+    program: &IrProgram,
+    branches: &[ChoiceBranch],
+) -> Result<()> {
+    for branch in branches {
+        let optional = choice_branch_is_optional_element(program, branch.node)?;
+        if optional {
+            return Err(VmError::InvalidValue {
+                message: "Schema Definition Error: Branch of choice must be non-optional.".into(),
+            }
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn parse_discriminator_path_step(step: &str) -> Result<(&str, Option<usize>)> {
