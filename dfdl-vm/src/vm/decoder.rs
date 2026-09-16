@@ -6794,6 +6794,34 @@ pub(crate) fn resolve_length_props_for_test(
     resolve_length_props(props, None, kind, strings, tunables)
 }
 
+fn sibling_state_value_by_name<'a>(
+    siblings: &'a BTreeMap<String, SiblingState>,
+    name: &str,
+) -> Option<&'a DfdlValue> {
+    if let Some(state) = siblings.get(name) {
+        return Some(&state.value);
+    }
+    siblings
+        .iter()
+        .find(|(k, _)| crate::xml_util::local_name_str(k) == name)
+        .map(|(_, state)| &state.value)
+}
+
+fn apply_length_sibling_adjust(len: u64, adjust: i64) -> Result<u64> {
+    if adjust == 0 {
+        return Ok(len);
+    }
+    if adjust < 0 {
+        let sub = u64::try_from(-adjust).map_err(|_| VmError::InvalidValue {
+            message: "invalid length sibling adjustment".into(),
+        })?;
+        return len.checked_sub(sub).ok_or_else(|| {
+            negative_runtime_length_error(-(sub as i64 - len as i64)).into()
+        });
+    }
+    Ok(len.saturating_add(adjust as u64))
+}
+
 fn resolve_length_props(
     props: &IrProps,
     siblings: Option<&BTreeMap<String, SiblingState>>,
@@ -6807,12 +6835,15 @@ fn resolve_length_props(
         if let Some(sib_id) = props.length_sibling {
             let sib_name = strings.get(sib_id)?;
             let sib_val = siblings
-                .and_then(|m| m.get(sib_name))
-                .map(|state| &state.value)
+                .and_then(|m| sibling_state_value_by_name(m, sib_name))
                 .ok_or_else(|| VmError::InvalidValue {
                     message: alloc::format!("length sibling `{sib_name}` not available"),
                 })?;
-            resolved.length = Some(length_from_value(sib_val, props.length_sibling_cast_long)?);
+            let base_len = length_from_value(sib_val, props.length_sibling_cast_long)?;
+            resolved.length = Some(apply_length_sibling_adjust(
+                base_len,
+                props.length_sibling_adjust,
+            )?);
             if kind == ValueKind::Decimal {
                 validate_explicit_decimal_before_decode(kind, &resolved, tunables, strings)?;
             } else if let Some(len) = resolved.length {

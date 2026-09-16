@@ -3319,6 +3319,9 @@ fn overlay_dfdl_to_ir(
     if props.length_sibling_cast_long {
         base.length_sibling_cast_long = true;
     }
+    if props.length_sibling_adjust != 0 {
+        base.length_sibling_adjust = props.length_sibling_adjust;
+    }
     if props.length_expr_unparsed {
         base.length_expr_unparsed = true;
     }
@@ -3854,6 +3857,7 @@ fn element_props_for_simple_type_compile(element: &DfdlProps) -> DfdlProps {
         length_units: element.length_units,
         length_sibling: element.length_sibling.clone(),
         length_sibling_cast_long: element.length_sibling_cast_long,
+        length_sibling_adjust: element.length_sibling_adjust,
         length_expr_unparsed: element.length_expr_unparsed,
         length_self_string_max_cap: element.length_self_string_max_cap,
         length_self_value_length: element.length_self_value_length,
@@ -3921,6 +3925,9 @@ fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.length_sibling_cast_long {
         out.length_sibling_cast_long = true;
+    }
+    if overlay.length_sibling_adjust != 0 {
+        out.length_sibling_adjust = overlay.length_sibling_adjust;
     }
     if overlay.length_expr_unparsed {
         out.length_expr_unparsed = true;

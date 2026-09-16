@@ -35,6 +35,8 @@ pub struct DfdlProps {
     pub length_sibling: Option<String>,
     /// True when `{ xs:long(../ex:name) }` wraps the length sibling reference.
     pub length_sibling_cast_long: bool,
+    /// Additive adjustment after resolving the length sibling (e.g. `{ ../len - 8 }` → -8).
+    pub length_sibling_adjust: i64,
     /// True when a `{ ... }` length expression was present but not fully compiled.
     pub length_expr_unparsed: bool,
     /// `{ if (fn:string-length(.) gt N) then N else fn:string-length(.) }` style cap.

@@ -782,10 +782,13 @@ pub fn validate_fill_byte_schema(
 ) -> Result<(), SchemaError> {
     let enc = encoding.to_ascii_uppercase();
     let trimmed = raw.trim();
-    let hex_entity = trimmed.starts_with("%#r")
+    let hex_byte_entity = (trimmed.starts_with("%#r") || trimmed.starts_with("%#R"))
         && trimmed.ends_with(';')
         && trimmed.len() >= 6;
-    if trimmed.contains('%') && !hex_entity {
+    let hex_codepoint_entity = (trimmed.starts_with("%#x") || trimmed.starts_with("%#X"))
+        && trimmed.ends_with(';')
+        && trimmed.len() >= 6;
+    if trimmed.contains('%') && !hex_byte_entity && !hex_codepoint_entity {
         // Section 13 nillable2 uses fillByte="%SP;" (single space); other character classes stay SDE.
         let allow_sp = matches!(trimmed, "%SP;" | "%SP");
         if !allow_sp {

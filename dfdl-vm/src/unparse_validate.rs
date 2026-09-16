@@ -603,7 +603,7 @@ fn validate_sequence_children(
         else {
             continue;
         };
-        if props.hidden || props.output_value_calc.is_some() {
+        if ir_props_computed_at_unparse(props) {
             continue;
         }
         let elem_name = program.strings.get(*name).map_err(|e| e.to_string())?;
@@ -869,6 +869,14 @@ fn ir_props_can_absent_from_unparse_infoset(props: &IrProps) -> bool {
         || props.occurs_min == 0
 }
 
+fn ir_props_computed_at_unparse(props: &IrProps) -> bool {
+    props.hidden
+        || props.output_value_calc.is_some()
+        || props.output_value_calc_literal.is_some()
+        || props.output_value_calc_sibling.is_some()
+        || props.output_value_calc_conditional
+}
+
 fn ir_particle_can_absent_from_unparse_infoset(
     program: &IrProgram,
     node_id: u32,
@@ -1026,13 +1034,24 @@ pub fn validate_unparse_value_map(
                 else {
                     continue;
                 };
+                if ir_props_computed_at_unparse(props) {
+                    continue;
+                }
                 let key = program
                     .strings
                     .get(*name)
                     .map_err(|e| VmError::InvalidValue { message: e.to_string() })?;
                 let max = props.occurs_max.unwrap_or(u64::MAX);
                 let min = props.occurs_min;
-                let count = match map.get(key) {
+                let local = crate::xml_util::local_name_str(key);
+                let count = match map
+                    .get(key)
+                    .or_else(|| map.get(local))
+                    .or_else(|| {
+                        map.iter()
+                            .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
+                            .map(|(_, v)| v)
+                    }) {
                     Some(DfdlValue::Array(items)) => items.len() as u64,
                     Some(_) => 1,
                     None => 0,

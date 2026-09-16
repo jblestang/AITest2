@@ -1950,7 +1950,7 @@ impl<'a> XsdParser<'a> {
         self.doc.dfdl_annotations_seen = true;
         record_foreign_attrs_on_dfdl_element(local, &attrs, &mut self.doc.schema_diagnostics);
         for key in attrs.keys() {
-            if key.starts_with("dfdl:") || key.starts_with("dfdlx:") {
+            if key.starts_with("dfdl:") {
                 let attr_local = key.rsplit(':').next().unwrap_or(key.as_str());
                 return Err(crate::error::SchemaError::InvalidProperty {
                     message: alloc::format!(
@@ -2674,6 +2674,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.length_sibling_cast_long {
         base.length_sibling_cast_long = true;
+    }
+    if overlay.length_sibling_adjust != 0 {
+        base.length_sibling_adjust = overlay.length_sibling_adjust;
     }
     if overlay.length_expr_unparsed {
         base.length_expr_unparsed = true;
@@ -3870,6 +3873,21 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
         if let Some(lit) = parse_xs_string_literal_arg(arg) {
             return Some((OutputValueCalc::Constant(0), None, Some(lit)));
         }
+        if let Some(nested) = parse_output_value_calc(&alloc::format!("{{{arg}}}")) {
+            return Some(nested);
+        }
+    }
+    if inner.starts_with("xs:float(") && inner.ends_with(')') {
+        let arg = inner["xs:float(".len()..inner.len() - 1].trim();
+        if let Some(nested) = parse_output_value_calc(&alloc::format!("{{{arg}}}")) {
+            return Some(nested);
+        }
+    }
+    if inner.starts_with("xs:int(") && inner.ends_with(')') {
+        let arg = inner["xs:int(".len()..inner.len() - 1].trim();
+        if let Some(nested) = parse_output_value_calc(&alloc::format!("{{{arg}}}")) {
+            return Some(nested);
+        }
     }
     if let Some(hex) = parse_output_value_calc_hex(inner) {
         return Some(hex);
@@ -4039,20 +4057,35 @@ fn apply_choice_dispatch_key_parse(props: &mut DfdlProps, value: &str) {
     }
 }
 
-fn parse_sibling_length_expr(value: &str) -> Option<(String, bool)> {
+fn parse_sibling_length_adjustment(path_tail: &str) -> Option<(String, i64)> {
+    let tail = path_tail.trim();
+    for op in ['+', '-'] {
+        if let Some((name_part, delta_part)) = tail.split_once(op) {
+            let name = local_name_from_qname(name_part.trim()).to_string();
+            let delta: i64 = delta_part.trim().parse().ok()?;
+            let adjust = if op == '-' { -delta } else { delta };
+            return Some((name, adjust));
+        }
+    }
+    Some((local_name_from_qname(tail).to_string(), 0))
+}
+
+fn parse_sibling_length_expr(value: &str) -> Option<(String, bool, i64)> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
     if let Some(path) = inner.strip_prefix("../") {
-        return Some((local_name_from_qname(path).to_string(), false));
+        let (name, adjust) = parse_sibling_length_adjustment(path)?;
+        return Some((name, false, adjust));
     }
     if let Some(idx) = inner.find("../") {
         let tail = inner[idx + 3..].trim().trim_end_matches(')').trim();
         if !tail.is_empty() {
             let cast_long = inner.contains("xs:long(") || inner.contains("xs:integer(");
-            return Some((local_name_from_qname(tail).to_string(), cast_long));
+            let (name, adjust) = parse_sibling_length_adjustment(tail)?;
+            return Some((name, cast_long, adjust));
         }
     }
     None
@@ -4403,9 +4436,10 @@ fn props_from_attrs_with_variables(
                     props.length = Some(v);
                 } else if let Some(v) = parse_constant_length_expr(value) {
                     props.length = Some(v);
-                } else if let Some((sibling, cast_long)) = parse_sibling_length_expr(value) {
+                } else if let Some((sibling, cast_long, adjust)) = parse_sibling_length_expr(value) {
                     props.length_sibling = Some(sibling);
                     props.length_sibling_cast_long = cast_long;
+                    props.length_sibling_adjust = adjust;
                 } else if variables
                     .and_then(|vars| parse_variable_length_expr(value, vars))
                     .is_some()
@@ -4849,21 +4883,21 @@ fn props_from_attrs_with_variables(
                 });
             }
             "textStandardDecimalSeparator" => {
-                if let Some((sibling, _)) = parse_sibling_length_expr(value) {
+                if let Some((sibling, _, _)) = parse_sibling_length_expr(value) {
                     props.text_standard_decimal_separator_sibling = Some(sibling);
                 } else {
                     props.text_standard_decimal_separator = Some(value.clone());
                 }
             }
             "textStandardGroupingSeparator" => {
-                if let Some((sibling, _)) = parse_sibling_length_expr(value) {
+                if let Some((sibling, _, _)) = parse_sibling_length_expr(value) {
                     props.text_standard_grouping_separator_sibling = Some(sibling);
                 } else {
                     props.text_standard_grouping_separator = Some(value.clone());
                 }
             }
             "textStandardExponentRep" => {
-                if let Some((sibling, _)) = parse_sibling_length_expr(value) {
+                if let Some((sibling, _, _)) = parse_sibling_length_expr(value) {
                     props.text_standard_exponent_rep_sibling = Some(sibling);
                 } else {
                     props.text_standard_exponent_rep = Some(value.clone());

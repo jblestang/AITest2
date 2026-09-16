@@ -1964,9 +1964,17 @@ fn resolve_encoding_for_encode(
     let Some(sibling) = parse_sibling_property_expr(raw) else {
         return Ok(props.clone());
     };
-    let sib_val = map.get(&sibling).ok_or_else(|| VmError::InvalidValue {
-        message: alloc::format!("encoding sibling `{sibling}` not available"),
-    })?;
+    let sib_val = map
+        .get(&sibling)
+        .or_else(|| map.get(crate::xml_util::local_name_str(&sibling)))
+        .or_else(|| {
+            map.iter()
+                .find(|(k, _)| crate::xml_util::local_name_str(k) == sibling)
+                .map(|(_, v)| v)
+        })
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("encoding sibling `{sibling}` not available"),
+        })?;
     let enc = match sib_val {
         DfdlValue::String(s) => s.text.clone(),
         DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => s.clone(),
@@ -1978,12 +1986,23 @@ fn resolve_encoding_for_encode(
         }
     };
     let mut resolved = props.clone();
-    resolved.encoding = strings.lookup(&enc).ok_or_else(|| {
+    resolved.encoding = lookup_encoding_string_id(strings, &enc).ok_or_else(|| {
         VmError::InvalidValue {
             message: alloc::format!("resolved encoding `{enc}` not in string pool"),
         }
     })?;
     Ok(resolved)
+}
+
+fn lookup_encoding_string_id(pool: &crate::ir::StringPool, enc: &str) -> Option<crate::ir::StringId> {
+    if let Some(id) = pool.lookup(enc) {
+        return Some(id);
+    }
+    pool.values
+        .iter()
+        .enumerate()
+        .find(|(_, v)| v.eq_ignore_ascii_case(enc))
+        .map(|(idx, _)| crate::ir::StringId(idx as u32))
 }
 
 fn choice_explicit_frame_bytes_encode(
@@ -2089,12 +2108,38 @@ fn resolve_length_props_encode(
         return Ok(props.clone());
     };
     let sib_name = strings.get(sib_id)?;
-    let sib_val = map.get(sib_name).ok_or_else(|| VmError::InvalidValue {
-        message: alloc::format!("length sibling `{sib_name}` not available"),
-    })?;
+    let sib_val = map
+        .get(sib_name)
+        .or_else(|| {
+            map.iter()
+                .find(|(k, _)| crate::xml_util::local_name_str(k) == sib_name)
+                .map(|(_, v)| v)
+        })
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("length sibling `{sib_name}` not available"),
+        })?;
     let mut resolved = props.clone();
-    resolved.length = Some(length_from_value(sib_val, props.length_sibling_cast_long)?);
+    let base_len = length_from_value(sib_val, props.length_sibling_cast_long)?;
+    resolved.length = Some(apply_length_sibling_adjust_encode(
+        base_len,
+        props.length_sibling_adjust,
+    )?);
     Ok(resolved)
+}
+
+fn apply_length_sibling_adjust_encode(len: u64, adjust: i64) -> Result<u64> {
+    if adjust == 0 {
+        return Ok(len);
+    }
+    if adjust < 0 {
+        let sub = u64::try_from(-adjust).map_err(|_| VmError::InvalidValue {
+            message: "invalid length sibling adjustment".into(),
+        })?;
+        return len
+            .checked_sub(sub)
+            .ok_or_else(|| negative_runtime_length_error(-(sub as i64 - len as i64)).into());
+    }
+    Ok(len.saturating_add(adjust as u64))
 }
 
 fn sibling_from_map<'a>(
@@ -2106,10 +2151,17 @@ fn sibling_from_map<'a>(
         message: "outputValueCalc sibling missing".into(),
     })?;
     let name = strings.get(id)?;
-    map.get(name).ok_or_else(|| VmError::InvalidValue {
-        message: alloc::format!("outputValueCalc sibling `{name}` not available"),
-    })
-    .map_err(Into::into)
+    map.get(name)
+        .or_else(|| map.get(crate::xml_util::local_name_str(name)))
+        .or_else(|| {
+            map.iter()
+                .find(|(k, _)| crate::xml_util::local_name_str(k) == name)
+                .map(|(_, v)| v)
+        })
+        .ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("outputValueCalc sibling `{name}` not available"),
+        })
+        .map_err(Into::into)
 }
 
 fn length_in_units(byte_len: usize, units: LengthUnits) -> Result<usize> {

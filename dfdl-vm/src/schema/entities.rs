@@ -1608,6 +1608,10 @@ pub fn validate_escape_block_property(raw: &str) -> Result<(), String> {
 
 /// `escapeCharacter` / `escapeEscapeCharacter` must not contain literal whitespace (DFDL-6-036R).
 pub fn validate_escape_character_property(raw: &str) -> Result<(), String> {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Ok(());
+    }
     validate_property_no_literal_whitespace(raw, "escapeScheme")
 }
 
