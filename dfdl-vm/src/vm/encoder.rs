@@ -1050,9 +1050,9 @@ impl<'a> Encoder<'a> {
         map: &BTreeMap<String, DfdlValue>,
         sequence_children: &[u32],
     ) -> Result<DfdlValue> {
-        if props.output_value_calc.is_some() {
+        if props.output_value_calc.is_some() || props.output_value_calc_conditional {
             let local = crate::xml_util::local_name_str(key);
-            if !ovc_deferred_to_encode_occurrence(props) {
+            if !ovc_deferred_to_encode_occurrence(props) && !props.output_value_calc_conditional {
                 if let Some(k) = map_has_local_key(map, local) {
                     return Ok(map.get(&k).cloned().unwrap());
                 }
@@ -1400,7 +1400,7 @@ fn collect_ovc_elements_in_sequence_subtree(
                 child,
                 ..
             } => {
-                if props.output_value_calc_conditional {
+                if props.output_value_calc_conditional && props.output_value_calc_literal.is_none() {
                     let elem = enc.ctx.strings().get(*name)?;
                     return Err(VmError::InvalidValue {
                         message: alloc::format!(
@@ -1409,7 +1409,7 @@ fn collect_ovc_elements_in_sequence_subtree(
                     }
                     .into());
                 }
-                if props.output_value_calc.is_some() {
+                if props.output_value_calc.is_some() || props.output_value_calc_conditional {
                     let key = enc.ctx.strings().get(*name)?.to_string();
                     out.push(OvcPrecomputeEntry {
                         node_id: cid,
@@ -1569,6 +1569,15 @@ fn ovc_value_for_element_kind(kind: crate::ir::ValueKind, value: DfdlValue) -> D
         (ValueKind::Float, DfdlValue::Long(n)) => DfdlValue::Float(n as f32),
         (ValueKind::Double, DfdlValue::Int(n)) => DfdlValue::Double(n as f64),
         (ValueKind::Double, DfdlValue::Long(n)) => DfdlValue::Double(n as f64),
+        (ValueKind::Double, DfdlValue::String(s)) => {
+            DfdlValue::Double(s.text.trim().parse().unwrap_or(0.0))
+        }
+        (ValueKind::Float, DfdlValue::String(s)) => {
+            DfdlValue::Float(s.text.trim().parse().unwrap_or(0.0))
+        }
+        (ValueKind::UnsignedByte, DfdlValue::String(s)) => {
+            DfdlValue::UnsignedByte(s.text.trim().parse().unwrap_or(0))
+        }
         (ValueKind::DateTime | ValueKind::Time, DfdlValue::String(s)) => {
             let norm = crate::vm::calendar_binary::normalize_xs_date_lexical(&s.text)
                 .unwrap_or_else(|_| s.text.clone());
@@ -1879,7 +1888,7 @@ fn resolve_path_step_value(
         if crate::xml_util::local_name_str(ename) != crate::xml_util::local_name_str(local) {
             continue;
         }
-        if props.output_value_calc.is_some() {
+        if props.output_value_calc.is_some() || props.output_value_calc_conditional {
             return eval_output_value_calc(enc, props, map, sequence_children, props);
         }
         if let IrNode::Element { child: Some(cid), .. } = enc.ctx.program.node(child_id)? {
@@ -1927,16 +1936,16 @@ fn synthesize_element_subtree_value(
             if let Some(k) = map_has_local_key(map, crate::xml_util::local_name_str(key)) {
                 return Ok(map.get(&k).cloned().unwrap());
             }
-            if props.output_value_calc.is_some() {
-                return eval_output_value_calc(enc, props, map, sequence_children, props);
-            }
-            if let Some(cid) = child {
-                return synthesize_element_subtree_value(enc, *cid, map, sequence_children);
-            }
-            Err(VmError::InvalidValue {
-                message: alloc::format!("outputValueCalc path missing `{key}`"),
-            }
-            .into())
+        if props.output_value_calc.is_some() || props.output_value_calc_conditional {
+            return eval_output_value_calc(enc, props, map, sequence_children, props);
+        }
+        if let Some(cid) = child {
+            return synthesize_element_subtree_value(enc, *cid, map, sequence_children);
+        }
+        Err(VmError::InvalidValue {
+            message: alloc::format!("outputValueCalc path missing `{key}`"),
+        }
+        .into())
         }
         _ => Err(VmError::InvalidValue {
             message: "outputValueCalc path unsupported particle".into(),
@@ -2418,6 +2427,133 @@ fn dfdl_value_to_string_fragment(value: &DfdlValue) -> String {
     }
 }
 
+fn xpath_cast_inner<'a>(expr: &'a str, cast: &str) -> Option<&'a str> {
+    let expr = expr.trim();
+    let prefix = alloc::format!("{cast}(");
+    let rest = expr.strip_prefix(prefix.as_str())?;
+    let mut depth = 0i32;
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(rest[..i].trim()),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn eval_xpath_string_value(
+    enc: &Encoder<'_>,
+    expr: &str,
+    map: &BTreeMap<String, DfdlValue>,
+    children: &[u32],
+) -> Result<String> {
+    let expr = expr.trim();
+    if let Some(body) = expr
+        .strip_prefix("fn:concat(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let mut out = String::new();
+        for part in split_top_level_commas_ovc(body) {
+            out.push_str(&eval_xpath_string_value(enc, part.trim(), map, children)?);
+        }
+        return Ok(out);
+    }
+    if let Some(body) = expr
+        .strip_prefix("fn:substring-before(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let parts = split_top_level_commas_ovc(body);
+        let a = eval_xpath_string_value(
+            enc,
+            parts.first().ok_or_else(|| VmError::InvalidValue {
+                message: "fn:substring-before missing arguments".into(),
+            })?,
+            map,
+            children,
+        )?;
+        let b = eval_xpath_string_value(
+            enc,
+            parts.get(1).ok_or_else(|| VmError::InvalidValue {
+                message: "fn:substring-before missing second argument".into(),
+            })?,
+            map,
+            children,
+        )?;
+        if let Some(idx) = a.find(&b) {
+            return Ok(a[..idx].to_string());
+        }
+        return Ok(a);
+    }
+    if let Some(body) = expr
+        .strip_prefix("fn:substring-after(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let parts = split_top_level_commas_ovc(body);
+        let a = eval_xpath_string_value(
+            enc,
+            parts.first().ok_or_else(|| VmError::InvalidValue {
+                message: "fn:substring-after missing arguments".into(),
+            })?,
+            map,
+            children,
+        )?;
+        let b = eval_xpath_string_value(
+            enc,
+            parts.get(1).ok_or_else(|| VmError::InvalidValue {
+                message: "fn:substring-after missing second argument".into(),
+            })?,
+            map,
+            children,
+        )?;
+        if let Some(idx) = a.find(&b) {
+            return Ok(a[idx + b.len()..].to_string());
+        }
+        return Ok(String::new());
+    }
+    if let Some(path) = expr.strip_prefix("../") {
+        let local = path.rsplit(':').next().unwrap_or(path).trim();
+        return lookup_sibling_string_in_encode_map(map, local);
+    }
+    if let Some(lit) = ovc_error_unquote_literal(expr) {
+        return Ok(lit);
+    }
+    let _ = (enc, children);
+    Err(VmError::InvalidValue {
+        message: alloc::format!("unsupported xpath outputValueCalc `{expr}`"),
+    }
+    .into())
+}
+
+fn eval_xpath_output_value_calc(
+    enc: &Encoder<'_>,
+    expr: &str,
+    map: &BTreeMap<String, DfdlValue>,
+    children: &[u32],
+) -> Result<DfdlValue> {
+    let expr = expr.trim();
+    if let Some(arg) = xpath_cast_inner(expr, "xs:unsignedByte") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        let n: u8 = s.trim().parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:unsignedByte `{s}`"),
+        })?;
+        return Ok(DfdlValue::UnsignedByte(n));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:string") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        return Ok(DfdlValue::string(s));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:int") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        let n: i32 = s.trim().parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:int `{s}`"),
+        })?;
+        return Ok(DfdlValue::Int(n));
+    }
+    eval_xpath_string_value(enc, expr, map, children).map(DfdlValue::string)
+}
+
 fn eval_output_value_calc(
     enc: &Encoder<'_>,
     props: &IrProps,
@@ -2426,6 +2562,13 @@ fn eval_output_value_calc(
     parent_props: &IrProps,
 ) -> Result<DfdlValue> {
     let strings = enc.ctx.strings();
+    if props.output_value_calc_conditional {
+        let lit_id = props.output_value_calc_literal.ok_or_else(|| VmError::InvalidValue {
+            message: "missing xpath outputValueCalc".into(),
+        })?;
+        let expr = strings.get(lit_id)?;
+        return eval_xpath_output_value_calc(enc, expr, map, children);
+    }
     let calc = props.output_value_calc.ok_or_else(|| VmError::InvalidValue {
         message: "missing outputValueCalc".into(),
     })?;
@@ -2735,14 +2878,9 @@ fn lookup_sibling_string_in_encode_map(
     map: &BTreeMap<String, DfdlValue>,
     sibling: &str,
 ) -> Result<String> {
-    let sib_val = map
-        .iter()
-        .find(|(k, _)| crate::xml_util::local_name_str(k) == sibling)
-        .map(|(_, v)| v)
-        .or_else(|| map.get(sibling))
-        .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("property sibling `{sibling}` not available"),
-        })?;
+    let sib_val = lookup_sibling_value_in_map(map, sibling).ok_or_else(|| VmError::InvalidValue {
+        message: alloc::format!("property sibling `{sibling}` not available"),
+    })?;
     match sib_val {
         DfdlValue::String(s) => Ok(s.text.clone()),
         DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => Ok(s.clone()),

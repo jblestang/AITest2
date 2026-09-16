@@ -475,6 +475,7 @@ impl<'a> IrBuilder<'a> {
         match particle {
             Particle::Element(element) => {
                 validate_ivc_on_element_decl(element, self.schema)?;
+                validate_ovc_on_element_decl(element, self.schema)?;
                 let element_props = dfdl_props_for_element_ref(self.schema, element);
                 if let Some(ref expr) = element_props.input_value_calc_expression {
                     validate_schema_ivc_expression_prefixes(expr, self.schema)?;
@@ -2206,6 +2207,32 @@ fn validate_format_has_no_input_value_calc(schema: &SchemaDocument) -> Result<()
     if dfdl_props_has_input_value_calc(&schema.format_defaults.props) {
         return Err(SchemaError::InvalidProperty {
             message: "Schema Definition Error: Property dfdl:inputValueCalc is not allowed on dfdl:format".into(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_ovc_on_element_decl(
+    element: &ElementDecl,
+    schema: &SchemaDocument,
+) -> Result<()> {
+    let props = dfdl_props_for_element_ref(schema, element);
+    if !props.output_value_calc.is_some() && !props.output_value_calc_conditional {
+        return Ok(());
+    }
+    let min = element.props.occurs_min.unwrap_or(1);
+    if min == 0 {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: dfdl:outputValueCalc cannot be defined on optional elements.".into(),
+        }
+        .into());
+    }
+    if props.max_occurs_specified
+        && (props.occurs_max.is_none() || props.occurs_max.is_some_and(|m| m > 1))
+    {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: dfdl:outputValueCalc cannot be defined on array elements.".into(),
         }
         .into());
     }

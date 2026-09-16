@@ -3994,6 +3994,7 @@ fn looks_like_xpath_output_value_calc(value: &str) -> bool {
         || inner.contains("xs:int(")
         || inner.contains("xs:string(")
         || inner.contains("xs:long(")
+        || inner.contains("xs:unsignedByte(")
 }
 
 fn parse_output_new_line_encode_sibling(value: &str) -> Option<String> {
@@ -4102,6 +4103,11 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
     }
     if let Some(hex) = parse_output_value_calc_hex(inner) {
         return Some(hex);
+    }
+    if inner.contains('.') || inner.contains('e') || inner.contains('E') {
+        if inner.parse::<f64>().is_ok() {
+            return Some((OutputValueCalc::Constant(0), None, Some(inner.to_string())));
+        }
     }
     if let Ok(v) = inner.parse::<i64>() {
         return Some((OutputValueCalc::Constant(v), None, None));
@@ -4923,6 +4929,9 @@ fn props_from_attrs_with_variables(
                 } else if looks_like_xpath_output_value_calc(value) {
                     // e.g. `{ xs:int(../ex:x) }` — computed on unparse, satisfies hidden-group rules.
                     props.output_value_calc_conditional = true;
+                    props.output_value_calc_literal = Some(
+                        value.trim()[1..value.trim().len() - 1].trim().to_string(),
+                    );
                 }
             }
             "inputValueCalc" => {

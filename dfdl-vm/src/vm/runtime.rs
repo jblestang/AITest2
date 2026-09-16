@@ -6606,6 +6606,15 @@ pub(crate) fn write_binary_scalar(
     }
 
     if kind != Decimal && bytes.len() != size {
+        if bytes.len() > size && !props.truncate_specified_length_string {
+            let mut message =
+                "Unparse Error: data too long for explicit length and unable to truncate".to_string();
+            if let Some(name) = field_name {
+                message.push_str("\nSchema context: ");
+                message.push_str(name);
+            }
+            return Err(VmError::InvalidValue { message });
+        }
         return Err(VmError::InvalidValue {
             message: alloc::format!(
                 "binary value width {} does not match explicit length {size}",
