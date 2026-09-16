@@ -1570,7 +1570,9 @@ fn ovc_value_for_element_kind(kind: crate::ir::ValueKind, value: DfdlValue) -> D
         (ValueKind::Double, DfdlValue::Int(n)) => DfdlValue::Double(n as f64),
         (ValueKind::Double, DfdlValue::Long(n)) => DfdlValue::Double(n as f64),
         (ValueKind::DateTime | ValueKind::Time, DfdlValue::String(s)) => {
-            DfdlValue::DateTime(s.text)
+            let norm = crate::vm::calendar_binary::normalize_xs_date_lexical(&s.text)
+                .unwrap_or_else(|_| s.text.clone());
+            DfdlValue::DateTime(norm)
         }
         (_, v) => v,
     }
@@ -1589,6 +1591,41 @@ fn encoded_value_length_bits(byte_len: usize, bit_count: u8) -> usize {
     } else {
         byte_len.saturating_sub(1).saturating_mul(8) + bit_count as usize
     }
+}
+
+/// `dfdl:valueLength` for delimited simple types: encoded field value only (no initiator/terminator).
+fn delimited_value_length_bits_from_encode(
+    enc: &Encoder<'_>,
+    props: &IrProps,
+    buf: &[u8],
+    bit_count: u8,
+    encode_scope: Option<&BTreeMap<String, DfdlValue>>,
+) -> Result<usize> {
+    let strings = enc.ctx.strings();
+    let encoding = encoding_name(props, strings)?;
+    let output_nl = resolve_output_new_line_for_encode(props, encode_scope, strings)?
+        .map(|s| s as String);
+    let output_nl_ref = output_nl.as_deref();
+    let mut total_bits = encoded_value_length_bits(buf.len(), bit_count);
+    if let Some(id) = props.initiator {
+        let raw = strings.get(id)?;
+        let pat = resolve_encode_property_pattern(raw, encode_scope);
+        if !pat.is_empty() {
+            let bytes =
+                encode_framing_delimiter_bytes(&pat, output_nl_ref, &encoding, None);
+            total_bits = total_bits.saturating_sub(encoded_bit_length(bytes.len(), 0));
+        }
+    }
+    if let Some(id) = props.terminator {
+        let raw = strings.get(id)?;
+        let pat = resolve_encode_property_pattern(raw, encode_scope);
+        if !pat.is_empty() {
+            let bytes =
+                encode_framing_delimiter_bytes(&pat, output_nl_ref, &encoding, None);
+            total_bits = total_bits.saturating_sub(encoded_bit_length(bytes.len(), 0));
+        }
+    }
+    Ok(total_bits)
 }
 
 fn find_particle_by_local_name(
@@ -2185,6 +2222,7 @@ fn measure_value_length(
     {
         if child.is_none()
             && props.length_kind == LengthKind::Delimited
+            && props.escape_scheme.is_none()
             && matches!(
                 kind,
                 crate::ir::ValueKind::String
@@ -2211,11 +2249,29 @@ fn measure_value_length(
         node_id
     };
     enc.encode_node(encode_id, value, &mut buf, &mut bit_count, encode_scope)?;
-    match units {
-        LengthUnits::Bits => Ok(encoded_value_length_bits(buf.len(), bit_count)),
-        LengthUnits::Bytes => {
-            Ok((encoded_value_length_bits(buf.len(), bit_count) + 7) / 8)
+    let value_bits = if let Ok(IrNode::Element {
+        props,
+        child: None,
+        ..
+    }) = enc.ctx.program.node(encode_id)
+    {
+        if props.length_kind == LengthKind::Delimited {
+            delimited_value_length_bits_from_encode(
+                enc,
+                props,
+                &buf,
+                bit_count,
+                encode_scope,
+            )?
+        } else {
+            encoded_value_length_bits(buf.len(), bit_count)
         }
+    } else {
+        encoded_value_length_bits(buf.len(), bit_count)
+    };
+    match units {
+        LengthUnits::Bits => Ok(value_bits),
+        LengthUnits::Bytes => Ok((value_bits + 7) / 8),
         LengthUnits::Characters => Err(VmError::UnsupportedOperation {
             op: "outputValueCalc character units".into(),
         }

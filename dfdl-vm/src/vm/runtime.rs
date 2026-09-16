@@ -2486,15 +2486,37 @@ pub(crate) fn resolve_calendar_language(
         return Ok(Some(out));
     }
     if let Some(id) = props.calendar_language {
-        let s = strings.get(id)?.trim();
-        if !s.is_empty() {
-            if !calendar_language_is_valid(s) {
-                return Err(calendar_language_sde(s));
+        let raw = strings.get(id)?.trim();
+        if !raw.is_empty() {
+            let locale = if let Some(sib_local) = parse_sibling_property_expr(raw) {
+                calendar_language_from_sibling_text_map(siblings, &sib_local)?
+            } else {
+                raw.to_string()
+            };
+            if !calendar_language_is_valid(&locale) {
+                return Err(calendar_language_sde(&locale));
             }
-            return Ok(Some(s.to_string()));
+            return Ok(Some(locale));
         }
     }
     Ok(None)
+}
+
+fn calendar_language_from_sibling_text_map(
+    siblings: Option<&alloc::collections::BTreeMap<String, alloc::string::String>>,
+    sib_local: &str,
+) -> Result<alloc::string::String, crate::error::VmError> {
+    let map = siblings.ok_or_else(|| crate::error::VmError::InvalidValue {
+        message: alloc::format!("missing sibling `{sib_local}` for calendarLanguage"),
+    })?;
+    for (k, v) in map {
+        if k == sib_local || crate::xml_util::local_name_str(k) == sib_local {
+            return Ok(v.clone());
+        }
+    }
+    Err(crate::error::VmError::InvalidValue {
+        message: alloc::format!("missing sibling `{sib_local}` for calendarLanguage"),
+    })
 }
 
 fn month_name_unparse_locale(month: u32, language: Option<&str>, width: usize) -> alloc::string::String {
@@ -2516,6 +2538,48 @@ fn month_name_unparse_locale(month: u32, language: Option<&str>, width: usize) -
             11 => "November",
             12 => "Dezember",
             _ => "März",
+        };
+        if width >= 4 {
+            return full.into();
+        }
+        return full.chars().take(width.max(1)).collect();
+    }
+    if key.as_deref() == Some("es") {
+        let full = match month {
+            1 => "enero",
+            2 => "febrero",
+            3 => "marzo",
+            4 => "abril",
+            5 => "mayo",
+            6 => "junio",
+            7 => "julio",
+            8 => "agosto",
+            9 => "septiembre",
+            10 => "octubre",
+            11 => "noviembre",
+            12 => "diciembre",
+            _ => "marzo",
+        };
+        if width >= 4 {
+            return full.into();
+        }
+        return full.chars().take(width.max(1)).collect();
+    }
+    if key.as_deref() == Some("ru") {
+        let full = match month {
+            1 => "января",
+            2 => "февраля",
+            3 => "марта",
+            4 => "апреля",
+            5 => "мая",
+            6 => "июня",
+            7 => "июля",
+            8 => "августа",
+            9 => "сентября",
+            10 => "октября",
+            11 => "ноября",
+            12 => "декабря",
+            _ => "марта",
         };
         if width >= 4 {
             return full.into();
@@ -2564,6 +2628,38 @@ fn weekday_name_unparse_locale(wd: u32, language: Option<&str>, width: usize) ->
         }
         return full.chars().take(width.max(1)).collect();
     }
+    if key.as_deref() == Some("es") {
+        let full = match wd {
+            1 => "lunes",
+            2 => "martes",
+            3 => "miércoles",
+            4 => "jueves",
+            5 => "viernes",
+            6 => "sábado",
+            7 => "domingo",
+            _ => "viernes",
+        };
+        if width >= 4 {
+            return full.into();
+        }
+        return full.chars().take(width.max(1)).collect();
+    }
+    if key.as_deref() == Some("ru") {
+        let full = match wd {
+            1 => "понедельник",
+            2 => "вторник",
+            3 => "среда",
+            4 => "четверг",
+            5 => "пятница",
+            6 => "суббота",
+            7 => "воскресенье",
+            _ => "пятница",
+        };
+        if width >= 4 {
+            return full.into();
+        }
+        return full.chars().take(width.max(1)).collect();
+    }
     let full = match wd {
         1 => "Monday",
         2 => "Tuesday",
@@ -2583,7 +2679,13 @@ fn weekday_name_unparse_locale(wd: u32, language: Option<&str>, width: usize) ->
 
 fn parse_iso_date_ymd(iso: &str) -> Result<(i32, u32, u32), crate::error::VmError> {
     use crate::error::VmError;
-    let date_part = iso.split('T').next().unwrap_or(iso).trim();
+    let mut date_part = iso.trim();
+    date_part = date_part.split('T').next().unwrap_or(date_part);
+    date_part = date_part.split('+').next().unwrap_or(date_part);
+    if let Some((d, _)) = date_part.split_once('Z') {
+        date_part = d;
+    }
+    date_part = date_part.trim();
     let mut parts = date_part.split('-');
     let y: i32 = parts
         .next()
@@ -6965,6 +7067,27 @@ pub(crate) fn write_text_scalar(
     } else {
         format_field_text_number(&text, kind, props, strings)?
     };
+    let text = if kind == crate::ir::ValueKind::String
+        && props.escape_scheme.is_some()
+        && matches!(
+            props.length_kind,
+            LengthKind::Delimited
+                | LengthKind::Pattern
+                | LengthKind::Implicit
+                | LengthKind::EndOfParent
+        )
+    {
+        let scheme = props.escape_scheme.as_ref().unwrap();
+        let resolved = resolve_escape_scheme_for_encode(scheme, encode_siblings);
+        let delim = props
+            .terminator
+            .and_then(|id| strings.get(id).ok())
+            .map(|raw| resolve_encode_property_pattern(raw, encode_siblings))
+            .unwrap_or_default();
+        crate::vm::escape::escape_field_text(&text, &resolved, delim.as_bytes())
+    } else {
+        text
+    };
     let text_before_pad = text.clone();
     let text = apply_min_length_pad(&text, props, strings, kind);
 
@@ -11142,6 +11265,36 @@ fn sibling_string_from_encode_map(
         }
         _ => None,
     }
+}
+
+fn resolve_escape_scheme_for_encode(
+    scheme: &crate::schema::EscapeSchemeDef,
+    siblings: Option<&alloc::collections::BTreeMap<String, crate::value::DfdlValue>>,
+) -> crate::schema::EscapeSchemeDef {
+    let mut resolved = scheme.clone();
+    if let Some(raw) = scheme.escape_character_raw.as_deref() {
+        resolved.escape_character = Some(resolve_encode_property_pattern(raw, siblings));
+    } else if let Some(raw) = scheme.escape_character.as_deref() {
+        if parse_sibling_property_expr(raw).is_some() {
+            resolved.escape_character = Some(resolve_encode_property_pattern(raw, siblings));
+        }
+    }
+    if let Some(raw) = scheme.escape_escape_character_raw.as_deref() {
+        resolved.escape_escape_character =
+            Some(resolve_encode_property_pattern(raw, siblings));
+    } else if let Some(raw) = scheme.escape_escape_character.as_deref() {
+        if parse_sibling_property_expr(raw).is_some() {
+            resolved.escape_escape_character =
+                Some(resolve_encode_property_pattern(raw, siblings));
+        }
+    }
+    if let Some(raw) = scheme.escape_block_start_raw.as_deref() {
+        resolved.escape_block_start = Some(resolve_encode_property_pattern(raw, siblings));
+    }
+    if let Some(raw) = scheme.escape_block_end_raw.as_deref() {
+        resolved.escape_block_end = Some(resolve_encode_property_pattern(raw, siblings));
+    }
+    resolved
 }
 
 pub(crate) fn resolve_encode_property_pattern(

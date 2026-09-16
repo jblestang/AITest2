@@ -703,6 +703,10 @@ fn parse_xs_date_lexical(text: &str) -> Result<alloc::string::String, VmError> {
     Ok(format_iso_date(y, m, d, tz))
 }
 
+pub(crate) fn normalize_xs_date_lexical(text: &str) -> Result<alloc::string::String, VmError> {
+    parse_xs_date_lexical(text)
+}
+
 fn parse_xs_time_lexical(text: &str) -> Result<alloc::string::String, VmError> {
     let (core, tz) = split_time_timezone(text);
     let (hh, mm, ss, frac) = parse_time_hms_frac(core)
