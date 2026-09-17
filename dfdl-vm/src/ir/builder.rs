@@ -3004,8 +3004,10 @@ fn validate_prefix_length_type(
     let encoding = strings
         .get(prefix_props.encoding)
         .unwrap_or("utf-8");
+    let custom_bits_encoding = encoding.contains("DFDL") || encoding.contains("BIT-PACKED");
     if prefix_props.length_units == LengthUnits::Bits
         && encoding.eq_ignore_ascii_case("US-ASCII")
+        && !custom_bits_encoding
         && prefix_props.representation == Representation::Text
         && !prefix_props.alignment_implicit
     {

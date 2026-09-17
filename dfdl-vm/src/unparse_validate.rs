@@ -411,11 +411,7 @@ fn validate_element_form(
     }
     let local = crate::xml_util::local_name_str(&node.name);
     let expect_qualified = parent_qualified.unwrap_or(qualified);
-    let mut has_ns = node.namespace.as_deref().is_some_and(|u| !u.is_empty());
-    if !expect_qualified {
-        // Unqualified elementFormDefault: infoset may still attach the target namespace URI to locals.
-        has_ns = false;
-    }
+    let has_ns = node.namespace.as_deref().is_some_and(|u| !u.is_empty());
     if expect_qualified == has_ns {
         return Ok(());
     }
@@ -625,6 +621,11 @@ fn validate_sequence_children(
                 )
             {
                 let needed = min.saturating_sub(count);
+                if needed == 1 && min == 1 {
+                    return Err(format!(
+                        "Unparse Error: Expected element start event for {elem_name}, but received element end event for {parent_name}"
+                    ));
+                }
                 let end_event_for = if props.occurs_count_kind == OccursCountKind::Expression {
                     children
                         .get(child_idx + 1)

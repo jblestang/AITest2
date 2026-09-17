@@ -840,7 +840,7 @@ fn validate_escape_separator_distinct(schema: &SchemaDocument, root: &str) -> Re
                     let conflicts = alts.iter().any(|alt| alt.starts_with(esc) || alt == esc);
                     if conflicts {
                         return Err(SchemaError::InvalidProperty {
-                            message: "Schema Definition Error: dfdl:terminator and dfdl:separator properties may not begin with the dfdl:escapeCharacter property value.".into(),
+                            message: "Schema Definition Error: The escape character cannot be the same as terminating markup for dfdl:separator or dfdl:terminator.".into(),
                         });
                     }
                 }

@@ -94,6 +94,12 @@ pub fn validate_text_alignment_schema(
     let encoding = strings
         .get(props.encoding)
         .unwrap_or("utf-8");
+    if encoding.contains("DFDL") || encoding.contains("BIT-PACKED") {
+        return Ok(());
+    }
+    if props.length_units == LengthUnits::Bits && props.alignment_units == LengthUnits::Bits {
+        return Ok(());
+    }
     let enc_lower = encoding.to_ascii_lowercase();
     if props.alignment_implicit
         && props.representation == Representation::Binary
