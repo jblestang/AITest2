@@ -347,10 +347,19 @@ impl<'a> Decoder<'a> {
         self.xpath_siblings_snapshot()
     }
 
-    fn eval_discriminator_xpath_eq(&self, inner: &str, dot: &str) -> Result<Option<bool>> {
-        if inner.contains('*') || inner.contains('(') {
-            return Ok(None);
+    fn strip_type_cast_wrapper(s: &str) -> &str {
+        let trimmed = s.trim();
+        if (trimmed.starts_with("xs:") || trimmed.starts_with("xsd:") || trimmed.starts_with("dfdl:"))
+            && trimmed.ends_with(')')
+        {
+            if let Some(open) = trimmed.find('(') {
+                return trimmed[open + 1..trimmed.len() - 1].trim();
+            }
         }
+        trimmed
+    }
+
+    fn eval_discriminator_xpath_eq(&self, inner: &str, dot: &str) -> Result<Option<bool>> {
         let mut rest = inner.trim();
         let mut up = 0usize;
         while rest.starts_with("../") {
@@ -360,11 +369,24 @@ impl<'a> Decoder<'a> {
         let Some(eq_idx) = rest.find(" eq ") else {
             return Ok(None);
         };
-        let mut path = rest[..eq_idx].trim();
-        let lit = crate::schema::unquote_xpath_string_literal(rest[eq_idx + 4..].trim());
+        let path_raw = rest[..eq_idx].trim();
+        let lit_raw = rest[eq_idx + 4..].trim();
+        let path_clean = Self::strip_type_cast_wrapper(path_raw);
+        let lit_clean = Self::strip_type_cast_wrapper(lit_raw);
+
+        if path_clean.contains('*') || path_clean.contains('(') || lit_clean.contains('*') || lit_clean.contains('(') {
+            return Ok(None);
+        }
+
+        let mut path = path_clean;
+        let lit = crate::schema::unquote_xpath_string_literal(lit_clean);
         let query_style = path.starts_with("./");
         if let Some(stripped) = path.strip_prefix("./") {
             path = stripped;
+        }
+        while path.starts_with("../") {
+            up += 1;
+            path = &path[3..];
         }
         if path.contains('/') || path.contains('[') {
             let Some(actual) = self
@@ -4998,7 +5020,7 @@ impl<'a> Decoder<'a> {
                 }
                 return Err(VmError::InvalidValue {
                     message: alloc::format!(
-                        "Parse Error. Failed to find infix separator. Separator '{pat}' not found"
+                        "Parse Error. Failed to find infix separator. Delimiter not found!  Was looking for ({pat}) but found \"{found_display}\" instead"
                     ),
                 }
                 .into());
@@ -7276,8 +7298,13 @@ fn format_choice_branch_error(branch: &ChoiceBranch, strings: &StringPool, err: 
         if let Some(id) = branch.initiator {
             if let Ok(pat) = strings.get(id) {
                 if msg.contains("Was looking for") {
+                    let clean_msg = if let Some(idx) = msg.find("Delimiter not found") {
+                        &msg[idx..]
+                    } else {
+                        msg
+                    };
                     return alloc::format!(
-                        "{branch_name}: Initiator '{pat}' not found. Alternative failed. Reason(s): List({msg})"
+                        "{branch_name}: Initiator '{pat}' not found. Alternative failed. Reason(s): List(Parse Error: Init('{pat}') - {branch_name}: {clean_msg})"
                     );
                 }
                 return alloc::format!("{branch_name}: Initiator '{pat}' not found");

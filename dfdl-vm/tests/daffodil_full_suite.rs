@@ -295,6 +295,24 @@ fn daffodil_section00_core_zero_fail_gate() {
     assert!(stats.pass >= 18, "expected ~18+ pass in core subset");
 }
 
+/// Zero-failure gate for section02 files.
+#[test]
+fn daffodil_section02_zero_fail_gate() {
+    let root = assert_tdml_root().join("section02");
+    let mut files = Vec::new();
+    collect_tdml_files(&root, &mut files);
+    let mut stats = SectionStats::default();
+    for path in files {
+        run_tdml_file(&path, &mut stats);
+    }
+    eprintln!(
+        "section02 zero-fail: pass={} fail={} skip={}",
+        stats.pass, stats.fail, stats.skip
+    );
+    assert_eq!(stats.parse_fail, 0);
+    assert_eq!(stats.fail, 0, "section02 failures: {stats:?}");
+}
+
 #[test]
 fn daffodil_section12_length_kind_regression_gate() {
     let root = assert_tdml_root().join("section12/lengthKind");
