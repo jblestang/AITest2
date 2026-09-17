@@ -431,11 +431,8 @@ pub(crate) fn is_iso8859_1_encoding(name: &str) -> bool {
 }
 
 /// Byte-oriented encodings where Daffodil remaps XML-illegal C0 controls ↔ PUA in the infoset.
-pub(crate) fn uses_xml_illegal_char_remap(encoding: &str) -> bool {
-    matches!(
-        normalize_encoding_name(encoding),
-        Some("ascii") | Some("iso-8859-1") | Some("ebcdic-cp-us")
-    )
+pub(crate) fn uses_xml_illegal_char_remap(_encoding: &str) -> bool {
+    true
 }
 
 /// Reverse of [`remap_xml_illegal_characters_to_pua`] for unparse / infoset input.

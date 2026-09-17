@@ -862,7 +862,7 @@ fn normalize_error_text(text: &str) -> alloc::string::String {
 }
 
 fn tdml_unparse_document_mismatch_message(
-    program: &crate::ir::IrProgram,
+    _program: &crate::ir::IrProgram,
     actual: &[u8],
     doc: &TdmlDocument,
 ) -> alloc::string::String {
@@ -871,8 +871,7 @@ fn tdml_unparse_document_mismatch_message(
         return "TDML Error: encoded document mismatch".into();
     }
     let prefix = "TDML Error: ";
-    let encoding = root_element_encoding(program).unwrap_or("US-ASCII");
-    if crate::vm::encoding::uses_xml_illegal_char_remap(encoding) {
+    if doc.kind == crate::tdml::parser::DocumentKind::Text {
         let actual_text: alloc::string::String = actual.iter().map(|&b| b as char).collect();
         let expected_text: alloc::string::String = expected.iter().map(|&b| b as char).collect();
         return alloc::format!(

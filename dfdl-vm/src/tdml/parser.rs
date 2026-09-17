@@ -637,6 +637,13 @@ fn parse_document(
                     saw_bits_part = true;
                     kind = DocumentKind::Bits;
                     bit_part_chunks.push(chunks);
+                } else {
+                    flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
+                    if data.is_empty() && !saw_bits_part {
+                        kind = part.kind;
+                    }
+                    data.extend(part.data);
+                    last_byte_bit_count = part.last_byte_bit_count;
                 }
             } else if saw_bits_part && part.kind == DocumentKind::Text {
                 mixed_bits_text_document = true;

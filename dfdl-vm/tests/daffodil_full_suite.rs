@@ -265,9 +265,8 @@ fn daffodil_section00_regression_gate() {
     );
 }
 
-/// Zero-failure gate for section00 files that should already be green (diagnostics / future tightening).
+/// Zero-failure gate for section00 files.
 #[test]
-#[ignore = "12 known failures in core general TDML; enable when fixed"]
 fn daffodil_section00_core_zero_fail_gate() {
     let root = assert_tdml_root().join("section00");
     let mut files = Vec::new();

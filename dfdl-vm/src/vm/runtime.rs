@@ -1,6 +1,6 @@
 use super::encoding::{
-    character_span_byte_length, count_characters, decode_text_bytes, encode_document_text, remap_pua_to_xml_illegal_characters,
-    remap_xml_illegal_characters_to_pua, uses_xml_illegal_char_remap,
+    character_span_byte_length, count_characters, decode_text_bytes, encode_document_text,
+    remap_pua_to_xml_illegal_characters, remap_xml_illegal_characters_to_pua,
     bits_charset_spec, decode_bits_charset_payload, hex_charset_order, hex_charset_payload_to_text,
     HexCharsetOrder, normalize_encoding_name,
     read_character_bytes, read_one_utf8_char,
@@ -5613,7 +5613,7 @@ pub(crate) fn read_text_scalar(
     } else {
         decode_specified_length_text_bytes(&raw, enc, props)?
     };
-    let text = if kind == crate::ir::ValueKind::String && uses_xml_illegal_char_remap(enc) {
+    let text = if kind == crate::ir::ValueKind::String {
         remap_xml_illegal_characters_to_pua(&text)
     } else {
         text
@@ -7106,12 +7106,7 @@ pub(crate) fn write_text_scalar(
             if config.encode_pua_codepoints_as_utf8 {
                 v.text.clone()
             } else {
-                let enc = encoding_name(props, strings)?;
-                if uses_xml_illegal_char_remap(enc) {
-                    remap_pua_to_xml_illegal_characters(&v.text)
-                } else {
-                    v.text.clone()
-                }
+                remap_pua_to_xml_illegal_characters(&v.text)
             }
         }
         (HexBinary, DfdlValue::HexBinary(v)) => encode_hex(v),
