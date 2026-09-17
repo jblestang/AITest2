@@ -1,7 +1,6 @@
 use crate::ir::{IrProps, ValueKind};
 use crate::schema::{BinaryNumberRep, LengthUnits, Representation};
 use crate::vm::runtime::Cursor;
-use alloc::vec;
 
 /// Skip count in bits for `dfdl:leadingSkip` / `dfdl:trailingSkip` (uses `dfdl:alignmentUnits`).
 pub fn skip_units_to_bits(props: &IrProps, skip: u64) -> usize {
@@ -57,7 +56,7 @@ fn text_encoding_alignment_bits(encoding: &str) -> usize {
     if let Some(width) = crate::vm::encoding::bits_charset_code_unit_width(encoding) {
         return width as usize;
     }
-    let enc = encoding.to_ascii_uppercase();
+    let _enc = encoding.to_ascii_uppercase();
     8
 }
 
@@ -221,7 +220,7 @@ pub fn write_trailing_skip(
             write_stream_bit(out, bit_count, props.fill_byte & 1, props.bit_order);
         }
     }
-    if props.alignment_units == LengthUnits::Bytes && *bit_count == 0 && skip_bits % 8 == 0 {
+    if props.alignment_units == LengthUnits::Bytes && *bit_count == 0 && skip_bits.is_multiple_of(8) {
         let nbytes = skip_bits / 8;
         write_byte_aligned(out, bit_count, &alloc::vec![props.fill_byte; nbytes])?;
         return Ok(());
@@ -230,6 +229,32 @@ pub fn write_trailing_skip(
         write_stream_bit(out, bit_count, props.fill_byte & 1, props.bit_order);
     }
     Ok(())
+}
+
+pub fn consume_trailing_skip(
+    cursor: &mut Cursor<'_>,
+    props: &IrProps,
+) -> Result<(), crate::error::VmError> {
+    use crate::error::VmError;
+    if props.trailing_skip == 0 {
+        return Ok(());
+    }
+    if props.trailing_skip > LEADING_TRAILING_SKIP_PROPERTY_LIMIT {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Tunable Limit Exceeded Error: Property trailingSkip {} is larger than limit {}",
+                props.trailing_skip,
+                LEADING_TRAILING_SKIP_PROPERTY_LIMIT
+            ),
+        });
+    }
+    let skip = skip_units_to_bits(props, props.trailing_skip);
+    if skip == 0 {
+        return Ok(());
+    }
+    cursor
+        .skip_stream_bits(skip, props.bit_order)
+        .map_err(|_| VmError::UnexpectedEof)
 }
 
 #[cfg(test)]
@@ -286,7 +311,7 @@ mod tests {
 
     #[test]
     fn consume_element_framing_uses_type_leading_skip() {
-        use crate::ir::ValueKind;
+        
         use crate::vm::runtime::consume_element_framing;
         let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
             xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
@@ -712,30 +737,4 @@ mod tests {
         }
     }
 
-}
-
-pub fn consume_trailing_skip(
-    cursor: &mut Cursor<'_>,
-    props: &IrProps,
-) -> Result<(), crate::error::VmError> {
-    use crate::error::VmError;
-    if props.trailing_skip == 0 {
-        return Ok(());
-    }
-    if props.trailing_skip > LEADING_TRAILING_SKIP_PROPERTY_LIMIT {
-        return Err(VmError::InvalidValue {
-            message: alloc::format!(
-                "Tunable Limit Exceeded Error: Property trailingSkip {} is larger than limit {}",
-                props.trailing_skip,
-                LEADING_TRAILING_SKIP_PROPERTY_LIMIT
-            ),
-        });
-    }
-    let skip = skip_units_to_bits(props, props.trailing_skip);
-    if skip == 0 {
-        return Ok(());
-    }
-    cursor
-        .skip_stream_bits(skip, props.bit_order)
-        .map_err(|_| VmError::UnexpectedEof)
 }

@@ -1,4 +1,4 @@
-use crate::vm::encoding::{bits_charset_code_unit_width, hex_charset_order};
+use crate::vm::encoding::hex_charset_order;
 use crate::error::{SchemaError, VmError};
 use crate::ir::{IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{BinaryNumberRep, LengthKind, LengthUnits, Representation};
@@ -7,7 +7,7 @@ fn uses_hex_charset_encoding(strings: &StringPool, enc: StringId) -> bool {
     strings
         .get(enc)
         .ok()
-        .and_then(|name| hex_charset_order(name))
+        .and_then(hex_charset_order)
         .is_some()
 }
 
@@ -192,7 +192,7 @@ pub fn validate_packed_binary_properties_schema(
             }
         }
     }
-    if props.alignment_units == LengthUnits::Bits && props.alignment % 4 != 0 {
+    if props.alignment_units == LengthUnits::Bits && !props.alignment.is_multiple_of(4) {
         let type_name = packed_align_type_name(kind);
         return Err(SchemaError::InvalidProperty {
             message: alloc::format!(
@@ -248,7 +248,7 @@ pub fn validate_packed_binary_bit_length_parse(
             ),
         });
     }
-    if n_bits % 4 != 0 {
+    if !n_bits.is_multiple_of(4) {
         return Err(VmError::InvalidValue {
             message: alloc::format!(
                 "Parse Error. The given length ({n_bits} bits) must be a multiple of 4 when using packed binary formats"
@@ -817,9 +817,7 @@ pub fn validate_fill_byte_schema(
     };
     if char_count != 1 {
         return Err(SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error: fillByte 1 character"
-            ),
+            message: "Schema Definition Error: fillByte 1 character".to_string(),
         });
     }
     if enc.contains("UTF-8") && bytes.len() > 1 {

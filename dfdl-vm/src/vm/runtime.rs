@@ -1,6 +1,5 @@
 use super::encoding::{
-    character_span_byte_length, count_characters, decode_text_bytes, encode_document_text,
-    is_iso8859_1_encoding, remap_pua_to_xml_illegal_characters,
+    character_span_byte_length, count_characters, decode_text_bytes, encode_document_text, remap_pua_to_xml_illegal_characters,
     remap_xml_illegal_characters_to_pua, uses_xml_illegal_char_remap,
     bits_charset_spec, decode_bits_charset_payload, hex_charset_order, hex_charset_payload_to_text,
     HexCharsetOrder, normalize_encoding_name,
@@ -22,7 +21,7 @@ use crate::length_validate::{
 };
 use crate::ir::{IrPrefixLength, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{
-    encode_delimiter, encode_delimiter_by_alt, encode_property_delimiter, match_length_pattern,
+    encode_property_delimiter, match_length_pattern,
     BinaryNumberRep, BitOrder,
     ByteOrder,
     EncodingErrorPolicy, LengthKind, LengthUnits, NilKind, Representation, SequenceKind,
@@ -33,7 +32,6 @@ use crate::schema::{
 use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::iter;
 
 /// Runtime configuration shared by encoder and decoder.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,7 +332,7 @@ impl<'a> Cursor<'a> {
         let mut out_bit = 0usize;
         while bits_left > 0 {
             if self.pos >= self.data.len() {
-                use crate::error::VmError;
+                
                 return Err(insufficient_data_bits_error(n, n - bits_left));
             }
             let byte = self.data[self.pos];
@@ -359,10 +357,10 @@ impl<'a> Cursor<'a> {
                 };
                 match field_order {
                     BitOrder::LeastSignificantBitFirst => {
-                        array[out_bit / 8] |= (bit as u8) << (out_bit % 8);
+                        array[out_bit / 8] |= bit << (out_bit % 8);
                     }
                     BitOrder::MostSignificantBitFirst => {
-                        array[out_bit / 8] |= (bit as u8) << (7 - (out_bit % 8));
+                        array[out_bit / 8] |= bit << (7 - (out_bit % 8));
                     }
                 }
                 out_bit += 1;
@@ -591,6 +589,7 @@ pub(crate) fn write_stream_bit_with_config(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn write_stream_bits(
     out: &mut alloc::vec::Vec<u8>,
     bit_count: &mut u8,
@@ -633,6 +632,7 @@ pub(crate) fn write_byte_aligned(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn write_bits_from_stream(
     out: &mut alloc::vec::Vec<u8>,
     bit_count: &mut u8,
@@ -687,7 +687,7 @@ fn validate_explicit_decimal_vm(
     let runtime_resolved = props.length_sibling.is_some();
     let units = units.unwrap_or(props.length_units);
     if let Ok(enc) = strings.get(props.encoding) {
-        if hex_charset_order(&enc).is_some() {
+        if hex_charset_order(enc).is_some() {
             let n_bits = match units {
                 LengthUnits::Bits => len as usize,
                 LengthUnits::Bytes => len.saturating_mul(8) as usize,
@@ -865,7 +865,7 @@ pub(crate) fn read_binary_scalar(
         let len = binary_bit_length(cursor, kind, props, strings)?;
         if kind != ValueKind::String && kind != ValueKind::HexBinary {
             let enc = encoding_name(props, strings)?;
-            if hex_charset_order(&enc).is_some()
+            if hex_charset_order(enc).is_some()
                 && (kind == ValueKind::Decimal || is_packed_binary_rep(props.binary_number_rep))
             {
                 validate_packed_binary_bit_length_parse(len, kind, props.binary_number_rep)?;
@@ -1051,7 +1051,7 @@ fn decode_binary_scalar(
     tunables: &DaffodilTunables,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::ir::ValueKind;
-    use crate::value::DfdlValue;
+    
 
     if kind == ValueKind::Decimal {
         return decode_decimal_binary(bytes, props, strings);
@@ -1088,6 +1088,7 @@ fn packed_sign_codes(props: &IrProps, strings: &StringPool) -> Result<PackedSign
     PackedSignCodes::parse(spec, props.binary_number_check_policy)
 }
 
+#[allow(dead_code)]
 fn binary_payload_to_u64(
     rep: BinaryNumberRep,
     bytes: &[u8],
@@ -1226,6 +1227,7 @@ fn decode_unsigned_binary_bytes(bytes: &[u8], le: bool) -> u64 {
     value
 }
 
+#[allow(dead_code)]
 fn bcd_bytes_to_u64(bytes: &[u8], le: bool) -> Result<u64, crate::error::VmError> {
     digits_to_u64(&bcd_to_digit_string(bytes, le)?)
 }
@@ -1248,7 +1250,7 @@ fn signed_magnitude_to_dfdl(
         } else {
             body
         };
-        return Ok(DfdlValue::Decimal(text.into()));
+        return Ok(DfdlValue::Decimal(text));
     }
     if negative {
         match kind {
@@ -1343,6 +1345,7 @@ fn effective_binary_decimal_vp(props: &IrProps) -> i32 {
         .unwrap_or(props.binary_decimal_virtual_point as i32)
 }
 
+#[allow(dead_code)]
 fn format_virtual_decimal(value: u64, virtual_point: u32) -> alloc::string::String {
     format_binary_decimal_magnitude(value, virtual_point as i32)
 }
@@ -1508,10 +1511,12 @@ fn parse_virtual_decimal(text: &str, virtual_point: u32) -> Result<u64, crate::e
     }
 }
 
+#[allow(dead_code)]
 fn bcd_digit_string(bytes: &[u8], le: bool) -> alloc::string::String {
     bcd_to_digit_string(bytes, le).unwrap_or_default()
 }
 
+#[allow(dead_code)]
 fn packed_digit_string(bytes: &[u8], le: bool, codes: &PackedSignCodes) -> alloc::string::String {
     let Ok((_neg, digits)) = packed_to_digit_string(bytes, le, codes) else {
         return alloc::string::String::new();
@@ -1524,6 +1529,7 @@ fn packed_digit_string(bytes: &[u8], le: bool, codes: &PackedSignCodes) -> alloc
 }
 
 /// Magnitude string for packed binary calendars (matches Daffodil `packedToBigInteger` text).
+#[allow(dead_code)]
 fn packed_calendar_magnitude_string(
     bytes: &[u8],
     le: bool,
@@ -1558,7 +1564,7 @@ fn decode_binary_calendar(
     raw_bits: Option<(u64, usize)>,
 ) -> Result<crate::value::DfdlValue, crate::error::VmError> {
     use crate::error::VmError;
-    use crate::value::DfdlValue;
+    
 
     let le = props.byte_order == ByteOrder::LittleEndian;
     let rep = props.binary_calendar_rep;
@@ -1570,8 +1576,8 @@ fn decode_binary_calendar(
             .binary_calendar_epoch
             .and_then(|id| strings.get(id).ok())
             .unwrap_or("1970-01-01T00:00:00");
-        let base = crate::vm::calendar_binary::parse_calendar_epoch_unix(epoch_raw)?;
-        return match rep {
+        let _base = crate::vm::calendar_binary::parse_calendar_epoch_unix(epoch_raw)?;
+        match rep {
             BinaryNumberRep::BinarySeconds => {
                 let delta = crate::vm::calendar_binary::decode_binary_seconds_value(bytes, le)?;
                 let text = crate::vm::calendar_binary::format_binary_calendar_from_seconds_delta(
@@ -1607,7 +1613,7 @@ fn decode_binary_calendar(
                 )?;
                 return calendar_value_from_text(kind, text);
             }
-            _ => unreachable!(),
+            _ => return Err(VmError::InvalidValue { message: "unsupported representation".into() }),
         };
     }
     let digits = match rep {
@@ -1637,7 +1643,7 @@ fn decode_binary_calendar(
         }
         BinaryNumberRep::PackedBcd => {
             let codes = packed_sign_codes(props, strings).unwrap_or_else(|_| {
-                PackedSignCodes::parse("C D F C", BinaryNumberCheckPolicy::Lax).unwrap()
+                PackedSignCodes::parse("C D F C", BinaryNumberCheckPolicy::Lax).unwrap_or_default()
             });
             let (negative, digits) = packed_to_digit_string(bytes, le, &codes)?;
             if negative {
@@ -1659,7 +1665,7 @@ fn decode_binary_calendar(
                 message: "binary dateTime requires BCD representation".into(),
             });
         }
-        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => unreachable!(),
+        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds => return Err(VmError::InvalidValue { message: "handled above".into() }),
     };
     let pat_id = props.calendar_pattern.ok_or(VmError::InvalidValue {
         message: "dateTime missing calendarPattern".into(),
@@ -1953,6 +1959,7 @@ struct CalendarTextConfig<'a> {
     days_in_first_week: u32,
 }
 
+#[allow(dead_code)]
 fn append_default_utc_offset(kind: crate::ir::ValueKind, date_only: bool, parsed: &str) -> alloc::string::String {
     if parsed.contains('T') {
         if parsed.contains('+')
@@ -1998,7 +2005,7 @@ fn append_packed_calendar_timezone(
     }
     let timezone_suffix = || {
         props.calendar_time_zone.and_then(|id| strings.get(id).ok()).and_then(
-            |raw| crate::vm::calendar_binary::calendar_timezone_xsd_suffix(raw),
+            crate::vm::calendar_binary::calendar_timezone_xsd_suffix,
         )
     };
     if props.calendar_time_zone_defined {
@@ -2019,7 +2026,7 @@ fn append_packed_calendar_timezone(
     }
 }
 
-fn read_calendar_timezone(text: &str, ti: &mut usize, z_width: usize) -> Result<alloc::string::String, crate::error::VmError> {
+fn read_calendar_timezone(text: &str, ti: &mut usize, _z_width: usize) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::error::VmError;
     let mut pos = *ti;
     while pos < text.len() && text.as_bytes()[pos].is_ascii_whitespace() {
@@ -2208,7 +2215,7 @@ pub(crate) fn parse_calendar_tz_offset(raw: &str) -> Option<(alloc::string::Stri
         let sign = sign as char;
         return Some((alloc::format!("{sign}{hh}:00"), start + 1 + 2));
     }
-    if i + 1 <= raw.len() && raw[i..i + 1].bytes().all(|b| b.is_ascii_digit()) {
+    if i < raw.len() && raw[i..i + 1].bytes().all(|b| b.is_ascii_digit()) {
         let h1 = raw[i..i + 1].parse::<u8>().ok()?;
         if h1 <= 9 {
             let sign = sign as char;
@@ -2383,7 +2390,7 @@ fn calendar_language_is_valid(locale: &str) -> bool {
     if locale.is_empty() {
         return false;
     }
-    let mut parts = locale.split(|c| c == '-' || c == '_');
+    let mut parts = locale.split(['-', '_']);
     let first = parts.next().unwrap_or("");
     if first.is_empty()
         || first.len() > 8
@@ -2521,7 +2528,7 @@ fn calendar_language_from_sibling_text_map(
 
 fn month_name_unparse_locale(month: u32, language: Option<&str>, width: usize) -> alloc::string::String {
     let key = language
-        .and_then(|l| l.split(|c| c == '-' || c == '_').next())
+        .and_then(|l| l.split(['-', '_']).next())
         .map(|s| s.to_ascii_lowercase());
     if key.as_deref() == Some("de") {
         let full = match month {
@@ -2610,7 +2617,7 @@ fn month_name_unparse_locale(month: u32, language: Option<&str>, width: usize) -
 
 fn weekday_name_unparse_locale(wd: u32, language: Option<&str>, width: usize) -> alloc::string::String {
     let key = language
-        .and_then(|l| l.split(|c| c == '-' || c == '_').next())
+        .and_then(|l| l.split(['-', '_']).next())
         .map(|s| s.to_ascii_lowercase());
     if key.as_deref() == Some("de") {
         let full = match wd {
@@ -3852,11 +3859,10 @@ fn parse_field_text_number(
 ) -> Result<alloc::string::String, crate::error::VmError> {
     use crate::ir::ValueKind;
     use crate::error::VmError;
-    if !props.custom_text_number_pattern {
-        if props.text_standard_base != 10 {
+    if !props.custom_text_number_pattern
+        && props.text_standard_base != 10 {
             return Ok(trimmed.into());
         }
-    }
     if let Some(zero) = text_standard_zero_rep_match(trimmed, props, strings) {
         return Ok(zero);
     }
@@ -4140,8 +4146,8 @@ pub(crate) fn reject_text_standard_special_for_integer(
     })
 }
 
-fn text_number_for_parse<'a>(
-    trimmed: &'a str,
+fn text_number_for_parse(
+    trimmed: &str,
     kind: crate::ir::ValueKind,
     props: &IrProps,
     strings: &StringPool,
@@ -4379,7 +4385,7 @@ fn digits_to_packed_bcd_bytes(
 ) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let mut d = digits.to_string();
-    if d.len() % 2 == 0 {
+    if d.len().is_multiple_of(2) {
         d.insert(0, '0');
     }
     let width = (d.len() + 1).div_ceil(2);
@@ -4465,7 +4471,7 @@ fn binary_bit_length(
             let len = props.length.ok_or(VmError::InvalidValue {
                 message: "explicit binary missing length".into(),
             })?;
-            if hex_charset_order(&encoding_name(props, strings)?).is_some()
+            if hex_charset_order(encoding_name(props, strings)?).is_some()
                 && (kind == ValueKind::Decimal || is_packed_binary_rep(props.binary_number_rep))
             {
                 validate_packed_binary_bit_length_parse(len as usize, kind, props.binary_number_rep)?;
@@ -4568,6 +4574,7 @@ fn decode_binary_from_raw_bits(
         );
     }
 
+    #[allow(unused_macros)]
     macro_rules! unsigned {
         ($t:ty, $cons:expr) => {{
             <$t>::try_from(raw).map($cons).map_err(|_| VmError::InvalidValue {
@@ -4631,7 +4638,9 @@ fn decode_binary_from_raw_bits(
         }
         Float => Ok(DfdlValue::Float(f32::from_bits(raw as u32))),
         Double => Ok(DfdlValue::Double(f64::from_bits(raw))),
-        Decimal | DateTime | Time => unreachable!("handled above"),
+        Decimal | DateTime | Time => Err(VmError::InvalidValue {
+            message: "handled above".into(),
+        }),
         String | HexBinary | Complex => Err(VmError::TypeMismatch {
             expected: "binary scalar".into(),
         }),
@@ -4688,7 +4697,7 @@ fn twos_complement_negate_be(bytes: &mut [u8]) {
     for b in bytes.iter_mut().rev() {
         let v = (!(*b as u16)).wrapping_add(carry);
         *b = v as u8;
-        carry = (v >> 8) as u16;
+        carry = v >> 8;
     }
 }
 
@@ -5135,7 +5144,7 @@ pub(crate) fn enclosing_terminator_at_cursor(
             &cursor.data[cursor.pos..],
             pat,
             stop.ignore_case,
-            enc.as_deref(),
+            enc,
         )
         .is_some_and(|n| n > 0)
         {
@@ -5154,7 +5163,7 @@ pub(crate) fn try_consume_nillable_element_nil(
     empty_nil_at_parent_separator: bool,
     enclosing_stops: &[&IrProps],
 ) -> Result<bool, crate::error::VmError> {
-    use crate::error::VmError;
+    
     use crate::schema::NilKind;
     if !props.nillable {
         return Ok(false);
@@ -5184,7 +5193,7 @@ pub(crate) fn try_consume_nillable_element_nil(
                         .is_some_and(|parent| parent.terminator == Some(term_id));
                     if !parent_owns {
                         let enc = encoding_name(props, strings).ok();
-                        let _ = cursor.consume_delimiter(term, props.ignore_case, enc.as_deref());
+                        let _ = cursor.consume_delimiter(term, props.ignore_case, enc);
                     }
                     return Ok(true);
                 }
@@ -5216,7 +5225,7 @@ pub(crate) fn try_consume_nillable_element_nil(
                         return Ok(true);
                     }
                     let enc = encoding_name(props, strings).ok();
-                    let _ = cursor.consume_delimiter(term, props.ignore_case, enc.as_deref());
+                    let _ = cursor.consume_delimiter(term, props.ignore_case, enc);
                     return Ok(true);
                 }
             }
@@ -5236,7 +5245,7 @@ pub(crate) fn try_consume_nillable_element_nil(
                             let _ = cursor.consume_delimiter(
                                 sep,
                                 parent.ignore_case,
-                                enc.as_deref(),
+                                enc,
                             );
                             return Ok(true);
                         }
@@ -5268,7 +5277,7 @@ pub(crate) fn try_consume_nillable_element_nil(
                                 let _ = cursor.consume_delimiter(
                                     sep,
                                     parent.ignore_case,
-                                    enc.as_deref(),
+                                    enc,
                                 );
                                 if cursor.pos <= before {
                                     return Ok(true);
@@ -5287,7 +5296,7 @@ pub(crate) fn try_consume_nillable_element_nil(
                             let before = cursor.pos;
                             let enc = encoding_name(parent, strings).ok();
                             let _ =
-                                cursor.consume_delimiter(sep, parent.ignore_case, enc.as_deref());
+                                cursor.consume_delimiter(sep, parent.ignore_case, enc);
                             if cursor.pos <= before {
                                 return Ok(true);
                             }
@@ -5442,7 +5451,7 @@ pub(crate) fn read_text_scalar(
         if props.empty_element_parse_policy == crate::schema::EmptyElementParsePolicy::TreatAsAbsent
             && pattern_allows_zero_length_match(cursor, props, strings)?
         {
-            return Err(crate::error::VmError::ElementAbsent.into());
+            return Err(crate::error::VmError::ElementAbsent);
         }
         if nil_value_includes_empty(props, strings)?
             && pattern_allows_zero_length_match(cursor, props, strings)?
@@ -5514,7 +5523,7 @@ pub(crate) fn read_text_scalar(
             let pat = pattern_str(strings, id)?;
             let policy = props.encoding_error_policy;
             let len = if pat == "." && normalize_encoding_name(enc) == Some("utf-8") {
-                read_one_utf8_char(&cursor.data, cursor.pos, policy)?.1
+                read_one_utf8_char(cursor.data, cursor.pos, policy)?.1
             } else {
                 match_length_pattern(&cursor.data[cursor.pos..], pat).ok_or(VmError::InvalidValue {
                     message: alloc::format!("pattern `{pat}` mismatch"),
@@ -5644,7 +5653,7 @@ pub(crate) fn read_text_scalar(
             )
         {
             if props.occurs_min == 0 {
-                return Err(crate::error::VmError::ElementAbsent.into());
+                return Err(crate::error::VmError::ElementAbsent);
             }
             let type_name = value_kind_type_name(kind, Some(props));
             return Err(VmError::InvalidValue {
@@ -5842,7 +5851,7 @@ pub(crate) fn read_text_scalar(
         Decimal => {
             let num = text_number_for_parse(trimmed, kind, props, strings)?;
             let canon = crate::vm::facet_validate::canonicalize_xs_decimal_lexical(&num);
-            Ok(DfdlValue::Decimal(canon.into()))
+            Ok(DfdlValue::Decimal(canon))
         }
         DateTime | Time => {
             if props.calendar_pattern_kind == crate::schema::CalendarPatternKind::Implicit
@@ -5967,7 +5976,7 @@ pub(crate) fn field_terminator_pending_at_cursor(
         &cursor.data[cursor.pos..],
         term,
         props.ignore_case,
-        enc.as_deref(),
+        enc,
     )
     .is_some()
 }
@@ -6009,15 +6018,15 @@ pub(crate) fn mixed_utf8_utf16_delimited_siblings(
     let Ok(ne) = encoding_name(next, strings) else {
         return false;
     };
-    if encodings_compatible_for_delimiter_scan(&pe, &ne) {
+    if encodings_compatible_for_delimiter_scan(pe, ne) {
         return false;
     }
     use crate::vm::encoding::normalize_encoding_name;
     let utf8 = matches!(
-        normalize_encoding_name(&pe),
+        normalize_encoding_name(pe),
         Some("utf-8") | Some("us-ascii") | Some("iso-8859-1")
     );
-    let utf16 = normalize_encoding_name(&ne).is_some_and(|n| n.starts_with("utf-16"));
+    let utf16 = normalize_encoding_name(ne).is_some_and(|n| n.starts_with("utf-16"));
     utf8 && utf16
 }
 
@@ -6135,7 +6144,7 @@ pub(crate) fn consume_text_field_terminator_after_fixed_length(
         &cursor.data[cursor.pos..],
         term,
         props.ignore_case,
-        enc.as_deref(),
+        enc,
     ) {
         cursor.advance(n);
         return Ok(());
@@ -6340,18 +6349,19 @@ fn parse_text_boolean(
         // Single-character occurrences in a comma-separated list may match a word in a
         // space-separated false rep (e.g. `b` vs `a b c` in textBoolean_0).
         if a.chars().count() == 1 {
-            let ch = a.chars().next().unwrap();
-            for word in b.split_whitespace() {
-                let mut wch = word.chars();
-                let Some(first) = wch.next() else {
-                    continue;
-                };
-                if ignore {
-                    if first.eq_ignore_ascii_case(&ch) {
+            if let Some(ch) = a.chars().next() {
+                for word in b.split_whitespace() {
+                    let mut wch = word.chars();
+                    let Some(first) = wch.next() else {
+                        continue;
+                    };
+                    if ignore {
+                        if first.eq_ignore_ascii_case(&ch) {
+                            return true;
+                        }
+                    } else if first == ch {
                         return true;
                     }
-                } else if first == ch {
-                    return true;
                 }
             }
         }
@@ -6450,10 +6460,10 @@ fn write_blob_scalar(
         }
         return Err(VmError::InvalidValue { message });
     }
-    let write_bytes = (len_bits + 7) / 8;
+    let write_bytes = len_bits.div_ceil(8);
     let mut payload = bytes;
     if payload.len() < write_bytes {
-        payload.extend(core::iter::repeat(props.fill_byte).take(write_bytes - payload.len()));
+        payload.extend(std::iter::repeat_n(props.fill_byte, write_bytes - payload.len()));
     }
     if props.length_units == LengthUnits::Bits && len_bits % 8 != 0 {
         write_bits_from_stream_with_config(
@@ -6492,7 +6502,7 @@ pub(crate) fn write_binary_scalar(
 
     if kind == HexBinary {
         if let Some(max) = tunables.max_hex_binary_length_in_bytes {
-            let wire_len = props.length.unwrap_or_else(|| {
+            let wire_len = props.length.unwrap_or({
                 if let DfdlValue::HexBinary(v) = value {
                     v.len() as u64
                 } else {
@@ -6604,10 +6614,10 @@ pub(crate) fn write_binary_scalar(
                 ),
             });
         }
-        LengthKind::Prefixed => unreachable!(),
+        LengthKind::Prefixed => return Err(VmError::UnsupportedOperation { op: "prefixed lengthKind".into() }),
     };
 
-    let mut bytes = alloc::vec::Vec::new();
+    let bytes;
     match (kind, value) {
         (Boolean, DfdlValue::Boolean(v)) => {
             bytes = int_bytes(encode_binary_boolean_sl(*v, props) as i64, size, le)
@@ -6852,7 +6862,7 @@ fn truncate_string_for_explicit_length(
         LengthUnits::Characters => {
             count_characters(text.as_bytes(), encoding, EncodingErrorPolicy::Error)? > len
         }
-        LengthUnits::Bits => text.as_bytes().len() * 8 > len,
+        LengthUnits::Bits => text.len() * 8 > len,
     };
     if !too_long {
         return Ok(text.to_string());
@@ -6868,9 +6878,7 @@ fn truncate_string_for_explicit_length(
     }
     match text_justification_for_kind(props, kind) {
         TextStringJustification::Center => Err(VmError::InvalidValue {
-            message: alloc::format!(
-                "Unparse Error: dfdl:textStringJustification=\"center\" cannot be used with dfdl:truncateSpecifiedLengthString=\"yes\" when truncation is required"
-            ),
+            message: "Unparse Error: dfdl:textStringJustification=\"center\" cannot be used with dfdl:truncateSpecifiedLengthString=\"yes\" when truncation is required".to_string(),
         }),
         TextStringJustification::Left => {
             let out = match units {
@@ -6925,7 +6933,7 @@ fn format_field_text_number(
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<alloc::string::String, crate::error::VmError> {
-    use crate::error::VmError;
+    
     use crate::ir::ValueKind;
     use crate::schema::TextNumberRep;
     use crate::vm::text_number_format::{format_standard_text_number, TextNumberRoundingProps};
@@ -7099,7 +7107,7 @@ pub(crate) fn write_text_scalar(
                 v.text.clone()
             } else {
                 let enc = encoding_name(props, strings)?;
-                if uses_xml_illegal_char_remap(&enc) {
+                if uses_xml_illegal_char_remap(enc) {
                     remap_pua_to_xml_illegal_characters(&v.text)
                 } else {
                     v.text.clone()
@@ -7130,46 +7138,48 @@ pub(crate) fn write_text_scalar(
                 | LengthKind::EndOfParent
         )
     {
-        let scheme = props.escape_scheme.as_ref().unwrap();
-        let resolved = resolve_escape_scheme_runtime(scheme, encode_siblings);
-        if resolved.escape_kind == crate::schema::EscapeKind::EscapeCharacter {
-            if let Some(esc) = resolved
-                .escape_character
-                .as_deref()
-                .filter(|s| !s.is_empty())
-            {
-                if let Some(parent) = encode_escape_parent {
-                    if let Some(id) = parent.separator {
-                        if let Ok(raw) = strings.get(id) {
-                            let sep = resolve_encode_property_pattern(raw, encode_siblings);
-                            if crate::schema::delimiter_alternatives(&sep)
-                                .into_iter()
-                                .any(|alt| alt.starts_with(esc) || alt == esc)
-                            {
-                                return Err(VmError::InvalidValue {
-                                    message: "Unparse Error: dfdl:terminator and dfdl:separator properties may not begin with the dfdl:escapeCharacter property value.".into(),
-                                });
+        if let Some(scheme) = props.escape_scheme.as_ref() {
+            let resolved = resolve_escape_scheme_runtime(scheme, encode_siblings);
+            if resolved.escape_kind == crate::schema::EscapeKind::EscapeCharacter {
+                if let Some(esc) = resolved
+                    .escape_character
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                {
+                    if let Some(parent) = encode_escape_parent {
+                        if let Some(id) = parent.separator {
+                            if let Ok(raw) = strings.get(id) {
+                                let sep = resolve_encode_property_pattern(raw, encode_siblings);
+                                if crate::schema::delimiter_alternatives(&sep)
+                                    .into_iter()
+                                    .any(|alt| alt.starts_with(esc) || alt == esc)
+                                {
+                                    return Err(VmError::InvalidValue {
+                                        message: "Unparse Error: dfdl:terminator and dfdl:separator properties may not begin with the dfdl:escapeCharacter property value.".into(),
+                                    });
+                                }
                             }
                         }
                     }
                 }
             }
+            let markup =
+                delimited_field_escape_markup(props, encode_escape_parent, strings, encode_siblings);
+            let block_markup_owned: alloc::vec::Vec<alloc::string::String>;
+            let markup_refs: alloc::vec::Vec<&str> = match scheme.escape_kind {
+                crate::schema::EscapeKind::EscapeBlock => {
+                    block_markup_owned =
+                        delimited_field_escape_markup(props, encode_escape_parent, strings, encode_siblings);
+                    block_markup_owned.iter().map(|s| s.as_str()).collect()
+                }
+                crate::schema::EscapeKind::EscapeCharacter => {
+                    markup.iter().map(|s| s.as_str()).collect()
+                }
+            };
+            crate::vm::escape::escape_field_text(&text, &resolved, &markup_refs)
+        } else {
+            text
         }
-        let markup =
-            delimited_field_escape_markup(props, encode_escape_parent, strings, encode_siblings);
-        let block_markup_owned: alloc::vec::Vec<alloc::string::String>;
-        let markup_refs: alloc::vec::Vec<&str> = match scheme.escape_kind {
-            crate::schema::EscapeKind::EscapeBlock => {
-                block_markup_owned =
-                    delimited_field_escape_markup(props, encode_escape_parent, strings, encode_siblings);
-                block_markup_owned.iter().map(|s| s.as_str()).collect()
-            }
-            crate::schema::EscapeKind::EscapeCharacter => {
-                block_markup_owned = alloc::vec::Vec::new();
-                markup.iter().map(|s| s.as_str()).collect()
-            }
-        };
-        crate::vm::escape::escape_field_text(&text, &resolved, &markup_refs)
     } else {
         text
     };
@@ -7221,7 +7231,7 @@ pub(crate) fn write_text_scalar(
                     &encoded,
                     len,
                     props.bit_order,
-                    Some(&config),
+                    Some(config),
                 )?;
                 return Ok(());
             }
@@ -7246,7 +7256,7 @@ pub(crate) fn write_text_scalar(
                     &encoded,
                     len,
                     props.bit_order,
-                    Some(&config),
+                    Some(config),
                 )?;
                 return Ok(());
             }
@@ -7349,9 +7359,7 @@ fn pad_text_field(
                     bytes = match justification {
                         TextStringJustification::Center => {
                             return Err(VmError::InvalidValue {
-                                message: alloc::format!(
-                                    "Unparse Error: dfdl:textStringJustification=\"center\" cannot be used with dfdl:truncateSpecifiedLengthString=\"yes\" when truncation is required"
-                                ),
+                                message: "Unparse Error: dfdl:textStringJustification=\"center\" cannot be used with dfdl:truncateSpecifiedLengthString=\"yes\" when truncation is required".to_string(),
                             });
                         }
                         TextStringJustification::Left => bytes[..len].to_vec(),
@@ -7366,16 +7374,16 @@ fn pad_text_field(
             let pad_count = len - bytes.len();
             match justification {
                 TextStringJustification::Right => {
-                    bytes.splice(0..0, iter::repeat(pad_byte).take(pad_count));
+                    bytes.splice(0..0, std::iter::repeat_n(pad_byte, pad_count));
                 }
                 TextStringJustification::Center => {
                     let right = pad_count / 2;
                     let left = pad_count - right;
-                    bytes.splice(0..0, iter::repeat(pad_byte).take(left));
-                    bytes.extend(iter::repeat(pad_byte).take(right));
+                    bytes.splice(0..0, std::iter::repeat_n(pad_byte, left));
+                    bytes.extend(std::iter::repeat_n(pad_byte, right));
                 }
                 TextStringJustification::Left => {
-                    bytes.extend(iter::repeat(pad_byte).take(pad_count));
+                    bytes.extend(std::iter::repeat_n(pad_byte, pad_count));
                 }
             }
             Ok(bytes)
@@ -7447,16 +7455,16 @@ fn pad_raw_text_field(
             let pad_count = len - bytes.len();
             match justification {
                 TextStringJustification::Right => {
-                    bytes.splice(0..0, iter::repeat(pad_byte).take(pad_count));
+                    bytes.splice(0..0, std::iter::repeat_n(pad_byte, pad_count));
                 }
                 TextStringJustification::Center => {
                     let left = pad_count / 2;
                     let right = pad_count - left;
-                    bytes.splice(0..0, iter::repeat(pad_byte).take(left));
-                    bytes.extend(iter::repeat(pad_byte).take(right));
+                    bytes.splice(0..0, std::iter::repeat_n(pad_byte, left));
+                    bytes.extend(std::iter::repeat_n(pad_byte, right));
                 }
                 TextStringJustification::Left => {
-                    bytes.extend(iter::repeat(pad_byte).take(pad_count));
+                    bytes.extend(std::iter::repeat_n(pad_byte, pad_count));
                 }
             }
             Ok(bytes)
@@ -7512,7 +7520,7 @@ pub(crate) fn has_non_empty_terminator(
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<bool, crate::error::VmError> {
-    use crate::error::VmError;
+    
     if let Some(id) = props.terminator {
         return Ok(!strings.get(id)?.is_empty());
     }
@@ -7847,8 +7855,8 @@ fn read_until_delimiters_bits_charset(
         }
     }
 
-    if matched_term_chars == 0 {
-        if require_delimiter {
+    if matched_term_chars == 0
+        && require_delimiter {
             let pat = patterns
                 .first()
                 .map(|p| p.pat.as_str())
@@ -7857,7 +7865,6 @@ fn read_until_delimiters_bits_charset(
                 message: format_terminator_not_found_error(pat),
             });
         }
-    }
 
     let payload_chars = decoded.chars().count().saturating_sub(matched_term_chars);
     let payload_bits = payload_chars * spec.width as usize;
@@ -7876,7 +7883,7 @@ pub(crate) fn read_until_delimiters(
     encoding: Option<&str>,
     scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<Vec<u8>, crate::error::VmError> {
-    use crate::error::VmError;
+    
     let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences, scan_ctx)?;
     if let Some(enc) = encoding {
         if let Some(spec) = bits_charset_spec(enc) {
@@ -7899,7 +7906,7 @@ pub(crate) fn read_until_delimiters(
         if remaining_bits == 0 {
             return Ok(Vec::new());
         }
-        if cursor.bit_count == 0 && remaining_bits % 8 == 0 {
+        if cursor.bit_count == 0 && remaining_bits.is_multiple_of(8) {
             let available = remaining_bits / 8;
             let byte_len = encoding
                 .map(|enc| crate::vm::encoding::delimited_payload_byte_length(available, enc))
@@ -7911,7 +7918,7 @@ pub(crate) fn read_until_delimiters(
                 return Ok(out);
             }
         }
-        if cursor.bit_count != 0 || remaining_bits % 8 != 0 {
+        if cursor.bit_count != 0 || !remaining_bits.is_multiple_of(8) {
             return cursor.read_stream_bits_as_bytes(remaining_bits, props.bit_order);
         }
         let rest = cursor.data[cursor.pos..].to_vec();
@@ -8152,7 +8159,7 @@ fn read_until_any_delimiter(
             }
         }
         let next = if let Some(scheme) = escape_scheme {
-            crate::vm::escape::advance_escape_scan_index(&cursor.data, cursor.pos, scheme)
+            crate::vm::escape::advance_escape_scan_index(cursor.data, cursor.pos, scheme)
         } else {
             cursor.pos + step
         };
@@ -8209,7 +8216,7 @@ fn consume_bits_charset_delimiter(
             decoded.push(read_bits_charset_code_unit(cursor, spec)?);
         }
         let ok = if entry.ignore_case {
-            decoded.to_ascii_lowercase() == term.to_ascii_lowercase()
+            decoded.eq_ignore_ascii_case(&term)
         } else {
             decoded == term
         };
@@ -8235,7 +8242,7 @@ pub(crate) fn consume_enclosing_delimiter(
     }
     let field_patterns = non_empty_delimiter_scan_patterns(props, strings, scan_ctx)?;
     if let Ok(enc) = encoding_name(props, strings) {
-        if let Some(spec) = bits_charset_spec(&enc) {
+        if let Some(spec) = bits_charset_spec(enc) {
             if consume_bits_charset_delimiter(cursor, &field_patterns, spec)? {
                 return Ok(());
             }
@@ -8266,7 +8273,7 @@ pub(crate) fn consume_enclosing_delimiter(
             &cursor.data[cursor.pos..],
             &entry.pat,
             entry.ignore_case,
-            enc.as_deref(),
+            enc,
         ) {
             if n > 0 {
                 cursor.advance(n);
@@ -8283,7 +8290,7 @@ pub(crate) fn consume_enclosing_delimiter(
                         &cursor.data[cursor.pos..],
                         &pat,
                         seq.ignore_case,
-                        enc.as_deref(),
+                        enc,
                     ) {
                         if n == 0 {
                             continue;
@@ -8817,12 +8824,14 @@ fn pad_char_for_kind(
         .unwrap_or_else(|| alloc::string::String::from(" "))
 }
 
+#[allow(dead_code)]
 fn calendar_lexical_error(type_name: &str, text: &str) -> crate::error::VmError {
     crate::error::VmError::InvalidValue {
         message: alloc::format!("Parse Error: Unable to parse {type_name} from text: {text}"),
     }
 }
 
+#[allow(dead_code)]
 fn validate_implicit_date_part(
     text: &str,
     tunables: &DaffodilTunables,
@@ -8856,6 +8865,7 @@ fn validate_implicit_date_part(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn validate_implicit_time_part(text: &str, date_time: bool) -> Result<(), crate::error::VmError> {
     let type_name = if date_time { "xs:dateTime" } else { "xs:time" };
     if text == "Z" {
@@ -8900,6 +8910,7 @@ fn validate_implicit_time_part(text: &str, date_time: bool) -> Result<(), crate:
     Ok(())
 }
 
+#[allow(dead_code)]
 fn validate_implicit_calendar_lexical(
     kind: crate::ir::ValueKind,
     date_only: bool,
@@ -9140,6 +9151,7 @@ fn split_sign_digits(s: &str) -> Result<(i64, &str), crate::error::VmError> {
     })
 }
 
+#[allow(dead_code)]
 fn parse_u128_radix(digits: &str, base: u32) -> Result<u128, crate::error::VmError> {
     u128::from_str_radix(digits, base).map_err(|_| crate::error::VmError::InvalidValue {
         message: alloc::format!("invalid integer `{digits}`"),
@@ -9462,7 +9474,7 @@ pub(crate) fn decode_hex_binary(s: &str) -> Result<Vec<u8>, crate::error::VmErro
 }
 
 fn decode_hex(s: &str) -> Result<Vec<u8>, crate::error::VmError> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(crate::error::VmError::InvalidValue {
             message: "invalid hexBinary".into(),
         });
@@ -9509,6 +9521,7 @@ fn length_kind_name(kind: LengthKind) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn write_alignment(
     out: &mut alloc::vec::Vec<u8>,
     bit_count: &mut u8,
@@ -9620,11 +9633,12 @@ fn write_alignment_values(
                 message: "Schema Definition Error: Property fillByte is not defined".into(),
             });
         }
-        out.extend(iter::repeat(props.fill_byte).take(skip));
+        out.extend(std::iter::repeat_n(props.fill_byte, skip));
     }
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn consume_alignment(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
@@ -9798,7 +9812,7 @@ fn field_terminator_matches_at_cursor(
         &cursor.data[cursor.pos..],
         &pat,
         props.ignore_case,
-        enc.as_deref(),
+        enc,
     ))
 }
 
@@ -9824,7 +9838,7 @@ fn defer_delimited_enclosing_consume(
                         &cursor.data[cursor.pos..],
                         pat,
                         seq.ignore_case,
-                        enc.as_deref(),
+                        enc,
                     )
                     .is_some()
                     {
@@ -9904,7 +9918,7 @@ pub(crate) fn read_simple(
                 cursor.consume_delimiter_with_alt(&pat, props.ignore_case, Some(encoding))
             else {
                 let found_display =
-                    format_found_at_cursor(&cursor.data, cursor.pos, Some(encoding));
+                    format_found_at_cursor(cursor.data, cursor.pos, Some(encoding));
                 let ctx = field_name.unwrap_or("element");
                 return Err(VmError::InvalidValue {
                     message: alloc::format!(
@@ -10264,6 +10278,7 @@ fn u64_to_bcd_bytes(value: u64, width: usize, le: bool) -> Result<alloc::vec::Ve
     Ok(bytes)
 }
 
+#[allow(dead_code)]
 fn u64_to_packed_bcd_bytes(
     value: u64,
     width: usize,
@@ -10271,7 +10286,7 @@ fn u64_to_packed_bcd_bytes(
 ) -> Result<alloc::vec::Vec<u8>, crate::error::VmError> {
     use crate::error::VmError;
     let mut digits = value.to_string();
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         digits.insert(0, '0');
     }
     while digits.len() < width * 2 - 1 {
@@ -10317,9 +10332,9 @@ pub(crate) fn int_bytes(value: i64, size: usize, le: bool) -> alloc::vec::Vec<u8
     } else if bytes.len() < size {
         let pad = size - bytes.len();
         if le {
-            bytes.splice(0..0, iter::repeat(0u8).take(pad));
+            bytes.splice(0..0, std::iter::repeat_n(0u8, pad));
         } else {
-            bytes.extend(iter::repeat(0u8).take(pad));
+            bytes.extend(std::iter::repeat_n(0u8, pad));
         }
     }
     if le {
@@ -10543,6 +10558,7 @@ fn write_prefix_field(
     }
 }
 
+#[allow(dead_code)]
 fn prefix_scalar_payload(
     value: u64,
     prefix: &IrPrefixLength,
@@ -10695,7 +10711,7 @@ fn write_text_prefix_field(
                             }
                         }
                         TextNumberJustification::Left => {
-                            padded.extend(iter::repeat(pad).take(pad_count));
+                            padded.extend(std::iter::repeat_n(pad, pad_count));
                         }
                         TextNumberJustification::Center => {
                             let left = pad_count / 2;
@@ -10749,7 +10765,7 @@ fn write_text_prefix_field(
                 }
                 LengthUnits::Bits => {
                     let byte_len = len.div_ceil(8);
-                    while padded.as_bytes().len() < byte_len {
+                    while padded.len() < byte_len {
                         padded.insert(0, pad);
                     }
                     let bytes = padded.as_bytes();
@@ -10800,9 +10816,9 @@ fn write_binary_prefix_field(
     } else if bytes.len() < byte_len {
         let pad = byte_len - bytes.len();
         if le {
-            bytes.splice(0..0, iter::repeat(0u8).take(pad));
+            bytes.splice(0..0, std::iter::repeat_n(0u8, pad));
         } else {
-            bytes.extend(iter::repeat(0u8).take(pad));
+            bytes.extend(std::iter::repeat_n(0u8, pad));
         }
     }
     if le && prefix.props.binary_number_rep == BinaryNumberRep::Binary {
@@ -10903,7 +10919,7 @@ fn write_explicit_payload(
                 } else {
                     0u8
                 };
-                bytes.extend(iter::repeat(pad).take(len - bytes.len()));
+                bytes.extend(std::iter::repeat_n(pad, len - bytes.len()));
             }
             write_byte_aligned(out, bit_count, &bytes)?;
             Ok(())
@@ -11043,7 +11059,7 @@ pub(crate) fn validate_unparse_scalar_lexical(
             let text = match val {
                 DfdlValue::Integer(s) => s.as_str(),
                 DfdlValue::String(s) => s.text.as_str(),
-                _ => unreachable!(),
+                _ => return Err(unparse_not_valid_xs(type_name)),
             };
             if props.non_negative_integer && text.trim().starts_with('-') {
                 return Err(VmError::InvalidValue {
@@ -11071,7 +11087,7 @@ pub(crate) fn validate_unparse_scalar_lexical(
             let text = match val {
                 DfdlValue::Decimal(s) => s.as_str(),
                 DfdlValue::String(s) => s.text.as_str(),
-                _ => unreachable!(),
+                _ => return Err(unparse_not_valid_xs(type_name)),
             };
             if text.trim().is_empty() {
                 return Err(unparse_not_valid_xs(type_name));
@@ -11105,7 +11121,7 @@ pub(crate) fn validate_unparse_scalar_lexical(
                     }
                     decode_hex_binary(t).map_err(|_| unparse_not_valid_xs("xs:hexBinary"))?
                 }
-                _ => unreachable!(),
+                _ => return Err(unparse_not_valid_xs("xs:hexBinary")),
             };
             if props.length_kind == crate::schema::LengthKind::Explicit {
                 if let Some(len) = props.length {
@@ -11157,7 +11173,7 @@ fn pad_hex_binary_value(
 ) -> alloc::vec::Vec<u8> {
     if let Some(size) = explicit_size {
         if bytes.len() < size {
-            bytes.extend(core::iter::repeat(props.fill_byte).take(size - bytes.len()));
+            bytes.extend(std::iter::repeat_n(props.fill_byte, size - bytes.len()));
         } else if bytes.len() > size {
             bytes.truncate(size);
         }
@@ -11169,7 +11185,7 @@ fn pad_hex_binary_value(
         .map(|n| n as usize)
     {
         if bytes.len() < min {
-            bytes.extend(core::iter::repeat(props.fill_byte).take(min - bytes.len()));
+            bytes.extend(std::iter::repeat_n(props.fill_byte, min - bytes.len()));
         }
     }
     bytes
@@ -11294,7 +11310,7 @@ pub(crate) fn write_simple(
             props,
             strings,
             tunables,
-            &config,
+            config,
             field_name,
         )?,
         Representation::Text => {
@@ -11305,7 +11321,7 @@ pub(crate) fn write_simple(
                 kind,
                 props,
                 strings,
-                &config,
+                config,
                 field_name,
                 encode_siblings,
                 encode_escape_parent,
@@ -11651,6 +11667,7 @@ mod delimited_stop_tests {
         }
     }
 
+    #[test]
     fn format_calendar_text_time_and_datetime() {
         assert_eq!(
             format_calendar_text("04:09:23", "hh:mm:ss", false, 53, default_cal_cfg(), false, false)
@@ -11664,7 +11681,6 @@ mod delimited_stop_tests {
         );
     }
 
-    #[test]
     #[test]
     fn format_calendar_text_date_pattern_choice() {
         let pat = "'It is day 'dd' of 'MMM, yyyy";

@@ -1,6 +1,6 @@
 //! List section06 failures (ignored).
 use dfdl_vm::tdml::{
-    parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
+    parse_tdml, run_parser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
     TdmlSuite,
 };
 use std::collections::{BTreeMap, HashSet};

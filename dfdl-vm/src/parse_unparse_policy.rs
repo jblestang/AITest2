@@ -5,7 +5,6 @@ use crate::schema::{
 };
 use alloc::collections::BTreeMap;
 use alloc::format;
-use alloc::string::ToString;
 
 fn policy_label(p: ParseUnparsePolicy) -> &'static str {
     match p {

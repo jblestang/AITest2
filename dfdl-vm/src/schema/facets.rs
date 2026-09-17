@@ -1,9 +1,9 @@
 use super::ast::{
-    BuiltinType, LengthKind, Representation, RestrictionBase, SchemaDocument, SimpleBase, TypeDef,
+    BuiltinType, LengthKind, RestrictionBase, SchemaDocument, SimpleBase, TypeDef,
 };
 use crate::error::SchemaError;
 use crate::ir::{IrProps, ValueKind};
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 #[derive(Debug, Default, Clone)]
@@ -257,9 +257,7 @@ fn validate_single_restriction(
     }
     if let Some(0) = total_digits {
         return Err(SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error: Value '0' is not facet-valid with respect to minInclusive '0' for type 'positiveInteger' (totalDigits)"
-            ),
+            message: "Schema Definition Error: Value '0' is not facet-valid with respect to minInclusive '0' for type 'positiveInteger' (totalDigits)".to_string(),
         });
     }
     if let (Some(frac), Some(total)) = (fraction_digits, total_digits) {
@@ -344,9 +342,7 @@ pub fn validate_restriction_chain(
 pub fn validate_facet_literals(eff: &EffectiveFacets) -> Result<(), SchemaError> {
     if eff.total_digits == Some(0) {
         return Err(SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error: Value '0' is not facet-valid with respect to minInclusive '0' for type 'positiveInteger' (totalDigits)"
-            ),
+            message: "Schema Definition Error: Value '0' is not facet-valid with respect to minInclusive '0' for type 'positiveInteger' (totalDigits)".to_string(),
         });
     }
     for v in [
@@ -606,10 +602,8 @@ pub fn validate_length_facets_for_type(
                 if let Some(base_len) = parent_eff.length {
                     if base_len != *local_len {
                         return Err(SchemaError::InvalidProperty {
-                            message: alloc::format!(
-                                "Schema Definition Error length-valid-restriction: \
-                                 value of length must be = the value of that of the base type"
-                            ),
+                            message: "Schema Definition Error length-valid-restriction: \
+                                 value of length must be = the value of that of the base type".to_string(),
                         });
                     }
                 }
@@ -623,7 +617,7 @@ pub fn validate_length_facets_for_type(
 
     let builtin = schema.builtin_for_simple_base(base);
     let prim_name = builtin
-        .map(|b| builtin_type_name(b))
+        .map(builtin_type_name)
         .unwrap_or("unknown");
 
     let has_length = eff.length.is_some();
@@ -632,12 +626,10 @@ pub fn validate_length_facets_for_type(
 
     if has_length && (has_min || has_max) {
         return Err(SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error due to length-minLength-maxLength: \
+            message: "Schema Definition Error due to length-minLength-maxLength: \
                  It is an error for both length and minLength to be members of facets. \
                  It is not valid to not have a minLength facet if the current restriction has the minLength facet \
-                 and the current restriction or base has the length facet"
-            ),
+                 and the current restriction or base has the length facet".to_string(),
         });
     }
 

@@ -12,7 +12,7 @@ use crate::schema::{
     TextTrimKind, TypeDef,
     TypeName, get_global_element,
     expand_entities_str,
-    parse_text_standard_separator_list, parse_text_standard_zero_rep_list,
+    parse_text_standard_separator_list,
     validate_length_facets_for_type, validate_length_pattern,
     validate_text_standard_distinct_values,
     validate_text_standard_exponent_rep_literal,
@@ -70,15 +70,14 @@ fn dfdl_props_for_element_ref(schema: &SchemaDocument, element: &ElementDecl) ->
                 .source_label
                 .as_deref()
                 .is_some_and(|s| s != schema.schema_source_label.as_deref().unwrap_or(""));
-            if imported {
-                if props.initiator.is_none() {
+            if imported
+                && props.initiator.is_none() {
                     props.initiator = g
                         .format_context
                         .initiator
                         .clone()
                         .filter(|s| !s.is_empty());
                 }
-            }
         }
     }
     props
@@ -142,7 +141,7 @@ impl<'a> IrBuilder<'a> {
 
     fn build(mut self, root_name: &str) -> Result<IrProgram> {
         let root = if let Some(root_element) =
-            crate::schema::get_global_element(&self.schema, root_name)
+            crate::schema::get_global_element(self.schema, root_name)
         {
             self.build_root_element_node(root_name, root_element)?
         } else if let Some(type_def) = self
@@ -215,7 +214,7 @@ impl<'a> IrBuilder<'a> {
         root_element: &GlobalElement,
     ) -> Result<u32> {
         if dfdl_props_has_input_value_calc(&root_element.props)
-            && builtin_for_element_type_name(&self.schema, &root_element.type_name).is_some()
+            && builtin_for_element_type_name(self.schema, &root_element.type_name).is_some()
         {
             return Err(SchemaError::InvalidProperty {
                 message: "Schema Definition Error: Placeholder".into(),
@@ -223,7 +222,7 @@ impl<'a> IrBuilder<'a> {
             .into());
         }
         let root = if let Some(builtin) =
-            builtin_for_element_type_name(&self.schema, &root_element.type_name)
+            builtin_for_element_type_name(self.schema, &root_element.type_name)
         {
             let kind = value_kind_from_builtin(builtin);
             let defaults = self.defaults.clone();
@@ -239,7 +238,7 @@ impl<'a> IrBuilder<'a> {
                 Some(root_name),
             )?;
             apply_restriction_facets(
-                &self.schema,
+                self.schema,
                 &mut props,
                 &SimpleBase::Builtin(builtin),
                 &mut self.strings,
@@ -263,9 +262,9 @@ impl<'a> IrBuilder<'a> {
                     name: root_element.type_name.as_str().to_string(),
                 })?;
 
-            if let TypeDef::Simple { base, props: _, .. } = type_def {
+            if let TypeDef::Simple { base, .. } = type_def {
                 let defaults = self.defaults.clone();
-                let kind = value_kind_from_simple(&self.schema, base);
+                let kind = value_kind_from_simple(self.schema, base);
                 let type_props = self
                     .schema
                     .effective_simple_type_props(&root_element.type_name)
@@ -273,7 +272,7 @@ impl<'a> IrBuilder<'a> {
                 validate_dfdl_prop_overlap(&root_element.props, &type_props)?;
                 let mut merged = self.merge_props_full(&defaults, &type_props, &root_element.props)?;
                 apply_type_name_ir_flags(&root_element.type_name, &mut merged);
-                validate_length_facets_for_type(&self.schema, base, kind, &merged, None)?;
+                validate_length_facets_for_type(self.schema, base, kind, &merged, None)?;
                 let mut ir_props = finalize_element_props(
                     kind,
                     merged,
@@ -289,7 +288,7 @@ impl<'a> IrBuilder<'a> {
                     Some(&root_element.type_name),
                 )?;
                 apply_restriction_facets(
-                    &self.schema,
+                    self.schema,
                     &mut ir_props,
                     base,
                     &mut self.strings,
@@ -385,7 +384,7 @@ impl<'a> IrBuilder<'a> {
                 format_context,
                 ..
             } => {
-                let kind = value_kind_from_simple(&self.schema, base);
+                let kind = value_kind_from_simple(self.schema, base);
                 let type_props = self
                     .schema
                     .effective_simple_type_props(type_name)
@@ -414,7 +413,7 @@ impl<'a> IrBuilder<'a> {
                     Some(type_name),
                 )?;
                 apply_restriction_facets(
-                    &self.schema,
+                    self.schema,
                     &mut ir_props,
                     base,
                     &mut self.strings,
@@ -422,7 +421,7 @@ impl<'a> IrBuilder<'a> {
                 );
                 validate_binary_calendar_compile(kind, &ir_props, &self.strings)?;
                 validate_length_facets_for_type(
-                    &self.schema,
+                    self.schema,
                     base,
                     kind,
                     &ir_props,
@@ -519,7 +518,7 @@ impl<'a> IrBuilder<'a> {
                     ir_props.length_kind_defined = true;
                 }
                 apply_restriction_facets(
-                    &self.schema,
+                    self.schema,
                     &mut ir_props,
                     &SimpleBase::Builtin(builtin),
                     &mut self.strings,
@@ -654,7 +653,7 @@ impl<'a> IrBuilder<'a> {
                             if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
                                 if let TypeDef::Simple { base, .. } = type_def {
                                     validate_length_facets_for_type(
-                                        &self.schema,
+                                        self.schema,
                                         base,
                                         kind,
                                         &merged_ir,
@@ -675,7 +674,7 @@ impl<'a> IrBuilder<'a> {
                             if let Some(type_def) = self.schema.resolve_type(&element.type_name) {
                                 if let TypeDef::Simple { base, props: type_props, .. } = type_def {
                                     apply_restriction_facets(
-                                        &self.schema,
+                                        self.schema,
                                         &mut merged,
                                         base,
                                         &mut self.strings,
@@ -767,7 +766,7 @@ impl<'a> IrBuilder<'a> {
                                 hidden,
                             )?;
                             branches.push(ChoiceBranch {
-                                name: self.strings.intern(&branch_name(branch)),
+                                name: self.strings.intern(branch_name(branch)),
                                 initiator: branch_initiator(branch, &mut self.strings),
                                 branch_key: branch_choice_key(branch, self.schema, &mut self.strings),
                                 node,
@@ -821,9 +820,7 @@ impl<'a> IrBuilder<'a> {
                         .any(|s| s.as_str() == gname)
                     {
                         return Err(SchemaError::InvalidProperty {
-                            message: alloc::format!(
-                                "Schema Definition Error: Model group circular definitions. Group references, or hidden group references form a loop."
-                            ),
+                            message: "Schema Definition Error: Model group circular definitions. Group references, or hidden group references form a loop.".to_string(),
                         }
                         .into());
                     }
@@ -866,17 +863,17 @@ impl<'a> IrBuilder<'a> {
                                 .props
                                 .separator
                                 .as_deref()
-                                .map_or(true, |s| s.is_empty())
+                                .is_none_or(|s| s.is_empty())
                                 && seq
                                     .props
                                     .terminator
                                     .as_deref()
-                                    .map_or(true, |s| s.is_empty())
+                                    .is_none_or(|s| s.is_empty())
                                 && seq
                                     .props
                                     .initiator
                                     .as_deref()
-                                    .map_or(true, |s| s.is_empty());
+                                    .is_none_or(|s| s.is_empty());
                             if inline_hidden {
                                 children.extend(group_children);
                             } else {
@@ -907,7 +904,7 @@ impl<'a> IrBuilder<'a> {
                                     true,
                                 )?;
                                 branches.push(ChoiceBranch {
-                                    name: self.strings.intern(&branch_name(branch)),
+                                    name: self.strings.intern(branch_name(branch)),
                                     initiator: branch_initiator(branch, &mut self.strings),
                                     branch_key: branch_choice_key(branch, self.schema, &mut self.strings),
                                     node,
@@ -1148,7 +1145,7 @@ impl<'a> IrBuilder<'a> {
         validate_text_string_pad_props(type_props)?;
         validate_text_string_pad_props(element_props)?;
         let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings)?;
-        resolve_escape_scheme(&self.schema, type_props, element_props, &mut ir);
+        resolve_escape_scheme(self.schema, type_props, element_props, &mut ir);
         self.attach_prefix_length(type_props, element_props, &mut ir, 0)?;
         Ok(ir)
     }
@@ -1267,7 +1264,7 @@ impl<'a> IrBuilder<'a> {
             &DfdlProps::default(),
             &mut self.strings,
         )?;
-        let kind = value_kind_from_simple(&self.schema, base);
+        let kind = value_kind_from_simple(self.schema, base);
         validate_prefix_length_type(type_name, props, &prefix_props, kind, &self.strings)?;
         self.attach_prefix_length(props, &DfdlProps::default(), &mut prefix_props, depth + 1)?;
         if kind == ValueKind::Decimal {
@@ -1476,7 +1473,7 @@ fn validate_zoned_text_number_pattern(
     check_policy: crate::schema::BinaryNumberCheckPolicy,
     decimal_signed: bool,
 ) -> Result<()> {
-    use crate::schema::BinaryNumberCheckPolicy;
+    
     let bare = text_number_pattern_bare(pattern);
     if bare.contains('@') {
         return Err(SchemaError::InvalidProperty {
@@ -1695,32 +1692,28 @@ fn finalize_element_props(
         }
         match scheme.escape_kind {
             EscapeKind::EscapeBlock => {
-                for raw in [
+                for s in [
                     scheme.escape_block_start_raw.as_deref(),
                     scheme.escape_block_end_raw.as_deref(),
-                ] {
-                    if let Some(s) = raw {
-                        if let Err(msg) = validate_escape_block_property(s) {
-                            return Err(SchemaError::InvalidProperty {
-                                message: alloc::format!("Schema Definition Error: {msg}"),
-                            }
-                            .into());
+                ].into_iter().flatten() {
+                    if let Err(msg) = validate_escape_block_property(s) {
+                        return Err(SchemaError::InvalidProperty {
+                            message: alloc::format!("Schema Definition Error: {msg}"),
                         }
+                        .into());
                     }
                 }
             }
             EscapeKind::EscapeCharacter => {
-                for raw in [
+                for s in [
                     scheme.escape_character_raw.as_deref(),
                     scheme.escape_escape_character_raw.as_deref(),
-                ] {
-                    if let Some(s) = raw {
-                        if let Err(msg) = validate_escape_character_property(s) {
-                            return Err(SchemaError::InvalidProperty {
-                                message: alloc::format!("Schema Definition Error: {msg}"),
-                            }
-                            .into());
+                ].into_iter().flatten() {
+                    if let Err(msg) = validate_escape_character_property(s) {
+                        return Err(SchemaError::InvalidProperty {
+                            message: alloc::format!("Schema Definition Error: {msg}"),
                         }
+                        .into());
                     }
                 }
             }
@@ -2069,7 +2062,7 @@ fn validate_input_value_calc_compile(
         if ir.unsigned_integer && v < 0 {
             return Err(sde_out_of_range(&v.to_string()).into());
         }
-        let out_of_range = || Err::<(), SchemaError>(sde_out_of_range(&v.to_string())).into();
+        let out_of_range = || Err::<(), SchemaError>(sde_out_of_range(&v.to_string()));
         match kind {
             ValueKind::Byte => {
                 i8::try_from(v).map(|_| ()).or_else(|_| out_of_range())?;
@@ -2348,7 +2341,7 @@ fn validate_program_sequence_bit_orders(program: &IrProgram) -> Result<()> {
             };
             let order = props.bit_order;
             if let Some(p) = prev {
-                if p != order && cumulative % 8 != 0 {
+                if p != order && !cumulative.is_multiple_of(8) {
                     return Err(SchemaError::InvalidProperty {
                         message: "Schema Definition Error: Changing bitOrder requires a byte boundary.".into(),
                     }
@@ -2596,9 +2589,7 @@ fn validate_trailing_skip_delimited(props: &IrProps) -> Result<()> {
         return Ok(());
     }
     Err(SchemaError::InvalidProperty {
-        message: alloc::format!(
-            "Schema Definition Error. Property terminator must be defined when trailingSkip > 0 and lengthKind='delimited'"
-        ),
+        message: "Schema Definition Error. Property terminator must be defined when trailingSkip > 0 and lengthKind='delimited'".to_string(),
     }
     .into())
 }
@@ -3428,8 +3419,7 @@ fn overlay_dfdl_to_ir(
     if let Some(v) = props.truncate_specified_length_string {
         base.truncate_specified_length_string = v;
     }
-    if props.text_number_pad_character.is_some() {
-        let raw = props.text_number_pad_character.as_deref().unwrap();
+    if let Some(raw) = props.text_number_pad_character.as_deref() {
         if let Err(msg) = crate::schema::validate_text_number_pad_character_merged(
             raw,
             props.text_number_pad_character_property_form,

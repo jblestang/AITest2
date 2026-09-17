@@ -136,7 +136,7 @@ fn zoned_v_pattern_matches(pattern: &str) -> bool {
         chars.next();
     }
     let mut before_v = 0usize;
-    while let Some(c) = chars.next() {
+    for c in chars.by_ref() {
         if c == 'V' {
             break;
         }
@@ -149,7 +149,7 @@ fn zoned_v_pattern_matches(pattern: &str) -> bool {
         return false;
     }
     let mut after_v = 0usize;
-    while let Some(c) = chars.next() {
+    for c in chars.by_ref() {
         if c == '+' {
             suffix_plus = true;
             break;
@@ -260,19 +260,6 @@ pub(crate) fn validate_zoned_pattern_characters(pattern: &str) -> Result<(), VmE
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ebcdic_section_sign_is_negative_five() {
-        let section = char::from_u32(0x00A7).unwrap();
-        let (d, neg) = convert_from_zoned_ebcdic(section).unwrap();
-        assert!(neg);
-        assert_eq!(d, 5);
-    }
-}
-
 pub(crate) fn zoned_to_number(
     raw: &str,
     style: TextZonedSignStyle,
@@ -305,4 +292,17 @@ pub(crate) fn zoned_to_number(
     } else {
         all_digits
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ebcdic_section_sign_is_negative_five() {
+        let section = char::from_u32(0x00A7).unwrap();
+        let (d, neg) = convert_from_zoned_ebcdic(section).unwrap();
+        assert!(neg);
+        assert_eq!(d, 5);
+    }
 }

@@ -61,6 +61,7 @@ fn tdml_hb_decode_via_spec() {
     let doc = &test.documents[0];
     let frame = doc.significant_bit_length();
     let value = spec
+        .decoder()
         .decode_with_tdml_options(
             &doc.data,
             frame,

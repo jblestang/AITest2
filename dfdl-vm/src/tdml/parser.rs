@@ -540,7 +540,7 @@ fn check_document_part_bit_order_transitions(
     for (i, (order, len, _)) in parts.iter().enumerate() {
         if i > 0 {
             let prior = parts[i - 1].0;
-            if prior != *order && cumulative % 8 != 0 {
+            if prior != *order && !cumulative.is_multiple_of(8) {
                 return Err(ParseError::InvalidXml {
                     message: "bitOrder can only change on a byte boundary.".into(),
                 }
@@ -632,22 +632,21 @@ fn parse_document(
                     }
                 }
                 bit_part_chunks.push(chunks);
-            } else if part.kind == DocumentKind::Hex && part.bit_chunks.is_some() {
-                let chunks = part.bit_chunks.unwrap();
-                saw_bits_part = true;
-                kind = DocumentKind::Bits;
-                bit_part_chunks.push(chunks);
+            } else if part.kind == DocumentKind::Hex {
+                if let Some(chunks) = part.bit_chunks.clone() {
+                    saw_bits_part = true;
+                    kind = DocumentKind::Bits;
+                    bit_part_chunks.push(chunks);
+                }
             } else if saw_bits_part && part.kind == DocumentKind::Text {
                 mixed_bits_text_document = true;
                 if saw_rtl_byte_order {
                     // Daffodil `Document.documentBits`: encoded text parts join the bit stream (MIL / 7-bit packed).
-                    let chunks = part
-                        .data_bit_chunks
-                        .clone()
-                        .expect("text data_bit_chunks in RTL bits document");
-                    bit_part_chunks.push(chunks);
-                    kind = DocumentKind::Bits;
-                } else if pending_bits.len() % 8 != 0 {
+                    if let Some(chunks) = part.data_bit_chunks.clone() {
+                        bit_part_chunks.push(chunks);
+                        kind = DocumentKind::Bits;
+                    }
+                } else if !pending_bits.len().is_multiple_of(8) {
                     append_bytes_as_msb_bits(&mut pending_bits, &part.data);
                 } else {
                     flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
@@ -926,7 +925,7 @@ fn parse_hex_document(text: &str) -> Result<Vec<u8>> {
     if hex.is_empty() {
         return Ok(Vec::new());
     }
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         hex.insert(0, '0');
     }
     let mut out = Vec::new();
@@ -1160,7 +1159,7 @@ mod tests {
         let suite = parse_tdml(tdml).expect("parse");
         let schema = suite.schemas.get("AI.dfdl.xsd").expect("schema");
         if let Err(e) = parse_schema(&schema.xsd) {
-            assert!(false, "schema compile failed: {e}\n---\n{}", schema.xsd);
+            panic!("schema compile failed: {e}\n---\n{}", schema.xsd);
         }
     }
 

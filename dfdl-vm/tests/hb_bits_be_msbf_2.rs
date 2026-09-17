@@ -1,4 +1,4 @@
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome};
+use dfdl_vm::tdml::TestOutcome;
 
 #[test]
 fn hex_binary_bits_be_msbf_2_tdml() {

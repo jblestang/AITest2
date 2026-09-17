@@ -127,12 +127,12 @@ fn walk_particle(
                             {
                                 pattern_errors_emitted = true;
                                 if full_xerces_style || *kind == ValueKind::String {
-                                    errors.push(alloc::format!("Validation Error"));
+                                    errors.push("Validation Error".to_string());
                                     errors.push(ename.to_string());
-                                    errors.push(alloc::format!("pattern"));
+                                    errors.push("pattern".to_string());
                                 } else {
-                                    errors.push(alloc::format!("failed facet checks"));
-                                    errors.push(alloc::format!("pattern"));
+                                    errors.push("failed facet checks".to_string());
+                                    errors.push("pattern".to_string());
                                 }
                                 if let Some(start) = detail.find('(') {
                                     if let Some(end) = detail.rfind(')') {
@@ -142,8 +142,8 @@ fn walk_particle(
                                 let lex = value_lexical(value, *kind).unwrap_or("");
                                 if full_xerces_style && !lex.is_empty() {
                                     errors.push(alloc::format!("'{lex}'"));
-                                    errors.push(alloc::format!("not facet-valid"));
-                                    errors.push(alloc::format!("pattern"));
+                                    errors.push("not facet-valid".to_string());
+                                    errors.push("pattern".to_string());
                                     if let Some(start) = detail.find('(') {
                                         if let Some(end) = detail.rfind(')') {
                                             errors.push(alloc::format!(
@@ -170,8 +170,8 @@ fn walk_particle(
                                 )
                             {
                                 pattern_errors_emitted = true;
-                                errors.push(alloc::format!("failed facet checks"));
-                                errors.push(alloc::format!("pattern"));
+                                errors.push("failed facet checks".to_string());
+                                errors.push("pattern".to_string());
                                 if let Some(start) = detail.find('(') {
                                     if let Some(end) = detail.rfind(')') {
                                         errors.push(detail[start + 1..end].to_string());
@@ -207,15 +207,15 @@ fn walk_particle(
                                             "'{lex}' of element 'ex:{ename}' is not valid"
                                         ));
                                     } else if props.input_value_calc.is_some() {
-                                        errors.push(alloc::format!("Validation Error"));
+                                        errors.push("Validation Error".to_string());
                                         errors.push(alloc::format!(
                                             "Value '{lex}' is not facet-valid with respect to minExclusive '{min}'"
                                         ));
                                     } else {
                                         errors.push(ename.to_string());
-                                        errors.push(alloc::format!("not valid"));
+                                        errors.push("not valid".to_string());
                                         errors.push(lex);
-                                        errors.push(alloc::format!("not facet-valid"));
+                                        errors.push("not facet-valid".to_string());
                                     }
                                 }
                             } else if full_xerces_style
@@ -232,9 +232,9 @@ fn walk_particle(
                                 && rest.is_some_and(|r| r.starts_with("facet maxInclusive"))
                             {
                                 if let Some(lex) = value_lexical_any(value, *kind) {
-                                    errors.push(alloc::format!("Validation Error"));
+                                    errors.push("Validation Error".to_string());
                                     errors.push(alloc::format!("Value '{lex}'"));
-                                    errors.push(alloc::format!("not valid"));
+                                    errors.push("not valid".to_string());
                                     errors.push(alloc::format!("ex:{ename}"));
                                 }
                             } else if full_xerces_style
@@ -244,7 +244,7 @@ fn walk_particle(
                                 if let Some(lex) = value_lexical(value, *kind) {
                                     let len = lex.chars().count();
                                     if let Some(min) = props.min_length {
-                                        errors.push(alloc::format!("Validation Error"));
+                                        errors.push("Validation Error".to_string());
                                         errors.push(alloc::format!(
                                             "Value '{lex}' with length = '{len}' is not facet-valid with respect to minLength '{min}'"
                                         ));
@@ -275,7 +275,7 @@ fn walk_particle(
                             } else if full_xerces_style && rest.is_some_and(|r| r.contains("totalDigits")) {
                                 if let Some(max) = props.total_digits {
                                     errors.push(ename.to_string());
-                                    errors.push(alloc::format!("not valid"));
+                                    errors.push("not valid".to_string());
                                     let has_range = props.value_min_inclusive.is_some()
                                         || props.value_max_inclusive.is_some()
                                         || props.value_min_exclusive.is_some()
@@ -300,9 +300,9 @@ fn walk_particle(
                                         errors.push(alloc::format!(
                                             "number of total digits has been limited to {max}."
                                         ));
-                                        errors.push(alloc::format!("Validation Error"));
+                                        errors.push("Validation Error".to_string());
                                         errors.push(ename.to_string());
-                                        errors.push(alloc::format!("not valid"));
+                                        errors.push("not valid".to_string());
                                     } else {
                                         errors.push(alloc::format!(
                                             "total digits has been limited to {max}"
@@ -317,22 +317,20 @@ fn walk_particle(
                                     .collect::<alloc::vec::Vec<_>>();
                                 if allowed.len() == 1 {
                                     if let Some(lex) = value_lexical(value, *kind) {
-                                        errors.push(alloc::format!("Validation Error"));
+                                        errors.push("Validation Error".to_string());
                                         errors.push(alloc::format!(
                                             "Value '{lex}' is not facet-valid with respect to enumeration '[{}]'.",
                                             allowed[0]
                                         ));
-                                        errors.push(alloc::format!(
-                                            "It must be a value from the enumeration."
-                                        ));
+                                        errors.push("It must be a value from the enumeration.".to_string());
                                     }
                                 } else {
                                     errors.push(ename.to_string());
-                                    errors.push(alloc::format!("not valid"));
+                                    errors.push("not valid".to_string());
                                     if let Some(lex) = value_lexical(value, *kind) {
                                         errors.push(lex.to_string());
                                     }
-                                    errors.push(alloc::format!("not facet-valid"));
+                                    errors.push("not facet-valid".to_string());
                                     let joined = allowed.join(", ");
                                     if !joined.is_empty() {
                                         errors.push(joined);
@@ -342,7 +340,7 @@ fn walk_particle(
                                 && rest.is_some_and(|r| r.starts_with("facet length"))
                             {
                                 if let Some(exact) = props.facet_length {
-                                    errors.push(alloc::format!("Validation Error"));
+                                    errors.push("Validation Error".to_string());
                                     errors.push(alloc::format!(
                                         "not facet-valid with respect to length '{exact}'"
                                     ));
@@ -353,7 +351,7 @@ fn walk_particle(
                                 && props.min_length.is_some()
                             {
                                 if let Some(min) = props.min_length {
-                                    errors.push(alloc::format!("Validation Error"));
+                                    errors.push("Validation Error".to_string());
                                     errors.push(alloc::format!(
                                         "not facet-valid with respect to minLength '{min}'"
                                     ));
@@ -363,7 +361,7 @@ fn walk_particle(
                                 && *kind == ValueKind::String
                             {
                                 if let Some(max) = props.max_length {
-                                    errors.push(alloc::format!("Validation Error"));
+                                    errors.push("Validation Error".to_string());
                                     errors.push(alloc::format!(
                                         "not facet-valid with respect to maxLength '{max}'"
                                     ));
@@ -379,12 +377,12 @@ fn walk_particle(
                                     if !matches!(lex.as_str(), "4" | "9") {
                                         if lex == "7" {
                                             errors.push(lex.clone());
-                                            errors.push(alloc::format!("not facet-valid"));
-                                            errors.push(alloc::format!("maxExclusive '3'"));
+                                            errors.push("not facet-valid".to_string());
+                                            errors.push("maxExclusive '3'".to_string());
                                         } else {
                                             errors.push(lex.clone());
-                                            errors.push(alloc::format!("{ename}"));
-                                            errors.push(alloc::format!("not valid"));
+                                            errors.push(ename.to_string());
+                                            errors.push("not valid".to_string());
                                         }
                                         if let Some(doc) = document_text {
                                             errors.push(alloc::format!("byte {}", doc.len()));
@@ -403,24 +401,24 @@ fn walk_particle(
                                         || r == "minExclusive"
                                 })
                             {
-                                errors.push(alloc::format!("Validation Error"));
+                                errors.push("Validation Error".to_string());
                                 if detail.contains("maxInclusive") {
-                                    errors.push(alloc::format!("maxInclusive"));
+                                    errors.push("maxInclusive".to_string());
                                     if let Some(max) = props.value_max_inclusive {
                                         errors.push(format_xerces_float_bound(max as f64));
                                     }
                                 } else if detail.contains("minInclusive") {
-                                    errors.push(alloc::format!("minInclusive"));
+                                    errors.push("minInclusive".to_string());
                                     if let Some(min) = props.value_min_inclusive {
                                         errors.push(format_xerces_float_bound(min as f64));
                                     }
                                 } else if detail.contains("maxExclusive") {
-                                    errors.push(alloc::format!("maxExclusive"));
+                                    errors.push("maxExclusive".to_string());
                                     if let Some(max) = props.value_max_exclusive {
                                         errors.push(format_xerces_float_bound(max as f64));
                                     }
                                 } else if detail.contains("minExclusive") {
-                                    errors.push(alloc::format!("minExclusive"));
+                                    errors.push("minExclusive".to_string());
                                     if let Some(min) = props.value_min_exclusive {
                                         errors.push(format_xerces_float_bound(min as f64));
                                     }
@@ -428,9 +426,7 @@ fn walk_particle(
                             } else if !full_xerces_style {
                                 if rest.is_some_and(|r| r.starts_with("facet pattern")) {
                                     if type_has_union_members(schema, program, props) {
-                                        errors.push(alloc::format!(
-                                            "failed facet checks due to: facet pattern"
-                                        ));
+                                        errors.push("failed facet checks due to: facet pattern".to_string());
                                         errors.push(alloc::format!("ex:{ename}"));
                                     } else {
                                         errors.push(alloc::format!(
@@ -453,14 +449,14 @@ fn walk_particle(
                                             || r.starts_with("facet length")
                                     })
                                 {
-                                    errors.push(alloc::format!("Validation Error"));
+                                    errors.push("Validation Error".to_string());
                                     errors.push(detail.clone());
                                 } else {
                                     errors.push(ename.to_string());
-                                    errors.push(alloc::format!("failed facet checks"));
+                                    errors.push("failed facet checks".to_string());
                                     if let Some(r) = rest {
                                         if r.contains("enumeration") {
-                                            errors.push(alloc::format!("facet enumeration(s)"));
+                                            errors.push("facet enumeration(s)".to_string());
                                             let allowed = props
                                                 .facet_enumeration
                                                 .iter()
@@ -473,11 +469,11 @@ fn walk_particle(
                                         } else if r.starts_with("facet maxLength") {
                                             errors.push(alloc::format!("due to: {r}"));
                                         } else if r.starts_with("facet minLength") {
-                                            errors.push(alloc::format!("facet minLength"));
+                                            errors.push("facet minLength".to_string());
                                         } else if r.starts_with("facet ") {
                                             errors.push(r.to_string());
-                                            if r.starts_with("facet maxExclusive") {
-                                                if ename == "e" {
+                                            if r.starts_with("facet maxExclusive")
+                                                && ename == "e" {
                                                     if let Some(lex) = value_lexical_any(value, *kind) {
                                                         if let Some(doc) = document_text {
                                                             if let Some(byte) =
@@ -490,7 +486,6 @@ fn walk_particle(
                                                         }
                                                     }
                                                 }
-                                            }
                                         } else {
                                             errors.push(alloc::format!("facet {r}"));
                                         }
@@ -498,13 +493,13 @@ fn walk_particle(
                                 }
                             } else if rest.is_some_and(|r| r.starts_with("facet pattern")) {
                                 errors.push(alloc::format!("ex:{ename}"));
-                                errors.push(alloc::format!("not valid"));
+                                errors.push("not valid".to_string());
                             } else {
                                 errors.push(ename.to_string());
-                                errors.push(alloc::format!("failed facet checks"));
+                                errors.push("failed facet checks".to_string());
                                 if let Some(r) = rest {
                                     if r.contains("enumeration") {
-                                        errors.push(alloc::format!("facet enumeration(s)"));
+                                        errors.push("facet enumeration(s)".to_string());
                                         let allowed = props
                                             .facet_enumeration
                                             .iter()
@@ -523,9 +518,9 @@ fn walk_particle(
                                 errors.push(detail.clone());
                             }
                         } else {
-                            errors.push(alloc::format!("Validation Error"));
+                            errors.push("Validation Error".to_string());
                             errors.push(ename.to_string());
-                            errors.push(alloc::format!("not valid"));
+                            errors.push("not valid".to_string());
                             errors.push(detail.clone());
                             errors.push(alloc::format!("ex:{ename} {detail}"));
                         }
@@ -540,7 +535,7 @@ fn walk_particle(
                     let type_name = TypeName::new(program.strings.get(type_id).map_err(|_| ())?);
                     if !validate_union_membership(schema, &type_name, text) {
                         errors.push(text.to_string());
-                        errors.push(alloc::format!("not one of the union members"));
+                        errors.push("not one of the union members".to_string());
                         if let Some(ename) = ename {
                             errors.push(alloc::format!("ex:{ename}"));
                         }
@@ -574,14 +569,14 @@ fn walk_particle(
                                 if props.occurs_max.is_some() && count > max {
                                     errors.push(key.to_string());
                                     errors.push(alloc::format!("{count} occur"));
-                                    errors.push(alloc::format!("expected"));
+                                    errors.push("expected".to_string());
                                     errors.push(alloc::format!("maximum of '{max}'"));
-                                    errors.push(alloc::format!("exceeded"));
+                                    errors.push("exceeded".to_string());
                                 }
                             } else {
                                 errors.push(key.to_string());
-                                errors.push(alloc::format!("occurred"));
-                                errors.push(alloc::format!("expected"));
+                                errors.push("occurred".to_string());
+                                errors.push("expected".to_string());
                                 errors.push(alloc::format!("minimum of '{min}'"));
                                 if props.occurs_max.is_some() {
                                     errors.push(alloc::format!("maximum of '{max}'"));
@@ -758,7 +753,7 @@ fn resolve_root_field_value<'a>(root_value: &'a DfdlValue, root_element: &str) -
     root_value
 }
 
-fn value_lexical<'a>(value: &'a DfdlValue, kind: ValueKind) -> Option<&'a str> {
+fn value_lexical(value: &DfdlValue, kind: ValueKind) -> Option<&str> {
     match (kind, value) {
         (ValueKind::String, DfdlValue::String(s)) => Some(s.text.as_str()),
         (_, DfdlValue::String(s)) => Some(s.text.as_str()),

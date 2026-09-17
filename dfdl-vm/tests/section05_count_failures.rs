@@ -82,7 +82,7 @@ fn section05_failure_counts_by_file() {
         }
     }
     let mut sorted: Vec<_> = counts.iter().collect();
-    sorted.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.1 .0));
     for (rel, (fail, total)) in sorted.iter().take(25) {
         eprintln!("{rel}: {fail}/{total} fail");
     }

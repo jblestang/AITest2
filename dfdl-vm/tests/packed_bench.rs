@@ -1,8 +1,7 @@
 //! Investigate packed.tdml slowness (ignored by default).
 use dfdl_vm::schema::parse_schema;
 use dfdl_vm::tdml::{
-    effective_round_trip, parse_tdml, run_parser_test, run_parser_test_with_options,
-    ParserTestRunOptions, RoundTrip,
+    effective_round_trip, parse_tdml, run_parser_test, RoundTrip,
 };
 use dfdl_vm::DfdlSpec;
 use std::collections::BTreeSet;
@@ -71,7 +70,7 @@ fn packed_tdml_timing_breakdown() {
     }
     let all_ms = t_all.elapsed().as_millis();
 
-    slowest.sort_by(|a, b| b.0.cmp(&a.0));
+    slowest.sort_by_key(|a| std::cmp::Reverse(a.0));
 
     let mut two_pass = 0usize;
     for t in &suite.tests {

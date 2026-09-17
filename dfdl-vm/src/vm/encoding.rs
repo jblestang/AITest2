@@ -213,7 +213,7 @@ pub(crate) fn encode_bits_charset_text(text: &str, spec: BitsCharsetSpec) -> Res
         match spec.bit_order {
             BitOrder::MostSignificantBitFirst => {
                 let idx = out.len() - 1;
-                out[idx] <<= (8 - bit_count) as u8;
+                out[idx] <<= 8 - bit_count;
             }
             BitOrder::LeastSignificantBitFirst => {}
         }
@@ -425,6 +425,7 @@ pub(crate) fn remap_xml_illegal_characters_to_pua(text: &str) -> String {
     out
 }
 
+#[allow(dead_code)]
 pub(crate) fn is_iso8859_1_encoding(name: &str) -> bool {
     matches!(normalize_encoding_name(name), Some("iso-8859-1"))
 }
@@ -461,7 +462,7 @@ fn eq_ascii_ignore_case(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())
-            .all(|(x, y)| x.to_ascii_lowercase() == y.to_ascii_lowercase())
+            .all(|(x, y)| x.eq_ignore_ascii_case(&y))
 }
 
 pub(crate) fn encode_document_text(text: &str, encoding: &str) -> Result<Vec<u8>, VmError> {
@@ -717,7 +718,10 @@ pub(crate) fn read_one_utf8_char(
         return malformed_utf8(width, policy);
     }
 
-    Ok((char::from_u32(code_point).unwrap(), width))
+    let ch = char::from_u32(code_point).ok_or(VmError::InvalidValue {
+        message: "invalid unicode code point".into(),
+    })?;
+    Ok((ch, width))
 }
 
 fn decode_utf8_text(bytes: &[u8], policy: EncodingErrorPolicy) -> Result<String, VmError> {
@@ -787,7 +791,7 @@ fn encode_utf16be(text: &str) -> Vec<u8> {
 }
 
 fn count_utf16_code_units(bytes: &[u8], label: &str) -> Result<usize, VmError> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err(VmError::InvalidValue {
             message: alloc::format!("invalid {label} byte length"),
         });
@@ -801,7 +805,7 @@ fn decode_utf32(bytes: &[u8], le: bool) -> Result<String, VmError> {
     let trailing = &bytes[usable..];
     let bytes = &bytes[..usable];
     let mut out = String::with_capacity(bytes.len() / 4 + if trailing.is_empty() { 0 } else { 1 });
-    for chunk in bytes.chunks_exact(4) {
+    for chunk in bytes.as_chunks::<4>().0 {
         let unit = if le {
             (chunk[0] as u32)
                 | ((chunk[1] as u32) << 8)
@@ -829,7 +833,7 @@ fn decode_utf16(bytes: &[u8], le: bool) -> Result<String, VmError> {
     let usable = bytes.len() - (bytes.len() % 2);
     let bytes = &bytes[..usable];
     let mut out = String::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
+    for chunk in bytes.as_chunks::<2>().0 {
         let unit = if le {
             (chunk[0] as u32) | ((chunk[1] as u32) << 8)
         } else {

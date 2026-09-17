@@ -121,10 +121,9 @@ fn normalize_xsd_tz_offset(off: &str) -> Option<alloc::string::String> {
     }
     let (sign, body) = if let Some(body) = off.strip_prefix('+') {
         ('+', body)
-    } else if let Some(body) = off.strip_prefix('-') {
-        ('-', body)
     } else {
-        return None;
+        let body = off.strip_prefix('-')?;
+        ('-', body)
     };
     let (h, m) = if let Some((h, m)) = body.split_once(':') {
         (h, m)
@@ -338,6 +337,7 @@ fn days_from_civil(y: i32, m: u32, d: u32) -> Result<i64, VmError> {
     Ok(era * 146097 + doe - 719468)
 }
 
+#[allow(dead_code)]
 pub fn format_unix_datetime_utc(secs: i64) -> alloc::string::String {
     format_unix_datetime_utc_millis(secs, 0)
 }
@@ -348,7 +348,7 @@ pub fn format_unix_datetime_utc_millis(secs: i64, millis: u32) -> alloc::string:
     let hh = (rem / 3600) as u32;
     let mm = ((rem % 3600) / 60) as u32;
     let ss = (rem % 60) as u32;
-    let (y, m, d) = civil_from_days(days as i64);
+    let (y, m, d) = civil_from_days(days);
     if millis == 0 {
         alloc::format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}")
     } else {
@@ -498,7 +498,7 @@ pub fn week_of_year_for(
             let mut days_in_year = 0u32;
             for i in 0..7 {
                 let pos = cur + i;
-                let (cy, cm, cd) = civil_from_days(pos);
+                let (cy, _cm, _cd) = civil_from_days(pos);
                 if cy == target_year {
                     days_in_year += 1;
                 }

@@ -163,7 +163,7 @@ fn parse_decimal_value(raw: &str) -> Result<Decimal, VmError> {
         if exp_val >= 0 {
             let shift = exp_val as usize;
             if shift >= d.scale {
-                d.digits.extend(core::iter::repeat(0).take(shift - d.scale));
+                d.digits.extend(std::iter::repeat_n(0, shift - d.scale));
                 d.scale = 0;
             } else {
                 d.scale -= shift;
@@ -232,6 +232,7 @@ fn decimal_to_string(d: &Decimal) -> String {
     s
 }
 
+#[allow(dead_code)]
 fn unscaled(d: &Decimal) -> (Vec<u8>, bool) {
     let s = decimal_to_string(d);
     let mag: String = s
@@ -249,6 +250,7 @@ fn unscaled(d: &Decimal) -> (Vec<u8>, bool) {
     (digits, d.negative)
 }
 
+#[allow(dead_code)]
 fn from_unscaled(digits: Vec<u8>, negative: bool) -> Decimal {
     let mut d = Decimal {
         negative,
@@ -323,6 +325,7 @@ fn add_mag(a: &[u8], b: &[u8]) -> Vec<u8> {
     out
 }
 
+#[allow(dead_code)]
 fn mul_mag_small(a: &[u8], n: u8) -> Vec<u8> {
     if n == 0 {
         return vec![0];
@@ -466,7 +469,7 @@ fn scaled_integer(d: &Decimal, target_scale: usize) -> Vec<u8> {
     let (int_part, frac_part) = s.split_once('.').unwrap_or((&s, ""));
     let mut frac = frac_part.to_string();
     if frac.len() < target_scale {
-        frac.extend(core::iter::repeat('0').take(target_scale - frac.len()));
+        frac.extend(std::iter::repeat_n('0', target_scale - frac.len()));
     } else if frac.len() > target_scale {
         frac.truncate(target_scale);
     }
@@ -780,10 +783,8 @@ fn format_mantissa_pattern(
                     j += 1;
                 }
                 i = j;
-                let stops_at_dot =
-                    int_pattern_ends_at_dot(&chars, i.saturating_sub(max)).is_some() && !saw_decimal;
-                if stops_at_dot && !saw_decimal {
-                    let dot_at = int_pattern_ends_at_dot(&chars, i.saturating_sub(max)).unwrap();
+                let dot_opt = int_pattern_ends_at_dot(&chars, i.saturating_sub(max));
+                if let (true, Some(dot_at)) = (!saw_decimal, dot_opt) {
                     let avail = int_digits.len().saturating_sub(int_idx);
                     let need = core::cmp::max(min, avail);
                     let pad = need.saturating_sub(avail);
@@ -866,13 +867,12 @@ fn format_mantissa_pattern(
             }
             other => {
                 out.push(other);
-                if saw_decimal && other.is_ascii_digit() {
-                    if frac_idx < frac_digits.len()
+                if saw_decimal && other.is_ascii_digit()
+                    && frac_idx < frac_digits.len()
                         && (b'0' + frac_digits[frac_idx]) as char == other
                     {
                         frac_idx += 1;
                     }
-                }
                 i += 1;
             }
         }

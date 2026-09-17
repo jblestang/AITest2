@@ -757,13 +757,12 @@ fn validate_name_and_ref(schema: &SchemaDocument) -> Result<(), SchemaError> {
 }
 
 fn validate_element_name_ref(el: &ElementDecl) -> Result<(), SchemaError> {
-    if el.element_ref.is_some() && (el.has_element_name_attr || el.type_name.as_str() != "xs:string") {
-        if el.has_element_name_attr {
+    if el.element_ref.is_some() && (el.has_element_name_attr || el.type_name.as_str() != "xs:string")
+        && el.has_element_name_attr {
             return Err(SchemaError::InvalidProperty {
                 message: "Schema Definition Error: name and type attributes cannot appear together with ref attribute".into(),
             });
         }
-    }
     Ok(())
 }
 
@@ -1113,8 +1112,8 @@ fn validate_sequence_separator_encoding(schema: &SchemaDocument, root: &str) -> 
         for seq in sequence_groups_in_particles(&particles) {
             validate_one_sequence_separator_encoding(
                 schema,
-                &seq.props,
-                &seq.particles,
+                seq.props,
+                seq.particles,
                 &inherited,
             )?;
         }
@@ -1277,9 +1276,7 @@ fn validate_one_sequence_separator_encoding(
                 if !encodings_compatible_for_delimiter_scan(seq_enc, child_enc) && !allow_ascii_utf16
                 {
                     return Err(SchemaError::InvalidProperty {
-                        message: alloc::format!(
-                            "Schema Definition Error: The separator of the enclosing group must be in the same encoding as the delimited element that precedes it. encoding separator"
-                        ),
+                        message: "Schema Definition Error: The separator of the enclosing group must be in the same encoding as the delimited element that precedes it. encoding separator".to_string(),
                     });
                 }
             }
@@ -1291,9 +1288,7 @@ fn validate_one_sequence_separator_encoding(
             if let Some(next_enc) = effective_encoding_name(&next) {
                 if !encodings_compatible_for_delimiter_scan(seq_enc, next_enc) {
                     return Err(SchemaError::InvalidProperty {
-                        message: alloc::format!(
-                            "Schema Definition Error: The separator of the enclosing group must be in the same encoding as the delimited element that precedes it. encoding separator"
-                        ),
+                        message: "Schema Definition Error: The separator of the enclosing group must be in the same encoding as the delimited element that precedes it. encoding separator".to_string(),
                     });
                 }
             }
@@ -1312,9 +1307,7 @@ fn validate_one_sequence_separator_encoding(
                         || !encodings_compatible_for_delimiter_scan(seq_enc, prev_enc)
                     {
                         return Err(SchemaError::InvalidProperty {
-                            message: alloc::format!(
-                                "Schema Definition Error: The separator of the enclosing group must be in the same encoding as the delimited element that precedes it. encoding separator"
-                            ),
+                            message: "Schema Definition Error: The separator of the enclosing group must be in the same encoding as the delimited element that precedes it. encoding separator".to_string(),
                         });
                     }
                 }
@@ -1535,13 +1528,10 @@ fn validate_reachable_assert_path_indexing(
 }
 
 fn validate_content_assert_indexing(content: &ComplexContent) -> Result<(), SchemaError> {
-    match content {
-        ComplexContent::Sequence(seq) => {
-            for p in &seq.particles {
-                validate_particle_assert_indexing(p)?;
-            }
+    if let ComplexContent::Sequence(seq) = content {
+        for p in &seq.particles {
+            validate_particle_assert_indexing(p)?;
         }
-        _ => {}
     }
     Ok(())
 }

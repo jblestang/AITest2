@@ -73,9 +73,7 @@ fn map_xml_parse_error_to_schema(err: crate::error::Error) -> crate::error::Erro
     }
     if msg.contains("Unexpected token inside qualified name") {
         return crate::error::SchemaError::InvalidProperty {
-            message: alloc::format!(
-                "Schema Definition Error: Element or attribute do not match QName production: QName::=(NCName':')?NCName"
-            ),
+            message: "Schema Definition Error: Element or attribute do not match QName production: QName::=(NCName':')?NCName".to_string(),
         }
         .into();
     }
@@ -238,12 +236,12 @@ impl<'a> XsdParser<'a> {
     }
 
     fn normalize_escape_scheme_ref(&self, props: &mut DfdlProps) {
-        if props
+        if let Some(qname) = props
             .escape_scheme_ref
             .as_ref()
-            .is_some_and(|r| !r.is_empty())
+            .filter(|r| !r.is_empty())
+            .cloned()
         {
-            let qname = props.escape_scheme_ref.clone().unwrap();
             props.escape_scheme_ref = Some(self.escape_scheme_ref_storage_key(&qname));
         }
     }
@@ -333,9 +331,7 @@ impl<'a> XsdParser<'a> {
                 && kind == SchemaMergeKind::Include
             {
                 let bare = format_storage_key(local, None);
-                if !self.doc.named_formats.contains_key(&bare) {
-                    self.doc.named_formats.insert(bare, v);
-                }
+                self.doc.named_formats.entry(bare).or_insert(v);
             }
         }
         for (k, v) in other.named_escape_schemes {
@@ -1740,7 +1736,7 @@ impl<'a> XsdParser<'a> {
                             props,
                             self.parse_annotation(child_attrs, namespace)?,
                         );
-                    } else if allowed.iter().any(|a| *a == local.as_str()) {
+                    } else if allowed.contains(&local.as_str()) {
                         break;
                     } else {
                         self.doc.schema_diagnostics.push(format!(
@@ -1964,7 +1960,7 @@ impl<'a> XsdParser<'a> {
             return self.parse_define_format(attrs);
         }
         if local == "defineEscapeScheme" {
-            let _ = self.parse_define_escape_scheme(attrs)?;
+            self.parse_define_escape_scheme(attrs)?;
             return Ok(DfdlProps::default());
         }
         if local == "defineVariable" {
@@ -2038,7 +2034,7 @@ impl<'a> XsdParser<'a> {
             let format_ref_name = attrs
                 .get("ref")
                 .map(|s| s.as_str())
-                .or_else(|| format_ref_from_props.as_deref());
+                .or(format_ref_from_props.as_deref());
             if let Some(ref_name) = format_ref_name {
                 if let Some(base) = self.lookup_named_format(ref_name) {
                     props = merge_dfdl_props(base, props);
@@ -2429,7 +2425,7 @@ pub(crate) fn lookup_named_escape_scheme_in_document(
         .map(|(_, v)| v.clone())
         .collect();
     if matching.len() == 1 {
-        return Some(matching.into_iter().next().unwrap());
+        return matching.into_iter().next();
     }
     None
 }
@@ -2564,7 +2560,7 @@ pub(crate) fn lookup_named_format_in_document(
             .map(|(_, v)| v.clone())
             .collect();
         if matching.len() == 1 {
-            return Some(matching.into_iter().next().unwrap());
+            return matching.into_iter().next();
         }
     }
     None
@@ -3242,10 +3238,9 @@ fn parse_ivc_path_steps(
         (true, r)
     } else if let Some(r) = s.strip_prefix('/') {
         (false, r)
-    } else if let Some(r) = s.strip_prefix("../").or_else(|| s.strip_prefix("..\\")) {
-        (false, r)
     } else {
-        return None;
+        let r = s.strip_prefix("../").or_else(|| s.strip_prefix("..\\"))?;
+        (false, r)
     };
     if rest.is_empty() {
         return None;
@@ -3730,10 +3725,9 @@ fn parse_output_value_calc_occurs_index(
     let inner = trimmed[1..trimmed.len() - 1].trim();
     let (multiply, path_part) = if let Some(rest) = inner.strip_prefix("dfdl:occursIndex() * ") {
         (true, rest.trim())
-    } else if let Some(rest) = inner.strip_prefix("dfdl:occursIndex() + ") {
-        (false, rest.trim())
     } else {
-        return None;
+        let rest = inner.strip_prefix("dfdl:occursIndex() + ")?;
+        (false, rest.trim())
     };
     let (path_expr, addend) = match path_part.rsplit_once('+') {
         Some((left, right)) if right.trim().parse::<i64>().is_ok() && !left.contains('[') => {
@@ -4145,11 +4139,10 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
     if let Some(hex) = parse_output_value_calc_hex(inner) {
         return Some(hex);
     }
-    if inner.contains('.') || inner.contains('e') || inner.contains('E') {
-        if inner.parse::<f64>().is_ok() {
+    if (inner.contains('.') || inner.contains('e') || inner.contains('E'))
+        && inner.parse::<f64>().is_ok() {
             return Some((OutputValueCalc::Constant(0), None, Some(inner.to_string())));
         }
-    }
     if let Ok(v) = inner.parse::<i64>() {
         return Some((OutputValueCalc::Constant(v), None, None));
     }
@@ -4196,7 +4189,7 @@ fn parse_output_value_calc(value: &str) -> Option<(OutputValueCalc, Option<Strin
                 None,
             ))
         }
-        ("fn:substring", sib) => {
+        ("fn:substring", _sib) => {
             let sub_args = split_top_level_commas(args);
             if sub_args.len() != 3 {
                 return None;
@@ -5109,7 +5102,7 @@ fn props_from_attrs_with_variables(
             }
             "calendarTimeZone" => {
                 if let Some(diags) = schema_diagnostics.as_deref_mut() {
-                    record_invalid_calendar_time_zone(&value, schema_label, diags);
+                    record_invalid_calendar_time_zone(value, schema_label, diags);
                 }
                 props.calendar_time_zone = Some(value.clone());
                 props.calendar_time_zone_defined = true;
@@ -5674,7 +5667,9 @@ pub(crate) fn resolve_type_qname_in_schema(
         }
         return Ok(TypeName::new(local));
     }
-    let (prefix, local) = type_attr.split_once(':').unwrap();
+    let Some((prefix, local)) = type_attr.split_once(':') else {
+        return Ok(TypeName::new(type_attr));
+    };
     let local = normalize_qname(local);
     let Some(uri) = prefix_map.get(prefix) else {
         return Ok(TypeName::new(local));
@@ -6169,6 +6164,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn parse_numeric_facet_bound_accepts_decimal_lexical() {
         assert_eq!(parse_numeric_facet_bound("0"), Some(0));
         assert_eq!(parse_numeric_facet_bound("0.0"), Some(0));

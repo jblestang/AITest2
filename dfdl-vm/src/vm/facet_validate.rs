@@ -81,7 +81,7 @@ fn validate_enumeration_lexical(
         return Err(facet_validation_error(
             props,
             strings,
-            alloc::format!("failed facet checks due to: enumeration"),
+            "failed facet checks due to: enumeration".to_string(),
         ));
     }
     Ok(())
@@ -629,7 +629,7 @@ fn validate_string_facets(text: &str, props: &IrProps, strings: &StringPool) -> 
             return Err(facet_validation_error(
                 props,
                 strings,
-                alloc::format!("failed facet checks due to: enumeration"),
+                "failed facet checks due to: enumeration".to_string(),
             ));
         }
     }
@@ -850,7 +850,7 @@ fn numeric_value_i64(value: &DfdlValue) -> Option<i64> {
         DfdlValue::Byte(v) => Some(*v as i64),
         DfdlValue::Short(v) => Some(*v as i64),
         DfdlValue::Int(v) => Some(*v as i64),
-        DfdlValue::Long(v) => Some(*v as i64),
+        DfdlValue::Long(v) => Some(*v),
         DfdlValue::UnsignedByte(v) => Some(*v as i64),
         DfdlValue::UnsignedShort(v) => Some(*v as i64),
         DfdlValue::UnsignedInt(v) => Some(*v as i64),

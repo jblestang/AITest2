@@ -4,7 +4,7 @@ pub use builder::{compile, compile_named, compile_named_with_tunables};
 use crate::error::VmError;
 use crate::schema::{
     BinaryFloatRep, BinaryNumberCheckPolicy, BinaryNumberRep, BitOrder, ByteOrder,
-    EncodingErrorPolicy, EscapeSchemeDef, InputValueCalc, InputValueCalcSegment,
+    EncodingErrorPolicy, EscapeSchemeDef, InputValueCalc,
     LengthKind, LengthUnits, NilKind, ObjectKind, OccursCountKind, OutputValueCalc,
     ChoiceLengthKind, Representation, SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind,
     TextNumberJustification, TextPadKind, TextStringJustification, TextTrimKind,

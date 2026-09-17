@@ -38,6 +38,7 @@ fn slice_starts_with_ignore_case(text: &str, prefix: &str) -> bool {
             .eq_ignore_ascii_case(prefix.as_bytes())
 }
 
+#[allow(dead_code)]
 fn default_decimal_separators() -> Vec<String> {
     vec![".".into()]
 }
@@ -273,7 +274,9 @@ fn strip_unquoted_char(s: &str, ch: char) -> String {
 
 fn strip_unquoted_substr(s: &str, sub: &str) -> String {
     if sub.len() == 1 {
-        return strip_unquoted_char(s, sub.chars().next().unwrap());
+        if let Some(ch) = sub.chars().next() {
+            return strip_unquoted_char(s, ch);
+        }
     }
     let mut out = String::new();
     let mut in_quote = false;
@@ -618,12 +621,11 @@ fn negative_template_span(pattern: &str) -> (usize, usize) {
             }
             break;
         }
-        if chars[i] == '*' {
-            if i + 1 < chars.len() {
+        if chars[i] == '*'
+            && i + 1 < chars.len() {
                 i += 2;
                 continue;
             }
-        }
         if is_negative_template_char(chars[i]) {
             break;
         }
@@ -634,12 +636,11 @@ fn negative_template_span(pattern: &str) -> (usize, usize) {
         if chars[i] == '\'' {
             break;
         }
-        if chars[i] == '*' {
-            if i + 1 < chars.len() {
+        if chars[i] == '*'
+            && i + 1 < chars.len() {
                 i += 2;
                 continue;
             }
-        }
         if chars[i] == ' ' {
             let mut j = i;
             while j < chars.len() && chars[j] == ' ' {
@@ -1049,7 +1050,7 @@ fn match_subpattern(
     let mut exponent: Option<String> = None;
     let mut exp_negative = false;
     let mut exp_explicit_sign = false;
-    let mut negative = negative_subpattern;
+    let negative = negative_subpattern;
     let mut saw_decimal = false;
     let mut in_exponent = false;
     let mut saw_digit = false;
@@ -1090,9 +1091,9 @@ fn match_subpattern(
         match chars[i] {
             '0' | '#' => {
                 let mut j = i;
-                let mut max_digits = 0usize;
+                let mut _max_digits = 0usize;
                 while j < chars.len() && matches!(chars[j], '0' | '#') {
-                    max_digits += 1;
+                    _max_digits += 1;
                     j += 1;
                 }
                 i = j;
@@ -1101,7 +1102,7 @@ fn match_subpattern(
                 let stops_at_dot = j < chars.len() && chars[j] == '.';
 
                 skip_pad(bytes, &mut pos, props.pad_character, lax, props, saw_decimal);
-                if in_exponent && exponent.as_ref().map_or(true, |e| e.is_empty()) {
+                if in_exponent && exponent.as_ref().is_none_or(|e| e.is_empty()) {
                     if pos < bytes.len() && bytes[pos] == b'+' {
                         exp_explicit_sign = true;
                         pos += 1;
@@ -1111,19 +1112,17 @@ fn match_subpattern(
                         pos += 1;
                     }
                 }
-                if !in_exponent && !saw_decimal {
-                    if match_decimal_separator(bytes, &mut pos, props) {
+                if !in_exponent && !saw_decimal
+                    && match_decimal_separator(bytes, &mut pos, props) {
                         saw_decimal = true;
                     }
-                }
                 let start = pos;
                 while pos < bytes.len() && bytes[pos].is_ascii_digit() {
-                    if stops_at_dot && !saw_decimal && !in_exponent {
-                        if match_decimal_separator(bytes, &mut pos, props) {
+                    if stops_at_dot && !saw_decimal && !in_exponent
+                        && match_decimal_separator(bytes, &mut pos, props) {
                             saw_decimal = true;
                             break;
                         }
-                    }
                     pos += 1;
                 }
                 let digit_count = pos - start;
@@ -1210,8 +1209,8 @@ fn match_subpattern(
                         continue;
                     }
                 }
-                if props.exponent_chars.contains(chars[i]) {
-                    if pos < bytes.len() {
+                if props.exponent_chars.contains(chars[i])
+                    && pos < bytes.len() {
                         let b = bytes[pos];
                         if b == b'E' || b == b'e' || props.exponent_chars.contains(b as char) {
                             pos += 1;
@@ -1220,7 +1219,6 @@ fn match_subpattern(
                             continue;
                         }
                     }
-                }
                 // fall through literal
                 let lit = chars[i];
                 skip_ws(bytes, &mut pos, lax);
@@ -1606,8 +1604,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
-    #[test]
     fn ppattern_p_on_right() {
         let dec = vec![".".into()];
         let props = TextNumberFormatProps {
@@ -1683,7 +1679,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn general_format_trailing_exponent_without_e_in_pattern() {
         let dec = default_decimal_separators();
         let props = TextNumberFormatProps {
@@ -1702,6 +1697,7 @@ mod tests {
         assert_eq!(n, "5.325762300373444E10");
     }
 
+    #[test]
     fn scientific_notation_exp_sign() {
         let dec = default_decimal_separators();
         let props = TextNumberFormatProps {
@@ -1720,6 +1716,7 @@ mod tests {
         assert_eq!(n3, "0.00123");
     }
 
+    #[test]
     fn v_pattern_money() {
         let dec = default_decimal_separators();
         let props = TextNumberFormatProps {
@@ -1764,6 +1761,7 @@ mod tests {
         assert_eq!(n, "-123");
     }
 
+    #[test]
     fn strict_four_zeros() {
         let dec = default_decimal_separators();
         let props = TextNumberFormatProps {

@@ -5,7 +5,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct PackedSignCodes {
     positive: Vec<u8>,
     negative: Vec<u8>,

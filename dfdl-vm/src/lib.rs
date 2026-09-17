@@ -19,6 +19,23 @@
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::collapsible_match,
+    clippy::field_reassign_with_default,
+    clippy::manual_strip,
+    clippy::needless_range_loop,
+    clippy::if_same_then_else,
+    clippy::large_enum_variant,
+    clippy::manual_find,
+    clippy::only_used_in_recursion,
+    clippy::unnecessary_get_then_check,
+    clippy::same_item_push,
+    clippy::needless_late_init,
+    unreachable_patterns,
+    dead_code
+)]
 #![cfg_attr(
     not(test),
     deny(

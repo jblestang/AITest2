@@ -414,7 +414,7 @@ fn parse_scalar_for_kind(text: &str, kind: ValueKind) -> Result<DfdlValue, Strin
         ValueKind::String => Ok(DfdlValue::string(trimmed)),
         ValueKind::Boolean => trimmed
             .parse::<bool>()
-            .or_else(|_| match trimmed {
+            .or(match trimmed {
                 "TRUE" | "true" | "1" => Ok(true),
                 "FALSE" | "false" | "0" => Ok(false),
                 _ => Err(()),
@@ -856,8 +856,7 @@ fn calendar_infoset_texts_equal(expected: &str, actual: &str) -> bool {
         return true;
     }
     if expected.contains('T') && !expected.contains('+') && !expected.contains('Z') {
-        if actual.starts_with(expected) {
-            let rest = &actual[expected.len()..];
+        if let Some(rest) = actual.strip_prefix(expected) {
             if rest == "+00:00" || rest == "Z" {
                 return true;
             }
@@ -960,7 +959,7 @@ fn compare_blob_reference(expected_uri: &str, actual: &[u8]) -> Result<(), Strin
                 actual.len()
             ));
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(feature = "std"))]
     {

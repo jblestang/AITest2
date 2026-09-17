@@ -115,7 +115,7 @@ fn section05_failure_buckets() {
                     }
                     TestOutcome::Skip(_) => {}
                 },
-                Err(e) => {
+                Err(_e) => {
                     f += 1;
                     *buckets.entry("run_err").or_default() += 1;
                 }

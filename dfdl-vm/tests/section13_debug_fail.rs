@@ -1,5 +1,5 @@
 //! Debug harness for remaining section13 failures.
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_unparser_test, TestOutcome};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_unparser_test};
 use std::fs;
 use std::path::PathBuf;
 

@@ -104,7 +104,7 @@ impl SchemaResolver {
         #[cfg(feature = "std")]
         {
             use std::path::Path;
-            let mut try_base = |base: &str| -> Option<String> {
+            let try_base = |base: &str| -> Option<String> {
                 let candidates = [Path::new(base).join(loc), Path::new(base).join(file_name)];
                 for path in &candidates {
                     if path.is_file() {
@@ -178,7 +178,7 @@ impl SchemaResolver {
         }
         #[cfg(feature = "std")]
         {
-            use std::path::{Path, PathBuf};
+            use std::path::Path;
             let search = |base: &Path| -> Option<(String, Option<String>)> {
                 let candidates = [
                     base.join(loc),
@@ -311,11 +311,11 @@ fn decode_schema_bytes(bytes: &[u8]) -> core::result::Result<String, String> {
 
 #[cfg(feature = "std")]
 fn decode_utf16_be(bytes: &[u8]) -> core::result::Result<String, String> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err("UTF-16BE schema has odd byte length".into());
     }
     let mut units = alloc::vec::Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
+    for chunk in bytes.as_chunks::<2>().0 {
         units.push(u16::from_be_bytes([chunk[0], chunk[1]]));
     }
     String::from_utf16(&units).map_err(|e| alloc::format!("invalid UTF-16BE schema: {e}"))
@@ -323,11 +323,11 @@ fn decode_utf16_be(bytes: &[u8]) -> core::result::Result<String, String> {
 
 #[cfg(feature = "std")]
 fn decode_utf16_le(bytes: &[u8]) -> core::result::Result<String, String> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err("UTF-16LE schema has odd byte length".into());
     }
     let mut units = alloc::vec::Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
+    for chunk in bytes.as_chunks::<2>().0 {
         units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
     }
     String::from_utf16(&units).map_err(|e| alloc::format!("invalid UTF-16LE schema: {e}"))

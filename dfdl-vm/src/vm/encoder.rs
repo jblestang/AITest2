@@ -1,7 +1,7 @@
 use super::runtime::{
     decode_hex_binary, encode_framing_delimiter_bytes, encoding_name, hex_binary_from_integer,
     int_bytes, is_suppressible_empty_representation, nil_unparse_bytes_for_encode,
-    resolve_encode_property_pattern, resolve_output_new_line_for_encode, write_alignment,
+    resolve_encode_property_pattern, resolve_output_new_line_for_encode,
     write_alignment_for_kind, write_alignment_with_config, write_byte_aligned,
     write_framed_payload, write_simple, validate_explicit_decimal_before_encode,
     trailing_suppressed_count, should_suppress_occurrence_separator, RuntimeConfig, VmContext,
@@ -67,7 +67,7 @@ impl<'a> Encoder<'a> {
             value,
             &self.ctx.program.root_element,
             self.ctx.program.root,
-            &self.ctx.program,
+            self.ctx.program,
         );
         let mut bit_count = 0u8;
         self.encode_node(self.ctx.program.root, value, output, &mut bit_count, None)?;
@@ -163,11 +163,6 @@ impl<'a> Encoder<'a> {
                 let seq = match value {
                     DfdlValue::Sequence(s) => s,
                     DfdlValue::String(text) if text.text.is_empty() => &empty_seq,
-                    _ if value.sequence_fields().is_some() => {
-                        owned_seq =
-                            crate::value::SequenceValue::new(value.sequence_fields().unwrap().clone());
-                        &owned_seq
-                    }
                     DfdlValue::Choice { value: inner, .. } => {
                         if let Some(s) = inner.sequence_value() {
                             s
@@ -189,10 +184,15 @@ impl<'a> Encoder<'a> {
                         }
                     }
                     _ => {
-                        return Err(VmError::TypeMismatch {
-                            expected: "sequence".into(),
+                        if let Some(fields) = value.sequence_fields() {
+                            owned_seq = crate::value::SequenceValue::new(fields.clone());
+                            &owned_seq
+                        } else {
+                            return Err(VmError::TypeMismatch {
+                                expected: "sequence value".into(),
+                            }
+                            .into());
                         }
-                        .into())
                     }
                 };
                 let map = &seq.fields;
@@ -414,7 +414,7 @@ impl<'a> Encoder<'a> {
                             && props.length_units == LengthUnits::Characters
                         {
                             let enc = encoding_name(props, self.ctx.strings())?;
-                            if crate::vm::encoding::normalize_encoding_name(&enc)
+                            if crate::vm::encoding::normalize_encoding_name(enc)
                                 .is_some_and(|e| matches!(e, "utf-8" | "utf-16be" | "utf-16le"))
                             {
                                 return Err(VmError::InvalidValue {
@@ -585,8 +585,8 @@ impl<'a> Encoder<'a> {
             trailing_suppressed_count(items, props, self.ctx.strings(), Some(sep_props))?;
         let encode_len = items.len().saturating_sub(suppressed);
         for (idx, item) in items.iter().take(encode_len).enumerate() {
-            if sep_props.separator_position != SeparatorPosition::Postfix {
-                if !should_suppress_occurrence_separator(
+            if sep_props.separator_position != SeparatorPosition::Postfix
+                && !should_suppress_occurrence_separator(
                     sep_props,
                     props,
                     items,
@@ -596,7 +596,6 @@ impl<'a> Encoder<'a> {
                 )? {
                     self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
                 }
-            }
             write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
             self.write_initiator(props, out, bit_count, None, encode_siblings)?;
             if matches!(item, DfdlValue::Null) {
@@ -609,8 +608,8 @@ impl<'a> Encoder<'a> {
                 })?;
             }
             self.write_terminator(props, out, bit_count, None, encode_siblings)?;
-            if sep_props.separator_position == SeparatorPosition::Postfix {
-                if !should_suppress_occurrence_separator(
+            if sep_props.separator_position == SeparatorPosition::Postfix
+                && !should_suppress_occurrence_separator(
                     sep_props,
                     props,
                     items,
@@ -620,7 +619,6 @@ impl<'a> Encoder<'a> {
                 )? {
                     self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
                 }
-            }
         }
         Ok(())
     }
@@ -1033,8 +1031,8 @@ impl<'a> Encoder<'a> {
                 Some(sep_props),
             )
             .map_err(Error::from)?;
-            if sep_props.separator_position == SeparatorPosition::Postfix {
-                if !should_suppress_occurrence_separator(
+            if sep_props.separator_position == SeparatorPosition::Postfix
+                && !should_suppress_occurrence_separator(
                     sep_props,
                     props,
                     items,
@@ -1045,7 +1043,6 @@ impl<'a> Encoder<'a> {
                 {
                     self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
                 }
-            }
         }
         Ok(())
     }
@@ -1062,7 +1059,9 @@ impl<'a> Encoder<'a> {
             let local = crate::xml_util::local_name_str(key);
             if !ovc_deferred_to_encode_occurrence(props) && !props.output_value_calc_conditional {
                 if let Some(k) = map_has_local_key(map, local) {
-                    return Ok(map.get(&k).cloned().unwrap());
+                    if let Some(v) = map.get(&k) {
+                        return Ok(v.clone());
+                    }
                 }
                 if let Some(v) = map.get(key) {
                     return Ok(v.clone());
@@ -1387,6 +1386,7 @@ fn ovc_length_cycle_error(
 }
 
 struct OvcPrecomputeEntry {
+    #[allow(dead_code)]
     node_id: u32,
     name_key: alloc::string::String,
     local: alloc::string::String,
@@ -1629,7 +1629,7 @@ fn delimited_value_length_bits_from_encode(
         let pat = resolve_encode_property_pattern(raw, encode_scope);
         if !pat.is_empty() {
             let bytes =
-                encode_framing_delimiter_bytes(&pat, output_nl_ref, &encoding, None);
+                encode_framing_delimiter_bytes(&pat, output_nl_ref, encoding, None);
             total_bits = total_bits.saturating_sub(encoded_bit_length(bytes.len(), 0));
         }
     }
@@ -1638,7 +1638,7 @@ fn delimited_value_length_bits_from_encode(
         let pat = resolve_encode_property_pattern(raw, encode_scope);
         if !pat.is_empty() {
             let bytes =
-                encode_framing_delimiter_bytes(&pat, output_nl_ref, &encoding, None);
+                encode_framing_delimiter_bytes(&pat, output_nl_ref, encoding, None);
             total_bits = total_bits.saturating_sub(encoded_bit_length(bytes.len(), 0));
         }
     }
@@ -1754,7 +1754,14 @@ fn resolve_output_value_calc_path_value(
     };
     let scope = scope.as_slice();
     let mut value = if let Some(k) = map_has_local_key(map, first_local) {
-        map.get(&k).cloned().unwrap()
+        if let Some(v) = map.get(&k) {
+            v.clone()
+        } else {
+            return Err(VmError::InvalidValue {
+                message: "key not found".into(),
+            }
+            .into());
+        }
     } else if let Some(cid) = find_particle_by_local_in_children(enc, scope, first_local)? {
         synthesize_element_subtree_value(enc, cid, map, scope)?
     } else if scope != sequence_children {
@@ -1773,14 +1780,14 @@ fn resolve_output_value_calc_path_value(
         return Ok(value);
     }
     let root_scope = root_sequence_children(enc)?;
-    let mut path_scope_vec = if let Some(b_id) =
+    let path_scope_vec = if let Some(b_id) =
         find_particle_by_local_in_children(enc, &root_scope, first_local)?
     {
         inner_sequence_children_of_element(enc, b_id).unwrap_or_else(|| scope.to_vec())
     } else {
         scope.to_vec()
     };
-    let mut path_scope = path_scope_vec.as_slice();
+    let path_scope = path_scope_vec.as_slice();
     for step in steps.iter().skip(1) {
         let local = strings.get(step.local)?;
         value = match value {
@@ -1886,7 +1893,9 @@ fn resolve_path_step_value(
     local: &str,
 ) -> Result<DfdlValue> {
     if let Some(k) = map_has_local_key(map, local) {
-        return Ok(map.get(&k).cloned().unwrap());
+        if let Some(v) = map.get(&k) {
+            return Ok(v.clone());
+        }
     }
     for &child_id in sequence_children {
         let IrNode::Element { name, props, .. } = enc.ctx.program.node(child_id)? else {
@@ -1942,7 +1951,9 @@ fn synthesize_element_subtree_value(
         } => {
             let key = enc.ctx.strings().get(*name)?;
             if let Some(k) = map_has_local_key(map, crate::xml_util::local_name_str(key)) {
-                return Ok(map.get(&k).cloned().unwrap());
+                if let Some(v) = map.get(&k) {
+                    return Ok(v.clone());
+                }
             }
         if props.output_value_calc.is_some() || props.output_value_calc_conditional {
             return eval_output_value_calc(enc, props, map, sequence_children, props);
@@ -2288,7 +2299,7 @@ fn measure_value_length(
     };
     match units {
         LengthUnits::Bits => Ok(value_bits),
-        LengthUnits::Bytes => Ok((value_bits + 7) / 8),
+        LengthUnits::Bytes => Ok(value_bits.div_ceil(8)),
         LengthUnits::Characters => Err(VmError::UnsupportedOperation {
             op: "outputValueCalc character units".into(),
         }
@@ -2333,7 +2344,7 @@ fn ovc_error_unquote_literal(s: &str) -> Option<String> {
 fn eval_fn_error_ovc(
     expr: &str,
     map: &BTreeMap<String, DfdlValue>,
-    strings: &crate::ir::StringPool,
+    _strings: &crate::ir::StringPool,
 ) -> Result<DfdlValue> {
     let expr = expr.trim();
     let error_call = if let Some(rest) = expr.strip_prefix("fn:round-half-to-even(") {
@@ -2567,7 +2578,7 @@ fn eval_output_value_calc(
     props: &IrProps,
     map: &BTreeMap<String, DfdlValue>,
     children: &[u32],
-    parent_props: &IrProps,
+    _parent_props: &IrProps,
 ) -> Result<DfdlValue> {
     let strings = enc.ctx.strings();
     if props.output_value_calc_conditional {
@@ -2630,7 +2641,7 @@ fn eval_output_value_calc(
             })?;
             let addend = props.output_value_calc_path_addend.unwrap_or(0);
             if addend == 0 {
-                return Ok(resolve_output_value_calc_path_value(enc, steps, children, map)?);
+                return resolve_output_value_calc_path_value(enc, steps, children, map);
             }
             let base = eval_output_infoset_path(enc, steps, children, map)?;
             let len = base.saturating_add(addend);
@@ -2807,7 +2818,10 @@ fn eval_output_value_calc(
         | OutputValueCalc::FnConcat
         | OutputValueCalc::FnError
         | OutputValueCalc::ValueLengthInfosetPath(_, _) => {
-            unreachable!("handled above")
+            return Err(VmError::InvalidValue {
+                message: "handled above".into(),
+            }
+            .into());
         }
     };
     Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {
@@ -2848,22 +2862,20 @@ fn dfdl_hex_binary_lexical_from_integer(n: i64) -> String {
         }
         return s;
     }
-    for w in 1..=8usize {
-        let raw = hex_binary_from_integer(n, Some(w));
-        let s: String = raw
-            .iter()
-            .map(|b| alloc::format!("{:02x}", b))
-            .collect();
-        let trimmed = s.trim_start_matches('0');
-        if trimmed.is_empty() {
-            return "00".into();
-        }
-        if trimmed.len() % 2 == 1 {
-            return alloc::format!("0{trimmed}");
-        }
-        return trimmed.to_string();
+    let raw = hex_binary_from_integer(n, Some(1));
+    let s: String = raw
+        .iter()
+        .map(|b| alloc::format!("{:02x}", b))
+        .collect();
+    let trimmed = s.trim_start_matches('0');
+    if trimmed.is_empty() {
+        return "00".into();
     }
-    "00".into()
+    if trimmed.len() % 2 == 1 {
+        alloc::format!("0{trimmed}")
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn parse_sibling_property_expr(raw: &str) -> Option<String> {
@@ -3015,7 +3027,7 @@ fn choice_explicit_frame_bytes_encode(
         LengthUnits::Bytes => n,
         LengthUnits::Characters => {
             let enc = encoding_name(props, strings)?;
-            super::encoding::character_span_byte_length(n, &enc)?
+            super::encoding::character_span_byte_length(n, enc)?
         }
         LengthUnits::Bits => n.saturating_add(7) / 8,
     };
@@ -3026,7 +3038,7 @@ fn choice_explicit_pad_byte(props: &IrProps) -> u8 {
     if props.representation == Representation::Text {
         return b' ';
     }
-    props.fill_byte as u8
+    props.fill_byte
 }
 
 fn pad_choice_explicit_frame(
@@ -3312,8 +3324,8 @@ fn needs_length_frame(props: &IrProps) -> bool {
 /// transparent `DfdlValue::field` unwrapping — it can drill into a same-named descendant.
 fn element_payload_value<'a>(value: &'a DfdlValue, local_name: &str) -> &'a DfdlValue {
     if let Some(fields) = value.sequence_fields() {
-        if fields.contains_key(local_name) {
-            return fields.get(local_name).expect("key just checked");
+        if let Some(val) = fields.get(local_name) {
+            return val;
         }
     }
     value
@@ -3347,6 +3359,7 @@ fn unwrap_root_for_encode<'a>(
     value
 }
 
+#[allow(dead_code)]
 fn branches_contain(program: &IrProgram, node_id: u32, name: &str) -> bool {
     match program.node(node_id) {
         Ok(IrNode::Choice { branches, .. }) => branches.iter().any(|b| {

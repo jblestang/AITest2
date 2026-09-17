@@ -116,7 +116,7 @@ fn restriction_level_accepts(
         }
     }
     if !patterns.is_empty() {
-        let bytes = text.as_bytes();
+        let _bytes = text.as_bytes();
         let mut any = false;
         for pat in patterns {
             if pattern_matches_whole(text, pat) {

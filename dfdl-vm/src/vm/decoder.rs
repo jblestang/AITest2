@@ -63,9 +63,7 @@ fn sibling_boolean_env<'a>(
     text_map: &'a BTreeMap<String, String>,
     bytes_map: &'a BTreeMap<String, usize>,
 ) -> Option<BooleanSiblingEnv<'a>> {
-    if siblings.is_none() {
-        return None;
-    }
+    siblings?;
     Some(BooleanSiblingEnv {
         text: text_map,
         content_bytes: bytes_map,
@@ -120,7 +118,7 @@ fn cursor_at_own_sequence_terminator(
             &cursor.data[cursor.pos..],
             pat,
             seq_props.ignore_case,
-            enc.as_deref(),
+            enc,
         )
         .is_some_and(|n| n > 0),
     )
@@ -385,7 +383,7 @@ impl<'a> Decoder<'a> {
             return Ok(None);
         }
         let local = path.rsplit(':').next().unwrap_or(path).trim();
-        return self.eval_sibling_name_eq_literal(local, &lit, up, query_style);
+        self.eval_sibling_name_eq_literal(local, &lit, up, query_style)
     }
 
     fn eval_sibling_name_eq_literal(
@@ -616,7 +614,7 @@ impl<'a> Decoder<'a> {
         }
         let order = props.bit_order;
         if let Some(prev) = *self.seq_bit_order.borrow() {
-            if prev != order && cursor.absolute_bit_index() % 8 != 0 {
+            if prev != order && !cursor.absolute_bit_index().is_multiple_of(8) {
                 return Err(VmError::InvalidValue {
                     message:
                         "Runtime Schema Definition Error. dfdl:bitOrder change requires byte boundary"
@@ -758,7 +756,7 @@ impl<'a> Decoder<'a> {
                             .consume_delimiter_with_alt(
                                 &pat,
                                 props.ignore_case,
-                                enc.as_deref(),
+                                enc,
                             )
                             .ok_or(VmError::InvalidValue {
                                 message: "initiator mismatch".into(),
@@ -857,9 +855,9 @@ impl<'a> Decoder<'a> {
                                         self.ctx.strings(),
                                     );
                                 }
-                                if prev_props.terminator.is_some() {
+                                if let Some(term_id) = prev_props.terminator {
                                     let term = self.resolve_delimiter_property(
-                                        self.ctx.strings().get(prev_props.terminator.unwrap())?,
+                                        self.ctx.strings().get(term_id)?,
                                         self.delimiter_occurrence_index_for_sequence(),
                                     );
                                     if !term.is_empty() {
@@ -871,14 +869,14 @@ impl<'a> Decoder<'a> {
                                             &cursor.data[cursor.pos..],
                                             pat,
                                             props.ignore_case,
-                                            sep_enc.as_deref(),
+                                            sep_enc,
                                         )
                                         .unwrap_or(0);
                                         let term_n = crate::schema::delimiter_match_len_at(
                                             &cursor.data[cursor.pos..],
                                             &term,
                                             prev_props.ignore_case,
-                                            enc.as_deref(),
+                                            enc,
                                         )
                                         .unwrap_or(0);
                                         if term_n > sep_n {
@@ -914,7 +912,7 @@ impl<'a> Decoder<'a> {
                         || (idx > 0
                             && self.skip_infix_sep_after_parsed_unbounded_array(
                                 props,
-                                &children,
+                                children,
                                 idx,
                                 cursor,
                             )?)
@@ -929,8 +927,7 @@ impl<'a> Decoder<'a> {
                                         pat,
                                         props.ignore_case,
                                         encoding_name(props, self.ctx.strings())
-                                            .ok()
-                                            .as_deref(),
+                                            .ok(),
                                     )
                                     .unwrap_or(0)
                                         == 0
@@ -1047,12 +1044,11 @@ impl<'a> Decoder<'a> {
                         ..
                     }) = self.ctx.program.node(child)
                     {
-                        if cp.occurs_min == 0 && cp.initiator.is_some() {
-                            if !self.initiator_present_at_cursor(cursor, cp)? {
+                        if cp.occurs_min == 0 && cp.initiator.is_some()
+                            && !self.initiator_present_at_cursor(cursor, cp)? {
                                 prev_absent_or_empty = true;
                                 break 'repeat_slot;
                             }
-                        }
                         if props.separator_suppression_policy
                             == Some(crate::schema::SeparatorSuppressionPolicy::TrailingEmptyStrict)
                             && matches!(
@@ -1072,20 +1068,19 @@ impl<'a> Decoder<'a> {
                                 Some(props),
                                 self.ctx.strings(),
                             )? || (props.separator_position == SeparatorPosition::Prefix
-                                && props.separator.is_some()
-                                && {
-                                    let sep_id = props.separator.unwrap();
+                                && (if let Some(sep_id) = props.separator {
                                     let sep_pat = self.ctx.strings().get(sep_id)?;
                                     crate::schema::match_delimiter_opts_for_encoding(
                                         &cursor.data[cursor.pos..],
                                         sep_pat,
                                         props.ignore_case,
                                         encoding_name(props, self.ctx.strings())
-                                            .ok()
-                                            .as_deref(),
+                                            .ok(),
                                     )
                                     .is_some()
-                                });
+                                } else {
+                                    false
+                                }));
                             if empty_slot {
                                 return Err(trailing_empty_strict_parse_error());
                             }
@@ -1433,7 +1428,7 @@ impl<'a> Decoder<'a> {
                         if let Some((n, alt)) = cursor.consume_delimiter_with_alt(
                             &pat_resolved,
                             props.ignore_case,
-                            enc.as_deref(),
+                            enc,
                         ) {
                             if n == 0
                                 && !cursor.is_empty()
@@ -1807,7 +1802,7 @@ impl<'a> Decoder<'a> {
             &cursor.data[cursor.pos..],
             pat,
             props.ignore_case,
-            enc.as_deref(),
+            enc,
         )
         .is_some_and(|n| n > 0)
         {
@@ -1993,11 +1988,10 @@ impl<'a> Decoder<'a> {
                             *cursor = rewind.clone();
                             continue;
                         }
-                        if needs_facet_validation(cp)
+                        if (needs_facet_validation(cp)
                             || cp.facet_check_constraints
-                            || !cp.facet_pattern_groups.is_empty()
-                        {
-                            if !backtrack_decoded_facets_ok(
+                            || !cp.facet_pattern_groups.is_empty())
+                            && !backtrack_decoded_facets_ok(
                                 &child_value,
                                 *kind,
                                 cp,
@@ -2007,7 +2001,6 @@ impl<'a> Decoder<'a> {
                                 *cursor = rewind;
                                 continue;
                             }
-                        }
                     }
                     let consumed = cursor.pos.saturating_sub(start);
                     let (key, state) = if let IrNode::Element { name, props: el_props, .. } =
@@ -2559,7 +2552,7 @@ impl<'a> Decoder<'a> {
                 if let Some((_n, alt)) = cursor.consume_delimiter_with_alt(
                     pat,
                     props.ignore_case,
-                    enc.as_deref(),
+                    enc,
                 ) {
                     terminator_alt = Some(alt);
                 }
@@ -2610,7 +2603,7 @@ impl<'a> Decoder<'a> {
         };
         let mut one_shot = props.clone();
         one_shot.occurs_max = Some(1);
-        one_shot.occurs_min = if self.initiator_present_at_cursor(cursor, &props)? {
+        one_shot.occurs_min = if self.initiator_present_at_cursor(cursor, props)? {
             1
         } else {
             0
@@ -3072,35 +3065,34 @@ impl<'a> Decoder<'a> {
             if min > 0
                 && (items.len() as u64) >= min
                 && max == u64::MAX
-                && at_empty_slot
-                && parent_sequence.is_some_and(|p| {
-                    p.separator.is_some()
-                        && p.separator_position == SeparatorPosition::Infix
-                })
             {
-                let Some(sep_id) = parent_sequence.and_then(|p| p.separator) else {
-                    unreachable!();
-                };
-                let pat = self.ctx.strings().get(sep_id)?;
-                let enc = parent_sequence
-                    .and_then(|p| encoding_name(p, self.ctx.strings()).ok());
-                if Self::suffix_is_only_infix_separators(
-                    cursor,
-                    pat,
-                    parent_sequence.unwrap().ignore_case,
-                    enc.as_deref(),
-                ) {
-                    let sep_pos = cursor.pos;
-                    self.consume_occurrence_separator(
-                        parent_sequence,
-                        Some(props),
-                        Some(items.as_slice()),
-                        cursor,
-                    )?;
-                    if never_optional_array.is_some() && cursor.pos > sep_pos {
-                        never_infix_separators_consumed += 1;
+                if let Some(parent) = parent_sequence.filter(|p| {
+                    p.separator.is_some() && p.separator_position == SeparatorPosition::Infix
+                }) {
+                    if cursor.remaining() == 0 && at_empty_slot {
+                        if let Some(sep_id) = parent.separator {
+                            let pat = self.ctx.strings().get(sep_id)?;
+                            let enc = encoding_name(parent, self.ctx.strings()).ok();
+                            if Self::suffix_is_only_infix_separators(
+                                cursor,
+                                pat,
+                                parent.ignore_case,
+                                enc,
+                            ) {
+                                let sep_pos = cursor.pos;
+                                self.consume_occurrence_separator(
+                                    parent_sequence,
+                                    Some(props),
+                                    Some(items.as_slice()),
+                                    cursor,
+                                )?;
+                                if never_optional_array.is_some() && cursor.pos > sep_pos {
+                                    never_infix_separators_consumed += 1;
+                                }
+                                continue;
+                            }
+                        }
                     }
-                    continue;
                 }
             }
             let more_array_occurrences = (items.len() as u64).saturating_add(1) < max;
@@ -3196,41 +3188,38 @@ impl<'a> Decoder<'a> {
                         && (items.len() as u64) >= min
                         && min > 0
                         && max == u64::MAX
-                        && parent_sequence.is_some_and(|p| {
-                            p.separator.is_some()
-                                && p.separator_position == SeparatorPosition::Infix
-                        })
                     {
-                        let Some(sep_id) = parent_sequence.and_then(|p| p.separator) else {
-                            unreachable!();
-                        };
-                        let pat = self.ctx.strings().get(sep_id)?;
-                        let enc = parent_sequence
-                            .and_then(|p| encoding_name(p, self.ctx.strings()).ok());
-                        let parent = parent_sequence.unwrap();
-                        let skip_leading_excess = items
-                            .iter()
-                            .all(|i| i.as_str().is_some_and(str::is_empty));
-                        let skip_trailing_excess = items.iter().any(|i| {
-                            i.as_str().is_some_and(|s| !s.is_empty())
-                        }) && Self::suffix_is_only_infix_separators(
-                            cursor,
-                            pat,
-                            parent.ignore_case,
-                            enc.as_deref(),
-                        );
-                        if skip_leading_excess || skip_trailing_excess {
-                            let sep_pos = cursor.pos;
-                            self.consume_occurrence_separator(
-                                parent_sequence,
-                                Some(props),
-                                Some(items.as_slice()),
-                                cursor,
-                            )?;
-                            if never_optional_array.is_some() && cursor.pos > sep_pos {
-                                never_infix_separators_consumed += 1;
+                        if let Some(parent) = parent_sequence.filter(|p| {
+                            p.separator.is_some() && p.separator_position == SeparatorPosition::Infix
+                        }) {
+                            if let Some(sep_id) = parent.separator {
+                                let pat = self.ctx.strings().get(sep_id)?;
+                                let enc = encoding_name(parent, self.ctx.strings()).ok();
+                                let skip_leading_excess = items
+                                    .iter()
+                                    .all(|i| i.as_str().is_some_and(str::is_empty));
+                                let skip_trailing_excess = items.iter().any(|i| {
+                                    i.as_str().is_some_and(|s| !s.is_empty())
+                                }) && Self::suffix_is_only_infix_separators(
+                                    cursor,
+                                    pat,
+                                    parent.ignore_case,
+                                    enc,
+                                );
+                                if skip_leading_excess || skip_trailing_excess {
+                                    let sep_pos = cursor.pos;
+                                    self.consume_occurrence_separator(
+                                        parent_sequence,
+                                        Some(props),
+                                        Some(items.as_slice()),
+                                        cursor,
+                                    )?;
+                                    if never_optional_array.is_some() && cursor.pos > sep_pos {
+                                        never_infix_separators_consumed += 1;
+                                    }
+                                    continue;
+                                }
                             }
-                            continue;
                         }
                     }
                     self.push_decoded_array_item(&mut items, v, props)?;
@@ -3490,8 +3479,8 @@ impl<'a> Decoder<'a> {
                     &self.ctx.program.tunables,
                 )?;
                 let props = self.resolve_conditional_byte_order(&props)?;
-                if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
-                    if !crate::ir::ir_props_has_input_value_calc(&props) {
+                if props.length_kind == LengthKind::Explicit && props.length == Some(0)
+                    && !crate::ir::ir_props_has_input_value_calc(&props) {
                         validate_explicit_decimal_before_decode(
                             *kind,
                             &props,
@@ -3509,7 +3498,6 @@ impl<'a> Decoder<'a> {
                             )?;
                         }
                     }
-                }
                 if pattern_text_frame
                     && props.representation == Representation::Binary
                     && !matches!(*kind, ValueKind::HexBinary)
@@ -3638,8 +3626,7 @@ impl<'a> Decoder<'a> {
                         }
                         let bit_len = match props.length_units {
                             LengthUnits::Bits => len,
-                            LengthUnits::Bytes => len.saturating_mul(8),
-                            LengthUnits::Characters => unreachable!("handled above"),
+                            LengthUnits::Bytes | LengthUnits::Characters => len.saturating_mul(8),
                         };
                         let frame_start = cursor.absolute_bit_index();
                         let prev_limit = cursor
@@ -3766,14 +3753,14 @@ impl<'a> Decoder<'a> {
                                     &cursor.data[cursor.pos..],
                                     term,
                                     props.ignore_case,
-                                    enc.as_deref(),
+                                    enc,
                                 )
                                 .is_some()
                                 {
                                     let _ = cursor.consume_delimiter(
                                         term,
                                         props.ignore_case,
-                                        enc.as_deref(),
+                                        enc,
                                     );
                                 }
                                 let mut sub = Cursor::new(&bytes);
@@ -3819,7 +3806,7 @@ impl<'a> Decoder<'a> {
                                         self.ctx.strings(),
                                         false,
                                         stop_sequences,
-                                        enc.as_deref(),
+                                        enc,
                                         None,
                                     )?;
                                     if bytes.is_empty()
@@ -3831,14 +3818,14 @@ impl<'a> Decoder<'a> {
                                                 &cursor.data[cursor.pos..],
                                                 sep,
                                                 parent.ignore_case,
-                                                enc.as_deref(),
+                                                enc,
                                             )
                                         {
                                             if n > 0 {
                                                 let _ = cursor.consume_delimiter(
                                                     sep,
                                                     parent.ignore_case,
-                                                    enc.as_deref(),
+                                                    enc,
                                                 );
                                                 consumed_parent_postfix_sep =
                                                     parent.separator_position
@@ -3856,13 +3843,13 @@ impl<'a> Decoder<'a> {
                                         &cursor.data[cursor.pos..],
                                         sep,
                                         parent.ignore_case,
-                                        enc.as_deref(),
+                                        enc,
                                     ) {
                                         if n > 0 {
                                             let _ = cursor.consume_delimiter(
                                                 sep,
                                                 parent.ignore_case,
-                                                enc.as_deref(),
+                                                enc,
                                             );
                                             consumed_parent_postfix_sep =
                                                 parent.separator_position
@@ -3886,7 +3873,7 @@ impl<'a> Decoder<'a> {
                                                 &mut sub,
                                                 inner_sep.as_str(),
                                                 props.ignore_case,
-                                                enc.as_deref(),
+                                                enc,
                                             )? {
                                                 // Trailing excess separators (e.g. CSV commas).
                                             } else if !sub.is_empty() {
@@ -3944,13 +3931,13 @@ impl<'a> Decoder<'a> {
                         inner,
                         ValueKind::Complex,
                     ))
-                } else if props.input_value_calc_expression.is_some() {
+                } else if let Some(expr) = props.input_value_calc_expression.as_ref() {
                     let ivc_element =
                         Some(crate::xml_util::local_name_str(self.ctx.strings().get(*name)?));
                     let sib_snap = self.xpath_siblings_snapshot();
                     let ancestor_frames = self.xpath_ancestor_frames.borrow();
                     let value = eval_input_value_calc_expression(
-                        props.input_value_calc_expression.as_ref().unwrap(),
+                        expr,
                         IvcEvalCtx {
                             siblings: Some(&sib_snap),
                             ancestor_frames: Some(ancestor_frames.as_slice()),
@@ -4212,6 +4199,7 @@ impl<'a> Decoder<'a> {
         props.initiator.is_none() && props.terminator.is_none()
     }
 
+    #[allow(dead_code)]
     fn is_complex_delimited_element(&self, node_id: u32, props: &IrProps) -> Result<bool> {
         Ok(self.is_delimited_element(node_id, props)
             && matches!(
@@ -4238,7 +4226,7 @@ impl<'a> Decoder<'a> {
                 &cursor.data[cursor.pos..],
                 pat,
                 stop.ignore_case,
-                enc.as_deref(),
+                enc,
             )
             .is_some()
             {
@@ -4277,7 +4265,7 @@ impl<'a> Decoder<'a> {
                 &cursor.data[cursor.pos..],
                 &pat,
                 stop.ignore_case,
-                enc.as_deref(),
+                enc,
             )
             .is_some()
             {
@@ -4287,6 +4275,7 @@ impl<'a> Decoder<'a> {
         Ok(false)
     }
 
+    #[allow(dead_code)]
     fn should_skip_empty_complex_delimited_occurrence(
         &self,
         node_id: u32,
@@ -4447,7 +4436,7 @@ impl<'a> Decoder<'a> {
                 )
                 && (items.len() as u64) < ip.occurs_min
             {
-                if cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+                if cursor.consume_delimiter(pat, props.ignore_case, enc) {
                     return Ok(());
                 }
                 let nested_infix_occurrence = self.parent_infix_consumed_by_occurrence_loop.get()
@@ -4476,11 +4465,11 @@ impl<'a> Decoder<'a> {
             _ => false,
         };
         if require {
-            if cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+            if cursor.consume_delimiter(pat, props.ignore_case, enc) {
                 return Ok(());
             }
             let found_display =
-                format_found_at_cursor(&cursor.data, cursor.pos, enc.as_deref());
+                format_found_at_cursor(cursor.data, cursor.pos, enc);
             return Err(VmError::InvalidValue {
                 message: alloc::format!(
                     "Parse Error. infix separator. Delimiter not found!  Was looking for ({pat}) but found \"{found_display}\" instead"
@@ -4492,7 +4481,7 @@ impl<'a> Decoder<'a> {
             && item_props.is_some()
             && items.is_some_and(|it| !it.is_empty());
         if mandatory_postfix {
-            if cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+            if cursor.consume_delimiter(pat, props.ignore_case, enc) {
                 return Ok(());
             }
             // Postfix may already have been consumed by separator-bounded implicit complex decode.
@@ -4501,7 +4490,7 @@ impl<'a> Decoder<'a> {
                     &cursor.data[cursor.pos..],
                     pat,
                     props.ignore_case,
-                    enc.as_deref(),
+                    enc,
                 )
                 .is_none()
             {
@@ -4510,7 +4499,7 @@ impl<'a> Decoder<'a> {
             let found_display = if cursor.is_empty() {
                 "End of file".into()
             } else {
-                format_found_at_cursor(&cursor.data, cursor.pos, enc.as_deref())
+                format_found_at_cursor(cursor.data, cursor.pos, enc)
             };
             return Err(VmError::InvalidValue {
                 message: alloc::format!(
@@ -4523,7 +4512,7 @@ impl<'a> Decoder<'a> {
             &cursor.data[cursor.pos..],
             pat,
             props.ignore_case,
-            enc.as_deref(),
+            enc,
         )
         .is_some()
         {
@@ -4534,7 +4523,7 @@ impl<'a> Decoder<'a> {
                     return Err(err);
                 }
             }
-            if !cursor.consume_delimiter(pat, props.ignore_case, enc.as_deref()) {
+            if !cursor.consume_delimiter(pat, props.ignore_case, enc) {
                 return Err(VmError::InvalidValue {
                     message: "separator mismatch".into(),
                 }
@@ -4759,8 +4748,8 @@ impl<'a> Decoder<'a> {
                 self.current_delimiter_occurrence_index(),
             );
             let enc = encoding_name(props, self.ctx.strings()).ok();
-            if !pat.is_empty() {
-                if !cursor.consume_delimiter(&pat, props.ignore_case, enc.as_deref()) {
+            if !pat.is_empty()
+                && !cursor.consume_delimiter(&pat, props.ignore_case, enc) {
                     if pat.ends_with('[')
                         && !pat.starts_with('[')
                         && cursor.data.get(cursor.pos) == Some(&b'[')
@@ -4773,7 +4762,6 @@ impl<'a> Decoder<'a> {
                         .into());
                     }
                 }
-            }
         }
         Ok(())
     }
@@ -4788,7 +4776,7 @@ impl<'a> Decoder<'a> {
                 return Ok(());
             }
             let enc = encoding_name(props, self.ctx.strings()).ok();
-            if !cursor.consume_delimiter(&pat, props.ignore_case, enc.as_deref()) {
+            if !cursor.consume_delimiter(&pat, props.ignore_case, enc) {
                 if cursor.is_empty() {
                     return Ok(());
                 }
@@ -4846,7 +4834,7 @@ impl<'a> Decoder<'a> {
             return Ok(false);
         }
         let enc = encoding_name(seq_props, self.ctx.strings()).ok();
-        Ok(cursor.consume_delimiter(pat, seq_props.ignore_case, enc.as_deref()))
+        Ok(cursor.consume_delimiter(pat, seq_props.ignore_case, enc))
     }
 
     fn trailing_empty_implicit_optional_empty_slot(
@@ -4923,11 +4911,11 @@ impl<'a> Decoder<'a> {
             &cursor.data[cursor.pos..],
             pat,
             seq_props.ignore_case,
-            enc.as_deref(),
+            enc,
         )
         .is_some()
         {
-            if !cursor.consume_delimiter(pat, seq_props.ignore_case, enc.as_deref()) {
+            if !cursor.consume_delimiter(pat, seq_props.ignore_case, enc) {
                 break;
             }
             consumed_any = true;
@@ -4973,7 +4961,7 @@ impl<'a> Decoder<'a> {
             }
             let enc = encoding_name(props, self.ctx.strings()).ok();
             if let Some((_, alt)) =
-                cursor.consume_delimiter_with_alt(pat, props.ignore_case, enc.as_deref())
+                cursor.consume_delimiter_with_alt(pat, props.ignore_case, enc)
             {
                 return Ok(Some(alt));
             }
@@ -4988,14 +4976,14 @@ impl<'a> Decoder<'a> {
                 }
             }
             let found_display =
-                format_found_at_cursor(&cursor.data, cursor.pos, enc.as_deref());
+                format_found_at_cursor(cursor.data, cursor.pos, enc);
             if props.separator_position == SeparatorPosition::Infix {
                 if allow_missing_infix_after_last_slot {
                     let sep_at_cursor = crate::schema::match_delimiter_opts_for_encoding(
                         &cursor.data[cursor.pos..],
                         pat,
                         props.ignore_case,
-                        enc.as_deref(),
+                        enc,
                     )
                     .is_some();
                     if !sep_at_cursor
@@ -5060,7 +5048,7 @@ impl<'a> Decoder<'a> {
             &cursor.data[cursor.pos..],
             separator,
             sep_props.ignore_case,
-            text_enc.as_deref(),
+            text_enc,
         )?;
         if sep_n == 0 {
             return None;
@@ -5083,7 +5071,7 @@ impl<'a> Decoder<'a> {
                 &cursor.data[cursor.pos..],
                 term,
                 enc_props.ignore_case,
-                enc_name.as_deref(),
+                enc_name,
             )?;
             if term_n > sep_n {
                 return Some(VmError::InvalidValue {
@@ -5220,7 +5208,7 @@ impl<'a> Decoder<'a> {
         };
         let Ok(IrNode::Element {
             props,
-            child: Some(inner),
+            child: Some(_inner),
             ..
         }) = self.ctx.program.node(child_id)
         else {
@@ -5334,7 +5322,7 @@ impl<'a> Decoder<'a> {
             &cursor.data[cursor.pos..],
             pat,
             seq_props.ignore_case,
-            enc.as_deref(),
+            enc,
         )
         .is_some();
         Ok(!at_sep)
@@ -5405,7 +5393,7 @@ fn choice_explicit_frame_bytes(
         LengthUnits::Bytes => n,
         LengthUnits::Characters => {
             let enc = encoding_name(props, strings)?;
-            super::encoding::character_span_byte_length(n, &enc)?
+            super::encoding::character_span_byte_length(n, enc)?
         }
         LengthUnits::Bits => n.saturating_add(7) / 8,
     };
@@ -5775,7 +5763,7 @@ fn eval_input_value_calc_concat(
                     IvcEvalCtx {
                         siblings,
                         ancestor_frames: None,
-                        root_element: root_element,
+                        root_element,
                         define_variables: &BTreeMap::new(),
                         runtime_variables: &BTreeMap::new(),
                         element_name: None,
@@ -5921,12 +5909,15 @@ fn eval_input_value_calc(
         return Ok(crate::value::DfdlValue::HexBinary(bytes));
     }
     let len = match calc {
-        InputValueCalc::Constant(_) => unreachable!("handled above"),
-        InputValueCalc::ConstantLexical => unreachable!("handled above"),
-        InputValueCalc::StringLiteral => unreachable!("handled above"),
-        InputValueCalc::SchemaVariable => unreachable!("handled above"),
-        InputValueCalc::BooleanFromSibling => unreachable!("handled above"),
-        InputValueCalc::HexBinaryFromSibling => unreachable!("handled above"),
+        InputValueCalc::Constant(_)
+        | InputValueCalc::ConstantLexical
+        | InputValueCalc::StringLiteral
+        | InputValueCalc::SchemaVariable
+        | InputValueCalc::BooleanFromSibling
+        | InputValueCalc::HexBinaryFromSibling => return Err(VmError::InvalidValue {
+            message: "handled above".into(),
+        }
+        .into()),
         InputValueCalc::ContentLengthSelf(units) | InputValueCalc::ValueLengthSelf(units) => {
             let byte_len = content_scope_bytes.unwrap_or_else(|| cursor.remaining());
             length_in_units(byte_len, units)?
@@ -6283,11 +6274,10 @@ fn parse_discriminator_path_step(step: &str) -> Result<(&str, Option<usize>)> {
 }
 
 fn single_or_array_item_at(value: &DfdlValue, one_based_index: usize) -> Result<DfdlValue> {
-    if one_based_index == 1 {
-        if matches!(value, DfdlValue::Sequence(_)) {
+    if one_based_index == 1
+        && matches!(value, DfdlValue::Sequence(_)) {
             return Ok(value.clone());
         }
-    }
     array_item_at(value, one_based_index)
 }
 
@@ -6405,6 +6395,7 @@ fn value_byte_length(value: &DfdlValue) -> Result<usize> {
 #[derive(Copy, Clone)]
 struct IvcEvalCtx<'a> {
     siblings: Option<&'a BTreeMap<String, SiblingState>>,
+    #[allow(dead_code)]
     ancestor_frames: Option<&'a [BTreeMap<String, SiblingState>]>,
     root_element: &'a str,
     define_variables: &'a BTreeMap<String, String>,
@@ -6684,9 +6675,7 @@ fn eval_input_value_calc_to_i64(
     )?;
     value.as_i64().ok_or_else(|| {
         VmError::InvalidValue {
-            message: alloc::format!(
-                "Schema Definition Error: expression evaluation error: non-numeric value"
-            ),
+            message: "Schema Definition Error: expression evaluation error: non-numeric value".to_string(),
         }
         .into()
     })
@@ -6708,9 +6697,7 @@ fn eval_input_value_calc_to_f64(
         DfdlValue::Double(v) => Ok(v),
         other => other.as_i64().map(|n| n as f64).ok_or_else(|| {
             VmError::InvalidValue {
-                message: alloc::format!(
-                    "Schema Definition Error: expression evaluation error: non-numeric value"
-                ),
+                message: "Schema Definition Error: expression evaluation error: non-numeric value".to_string(),
             }
             .into()
         }),
@@ -6777,6 +6764,7 @@ fn eval_occurs_count_expression(
     Ok(count_dfdl_value_nodes(&value))
 }
 
+#[allow(dead_code)]
 fn eval_fn_count_path(
     steps: &[crate::ir::IrInputPathStep],
     siblings: Option<&BTreeMap<String, SiblingState>>,

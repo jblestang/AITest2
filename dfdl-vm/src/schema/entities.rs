@@ -422,7 +422,7 @@ pub fn validate_text_string_pad_character_merged(
     }
     let expanded = expand_entities_str(raw);
     let one_unit = if length_units_bytes {
-        expanded.as_bytes().len() == 1
+        expanded.len() == 1
     } else {
         expanded.chars().count() == 1
     };
@@ -913,14 +913,14 @@ pub fn validate_runtime_delimiter_expression(prop: &str, expr: &str) -> Result<(
     for lit in delimiter_expression_string_literals(expr) {
         validate_delimiter_property_value(&lit)?;
         if lit.trim() == "%" && prop == "terminator" {
-            return Err(format!("Invalid DFDL Entity (%) found\n%%"));
+            return Err("Invalid DFDL Entity (%) found\n%%".to_string());
         }
     }
     if let Some(lit) = eval_compile_time_delimiter_expression(expr) {
         validate_delimiter_property_value(&lit)?;
         validate_delimiter_es_restriction(prop, &lit)?;
         if lit.trim() == "%" && prop == "terminator" {
-            return Err(format!("Invalid DFDL Entity (%) found\n%%"));
+            return Err("Invalid DFDL Entity (%) found\n%%".to_string());
         }
     }
     Ok(())
@@ -996,7 +996,7 @@ fn ascii_eq_ic(a: u8, b: u8, ignore_case: bool) -> bool {
     if !ignore_case {
         return false;
     }
-    a.to_ascii_lowercase() == b.to_ascii_lowercase()
+    a.eq_ignore_ascii_case(&b)
 }
 
 fn bytes_startswith_ic(input: &[u8], prefix: &[u8], ignore_case: bool) -> bool {
@@ -1419,11 +1419,10 @@ fn has_regex_char_class(pattern: &str) -> bool {
     let bytes = pattern.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
-        if bytes[i] == b'[' {
-            if pattern[i..].find(']').is_some() {
+        if bytes[i] == b'['
+            && pattern[i..].find(']').is_some() {
                 return true;
             }
-        }
         i += 1;
     }
     false
@@ -1617,7 +1616,7 @@ pub fn validate_extra_escaped_characters_property(raw: &str) -> Result<(), Strin
         } else {
             trimmed
                 .split_whitespace()
-                .map(|t| unescape_dfdl_delimiter_alt(t))
+                .map(unescape_dfdl_delimiter_alt)
                 .collect()
         };
     for token in tokens {
@@ -1651,7 +1650,7 @@ pub fn extra_escaped_characters_from_property(raw: &str) -> alloc::vec::Vec<char
         } else {
             trimmed
                 .split_whitespace()
-                .map(|t| unescape_dfdl_delimiter_alt(t))
+                .map(unescape_dfdl_delimiter_alt)
                 .collect()
         };
     let mut out = alloc::vec::Vec::new();
@@ -1699,7 +1698,7 @@ pub fn validate_text_number_pad_character_merged(
     validate_dfdl_entities_in_property(raw)?;
     if raw.chars().any(|c| c.is_whitespace()) {
         if property_form {
-            return Err(format!("Use DFDL Entities (property textNumberPadCharacter)"));
+            return Err("Use DFDL Entities (property textNumberPadCharacter)".to_string());
         }
         return Err(
             "facet-valid NonEmptyStringLiteral property textNumberPadCharacter".into(),
@@ -1738,10 +1737,9 @@ fn split_entity_and_literal_alternatives(pattern: &str) -> Option<alloc::vec::Ve
         }
         let start = i;
         if bytes[i] == b'%' {
-            if let Some(rel) = pattern[i..].find(';') {
+            {
+                let rel = pattern[i..].find(';')?;
                 i += rel + 1;
-            } else {
-                return None;
             }
         } else {
             while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
@@ -2470,7 +2468,7 @@ fn match_until_unescaped_comma(input: &[u8]) -> usize {
             while j > 0 && input[j - 1] == b'\\' {
                 j -= 1;
             }
-            if (i - j) % 2 == 0 {
+            if (i - j).is_multiple_of(2) {
                 return i;
             }
         }
@@ -2691,6 +2689,7 @@ mod tests {
         assert_eq!(match_delimiter_with_alt(b":,1", pat, false), Some((1, 1)));
     }
 
+    #[test]
     fn validate_percent_escape_in_delimiter() {
         assert!(validate_delimiter_property_value("%%").is_ok());
         assert!(validate_delimiter_property_value("%").is_err());

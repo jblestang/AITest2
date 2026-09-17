@@ -1,4 +1,4 @@
-use super::infoset::{compare_infoset_with_context, infoset_xml_to_root_value, resolve_expected_infoset_xml};
+use super::infoset::{compare_infoset_with_context, resolve_expected_infoset_xml};
 use super::resources::load_tdml_resource;
 use super::validation::collect_post_decode_validation_errors_with_document;
 use super::parser::{

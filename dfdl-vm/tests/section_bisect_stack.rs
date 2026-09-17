@@ -249,7 +249,7 @@ fn parse_cycle_base_schema_only() {
     for (k, v) in &doc.global_elements {
         eprintln!("  ge {k} -> type {}", v.type_name.as_str());
     }
-    for (k, _) in &doc.types {
+    for k in doc.types.keys() {
         eprintln!("  type {}", k.as_str());
     }
 }

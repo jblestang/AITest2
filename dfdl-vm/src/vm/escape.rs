@@ -142,15 +142,14 @@ fn unescape_character(input: &str, scheme: &EscapeSchemeDef) -> String {
     let mut i = 0usize;
     while i < bytes.len() {
         if let Some(ee) = esc_esc_bytes {
-            if i + ee.len() <= bytes.len() && &bytes[i..i + ee.len()] == ee {
-                if i + ee.len() + esc_bytes.len() <= bytes.len()
+            if i + ee.len() <= bytes.len() && &bytes[i..i + ee.len()] == ee
+                && i + ee.len() + esc_bytes.len() <= bytes.len()
                     && &bytes[i + ee.len()..i + ee.len() + esc_bytes.len()] == esc_bytes
                 {
                     out.extend_from_slice(esc_bytes);
                     i += ee.len() + esc_bytes.len();
                     continue;
                 }
-            }
         }
         if i + esc_bytes.len() <= bytes.len() && &bytes[i..i + esc_bytes.len()] == esc_bytes {
             i += esc_bytes.len();
@@ -292,11 +291,7 @@ fn escape_block_interior(
                 false
             } else if at_suffix && will_wrap {
                 true
-            } else if !at_suffix {
-                true
-            } else {
-                false
-            };
+            } else { !at_suffix };
             if escape_end {
                 if let Some(e) = ee_bytes {
                     out.extend_from_slice(e);

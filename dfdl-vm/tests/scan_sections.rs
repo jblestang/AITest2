@@ -157,6 +157,7 @@ scan_test!(scan_section12_length_kind, "section12/lengthKind");
 scan_test!(scan_section12_delimiter_properties, "section12/delimiter_properties");
 scan_test!(scan_section12_length_properties, "section12/length_properties");
 scan_test!(scan_section12_aligned_data, "section12/aligned_data");
+#[allow(unused_macros)]
 macro_rules! scan_test_skip {
     ($name:ident, $dir:literal, $skip:expr) => {
         #[test]

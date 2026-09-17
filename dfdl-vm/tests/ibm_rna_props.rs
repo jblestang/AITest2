@@ -22,7 +22,7 @@ fn rna_base_simple_type_has_binary_representation() {
         .iter()
         .find(|k| k.contains("RNABase"))
         .cloned()
-        .map(|k| TypeName::new(k))
+        .map(TypeName::new)
         .expect("RNABase type");
     let props = doc.effective_simple_type_props(&name).expect("effective props");
     eprintln!("RNABase effective: repr={:?} len_kind={:?} len={:?} align={:?} units={:?}", props.representation, props.length_kind, props.length, props.alignment, props.length_units);

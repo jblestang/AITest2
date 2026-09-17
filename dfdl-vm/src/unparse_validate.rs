@@ -278,7 +278,7 @@ fn validate_hidden_group_model(
         if let Particle::Sequence(s) = particle {
             if let Some(ref href) = s.props.hidden_group_ref {
                 let nested = group_local_name(href);
-                validate_hidden_group_model(schema, &nested, href, stack)?;
+                validate_hidden_group_model(schema, nested, href, stack)?;
                 continue;
             }
         }
@@ -496,7 +496,7 @@ fn validate_infoset_particle(
                 let branch_name = program.strings.get(branch.name).map_err(|e| e.to_string())?;
                 let branch_children = find_infoset_children(node, branch_name);
                 if !branch_children.is_empty() {
-                    for child_node in branch_children {
+                    if let Some(&child_node) = branch_children.first() {
                         return validate_infoset_particle(
                             program,
                             branch.node,
