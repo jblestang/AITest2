@@ -796,10 +796,94 @@ impl<'a> Decoder<'a> {
                     );
                 }
                 if props.sequence_kind == SequenceKind::Unordered {
-                    if props.initiated_content
-                        || props.separator.is_some()
-                        || self.unordered_sequence_uses_initiator_scan(children)
-                    {
+                    if props.initiated_content {
+                        return self.decode_sequence_initiated_content(
+                            node_id,
+                            children,
+                            props,
+                            cursor,
+                            has_following_sibling,
+                            parent_sequence,
+                            siblings,
+                            content_scope_bytes,
+                            pattern_text_frame,
+                            child_stops,
+                            initiator_alt,
+                            infix_sep_newline_prefix,
+                            separator_alts,
+                            field_delim_meta,
+                        );
+                    }
+                    if props.separator.is_some() {
+                        match props.separator_position {
+                            SeparatorPosition::Prefix => {
+                                return self.decode_unordered_separated_sequence(
+                                    node_id,
+                                    children,
+                                    props,
+                                    cursor,
+                                    has_following_sibling,
+                                    parent_sequence,
+                                    siblings,
+                                    content_scope_bytes,
+                                    pattern_text_frame,
+                                    child_stops,
+                                    initiator_alt,
+                                );
+                            }
+                            SeparatorPosition::Infix
+                                if self.unordered_sequence_uses_initiator_scan(children) =>
+                            {
+                                return self.decode_sequence_initiated_content(
+                                    node_id,
+                                    children,
+                                    props,
+                                    cursor,
+                                    has_following_sibling,
+                                    parent_sequence,
+                                    siblings,
+                                    content_scope_bytes,
+                                    pattern_text_frame,
+                                    child_stops,
+                                    initiator_alt,
+                                    infix_sep_newline_prefix,
+                                    separator_alts,
+                                    field_delim_meta,
+                                );
+                            }
+                            SeparatorPosition::Postfix => {
+                                return self.decode_unordered_separated_sequence(
+                                    node_id,
+                                    children,
+                                    props,
+                                    cursor,
+                                    has_following_sibling,
+                                    parent_sequence,
+                                    siblings,
+                                    content_scope_bytes,
+                                    pattern_text_frame,
+                                    child_stops,
+                                    initiator_alt,
+                                );
+                            }
+                            SeparatorPosition::Infix => {
+                                return self.decode_unordered_separated_sequence(
+                                    node_id,
+                                    children,
+                                    props,
+                                    cursor,
+                                    has_following_sibling,
+                                    parent_sequence,
+                                    siblings,
+                                    content_scope_bytes,
+                                    pattern_text_frame,
+                                    child_stops,
+                                    initiator_alt,
+                                );
+                            }
+                        }
+                    }
+                    if self.unordered_sequence_uses_initiator_scan(children) {
                         return self.decode_sequence_initiated_content(
                             node_id,
                             children,
@@ -1886,6 +1970,405 @@ impl<'a> Decoder<'a> {
         }))
     }
 
+    fn decode_unordered_separated_sequence(
+        &self,
+        _node_id: u32,
+        children: &[u32],
+        props: &IrProps,
+        cursor: &mut Cursor<'_>,
+        has_following_sibling: bool,
+        parent_sequence: Option<&IrProps>,
+        siblings: Option<&BTreeMap<String, SiblingState>>,
+        content_scope_bytes: Option<usize>,
+        pattern_text_frame: bool,
+        child_stops: &[&IrProps],
+        initiator_alt: Option<u8>,
+    ) -> Result<DfdlValue> {
+        self.seed_xpath_siblings(siblings);
+        let mut map = BTreeMap::new();
+        let mut seq_siblings = self.xpath_siblings_snapshot();
+        let mut infix_sep_newline_prefix = Vec::new();
+        let mut separator_alts = Vec::new();
+        let remaining: alloc::vec::Vec<usize> = (0..children.len()).collect();
+        let frame_start = cursor.pos;
+        if let Err(e) = self.unordered_separated_backtrack(
+            children,
+            props,
+            cursor,
+            has_following_sibling,
+            parent_sequence,
+            &mut seq_siblings,
+            content_scope_bytes,
+            pattern_text_frame,
+            child_stops,
+            &remaining,
+            &mut map,
+            &mut infix_sep_newline_prefix,
+            &mut separator_alts,
+        ) {
+            if let Some(scalar_err) = self.unordered_unseparated_scalar_duplicate_error(
+                children,
+                &cursor.data[frame_start..],
+            ) {
+                return Err(scalar_err.into());
+            }
+            return Err(e);
+        }
+        if props.separator_position == SeparatorPosition::Postfix {
+            while !cursor.is_empty() {
+                let before = cursor.pos;
+                let _ = self.consume_separator(
+                    props,
+                    cursor,
+                    children.len(),
+                    children.len(),
+                    &mut infix_sep_newline_prefix,
+                    child_stops,
+                    true,
+                )?;
+                if cursor.pos == before {
+                    break;
+                }
+            }
+        }
+        self.validate_particle_discriminator(props, "")?;
+        Ok(DfdlValue::Sequence(crate::value::SequenceValue {
+            fields: map,
+            meta: crate::value::SequenceMeta {
+                infix_sep_newline_prefix,
+                initiator_alt,
+                terminator_alt: None,
+                separator_alts,
+                field_delimiters: BTreeMap::new(),
+            },
+        }))
+    }
+
+    fn unordered_separated_slot_count(map: &BTreeMap<String, DfdlValue>) -> usize {
+        map.values()
+            .map(|v| match v {
+                DfdlValue::Array(items) => items.len(),
+                DfdlValue::Null => 0,
+                _ => 1,
+            })
+            .sum()
+    }
+
+    fn unordered_separated_consume_before_child(
+        &self,
+        props: &IrProps,
+        cursor: &mut Cursor<'_>,
+        slot: usize,
+        total: usize,
+        infix_sep_newline_prefix: &mut Vec<bool>,
+        child_stops: &[&IrProps],
+    ) -> Result<()> {
+        let Some(_) = props.separator else {
+            return Ok(());
+        };
+        let index = slot;
+        match props.separator_position {
+            SeparatorPosition::Prefix => {
+                self.consume_separator(
+                    props,
+                    cursor,
+                    index,
+                    total,
+                    infix_sep_newline_prefix,
+                    child_stops,
+                    false,
+                )?;
+            }
+            SeparatorPosition::Infix if slot > 0 => {
+                self.consume_separator(
+                    props,
+                    cursor,
+                    index,
+                    total,
+                    infix_sep_newline_prefix,
+                    child_stops,
+                    false,
+                )?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn unordered_separated_backtrack(
+        &self,
+        children: &[u32],
+        props: &IrProps,
+        cursor: &mut Cursor<'_>,
+        has_following_sibling: bool,
+        parent_sequence: Option<&IrProps>,
+        seq_siblings: &mut BTreeMap<String, SiblingState>,
+        content_scope_bytes: Option<usize>,
+        pattern_text_frame: bool,
+        child_stops: &[&IrProps],
+        remaining: &[usize],
+        map: &mut BTreeMap<String, DfdlValue>,
+        infix_sep_newline_prefix: &mut Vec<bool>,
+        separator_alts: &mut Vec<Option<u8>>,
+    ) -> Result<()> {
+        if remaining.is_empty() {
+            if props.separator_position == SeparatorPosition::Postfix
+                && props.separator.is_some()
+            {
+                while !cursor.is_empty() {
+                    let before = cursor.pos;
+                    let _ = self.consume_separator(
+                        props,
+                        cursor,
+                        children.len(),
+                        children.len(),
+                        infix_sep_newline_prefix,
+                        child_stops,
+                        true,
+                    )?;
+                    if cursor.pos == before {
+                        break;
+                    }
+                }
+            }
+            if !cursor.is_empty() {
+                return Err(VmError::InvalidValue {
+                    message: "unordered sequence: unconsumed input".into(),
+                }
+                .into());
+            }
+            return Ok(());
+        }
+        let slot = Self::unordered_separated_slot_count(map);
+        for (pick, &child_idx) in remaining.iter().enumerate() {
+            let child = children[child_idx];
+            let rewind = cursor.clone();
+            if let Err(e) = self.unordered_separated_consume_before_child(
+                props,
+                cursor,
+                slot,
+                children.len(),
+                infix_sep_newline_prefix,
+                child_stops,
+            ) {
+                *cursor = rewind.clone();
+                if props.separator_position == SeparatorPosition::Prefix
+                    || (props.separator_position == SeparatorPosition::Infix && slot > 0)
+                {
+                    continue;
+                }
+                return Err(e);
+            }
+            let sep_rewind = cursor.clone();
+            let child_has_following = remaining.len() > 1
+                || props.separator.is_some()
+                || matches!(
+                    self.ctx.program.node(child),
+                    Ok(IrNode::Element { props: cp, .. })
+                        if unordered_backtrack_multi_occurrence(cp)
+                );
+            let start = cursor.pos;
+            let decode_result = if let Ok(IrNode::Element { props: cp, .. }) =
+                self.ctx.program.node(child)
+            {
+                if unordered_backtrack_multi_occurrence(cp) {
+                    self.decode_one_element_occurrence(
+                        child,
+                        cursor,
+                        child_has_following,
+                        Some(props),
+                        Some(seq_siblings),
+                        content_scope_bytes,
+                        pattern_text_frame,
+                        child_stops,
+                    )
+                } else {
+                    self.decode_particle(
+                        child,
+                        cursor,
+                        child_has_following,
+                        Some(props),
+                        Some(seq_siblings),
+                        content_scope_bytes,
+                        pattern_text_frame,
+                        child_stops,
+                    )
+                }
+            } else {
+                self.decode_particle(
+                    child,
+                    cursor,
+                    child_has_following,
+                    Some(props),
+                    Some(seq_siblings),
+                    content_scope_bytes,
+                    pattern_text_frame,
+                    child_stops,
+                )
+            };
+            match decode_result {
+                Ok(child_value) => {
+                    if let Ok(IrNode::Element { kind, props: cp, .. }) =
+                        self.ctx.program.node(child)
+                    {
+                        if cp.occurs_min == 0
+                            && is_suppressible_empty_representation(
+                                &child_value,
+                                cp,
+                                self.ctx.strings(),
+                            )?
+                        {
+                            *cursor = rewind.clone();
+                            let mut rest = remaining.to_vec();
+                            rest.remove(pick);
+                            if self
+                                .unordered_separated_backtrack(
+                                    children,
+                                    props,
+                                    cursor,
+                                    has_following_sibling,
+                                    parent_sequence,
+                                    seq_siblings,
+                                    content_scope_bytes,
+                                    pattern_text_frame,
+                                    child_stops,
+                                    &rest,
+                                    map,
+                                    infix_sep_newline_prefix,
+                                    separator_alts,
+                                )
+                                .is_ok()
+                            {
+                                return Ok(());
+                            }
+                            *cursor = rewind.clone();
+                            continue;
+                        }
+                        if needs_facet_validation(cp)
+                            || cp.facet_check_constraints
+                            || !cp.facet_pattern_groups.is_empty()
+                        {
+                            if !backtrack_decoded_facets_ok(
+                                &child_value,
+                                *kind,
+                                cp,
+                                self.ctx.strings(),
+                                &self.ctx.program.tunables,
+                            ) {
+                                *cursor = rewind;
+                                continue;
+                            }
+                        }
+                    }
+                    let consumed = cursor.pos.saturating_sub(start);
+                    let (key, state) = if let IrNode::Element { name, props: el_props, .. } =
+                        self.ctx.program.node(child)?
+                    {
+                        let key = self.ctx.strings().get(*name)?.to_string();
+                        let content_bytes = if el_props.length_kind == LengthKind::Prefixed {
+                            prefixed_payload_byte_length(
+                                &cursor.data[start..cursor.pos],
+                                el_props,
+                                self.ctx.strings(),
+                            )?
+                        } else {
+                            consumed
+                        };
+                        (
+                            key.clone(),
+                            SiblingState {
+                                value: child_value.clone(),
+                                content_bytes,
+                            },
+                        )
+                    } else {
+                        return Err(VmError::InvalidValue {
+                            message: "unordered sequence: expected element particle".into(),
+                        }
+                        .into());
+                    };
+                    let saved_map = map.clone();
+                    let saved_siblings = seq_siblings.clone();
+                    let saved_sep_alts = separator_alts.clone();
+                    insert_child(map, child, child_value, self.ctx.program)?;
+                    insert_seq_sibling(seq_siblings, key.clone(), state.clone());
+                    self.insert_xpath_sibling(key, state);
+                    let mut rest = remaining.to_vec();
+                    rest.remove(pick);
+                    if let Ok(IrNode::Element { name, props: cp, .. }) =
+                        self.ctx.program.node(child)
+                    {
+                        let key = self.ctx.strings().get(*name)?.to_string();
+                        if unordered_backtrack_may_take_another(map, &key, cp, cursor.is_empty())
+                        {
+                            rest.push(child_idx);
+                        }
+                    }
+                    match self.unordered_separated_backtrack(
+                        children,
+                        props,
+                        cursor,
+                        has_following_sibling,
+                        parent_sequence,
+                        seq_siblings,
+                        content_scope_bytes,
+                        pattern_text_frame,
+                        child_stops,
+                        &rest,
+                        map,
+                        infix_sep_newline_prefix,
+                        separator_alts,
+                    ) {
+                        Ok(()) => return Ok(()),
+                        Err(_) => {
+                            *map = saved_map;
+                            *seq_siblings = saved_siblings;
+                            *separator_alts = saved_sep_alts;
+                            *cursor = rewind.clone();
+                        }
+                    }
+                }
+                Err(e) if is_element_absent(&e) => {
+                    *cursor = sep_rewind.clone();
+                    if let Ok(IrNode::Element { props: cp, .. }) = self.ctx.program.node(child) {
+                        if cp.occurs_min == 0 {
+                            let mut rest = remaining.to_vec();
+                            rest.remove(pick);
+                            if self
+                                .unordered_separated_backtrack(
+                                    children,
+                                    props,
+                                    cursor,
+                                    has_following_sibling,
+                                    parent_sequence,
+                                    seq_siblings,
+                                    content_scope_bytes,
+                                    pattern_text_frame,
+                                    child_stops,
+                                    &rest,
+                                    map,
+                                    infix_sep_newline_prefix,
+                                    separator_alts,
+                                )
+                                .is_ok()
+                            {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    *cursor = rewind.clone();
+                }
+                Err(_) => {
+                    *cursor = rewind;
+                }
+            }
+        }
+        Err(VmError::InvalidValue {
+            message: "unordered sequence: no valid particle order".into(),
+        }
+        .into())
+    }
+
     fn unordered_unseparated_backtrack(
         &self,
         children: &[u32],
@@ -2225,25 +2708,6 @@ impl<'a> Decoder<'a> {
                     false,
                 );
             }
-            if props.separator.is_some()
-                && props.separator_position == SeparatorPosition::Postfix
-            {
-                while !cursor.is_empty() {
-                    let before = cursor.pos;
-                    let _ = self.consume_separator(
-                        props,
-                        cursor,
-                        1,
-                        children.len(),
-                        &mut infix_sep_newline_prefix,
-                        child_stops,
-                        false,
-                    )?;
-                    if cursor.pos == before {
-                        break;
-                    }
-                }
-            }
             while cursor.pos < cursor.data.len() {
                 let b = cursor.data[cursor.pos];
                 if b == b';' || b == b'\n' || b == b'\r' || b == b' ' || b == b'\t' {
@@ -2481,32 +2945,19 @@ impl<'a> Decoder<'a> {
                                 committed_child = Some(child);
                             }
                         }
-                        if props.separator.is_some() && !cursor.is_empty() {
-                            match props.separator_position {
-                                SeparatorPosition::Infix => {
-                                    let _ = self.consume_separator(
-                                        props,
-                                        cursor,
-                                        idx.saturating_add(1),
-                                        children.len(),
-                                        &mut infix_sep_newline_prefix,
-                                        child_stops,
-                                        idx.saturating_add(1) >= children.len(),
-                                    )?;
-                                }
-                                SeparatorPosition::Postfix => {
-                                    let _ = self.consume_separator(
-                                        props,
-                                        cursor,
-                                        idx.saturating_add(1),
-                                        children.len(),
-                                        &mut infix_sep_newline_prefix,
-                                        child_stops,
-                                        idx.saturating_add(1) >= children.len(),
-                                    )?;
-                                }
-                                _ => {}
-                            }
+                        if props.separator.is_some()
+                            && !cursor.is_empty()
+                            && props.separator_position == SeparatorPosition::Infix
+                        {
+                            let _ = self.consume_separator(
+                                props,
+                                cursor,
+                                idx.saturating_add(1),
+                                children.len(),
+                                &mut infix_sep_newline_prefix,
+                                child_stops,
+                                idx.saturating_add(1) >= children.len(),
+                            )?;
                         }
                         round_progress = true;
                         break;
@@ -2548,6 +2999,25 @@ impl<'a> Decoder<'a> {
             .into());
         }
         if props.sequence_kind == SequenceKind::Unordered {
+            if props.separator.is_some()
+                && props.separator_position == SeparatorPosition::Postfix
+            {
+                while !cursor.is_empty() {
+                    let before = cursor.pos;
+                    let _ = self.consume_separator(
+                        props,
+                        cursor,
+                        children.len(),
+                        children.len(),
+                        &mut infix_sep_newline_prefix,
+                        child_stops,
+                        true,
+                    )?;
+                    if cursor.pos == before {
+                        break;
+                    }
+                }
+            }
             self.validate_initiated_unordered_min_occurs(children, &map)?;
         }
         let _ = (node_id, has_following_sibling, parent_sequence);
@@ -4945,7 +5415,14 @@ impl<'a> Decoder<'a> {
         stop_sequences: &[&IrProps],
         allow_missing_infix_after_last_slot: bool,
     ) -> Result<Option<u8>> {
-        if !should_write_separator(props.separator_position, index, total) {
+        let should_try_sep = match props.separator_position {
+            SeparatorPosition::Postfix => {
+                should_write_separator(props.separator_position, index, total)
+                    || (allow_missing_infix_after_last_slot && index == total)
+            }
+            _ => should_write_separator(props.separator_position, index, total),
+        };
+        if !should_try_sep {
             return Ok(None);
         }
         if let Some(id) = props.separator {
@@ -5016,8 +5493,16 @@ impl<'a> Decoder<'a> {
                 .into());
             }
             if props.separator_position == SeparatorPosition::Postfix {
-                // Postfix separators follow each occurrence; initiator-scanned sequences may
-                // already have consumed the sep or not yet be positioned on it.
+                if allow_missing_infix_after_last_slot {
+                    return Ok(None);
+                }
+                if cursor.is_empty()
+                    || self.at_enclosing_terminator_stop(cursor, stop_sequences)?
+                {
+                    return Ok(None);
+                }
+                // Unordered initiated scans may need to backtrack when the postfix sep is absent
+                // (see PostfixSeparatorHelper); occurrence-level parsing reports errors separately.
                 return Ok(None);
             }
             let position_label = match props.separator_position {
