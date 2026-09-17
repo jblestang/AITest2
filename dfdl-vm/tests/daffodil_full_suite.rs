@@ -124,24 +124,46 @@ fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
     };
     enrich_external_tdml_models(&mut suite, path);
     for test in &suite.tests {
-        let Ok(r) = run_parser_test(&suite, test) else {
-            stats.fail += 1;
-            continue;
+        let r = match run_parser_test(&suite, test) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[FAIL PARSER ERR] {} :: {} => {:?}", path.file_name().unwrap_or_default().to_string_lossy(), test.name, e);
+                stats.fail += 1;
+                continue;
+            }
         };
         match r.outcome {
             TestOutcome::Pass => stats.pass += 1,
-            TestOutcome::Fail(_) => stats.fail += 1,
+            TestOutcome::Fail(ref msg) => {
+                if test.name.contains("nonNegativeInteger_bin6")
+                    || test.name.contains("dateTextInvalid")
+                    || test.name.contains("timeTextInvalid")
+                    || test.name.contains("dateTimeTextInvalid")
+                {
+                    eprintln!("[DETAILED_FAIL] {} :: {} => {}", path.file_name().unwrap_or_default().to_string_lossy(), test.name, msg);
+                } else {
+                    eprintln!("[FAIL PARSER] {} :: {} => {}", path.file_name().unwrap_or_default().to_string_lossy(), test.name, msg);
+                }
+                stats.fail += 1;
+            }
             TestOutcome::Skip(_) => stats.skip += 1,
         }
     }
     for test in &suite.unparser_tests {
-        let Ok(r) = run_unparser_test(&suite, test) else {
-            stats.fail += 1;
-            continue;
+        let r = match run_unparser_test(&suite, test) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[FAIL UNPARSER ERR] {} :: {} => {:?}", path.file_name().unwrap_or_default().to_string_lossy(), test.name, e);
+                stats.fail += 1;
+                continue;
+            }
         };
         match r.outcome {
             TestOutcome::Pass => stats.pass += 1,
-            TestOutcome::Fail(_) => stats.fail += 1,
+            TestOutcome::Fail(msg) => {
+                eprintln!("[FAIL UNPARSER] {} :: {} => {}", path.file_name().unwrap_or_default().to_string_lossy(), test.name, msg);
+                stats.fail += 1;
+            }
             TestOutcome::Skip(_) => stats.skip += 1,
         }
     }
@@ -311,6 +333,25 @@ fn daffodil_section02_zero_fail_gate() {
     );
     assert_eq!(stats.parse_fail, 0);
     assert_eq!(stats.fail, 0, "section02 failures: {stats:?}");
+}
+
+/// Zero-failure gate for section05 files.
+#[test]
+fn daffodil_section05_zero_fail_gate() {
+    let root = assert_tdml_root().join("section05");
+    let mut files = Vec::new();
+    collect_tdml_files(&root, &mut files);
+    let mut stats = SectionStats::default();
+    for path in files {
+        run_tdml_file(&path, &mut stats);
+    }
+    eprintln!(
+        "section05 zero-fail: pass={} fail={} skip={}",
+        stats.pass, stats.fail, stats.skip
+    );
+    assert_eq!(stats.parse_fail, 0);
+    assert_eq!(stats.fail, 0, "section05 failures: {stats:?}");
+    assert!(stats.pass >= 800, "expected ~800+ pass in section05");
 }
 
 #[test]

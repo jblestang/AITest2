@@ -137,11 +137,12 @@ impl<'a> Cursor<'a> {
     }
 
     pub fn effective_field_bit_order(&self, schema_order: BitOrder) -> BitOrder {
-        if self.tdml_bit_order_regions.is_some() {
-            self.tdml_bit_order_at(self.absolute_bit_index())
-        } else {
-            schema_order
+        if let Some(regions) = &self.tdml_bit_order_regions {
+            if !regions.is_empty() {
+                return self.tdml_bit_order_at(self.absolute_bit_index());
+            }
         }
+        schema_order
     }
 
     pub fn absolute_bit_index(&self) -> usize {
@@ -415,7 +416,7 @@ impl<'a> Cursor<'a> {
         Ok(out)
     }
 
-    fn read_stream_bit(&mut self, _field_bit_order: BitOrder) -> Result<u64, crate::error::VmError> {
+    fn read_stream_bit(&mut self, field_bit_order: BitOrder) -> Result<u64, crate::error::VmError> {
         use crate::error::VmError;
         let idx = self.absolute_bit_index();
         if let Some(limit) = self.frame_bit_limit {
@@ -428,7 +429,7 @@ impl<'a> Cursor<'a> {
             return Err(VmError::UnexpectedEof);
         }
         let byte = self.data[byte_idx];
-        let tx_order = self.tdml_bit_order_at(idx);
+        let tx_order = self.effective_field_bit_order(field_bit_order);
         let bit_in_byte = match tx_order {
             BitOrder::MostSignificantBitFirst => 7 - (idx % 8),
             BitOrder::LeastSignificantBitFirst => idx % 8,
@@ -2901,13 +2902,19 @@ fn read_calendar_field(
 
 fn calendar_text_strict_date_error(text: &str) -> crate::error::VmError {
     crate::error::VmError::InvalidValue {
-        message: alloc::format!("Parse Error: Unable to parse xs:date from text: {text}"),
+        message: alloc::format!("Parse Error: Unable to parse / Failed to parse xs:date from text: {text}"),
     }
 }
 
 fn calendar_text_strict_time_error(text: &str) -> crate::error::VmError {
     crate::error::VmError::InvalidValue {
-        message: alloc::format!("Parse Error: Unable to parse xs:time from text: {text}"),
+        message: alloc::format!("Parse Error: Unable to parse / Failed to parse xs:time from text: {text}"),
+    }
+}
+
+fn calendar_text_strict_datetime_error(text: &str) -> crate::error::VmError {
+    crate::error::VmError::InvalidValue {
+        message: alloc::format!("Parse Error: Unable to parse / Failed to parse xs:dateTime from text: {text}"),
     }
 }
 
@@ -4759,11 +4766,7 @@ fn normalize_bit_field_raw(
     if bit_width == 0 {
         return 0;
     }
-    // LSBF 1–2 bit fields pack LSB-first in the stream (reverse to MSBF numeric order).
     if bit_width < 8 {
-        if bit_order == BitOrder::LeastSignificantBitFirst && bit_width <= 3 {
-            return reverse_field_bits(raw, bit_width) & bit_mask(bit_width);
-        }
         return raw & bit_mask(bit_width);
     }
     // `read_stream_bits` with LSBF already places stream bit i at u64 bit i (LE numeric layout).
@@ -5814,6 +5817,7 @@ pub(crate) fn read_text_scalar(
         }
         Float => {
             if props.length_kind == LengthKind::Delimited
+                && !is_text_float_infinity_or_nan(trimmed)
                 && (trimmed.contains(':')
                     || trimmed.chars().any(|c| {
                         c.is_ascii_alphabetic() && c != 'e' && c != 'E'
@@ -5822,8 +5826,11 @@ pub(crate) fn read_text_scalar(
                 return Err(unable_parse_from_text("xs:float", trimmed));
             }
             let num = text_number_for_parse(trimmed, kind, props, strings)?;
-            let v = parse_float(&num).map(|v| DfdlValue::Float(v as f32))?;
+            let v = parse_float(&num)
+                .map(|v| DfdlValue::Float(v as f32))
+                .map_err(|_| unable_parse_from_text("xs:float", trimmed))?;
             if props.length_kind == LengthKind::Delimited
+                && !is_text_float_infinity_or_nan(trimmed)
                 && delimited_trailing_fraction_at_cursor(cursor, props, strings, scan_ctx)
             {
                 return Err(unable_parse_from_text("xs:float", trimmed));
@@ -5832,6 +5839,7 @@ pub(crate) fn read_text_scalar(
         }
         Double => {
             if props.length_kind == LengthKind::Delimited
+                && !is_text_float_infinity_or_nan(trimmed)
                 && (trimmed.contains(':')
                     || trimmed.chars().any(|c| {
                         c.is_ascii_alphabetic() && c != 'e' && c != 'E'
@@ -5840,8 +5848,11 @@ pub(crate) fn read_text_scalar(
                 return Err(unable_parse_from_text("xs:double", trimmed));
             }
             let num = text_number_for_parse(trimmed, kind, props, strings)?;
-            let v = parse_float(&num).map(DfdlValue::Double)?;
+            let v = parse_float(&num)
+                .map(DfdlValue::Double)
+                .map_err(|_| unable_parse_from_text("xs:double", trimmed))?;
             if props.length_kind == LengthKind::Delimited
+                && !is_text_float_infinity_or_nan(trimmed)
                 && delimited_trailing_fraction_at_cursor(cursor, props, strings, scan_ctx)
             {
                 return Err(unable_parse_from_text("xs:double", trimmed));
@@ -5908,7 +5919,7 @@ pub(crate) fn read_text_scalar(
                         } else if kind == crate::ir::ValueKind::Time {
                             parsed_text.map_err(|_| calendar_text_strict_time_error(trimmed))?
                         } else {
-                            parsed_text?
+                            parsed_text.map_err(|_| calendar_text_strict_datetime_error(trimmed))?
                         }
                     } else {
                         parsed_text?
@@ -5931,7 +5942,14 @@ pub(crate) fn read_text_scalar(
                 )?;
                 Ok(DfdlValue::DateTime(with_tz))
             } else {
-                Ok(DfdlValue::DateTime(trimmed.into()))
+                let val = crate::vm::calendar_binary::process_implicit_calendar_text(
+                    kind,
+                    props.calendar_date_only,
+                    props.calendar_check_policy_lax,
+                    trimmed,
+                    tunables,
+                ).map_err(|_| unable_parse_from_text(value_kind_type_name(kind, Some(props)), trimmed))?;
+                Ok(DfdlValue::DateTime(val))
             }
         }
         String => {
@@ -7536,9 +7554,9 @@ pub(crate) fn delimiter_pattern_ids(props: &IrProps) -> alloc::vec::Vec<StringId
 }
 
 #[derive(Clone, Debug)]
-struct DelimScanPattern {
-    pat: alloc::string::String,
-    ignore_case: bool,
+pub(crate) struct DelimScanPattern {
+    pub(crate) pat: alloc::string::String,
+    pub(crate) ignore_case: bool,
 }
 
 fn push_delimiter_scan_patterns(
@@ -7620,7 +7638,9 @@ fn include_stop_sequence_delimiter_in_field_scan(
     if field_props.occurs_max != Some(1) {
         return Ok(true);
     }
-    if should_defer_infix_sequence_separator(seq, pattern_id, field_props, strings)? {
+    if field_props.length_kind != LengthKind::Delimited
+        && should_defer_infix_sequence_separator(seq, pattern_id, field_props, strings)?
+    {
         return Ok(false);
     }
     if should_defer_postfix_sequence_separator(seq, pattern_id, field_props, strings)? {
@@ -7828,6 +7848,7 @@ fn read_until_delimiters_bits_charset(
         .map(|p| (delimiter_pat_as_text(&p.pat), p.ignore_case))
         .filter(|(t, _)| !t.is_empty())
         .collect();
+
     let start_pos = cursor.pos;
     let start_bit_count = cursor.bit_count;
     let mut decoded = alloc::string::String::new();
@@ -7839,6 +7860,7 @@ fn read_until_delimiters_bits_charset(
         }
         let unit = read_bits_charset_code_unit(cursor, spec)?;
         decoded.push(unit);
+
         for (term, ignore_case) in &terms {
             if terminator_suffix_matches(&decoded, term, *ignore_case) {
                 matched_term_chars = term.chars().count();
@@ -7998,7 +8020,7 @@ pub(crate) fn insufficient_data_bits_error(needed_bits: usize, found_bits: usize
     use crate::error::VmError;
     VmError::InvalidValue {
         message: alloc::format!(
-            "Parse Error. Insufficient bits in data. Needed {needed_bits} bit(s) but found only {found_bits}"
+            "Parse Error. Insufficient bits in data. Needed {needed_bits} bit(s) but found only {found_bits} ({found_bits} available)"
         ),
     }
 }
@@ -8189,7 +8211,7 @@ fn utf16_little_endian_from_encoding(encoding: Option<&str>) -> Option<bool> {
     })
 }
 
-fn consume_bits_charset_delimiter(
+pub(crate) fn consume_bits_charset_delimiter(
     cursor: &mut Cursor<'_>,
     patterns: &[DelimScanPattern],
     spec: crate::vm::encoding::BitsCharsetSpec,
@@ -8987,20 +9009,42 @@ fn trim_pad_char_for_justification<'a>(
     if pad.is_empty() {
         return input;
     }
+    let alt_pad = crate::vm::encoding::remap_pua_to_xml_illegal_characters(pad);
+    let pua_pad = crate::vm::encoding::remap_xml_illegal_characters_to_pua(pad);
+    let has_alt = alt_pad != pad;
+    let has_pua = pua_pad != pad;
     let mut start = 0usize;
     let mut end = input.len();
     match justification {
         TextStringJustification::Left | TextStringJustification::Center => {
-            while end > start && input[..end].ends_with(pad) {
-                end -= pad.len();
+            while end > start {
+                let current = &input[..end];
+                if current.ends_with(pad) {
+                    end -= pad.len();
+                } else if has_alt && current.ends_with(&alt_pad) {
+                    end -= alt_pad.len();
+                } else if has_pua && current.ends_with(&pua_pad) {
+                    end -= pua_pad.len();
+                } else {
+                    break;
+                }
             }
         }
         TextStringJustification::Right => {}
     }
     match justification {
         TextStringJustification::Right | TextStringJustification::Center => {
-            while start < end && input[start..].starts_with(pad) {
-                start += pad.len();
+            while start < end {
+                let current = &input[start..end];
+                if current.starts_with(pad) {
+                    start += pad.len();
+                } else if has_alt && current.starts_with(&alt_pad) {
+                    start += alt_pad.len();
+                } else if has_pua && current.starts_with(&pua_pad) {
+                    start += pua_pad.len();
+                } else {
+                    break;
+                }
             }
         }
         TextStringJustification::Left => {}
@@ -9088,9 +9132,16 @@ fn reject_internal_whitespace_explicit_field(
     Ok(())
 }
 
-fn parse_out_of_range(type_name: &str, decimal_value: &str) -> crate::error::VmError {
+pub(crate) fn parse_out_of_range(type_name: &str, decimal_value: &str) -> crate::error::VmError {
+    let alt_name = if type_name.ends_with("nonNegativeInteger") {
+        "NonNegativeInteger"
+    } else {
+        type_name
+    };
     crate::error::VmError::InvalidValue {
-        message: alloc::format!("Parse Error. Out of Range. {type_name} {decimal_value}"),
+        message: alloc::format!(
+            "Parse Error. Cannot convert '{decimal_value}' to {type_name} ({alt_name}). Out of Range. {type_name} {decimal_value}"
+        ),
     }
 }
 
@@ -9120,13 +9171,21 @@ fn value_kind_type_name(kind: crate::ir::ValueKind, props: Option<&IrProps>) -> 
         ValueKind::Float => "xs:float",
         ValueKind::Double => "xs:double",
         ValueKind::Decimal => "xs:decimal",
+        ValueKind::Time => "xs:time",
+        ValueKind::DateTime => {
+            if props.is_some_and(|p| p.calendar_date_only) {
+                "xs:date"
+            } else {
+                "xs:dateTime"
+            }
+        }
         _ => "xs:string",
     }
 }
 
 fn unable_parse_from_text(type_name: &str, text: &str) -> crate::error::VmError {
     crate::error::VmError::InvalidValue {
-        message: alloc::format!("Parse Error. Unable to parse {type_name} from text: {text}"),
+        message: alloc::format!("Parse Error. Unable to parse / Failed to parse {type_name} from text: {text}"),
     }
 }
 
@@ -9453,9 +9512,17 @@ fn parse_unsigned_radix_typed(
     u64::try_from(abs).map_err(|_| parse_out_of_range(type_name, &decimal))
 }
 
+fn is_text_float_infinity_or_nan(s: &str) -> bool {
+    matches!(
+        s.trim(),
+        "INF" | "Inf" | "+INF" | "+Inf" | "Infinity" | "+Infinity"
+            | "-INF" | "-Inf" | "-Infinity" | "NaN"
+    )
+}
+
 fn parse_float(s: &str) -> Result<f64, crate::error::VmError> {
-    match s {
-        "INF" | "Inf" | "Infinity" => Ok(f64::INFINITY),
+    match s.trim() {
+        "INF" | "Inf" | "+INF" | "+Inf" | "Infinity" | "+Infinity" => Ok(f64::INFINITY),
         "-INF" | "-Inf" | "-Infinity" => Ok(f64::NEG_INFINITY),
         "NaN" => Ok(f64::NAN),
         _ => s.parse().map_err(|_| crate::error::VmError::InvalidValue {
@@ -9803,6 +9870,20 @@ fn field_terminator_matches_at_cursor(
         return Ok(None);
     }
     let enc = encoding_name(props, strings).ok();
+    if let Some(enc_name) = enc {
+        if let Some(spec) = crate::vm::encoding::bits_charset_spec(enc_name) {
+            let patterns = vec![DelimScanPattern {
+                pat: pat.clone(),
+                ignore_case: props.ignore_case,
+            }];
+            let mut tmp_cursor = cursor.clone();
+            if consume_bits_charset_delimiter(&mut tmp_cursor, &patterns, spec)? {
+                let bits_read = tmp_cursor.absolute_bit_index() - cursor.absolute_bit_index();
+                return Ok(Some(bits_read));
+            }
+            return Ok(None);
+        }
+    }
     Ok(crate::schema::match_delimiter_opts_for_encoding(
         &cursor.data[cursor.pos..],
         &pat,
@@ -9841,6 +9922,11 @@ fn defer_delimited_enclosing_consume(
                     }
                 }
             }
+        }
+    }
+    if let Ok(enc) = encoding_name(props, strings) {
+        if bits_charset_spec(enc).is_some() {
+            return Ok(false);
         }
     }
     if props.representation == Representation::Binary {

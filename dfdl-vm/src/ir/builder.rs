@@ -213,14 +213,6 @@ impl<'a> IrBuilder<'a> {
         root_name: &str,
         root_element: &GlobalElement,
     ) -> Result<u32> {
-        if dfdl_props_has_input_value_calc(&root_element.props)
-            && builtin_for_element_type_name(self.schema, &root_element.type_name).is_some()
-        {
-            return Err(SchemaError::InvalidProperty {
-                message: "Schema Definition Error: Placeholder".into(),
-            }
-            .into());
-        }
         let root = if let Some(builtin) =
             builtin_for_element_type_name(self.schema, &root_element.type_name)
         {

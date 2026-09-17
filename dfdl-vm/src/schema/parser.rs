@@ -3277,7 +3277,15 @@ enum IvcIntegerLexical {
 
 fn parse_ivc_integer_lexical(s: &str) -> Option<IvcIntegerLexical> {
     let s = s.trim();
-    if s.is_empty() || !s.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '+') {
+    if s.is_empty() {
+        return None;
+    }
+    let rest = if let Some(r) = s.strip_prefix('+').or_else(|| s.strip_prefix('-')) {
+        r
+    } else {
+        s
+    };
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
     if let Ok(v) = s.parse::<i64>() {
@@ -4932,6 +4940,9 @@ fn props_from_attrs_with_variables(
                         props.output_value_calc_segments = Some(segments);
                     } else {
                         props.output_value_calc_conditional = true;
+                        props.output_value_calc_literal = Some(
+                            value.trim()[1..value.trim().len() - 1].trim().to_string(),
+                        );
                     }
                 } else if let Some(segments) = parse_input_value_calc_concat(value) {
                     props.output_value_calc = Some(OutputValueCalc::FnConcat);

@@ -21,4 +21,28 @@ fn byte_binary_02_leftover_bits() {
 #[test]
 fn double_binary_01_insufficient_bits() {
     assert!(matches!(run("double_binary_01"), TestOutcome::Pass));
+}#[test]
+fn bit_order_mil2045() {
+    let tdml_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section05/simple_types/BitOrder.tdml"
+    );
+    let text = fs::read_to_string(tdml_path).expect("read");
+    let suite = parse_tdml(&text).expect("parse");
+    let t = suite.tests.iter().find(|t| t.name == "TestMIL2045_47001D_Page70_TableB_I_with_string").unwrap();
+    let res = run_parser_test(&suite, t).expect("run");
+    assert_eq!(res.outcome, TestOutcome::Pass, "{:?}", res.outcome);
+}
+
+#[test]
+fn least_significant_bit_first() {
+    let tdml_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section05/simple_types/BitOrder.tdml"
+    );
+    let text = fs::read_to_string(tdml_path).expect("read");
+    let suite = parse_tdml(&text).expect("parse");
+    let t = suite.tests.iter().find(|t| t.name == "leastSignificantBitFirst").unwrap();
+    let res = run_parser_test(&suite, t).expect("run");
+    assert_eq!(res.outcome, TestOutcome::Pass, "{:?}", res.outcome);
 }

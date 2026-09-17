@@ -2552,12 +2552,86 @@ fn eval_xpath_output_value_calc(
     children: &[u32],
 ) -> Result<DfdlValue> {
     let expr = expr.trim();
+    if let Some(arg) = xpath_cast_inner(expr, "xs:date") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        let norm = crate::vm::calendar_binary::normalize_xs_date_lexical(&s)
+            .unwrap_or(s);
+        return Ok(DfdlValue::DateTime(norm));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:dateTime")
+        .or_else(|| xpath_cast_inner(expr, "xs:time"))
+    {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        return Ok(DfdlValue::DateTime(s));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:integer")
+        .or_else(|| xpath_cast_inner(expr, "xs:long"))
+    {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        let n: i64 = s.trim().parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:integer `{s}`"),
+        })?;
+        return Ok(DfdlValue::Long(n));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:short") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        let n: i16 = s.trim().parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:short `{s}`"),
+        })?;
+        return Ok(DfdlValue::Int(i32::from(n)));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:byte") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        let n: i8 = s.trim().parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:byte `{s}`"),
+        })?;
+        return Ok(DfdlValue::Int(i32::from(n)));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:unsignedInt") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        let n: u32 = s.trim().parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:unsignedInt `{s}`"),
+        })?;
+        return Ok(DfdlValue::Long(i64::from(n)));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:unsignedShort") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        let n: u16 = s.trim().parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:unsignedShort `{s}`"),
+        })?;
+        return Ok(DfdlValue::Int(i32::from(n)));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:unsignedLong") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        let n: u64 = s.trim().parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:unsignedLong `{s}`"),
+        })?;
+        return Ok(DfdlValue::Long(n as i64));
+    }
     if let Some(arg) = xpath_cast_inner(expr, "xs:unsignedByte") {
         let s = eval_xpath_string_value(enc, arg, map, children)?;
         let n: u8 = s.trim().parse().map_err(|_| VmError::InvalidValue {
             message: alloc::format!("invalid xs:unsignedByte `{s}`"),
         })?;
         return Ok(DfdlValue::UnsignedByte(n));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:decimal") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        return Ok(DfdlValue::Decimal(s));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:float") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        let n: f32 = s.trim().parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:float `{s}`"),
+        })?;
+        return Ok(DfdlValue::Float(n));
+    }
+    if let Some(arg) = xpath_cast_inner(expr, "xs:double") {
+        let s = eval_xpath_string_value(enc, arg, map, children)?;
+        let n: f64 = s.trim().parse().map_err(|_| VmError::InvalidValue {
+            message: alloc::format!("invalid xs:double `{s}`"),
+        })?;
+        return Ok(DfdlValue::Double(n));
     }
     if let Some(arg) = xpath_cast_inner(expr, "xs:string") {
         let s = eval_xpath_string_value(enc, arg, map, children)?;

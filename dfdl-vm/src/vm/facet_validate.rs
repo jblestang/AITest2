@@ -217,6 +217,13 @@ pub fn validate_decoded_facets_tdml(
         validate_calendar_enumeration(value, props, strings)?;
     } else if kind == ValueKind::Integer {
         if let DfdlValue::Integer(lex) = value {
+            if props.non_negative_integer && lex.trim().starts_with('-') {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Parse Error. Cannot convert '{lex}' to xs:nonNegativeInteger (NonNegativeInteger). Out of Range. xs:nonNegativeInteger {lex}"
+                    ),
+                });
+            }
             if digits_before_range {
                 if props.total_digits.is_some() || props.fraction_digits.is_some() {
                     validate_digit_facets(lex, props, strings)?;

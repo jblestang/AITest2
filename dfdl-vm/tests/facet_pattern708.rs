@@ -48,3 +48,4 @@ fn pattern_regex_dfdl708_04_tdml() {
     let r = run_parser_test(&suite, t).expect("run");
     assert_eq!(r.outcome, TestOutcome::Pass, "{:?}", r.outcome);
 }
+

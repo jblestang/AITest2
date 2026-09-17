@@ -990,21 +990,15 @@ fn text_document_data_bits(text: &str, encoding: Option<&str>) -> Result<Vec<Str
     let bit_strings: Vec<String> = encoded.iter().map(|b| byte_to_msb_bit_string(*b)).collect();
     if let Some(enc) = encoding {
         if let Some(spec) = bits_charset_spec(enc) {
-            let code_units = text.chars().count();
-            let n_bits = code_units * spec.width as usize;
-            let concatenated: String = bit_strings.iter().rev().map(String::as_str).collect();
-            let all_bits = if concatenated.len() > n_bits {
-                concatenated[concatenated.len() - n_bits..].to_string()
-            } else {
-                concatenated
-            };
-            let width = spec.width as usize;
-            let rev: String = all_bits.chars().rev().collect();
-            let chunks = rev
-                .as_bytes()
-                .chunks(width)
-                .map(|chunk| {
-                    reverse_bit_string(core::str::from_utf8(chunk).unwrap_or(""))
+            let chunks: Vec<String> = text
+                .chars()
+                .map(|ch| {
+                    let u = ch as u32;
+                    let mut s = String::new();
+                    for i in (0..spec.width).rev() {
+                        s.push(if ((u >> i) & 1) == 1 { '1' } else { '0' });
+                    }
+                    s
                 })
                 .collect();
             return Ok(chunks);

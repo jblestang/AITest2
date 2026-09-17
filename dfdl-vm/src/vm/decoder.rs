@@ -1283,7 +1283,14 @@ impl<'a> Decoder<'a> {
                                     field_delim_meta.insert(key, meta);
                                 }
                             }
+                            let is_array_element = match self.ctx.program.node(child) {
+                                Ok(IrNode::Element { props: cp, .. }) => {
+                                    cp.occurs_max.map(|m| m > 1).unwrap_or(true)
+                                }
+                                _ => false,
+                            };
                             let single_complex_child = children.len() == 1
+                                && !is_array_element
                                 && matches!(
                                     self.ctx.program.node(child),
                                     Ok(IrNode::Element { child: Some(_), .. })
@@ -3261,7 +3268,7 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 Err(e) => {
-                    if implicit_empty_probe {
+                    if implicit_empty_probe && (items.len() as u64) < min {
                         return Err(e);
                     }
                     if is_schema_definition_error(&e) {
@@ -3349,9 +3356,13 @@ impl<'a> Decoder<'a> {
                         )? {
                             continue;
                         }
-                        if props.initiator.is_some()
+                        let has_real_initiator = props
+                            .initiator
+                            .and_then(|id| self.ctx.strings().get(id).ok())
+                            .is_some_and(|s| !s.is_empty());
+                        if has_real_initiator
                             && cursor.pos > rewind.pos
-                            && (items.len() as u64) < max
+                            && (items.len() as u64) < min
                         {
                             return Err(
                                 element_parse_error(
@@ -3650,6 +3661,10 @@ impl<'a> Decoder<'a> {
                             LengthUnits::Bits => len,
                             LengthUnits::Bytes | LengthUnits::Characters => len.saturating_mul(8),
                         };
+                        let available = crate::vm::runtime::bits_available_in_cursor(cursor);
+                        if available < bit_len {
+                            return Err(crate::vm::runtime::insufficient_data_bits_error(bit_len, available).into());
+                        }
                         let frame_start = cursor.absolute_bit_index();
                         let prev_limit = cursor
                             .frame_bit_limit
@@ -4124,6 +4139,29 @@ impl<'a> Decoder<'a> {
         kind: ValueKind,
         props: &IrProps,
     ) -> Result<DfdlValue> {
+        let value = if kind != ValueKind::String {
+            if let DfdlValue::String(s) = &value {
+                parse_ivc_lexical_for_kind(s.text.as_str(), kind, props, self.ctx.strings())?
+            } else {
+                value
+            }
+        } else {
+            value
+        };
+        if props.non_negative_integer {
+            let is_neg = match &value {
+                DfdlValue::Integer(s) => s.trim().starts_with('-'),
+                DfdlValue::Long(n) => *n < 0,
+                DfdlValue::Int(n) => *n < 0,
+                DfdlValue::Short(n) => *n < 0,
+                DfdlValue::Byte(n) => *n < 0,
+                _ => false,
+            };
+            if is_neg {
+                let s = dfdl_value_dispatch_string(&value);
+                return Err(super::runtime::parse_out_of_range("xs:nonNegativeInteger", &s).into());
+            }
+        }
         super::runtime::finalize_simple_value(
             value,
             kind,
@@ -4798,6 +4836,27 @@ impl<'a> Decoder<'a> {
                 return Ok(());
             }
             let enc = encoding_name(props, self.ctx.strings()).ok();
+            if let Some(enc_name) = enc {
+                if let Some(spec) = crate::vm::encoding::bits_charset_spec(enc_name) {
+                    if std::env::var("DEBUG_7BIT").is_ok() {
+                        std::eprintln!("CONSUME TERMINATOR BITS CHARSET at bit_idx={} pat={pat:?}", cursor.absolute_bit_index());
+                    }
+                    let patterns = vec![crate::vm::runtime::DelimScanPattern {
+                        pat: pat.clone(),
+                        ignore_case: props.ignore_case,
+                    }];
+                    if crate::vm::runtime::consume_bits_charset_delimiter(cursor, &patterns, spec)? {
+                        return Ok(());
+                    }
+                    if cursor.is_empty() {
+                        return Ok(());
+                    }
+                    return Err(VmError::InvalidValue {
+                        message: crate::vm::runtime::format_terminator_not_found_error(&pat),
+                    }
+                    .into());
+                }
+            }
             if !cursor.consume_delimiter(&pat, props.ignore_case, enc) {
                 if cursor.is_empty() {
                     return Ok(());
@@ -6611,7 +6670,7 @@ fn eval_input_value_calc_expression(
                 ctx,
                 strings,
                 tunables,
-                ValueKind::Integer,
+                ValueKind::String,
                 target_props,
             )?;
             let text = dfdl_value_to_string(&value);

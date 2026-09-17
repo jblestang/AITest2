@@ -906,13 +906,13 @@ fn split_implicit_time_core_tz(text: &str) -> Result<(alloc::string::String, Opt
         || text.as_bytes().get(5) != Some(&b':')
     {
         return Err(VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Unable to parse xs:time from text: {text}"),
+            message: alloc::format!("Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {text}"),
         });
     }
     let core = &text[..8];
     if !core.chars().all(|c| c.is_ascii_digit() || c == ':') {
         return Err(VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Unable to parse xs:time from text: {text}"),
+            message: alloc::format!("Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {text}"),
         });
     }
     let rest = text[8..].trim();
@@ -928,13 +928,13 @@ fn parse_hms_core(core: &str) -> Result<(u32, u32, u32), VmError> {
         .next()
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Unable to parse time from text: {core}"),
+            message: alloc::format!("Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {core}"),
         })?;
     let m: u32 = parts
         .next()
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Unable to parse time from text: {core}"),
+            message: alloc::format!("Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {core}"),
         })?;
     let s: u32 = parts
         .next()
@@ -949,23 +949,23 @@ fn parse_ymd_core(text: &str) -> Result<(i32, u32, u32), VmError> {
         .next()
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Unable to parse xs:date from text: {text}"),
+            message: alloc::format!("Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"),
         })?;
     let m: u32 = parts
         .next()
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Unable to parse xs:date from text: {text}"),
+            message: alloc::format!("Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"),
         })?;
     let d: u32 = parts
         .next()
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Unable to parse xs:date from text: {text}"),
+            message: alloc::format!("Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"),
         })?;
     if parts.next().is_some() {
         return Err(VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Unable to parse xs:date from text: {text}"),
+            message: alloc::format!("Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"),
         });
     }
     Ok((y, m, d))
@@ -1137,7 +1137,7 @@ pub fn process_implicit_calendar_text(
         return Ok(out);
     }
     let implicit_datetime_error = || VmError::InvalidValue {
-        message: alloc::format!("Parse Error: Unable to parse xs:dateTime from text: {text}"),
+        message: alloc::format!("Parse Error: Failed to parse xs:dateTime / Unable to parse xs:dateTime from text: {text}"),
     };
     let Some(sep) = text.find('T') else {
         return Err(implicit_datetime_error());
@@ -1664,10 +1664,7 @@ pub fn validate_implicit_binary_length_schema(
     if props.representation != Representation::Binary || props.length_kind != LengthKind::Implicit {
         return Ok(());
     }
-    if props.input_value_calc.is_some()
-        || props.input_value_calc_sibling.is_some()
-        || props.input_value_calc_segments.is_some()
-    {
+    if crate::ir::ir_props_has_input_value_calc(props) {
         return Ok(());
     }
     if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {

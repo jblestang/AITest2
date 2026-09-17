@@ -442,7 +442,7 @@ fn walk_particle(
                                             "{ename} failed facet checks due to: {r}"
                                         ));
                                     }
-                                } else if props.input_value_calc.is_some()
+                                } else if crate::ir::ir_props_has_input_value_calc(props)
                                     && rest.is_some_and(|r| {
                                         r.starts_with("facet minLength")
                                             || r.starts_with("facet maxLength")
