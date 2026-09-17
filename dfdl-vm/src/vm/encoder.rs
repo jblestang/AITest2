@@ -159,9 +159,15 @@ impl<'a> Encoder<'a> {
         match self.ctx.program.node(node_id)? {
             IrNode::Sequence { children, props } => {
                 let empty_seq = crate::value::SequenceValue::new(BTreeMap::new());
+                let owned_seq;
                 let seq = match value {
                     DfdlValue::Sequence(s) => s,
                     DfdlValue::String(text) if text.text.is_empty() => &empty_seq,
+                    _ if value.sequence_fields().is_some() => {
+                        owned_seq =
+                            crate::value::SequenceValue::new(value.sequence_fields().unwrap().clone());
+                        &owned_seq
+                    }
                     DfdlValue::Choice { value: inner, .. } => {
                         if let Some(s) = inner.sequence_value() {
                             s

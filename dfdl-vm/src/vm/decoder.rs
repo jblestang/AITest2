@@ -2225,6 +2225,25 @@ impl<'a> Decoder<'a> {
                     false,
                 );
             }
+            if props.separator.is_some()
+                && props.separator_position == SeparatorPosition::Postfix
+            {
+                while !cursor.is_empty() {
+                    let before = cursor.pos;
+                    let _ = self.consume_separator(
+                        props,
+                        cursor,
+                        1,
+                        children.len(),
+                        &mut infix_sep_newline_prefix,
+                        child_stops,
+                        false,
+                    )?;
+                    if cursor.pos == before {
+                        break;
+                    }
+                }
+            }
             while cursor.pos < cursor.data.len() {
                 let b = cursor.data[cursor.pos];
                 if b == b';' || b == b'\n' || b == b'\r' || b == b' ' || b == b'\t' {
@@ -2462,19 +2481,32 @@ impl<'a> Decoder<'a> {
                                 committed_child = Some(child);
                             }
                         }
-                        if props.separator.is_some()
-                            && !cursor.is_empty()
-                            && props.separator_position == SeparatorPosition::Infix
-                        {
-                            let _ = self.consume_separator(
-                                props,
-                                cursor,
-                                idx.saturating_add(1),
-                                children.len(),
-                                &mut infix_sep_newline_prefix,
-                                child_stops,
-                                idx.saturating_add(1) >= children.len(),
-                            )?;
+                        if props.separator.is_some() && !cursor.is_empty() {
+                            match props.separator_position {
+                                SeparatorPosition::Infix => {
+                                    let _ = self.consume_separator(
+                                        props,
+                                        cursor,
+                                        idx.saturating_add(1),
+                                        children.len(),
+                                        &mut infix_sep_newline_prefix,
+                                        child_stops,
+                                        idx.saturating_add(1) >= children.len(),
+                                    )?;
+                                }
+                                SeparatorPosition::Postfix => {
+                                    let _ = self.consume_separator(
+                                        props,
+                                        cursor,
+                                        idx.saturating_add(1),
+                                        children.len(),
+                                        &mut infix_sep_newline_prefix,
+                                        child_stops,
+                                        idx.saturating_add(1) >= children.len(),
+                                    )?;
+                                }
+                                _ => {}
+                            }
                         }
                         round_progress = true;
                         break;
@@ -4982,6 +5014,11 @@ impl<'a> Decoder<'a> {
                     ),
                 }
                 .into());
+            }
+            if props.separator_position == SeparatorPosition::Postfix {
+                // Postfix separators follow each occurrence; initiator-scanned sequences may
+                // already have consumed the sep or not yet be positioned on it.
+                return Ok(None);
             }
             let position_label = match props.separator_position {
                 SeparatorPosition::Prefix => "prefix separator",
