@@ -1427,9 +1427,6 @@ fn collect_ovc_elements_in_sequence_subtree(
                         props: props.clone(),
                     });
                 }
-                if let Some(inner) = child {
-                    collect_ovc_elements_in_subtree(enc, *inner, out)?;
-                }
             }
             IrNode::Sequence { children: nested, .. } => {
                 collect_ovc_elements_in_sequence_subtree(enc, nested, out)?;
@@ -1542,6 +1539,11 @@ fn precompute_output_values<'a>(
             let computed = ovc_value_for_element_kind(entry.kind, computed);
             let prev = effective.get(&entry.name_key);
             if prev == Some(&computed) {
+                continue;
+            }
+            // Hidden OVC particles must not replace infoset values at this sequence scope
+            // (duplicate local names between hidden and regular group refs).
+            if map.contains_key(&entry.name_key) && entry.props.hidden {
                 continue;
             }
             effective.insert(entry.name_key.clone(), computed);

@@ -229,7 +229,7 @@ scan_test!(scan_section17, "section17");
 
 regression_gate!(daffodil_section08_regression_gate, "section08", 17, 23);
 regression_gate!(daffodil_section13_regression_gate_scan, "section13", 503, 39);
-regression_gate!(daffodil_section14_regression_gate, "section14", 150, 3);
+regression_gate!(daffodil_section14_regression_gate, "section14", 153, 0);
 regression_gate!(daffodil_section15_regression_gate, "section15", 159, 9);
 regression_gate!(daffodil_section16_regression_gate, "section16", 84, 3);
 regression_gate!(daffodil_section23_regression_gate, "section23", 121, 913);
