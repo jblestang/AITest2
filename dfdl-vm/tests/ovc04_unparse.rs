@@ -60,7 +60,11 @@ fn ovc_hidden_calculations2() {
     );
     let tdml = fs::read_to_string(&tdml_path).expect("tdml");
     let suite = parse_tdml(&tdml).expect("parse");
-    let test = suite.unparser_tests.iter().find(|t| t.name == "ovcHiddenCalculations2").expect("test");
+    let test = suite
+        .unparser_tests
+        .iter()
+        .find(|t| t.name == "ovcHiddenCalculations2")
+        .expect("test");
     let result = run_unparser_test(&suite, test).expect("run");
     eprintln!("{:?}", result.outcome);
     assert!(matches!(result.outcome, TestOutcome::Pass));

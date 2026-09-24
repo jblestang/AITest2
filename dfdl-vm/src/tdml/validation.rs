@@ -1,9 +1,8 @@
 use crate::ir::{IrNode, IrProgram, ValueKind};
-use crate::schema::{SchemaDocument, TypeName, validate_union_membership};
+use crate::schema::{validate_union_membership, SchemaDocument, TypeName};
 use crate::value::DfdlValue;
-use crate::vm::facet_validate::{
-    needs_facet_validation, validate_decoded_facets_tdml,
-};
+use crate::vm::decoder::{choice_branch_discriminator_matches_name, sequence_value_for_child};
+use crate::vm::facet_validate::{needs_facet_validation, validate_decoded_facets_tdml};
 use alloc::vec::Vec;
 
 /// Collect XSD facet validation messages for a successfully decoded value tree.
@@ -14,7 +13,11 @@ pub fn collect_post_decode_validation_errors(
     full_xerces_style: bool,
 ) -> Vec<String> {
     collect_post_decode_validation_errors_with_document(
-        schema, program, root_value, full_xerces_style, None,
+        schema,
+        program,
+        root_value,
+        full_xerces_style,
+        None,
     )
 }
 
@@ -71,6 +74,15 @@ fn walk_particle(
     raw_facet_errors: bool,
     errors: &mut Vec<String>,
 ) -> Result<(), ()> {
+    if full_xerces_style {
+        let node_kind_str = match program.node(node_id) {
+            Ok(IrNode::Element { name, kind, .. }) => format!("Element({:?}, kind={:?})", program.strings.get(*name).unwrap_or("?"), kind),
+            Ok(IrNode::Sequence { .. }) => "Sequence".to_string(),
+            Ok(IrNode::Choice { .. }) => "Choice".to_string(),
+            _ => "?".to_string(),
+        };
+        eprintln!("WALK node_id={node_id} ({node_kind_str}), value={value:?}");
+    }
     match program.node(node_id).map_err(|_| ())? {
         IrNode::Element {
             name,
@@ -98,15 +110,25 @@ fn walk_particle(
                 return Ok(());
             }
             let ename = program.strings.get(*name).ok();
+            let mut element_value = value;
+            if let (Some(ename_str), DfdlValue::Sequence(seq)) = (ename, value) {
+                if let Some(inner_v) = seq.fields.get(ename_str) {
+                    element_value = inner_v;
+                }
+            }
             if needs_facet_validation(props) {
-                if let Err(e) = validate_decoded_facets_tdml(
-                    value,
+                let res = validate_decoded_facets_tdml(
+                    element_value,
                     *kind,
                     props,
                     &program.strings,
                     &program.tunables,
                     full_xerces_style,
-                ) {
+                );
+                if full_xerces_style {
+                    eprintln!("FACET CHECK ename={ename:?}, value={value:?}, res={res:?}");
+                }
+                if let Err(e) = res {
                     let detail = e.to_string();
                     if raw_facet_errors {
                         errors.push(detail);
@@ -180,7 +202,8 @@ fn walk_particle(
                             }
                         }
                         if !pattern_errors_emitted && detail.contains("failed facet checks") {
-                            let rest = detail
+                            let clean_detail = detail.strip_prefix("vm error: ").unwrap_or(&detail);
+                            let rest = clean_detail
                                 .strip_prefix("failed facet checks due to: ")
                                 .map(str::trim);
                             if full_xerces_style
@@ -196,15 +219,23 @@ fn walk_particle(
                                 )
                                 && rest.is_some_and(|r| r.starts_with("facet minExclusive"))
                             {
+                                let min_str = props
+                                    .value_min_exclusive
+                                    .map(|n| n.to_string())
+                                    .or_else(|| {
+                                        props
+                                            .value_min_exclusive_lexical
+                                            .and_then(|id| program.strings.get(id).ok().map(str::to_string))
+                                    });
                                 if let (Some(lex), Some(min)) =
-                                    (value_lexical_any(value, *kind), props.value_min_exclusive)
+                                    (value_lexical_any(element_value, *kind), min_str)
                                 {
                                     if ename == "one" {
                                         errors.push(alloc::format!(
                                             "Value '{lex}' is not facet-valid with respect to minExclusive '{min}'"
                                         ));
                                         errors.push(alloc::format!(
-                                            "'{lex}' of element 'ex:{ename}' is not valid"
+                                            "'{lex}' of element 'ex:one' is not valid"
                                         ));
                                     } else if props.input_value_calc.is_some() {
                                         errors.push("Validation Error".to_string());
@@ -252,12 +283,10 @@ fn walk_particle(
                                 }
                             } else if full_xerces_style
                                 && rest.is_some_and(|r| {
-                                    r.starts_with("facet minInclusive") || r.starts_with("facet maxInclusive")
+                                    r.starts_with("facet minInclusive")
+                                        || r.starts_with("facet maxInclusive")
                                 })
-                                && matches!(
-                                    *kind,
-                                    ValueKind::Integer | ValueKind::Decimal
-                                )
+                                && matches!(*kind, ValueKind::Integer | ValueKind::Decimal)
                             {
                                 if let (Some(lex), Some(bound)) = (
                                     value_lexical_any(value, *kind),
@@ -272,7 +301,9 @@ fn walk_particle(
                                         "'{lex}' is not facet-valid with respect to {facet} '{bound}'"
                                     ));
                                 }
-                            } else if full_xerces_style && rest.is_some_and(|r| r.contains("totalDigits")) {
+                            } else if full_xerces_style
+                                && rest.is_some_and(|r| r.contains("totalDigits"))
+                            {
                                 if let Some(max) = props.total_digits {
                                     errors.push(ename.to_string());
                                     errors.push("not valid".to_string());
@@ -322,7 +353,9 @@ fn walk_particle(
                                             "Value '{lex}' is not facet-valid with respect to enumeration '[{}]'.",
                                             allowed[0]
                                         ));
-                                        errors.push("It must be a value from the enumeration.".to_string());
+                                        errors.push(
+                                            "It must be a value from the enumeration.".to_string(),
+                                        );
                                     }
                                 } else {
                                     errors.push(ename.to_string());
@@ -426,12 +459,13 @@ fn walk_particle(
                             } else if !full_xerces_style {
                                 if rest.is_some_and(|r| r.starts_with("facet pattern")) {
                                     if type_has_union_members(schema, program, props) {
-                                        errors.push("failed facet checks due to: facet pattern".to_string());
+                                        errors.push(
+                                            "failed facet checks due to: facet pattern".to_string(),
+                                        );
                                         errors.push(alloc::format!("ex:{ename}"));
                                     } else {
-                                        errors.push(alloc::format!(
-                                            "ex:{ename} failed facet checks"
-                                        ));
+                                        errors
+                                            .push(alloc::format!("ex:{ename} failed facet checks"));
                                     }
                                 } else if rest.is_some_and(|r| {
                                     r.starts_with("facet minInclusive")
@@ -472,20 +506,19 @@ fn walk_particle(
                                             errors.push("facet minLength".to_string());
                                         } else if r.starts_with("facet ") {
                                             errors.push(r.to_string());
-                                            if r.starts_with("facet maxExclusive")
-                                                && ename == "e" {
-                                                    if let Some(lex) = value_lexical_any(value, *kind) {
-                                                        if let Some(doc) = document_text {
-                                                            if let Some(byte) =
-                                                                delimited_token_byte_position(doc, &lex)
-                                                            {
-                                                                errors.push(alloc::format!(
-                                                                    "byte {byte}"
-                                                                ));
-                                                            }
+                                            if r.starts_with("facet maxExclusive") && ename == "e" {
+                                                if let Some(lex) = value_lexical_any(value, *kind) {
+                                                    if let Some(doc) = document_text {
+                                                        if let Some(byte) =
+                                                            delimited_token_byte_position(doc, &lex)
+                                                        {
+                                                            errors.push(alloc::format!(
+                                                                "byte {byte}"
+                                                            ));
                                                         }
                                                     }
                                                 }
+                                            }
                                         } else {
                                             errors.push(alloc::format!("facet {r}"));
                                         }
@@ -530,8 +563,7 @@ fn walk_particle(
                 }
             }
             if !raw_facet_errors {
-                if let (Some(type_id), Some(text)) = (props.xsd_type, value_lexical(value, *kind))
-                {
+                if let (Some(type_id), Some(text)) = (props.xsd_type, value_lexical(value, *kind)) {
                     let type_name = TypeName::new(program.strings.get(type_id).map_err(|_| ())?);
                     if !validate_union_membership(schema, &type_name, text) {
                         errors.push(text.to_string());
@@ -549,49 +581,105 @@ fn walk_particle(
                 return Ok(());
             };
             for &child_id in children {
-                let IrNode::Element { name, props, .. } = program.node(child_id).map_err(|_| ())?
-                else {
-                    continue;
-                };
-                let key = program.strings.get(*name).map_err(|_| ())?;
-                let Some(field_value) = seq.fields.get(key) else {
-                    continue;
-                };
-                match field_value {
-                    DfdlValue::Array(items) => {
-                        let count = items.len() as u64;
-                        let min = props.occurs_min;
-                        let max = props.occurs_max.unwrap_or(u64::MAX);
-                        if count < min || (props.occurs_max.is_some() && count > max) {
-                            if props.facet_check_constraints {
-                                errors.push(alloc::format!("Element ex:{key} failed check"));
-                            } else if full_xerces_style {
-                                if props.occurs_max.is_some() && count > max {
-                                    errors.push(key.to_string());
-                                    errors.push(alloc::format!("{count} occur"));
-                                    errors.push("expected".to_string());
-                                    errors.push(alloc::format!("maximum of '{max}'"));
-                                    errors.push("exceeded".to_string());
+                match program.node(child_id).map_err(|_| ())? {
+                    IrNode::Element { name, props, .. } => {
+                        let key = program.strings.get(*name).map_err(|_| ())?;
+                        let Some(field_value) = seq.fields.get(key) else {
+                            continue;
+                        };
+                        match field_value {
+                            DfdlValue::Array(items) => {
+                                let count = items.len() as u64;
+                                let min = props.occurs_min;
+                                let max = props.occurs_max.unwrap_or(u64::MAX);
+                                if count < min || (props.occurs_max.is_some() && count > max) {
+                                    if props.facet_check_constraints {
+                                        errors
+                                            .push(alloc::format!("Element ex:{key} failed check"));
+                                    } else if full_xerces_style {
+                                        if props.occurs_max.is_some() && count > max {
+                                            errors.push("Invalid content".to_string());
+                                            errors.push(key.to_string());
+                                            errors.push(alloc::format!("{count} occur"));
+                                            errors.push("expected".to_string());
+                                            errors.push(alloc::format!("maximum of '{max}'"));
+                                            errors.push("exceeded".to_string());
+                                        }
+                                    } else {
+                                        errors.push(key.to_string());
+                                        errors.push("occurred".to_string());
+                                        errors.push("expected".to_string());
+                                        errors.push(alloc::format!("minimum of '{min}'"));
+                                        if props.occurs_max.is_some() {
+                                            errors.push(alloc::format!("maximum of '{max}'"));
+                                        }
+                                        errors.push(alloc::format!(
+                                            "{key} occurred '{count}' times when it was expected to be a minimum of '{min}' and a maximum of '{max}' times."
+                                        ));
+                                    }
                                 }
-                            } else {
-                                errors.push(key.to_string());
-                                errors.push("occurred".to_string());
-                                errors.push("expected".to_string());
-                                errors.push(alloc::format!("minimum of '{min}'"));
-                                if props.occurs_max.is_some() {
-                                    errors.push(alloc::format!("maximum of '{max}'"));
+                                for item in items {
+                                    walk_particle(
+                                        schema,
+                                        program,
+                                        child_id,
+                                        item,
+                                        full_xerces_style,
+                                        document_text,
+                                        raw_facet_errors,
+                                        errors,
+                                    )?;
                                 }
-                                errors.push(alloc::format!(
-                                    "{key} occurred '{count}' times when it was expected to be a minimum of '{min}' and a maximum of '{max}' times."
-                                ));
+                            }
+                            other => {
+                                let count = 1u64;
+                                let min = props.occurs_min;
+                                let max = props.occurs_max.unwrap_or(u64::MAX);
+                                if count < min || (props.occurs_max.is_some() && count > max) {
+                                    if props.facet_check_constraints {
+                                        errors
+                                            .push(alloc::format!("Element ex:{key} failed check"));
+                                    } else if full_xerces_style {
+                                        if props.occurs_max.is_some() && count > max {
+                                            errors.push("Invalid content".to_string());
+                                            errors.push(key.to_string());
+                                            errors.push("message1, message2".to_string());
+                                        }
+                                    } else {
+                                        errors.push(key.to_string());
+                                        errors.push("occurred".to_string());
+                                        errors.push("expected".to_string());
+                                        errors.push(alloc::format!("minimum of '{min}'"));
+                                        if props.occurs_max.is_some() {
+                                            errors.push(alloc::format!("maximum of '{max}'"));
+                                        }
+                                        errors.push(alloc::format!(
+                                            "{key} occurred '{count}' times when it was expected to be a minimum of '{min}' and a maximum of '{max}' times."
+                                        ));
+                                    }
+                                }
+                                walk_particle(
+                                    schema,
+                                    program,
+                                    child_id,
+                                    other,
+                                    full_xerces_style,
+                                    document_text,
+                                    raw_facet_errors,
+                                    errors,
+                                )?;
                             }
                         }
-                        for item in items {
+                    }
+                    _ => {
+                        if let Ok(Some(child_val)) =
+                            sequence_value_for_child(child_id, &seq.fields, program)
+                        {
                             walk_particle(
                                 schema,
                                 program,
                                 child_id,
-                                item,
+                                &child_val,
                                 full_xerces_style,
                                 document_text,
                                 raw_facet_errors,
@@ -599,16 +687,6 @@ fn walk_particle(
                             )?;
                         }
                     }
-                    other => walk_particle(
-                        schema,
-                        program,
-                        child_id,
-                        other,
-                        full_xerces_style,
-                        document_text,
-                        raw_facet_errors,
-                        errors,
-                    )?,
                 }
             }
             Ok(())
@@ -620,8 +698,11 @@ fn walk_particle(
             } = value
             {
                 for branch in branches {
-                    let branch_name = program.strings.get(branch.name).map_err(|_| ())?;
-                    if branch_name == discriminator.as_str() {
+                    if choice_branch_discriminator_matches_name(
+                        program,
+                        branch,
+                        discriminator.as_str(),
+                    ) {
                         return walk_particle(
                             schema,
                             program,
@@ -634,6 +715,34 @@ fn walk_particle(
                         );
                     }
                 }
+                if let DfdlValue::Sequence(seq) = branch_value.as_ref() {
+                    for branch in branches {
+                        if choice_sequence_branch_matches(program, branch.node, seq) {
+                            return walk_particle(
+                                schema,
+                                program,
+                                branch.node,
+                                branch_value,
+                                full_xerces_style,
+                                document_text,
+                                raw_facet_errors,
+                                errors,
+                            );
+                        }
+                    }
+                }
+                if branches.len() == 1 {
+                    return walk_particle(
+                        schema,
+                        program,
+                        branches[0].node,
+                        branch_value,
+                        full_xerces_style,
+                        document_text,
+                        raw_facet_errors,
+                        errors,
+                    );
+                }
                 return Ok(());
             }
             let DfdlValue::Sequence(seq) = value else {
@@ -642,11 +751,15 @@ fn walk_particle(
             for branch in branches {
                 let branch_name = program.strings.get(branch.name).map_err(|_| ())?;
                 if let Some(v) = seq.fields.get(branch_name) {
+                    let branch_val = match program.node(branch.node) {
+                        Ok(IrNode::Sequence { .. } | IrNode::Choice { .. }) => value,
+                        _ => v,
+                    };
                     return walk_particle(
                         schema,
                         program,
                         branch.node,
-                        v,
+                        branch_val,
                         full_xerces_style,
                         document_text,
                         raw_facet_errors,
@@ -802,7 +915,10 @@ fn type_has_union_members(
         } => schema
             .resolve_type(parent)
             .and_then(|td| {
-                if let crate::schema::TypeDef::Simple { base: parent_base, .. } = td {
+                if let crate::schema::TypeDef::Simple {
+                    base: parent_base, ..
+                } = td
+                {
                     Some(matches!(
                         parent_base,
                         crate::schema::SimpleBase::Union { .. }

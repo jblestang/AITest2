@@ -7,7 +7,11 @@ fn rna_base_simple_type_has_binary_representation() {
         "/../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section06/namespaces/ibm_format_compat_2.dfdl.xsd"
     );
     let xsd = std::fs::read_to_string(path).unwrap();
-    let dir = std::path::Path::new(path).parent().unwrap().to_string_lossy().into_owned();
+    let dir = std::path::Path::new(path)
+        .parent()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     let doc = parse_schema_with_options(
         &xsd,
         &ParseOptions {
@@ -24,7 +28,12 @@ fn rna_base_simple_type_has_binary_representation() {
         .cloned()
         .map(TypeName::new)
         .expect("RNABase type");
-    let props = doc.effective_simple_type_props(&name).expect("effective props");
-    eprintln!("RNABase effective: repr={:?} len_kind={:?} len={:?} align={:?} units={:?}", props.representation, props.length_kind, props.length, props.alignment, props.length_units);
+    let props = doc
+        .effective_simple_type_props(&name)
+        .expect("effective props");
+    eprintln!(
+        "RNABase effective: repr={:?} len_kind={:?} len={:?} align={:?} units={:?}",
+        props.representation, props.length_kind, props.length, props.alignment, props.length_units
+    );
     assert_eq!(props.representation, Some(Representation::Binary));
 }

@@ -28,19 +28,25 @@ fn money_has_zero_rep() {
     eprintln!("zero_rep={props:?}");
     let (defined, raw) = props.unwrap();
     assert!(defined);
-    let (pattern, custom, base) = program.nodes.iter().find_map(|n| match n {
-        IrNode::Element { name, props, .. } if program.strings.get(*name).ok() == Some("money") => {
-            Some((
-                props
-                    .text_number_pattern
-                    .and_then(|id| program.strings.get(id).ok())
-                    .map(|s| s.to_string()),
-                props.custom_text_number_pattern,
-                props.text_standard_base,
-            ))
-        }
-        _ => None,
-    }).unwrap();
+    let (pattern, custom, base) = program
+        .nodes
+        .iter()
+        .find_map(|n| match n {
+            IrNode::Element { name, props, .. }
+                if program.strings.get(*name).ok() == Some("money") =>
+            {
+                Some((
+                    props
+                        .text_number_pattern
+                        .and_then(|id| program.strings.get(id).ok())
+                        .map(|s| s.to_string()),
+                    props.custom_text_number_pattern,
+                    props.text_standard_base,
+                ))
+            }
+            _ => None,
+        })
+        .unwrap();
     eprintln!("pattern={pattern:?} custom={custom} base={base} raw_zero={raw:?}");
 }
 
@@ -56,7 +62,11 @@ fn zero_rep_pattern_matches_document() {
 #[test]
 fn vpattern_zero_passes() {
     let suite = parse_tdml(TDML).expect("tdml");
-    let t = suite.tests.iter().find(|t| t.name == "vpattern_zero").unwrap();
+    let t = suite
+        .tests
+        .iter()
+        .find(|t| t.name == "vpattern_zero")
+        .unwrap();
     let r = run_parser_test(&suite, t).expect("run");
     assert!(matches!(r.outcome, TestOutcome::Pass));
 }

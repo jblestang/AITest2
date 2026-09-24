@@ -1,6 +1,4 @@
-use super::ast::{
-    RestrictionBase, SchemaDocument, SimpleBase, TypeDef, TypeName, UnionMember,
-};
+use super::ast::{RestrictionBase, SchemaDocument, SimpleBase, TypeDef, TypeName, UnionMember};
 use crate::schema::match_length_pattern;
 use regex_automata::meta::Regex;
 use regex_automata::{Anchored, Input};
@@ -47,7 +45,10 @@ fn union_members_to_validate<'a>(
             ..
         } => {
             let parent = schema.types.get(name)?;
-            let TypeDef::Simple { base: parent_base, .. } = parent else {
+            let TypeDef::Simple {
+                base: parent_base, ..
+            } = parent
+            else {
                 return None;
             };
             match parent_base {
@@ -168,6 +169,10 @@ mod tests {
             &TypeName::new("restricted"),
             "aaaaaaa"
         ));
-        assert!(validate_union_membership(&doc, &TypeName::new("restricted"), "aa"));
+        assert!(validate_union_membership(
+            &doc,
+            &TypeName::new("restricted"),
+            "aa"
+        ));
     }
 }

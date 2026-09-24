@@ -1,4 +1,6 @@
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlSchema, TdmlSuite};
+use dfdl_vm::tdml::{
+    parse_tdml, run_parser_test, run_unparser_test, TdmlSchema, TdmlSuite, TestOutcome,
+};
 use std::collections::HashSet;
 use std::env;
 use std::fs;

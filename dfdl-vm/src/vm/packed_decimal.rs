@@ -19,7 +19,9 @@ impl PackedSignCodes {
         let chars: Vec<char> = compact.chars().collect();
         if chars.len() != 4 {
             return Err(VmError::InvalidValue {
-                message: alloc::format!("binaryPackedSignCodes must have 4 characters, got `{spec}`"),
+                message: alloc::format!(
+                    "binaryPackedSignCodes must have 4 characters, got `{spec}`"
+                ),
             });
         }
         // Daffodil uses `char - 55` for A-F hex letters (C -> 0x0C).
@@ -30,7 +32,12 @@ impl PackedSignCodes {
                 c as u8 - 55
             }
         };
-        let (p, n, u, z) = (code(chars[0]), code(chars[1]), code(chars[2]), code(chars[3]));
+        let (p, n, u, z) = (
+            code(chars[0]),
+            code(chars[1]),
+            code(chars[2]),
+            code(chars[3]),
+        );
         Ok(match policy {
             BinaryNumberCheckPolicy::Strict => Self {
                 positive: vec![p],

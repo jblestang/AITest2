@@ -1,19 +1,20 @@
+use super::alignment::write_leading_skip;
 use super::runtime::{
     decode_hex_binary, encode_framing_delimiter_bytes, encoding_name, hex_binary_from_integer,
     int_bytes, is_suppressible_empty_representation, nil_unparse_bytes_for_encode,
     resolve_encode_property_pattern, resolve_output_new_line_for_encode,
-    write_alignment_for_kind, write_alignment_with_config, write_byte_aligned,
-    write_framed_payload, write_simple, validate_explicit_decimal_before_encode,
-    trailing_suppressed_count, should_suppress_occurrence_separator, RuntimeConfig, VmContext,
+    should_suppress_occurrence_separator, trailing_suppressed_count,
+    validate_explicit_decimal_before_encode, write_alignment_for_kind, write_alignment_with_config,
+    write_byte_aligned, write_framed_payload, write_simple, RuntimeConfig, VmContext,
 };
-use super::alignment::write_leading_skip;
 use crate::error::{Error, Result, VmError};
-use crate::length_validate::validate_fill_byte_schema;
 use crate::ir::{IrNode, IrProgram, IrProps};
+use crate::length_validate::validate_fill_byte_schema;
 use crate::schema::{
-    encode_delimiter, encode_delimiter_by_alt, encode_property_delimiter, encode_sequence_separator,
-    ByteOrder, ChoiceLengthKind, LengthKind, LengthUnits, OccursCountKind,
-    Representation, SeparatorSuppressionPolicy, TextPadKind, OutputValueCalc, SeparatorPosition,
+    encode_delimiter, encode_delimiter_by_alt, encode_property_delimiter,
+    encode_sequence_separator, ByteOrder, ChoiceLengthKind, LengthKind, LengthUnits,
+    OccursCountKind, OutputValueCalc, Representation, SeparatorPosition,
+    SeparatorSuppressionPolicy, TextPadKind,
 };
 use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
@@ -30,6 +31,7 @@ pub struct Encoder<'a> {
     ctx: VmContext<'a>,
     /// 1-based index and total count for the nearest enclosing array occurrence (repeat indicators).
     array_occurrence_for_ovc: Cell<Option<(usize, usize)>>,
+    seq_bit_order: Cell<Option<crate::schema::BitOrder>>,
 }
 
 impl<'a> Encoder<'a> {
@@ -41,10 +43,38 @@ impl<'a> Encoder<'a> {
         Self {
             ctx: VmContext { program, config },
             array_occurrence_for_ovc: Cell::new(None),
+            seq_bit_order: Cell::new(None),
         }
     }
 
-    fn with_array_occurrence<R>(&self, index_1: usize, total: usize, f: impl FnOnce() -> Result<R>) -> Result<R> {
+    fn check_bit_order_change(&self, props: &IrProps, bit_count: u8) -> Result<()> {
+        if !props.bit_order_defined {
+            return Ok(());
+        }
+        let order = props.bit_order;
+        if let Some(prev) = self.seq_bit_order.get() {
+            if prev != order && !bit_count.is_multiple_of(8) {
+                return Err(VmError::InvalidValue {
+                    message: "Schema Definition Error: bitOrder change requires byte boundary".into(),
+                }
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    fn note_bit_order(&self, props: &IrProps) {
+        if props.bit_order_defined {
+            self.seq_bit_order.set(Some(props.bit_order));
+        }
+    }
+
+    fn with_array_occurrence<R>(
+        &self,
+        index_1: usize,
+        total: usize,
+        f: impl FnOnce() -> Result<R>,
+    ) -> Result<R> {
         self.array_occurrence_for_ovc.set(Some((index_1, total)));
         let out = f();
         self.array_occurrence_for_ovc.set(None);
@@ -58,11 +88,7 @@ impl<'a> Encoder<'a> {
     }
 
     /// Encode `value` and return the number of significant bits in the last output byte (0 if byte-aligned).
-    pub fn encode_with_bit_count(
-        &self,
-        value: &DfdlValue,
-        output: &mut Vec<u8>,
-    ) -> Result<u8> {
+    pub fn encode_with_bit_count(&self, value: &DfdlValue, output: &mut Vec<u8>) -> Result<u8> {
         let value = unwrap_root_for_encode(
             value,
             &self.ctx.program.root_element,
@@ -213,12 +239,7 @@ impl<'a> Encoder<'a> {
                     }
                     if optional_sequence_particle_absent(self, child, &effective)? {
                         if trailing_empty_absent_position_slot(
-                            self,
-                            props,
-                            child,
-                            children,
-                            idx,
-                            &effective,
+                            self, props, child, children, idx, &effective,
                         )? {
                             self.write_sequence_separator(
                                 props,
@@ -235,9 +256,7 @@ impl<'a> Encoder<'a> {
                     }
                     let defer_sep = sequence_separator_deferred_to_child_occurrences(self, child)?;
                     if !defer_sep {
-                        if wrote_particle
-                            || props.separator_position == SeparatorPosition::Prefix
-                        {
+                        if wrote_particle || props.separator_position == SeparatorPosition::Prefix {
                             self.write_sequence_separator(
                                 props,
                                 out,
@@ -281,8 +300,16 @@ impl<'a> Encoder<'a> {
                 )?;
                 Ok(())
             }
-            IrNode::Choice { branches, props: choice_props, .. } => {
-                if let DfdlValue::Choice { discriminator, value } = value {
+            IrNode::Choice {
+                branches,
+                props: choice_props,
+                ..
+            } => {
+                if let DfdlValue::Choice {
+                    discriminator,
+                    value,
+                } = value
+                {
                     let branch = branches
                         .iter()
                         .find(|b| {
@@ -307,9 +334,9 @@ impl<'a> Encoder<'a> {
                 if let Some(map) = value.sequence_fields() {
                     for branch in branches {
                         if let Some(key) = choice_branch_data_key(self, branch.node, map) {
-                            let val = map.get(&key).ok_or(VmError::MissingField {
-                                name: key.clone(),
-                            })?;
+                            let val = map
+                                .get(&key)
+                                .ok_or(VmError::MissingField { name: key.clone() })?;
                             self.write_initiator(choice_props, out, bit_count, None, None)?;
                             return self.encode_choice_matched_branch(
                                 choice_props,
@@ -407,10 +434,7 @@ impl<'a> Encoder<'a> {
                     let field = element_payload_value(value, name_str);
                     if needs_length_frame(props) {
                         if *kind == crate::ir::ValueKind::Complex
-                            && matches!(
-                                props.length_kind,
-                                LengthKind::Explicit | LengthKind::Fixed
-                            )
+                            && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
                             && props.length_units == LengthUnits::Characters
                         {
                             let enc = encoding_name(props, self.ctx.strings())?;
@@ -456,6 +480,7 @@ impl<'a> Encoder<'a> {
                         )
                     }
                 } else {
+                    self.check_bit_order_change(props, *bit_count)?;
                     write_leading_skip(out, bit_count, props).map_err(Error::from)?;
                     write_alignment_for_kind(
                         out,
@@ -466,19 +491,14 @@ impl<'a> Encoder<'a> {
                         Some(&self.ctx.config),
                     )
                     .map_err(Error::from)?;
-                    let schema_ctx =
-                        schema_context_field_name(self.ctx.strings().get(*name)?);
+                    let schema_ctx = schema_context_field_name(self.ctx.strings().get(*name)?);
                     let props = encode_scope
                         .map(|scope| {
-                            resolve_text_standard_props_for_encode(
-                                props,
-                                scope,
-                                self.ctx.strings(),
-                            )
+                            resolve_text_standard_props_for_encode(props, scope, self.ctx.strings())
                         })
                         .transpose()?
                         .unwrap_or_else(|| props.clone());
-                    write_simple(
+                    let res = write_simple(
                         out,
                         bit_count,
                         value,
@@ -491,8 +511,9 @@ impl<'a> Encoder<'a> {
                         None,
                         encode_scope,
                         None,
-                    )
-                    .map_err(Into::into)
+                    );
+                    self.note_bit_order(&props);
+                    res.map_err(Into::into)
                 }
             }
         }
@@ -593,9 +614,11 @@ impl<'a> Encoder<'a> {
                     idx,
                     true,
                     self.ctx.strings(),
-                )? {
-                    self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
-                }
+                )?
+            {
+                self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
+            }
+            self.check_bit_order_change(props, *bit_count)?;
             write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
             self.write_initiator(props, out, bit_count, None, encode_siblings)?;
             if matches!(item, DfdlValue::Null) {
@@ -608,6 +631,7 @@ impl<'a> Encoder<'a> {
                 })?;
             }
             self.write_terminator(props, out, bit_count, None, encode_siblings)?;
+            self.note_bit_order(props);
             if sep_props.separator_position == SeparatorPosition::Postfix
                 && !should_suppress_occurrence_separator(
                     sep_props,
@@ -616,9 +640,10 @@ impl<'a> Encoder<'a> {
                     idx,
                     false,
                     self.ctx.strings(),
-                )? {
-                    self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
-                }
+                )?
+            {
+                self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
+            }
         }
         Ok(())
     }
@@ -675,13 +700,8 @@ impl<'a> Encoder<'a> {
                 {
                     value = DfdlValue::string("");
                 }
-                value = value_for_occurrence_encode(
-                    self,
-                    props,
-                    value,
-                    &value_map,
-                    sequence_children,
-                )?;
+                value =
+                    value_for_occurrence_encode(self, props, value, &value_map, sequence_children)?;
                 if props.occurs_count_kind == OccursCountKind::Expression
                     && matches!(value, DfdlValue::Array(ref a) if a.is_empty())
                     && props.occurs_min == 0
@@ -788,16 +808,9 @@ impl<'a> Encoder<'a> {
                 props: inner_props,
             } => {
                 let scope_lookup = merged_encode_lookup(encode_scope, map);
-                let effective =
-                    precompute_output_values(self, children, map, inner_props)?;
+                let effective = precompute_output_values(self, children, map, inner_props)?;
                 let separator_lookup = merged_encode_lookup(Some(&scope_lookup), &effective);
-                self.write_initiator(
-                    inner_props,
-                    out,
-                    bit_count,
-                    None,
-                    Some(&separator_lookup),
-                )?;
+                self.write_initiator(inner_props, out, bit_count, None, Some(&separator_lookup))?;
                 let mut wrote_particle = false;
                 for (idx, &child) in children.iter().enumerate() {
                     if child_skips_encode(self, child)? {
@@ -825,8 +838,7 @@ impl<'a> Encoder<'a> {
                         }
                         continue;
                     }
-                    let defer_sep =
-                        sequence_separator_deferred_to_child_occurrences(self, child)?;
+                    let defer_sep = sequence_separator_deferred_to_child_occurrences(self, child)?;
                     if !defer_sep {
                         if wrote_particle
                             || inner_props.separator_position == SeparatorPosition::Prefix
@@ -841,8 +853,7 @@ impl<'a> Encoder<'a> {
                                 Some(&separator_lookup),
                             )?;
                         }
-                    } else if idx > 0
-                        && inner_props.separator_position == SeparatorPosition::Infix
+                    } else if idx > 0 && inner_props.separator_position == SeparatorPosition::Infix
                     {
                         self.write_sequence_separator(
                             inner_props,
@@ -866,16 +877,14 @@ impl<'a> Encoder<'a> {
                     )?;
                     wrote_particle = true;
                 }
-                self.write_terminator(
-                    inner_props,
-                    out,
-                    bit_count,
-                    None,
-                    Some(&separator_lookup),
-                )?;
+                self.write_terminator(inner_props, out, bit_count, None, Some(&separator_lookup))?;
                 Ok(())
             }
-            IrNode::Choice { branches, props: choice_props, .. } => {
+            IrNode::Choice {
+                branches,
+                props: choice_props,
+                ..
+            } => {
                 for branch in branches {
                     if map_has_local_key(map, "r2").is_some()
                         && matches!(
@@ -886,9 +895,9 @@ impl<'a> Encoder<'a> {
                         continue;
                     }
                     if let Some(key) = choice_branch_data_key(self, branch.node, map) {
-                        let val = map.get(&key).ok_or(VmError::MissingField {
-                            name: key.clone(),
-                        })?;
+                        let val = map
+                            .get(&key)
+                            .ok_or(VmError::MissingField { name: key.clone() })?;
                         self.write_initiator(choice_props, out, bit_count, None, None)?;
                         return self.encode_choice_matched_branch(
                             choice_props,
@@ -990,10 +999,7 @@ impl<'a> Encoder<'a> {
             trailing_suppressed_count(items, props, self.ctx.strings(), Some(sep_props))?;
         let encode_len = items.len().saturating_sub(suppressed);
         let empty = BTreeMap::new();
-        let sibling_lookup = merged_encode_lookup(
-            encode_scope,
-            encode_siblings.unwrap_or(&empty),
-        );
+        let sibling_lookup = merged_encode_lookup(encode_scope, encode_siblings.unwrap_or(&empty));
         for (idx, item) in items.iter().take(encode_len).enumerate() {
             if sep_props.separator_position != SeparatorPosition::Postfix {
                 let suppress = should_suppress_occurrence_separator(
@@ -1003,18 +1009,21 @@ impl<'a> Encoder<'a> {
                     idx,
                     true,
                     self.ctx.strings(),
-                )? || is_suppressible_empty_representation(item, props, self.ctx.strings())?;
+                )?;
                 if !suppress && (!sequence_particle || encode_len > 1) {
                     self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
                 }
             }
-            if is_suppressible_empty_representation(item, props, self.ctx.strings())? {
+            if is_suppressible_empty_representation(item, props, self.ctx.strings())?
+                && !matches!(item, DfdlValue::Null)
+            {
                 let pad_empty = kind == crate::ir::ValueKind::String
                     && props.text_pad_kind == TextPadKind::PadChar;
                 if !pad_empty {
                     continue;
                 }
             }
+            self.check_bit_order_change(props, *bit_count)?;
             write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
             write_simple(
                 out,
@@ -1031,6 +1040,7 @@ impl<'a> Encoder<'a> {
                 Some(sep_props),
             )
             .map_err(Error::from)?;
+            self.note_bit_order(props);
             if sep_props.separator_position == SeparatorPosition::Postfix
                 && !should_suppress_occurrence_separator(
                     sep_props,
@@ -1039,10 +1049,11 @@ impl<'a> Encoder<'a> {
                     idx,
                     false,
                     self.ctx.strings(),
-                )? && (!sequence_particle || encode_len > 1)
-                {
-                    self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
-                }
+                )?
+                && (!sequence_particle || encode_len > 1)
+            {
+                self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
+            }
         }
         Ok(())
     }
@@ -1067,8 +1078,7 @@ impl<'a> Encoder<'a> {
                     return Ok(v.clone());
                 }
             }
-            let computed =
-                eval_output_value_calc(self, props, map, sequence_children, props)?;
+            let computed = eval_output_value_calc(self, props, map, sequence_children, props)?;
             return Ok(ovc_value_for_element_kind(kind, computed));
         }
         if props.hidden {
@@ -1224,8 +1234,12 @@ impl<'a> Encoder<'a> {
                     );
                 }
             }
-            write_byte_aligned(out, bit_count, &encode_delimiter(self.ctx.strings().get(id)?))
-                .map_err(Error::from)?;
+            write_byte_aligned(
+                out,
+                bit_count,
+                &encode_delimiter(self.ctx.strings().get(id)?),
+            )
+            .map_err(Error::from)?;
         }
         Ok(())
     }
@@ -1237,9 +1251,11 @@ impl<'a> Encoder<'a> {
         out: &mut Vec<u8>,
         bit_count: &mut u8,
     ) -> Result<()> {
-        write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config)).map_err(Error::from)?;
+        write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))
+            .map_err(Error::from)?;
         self.write_initiator(props, out, bit_count, None, None)?;
-        let payload = nil_unparse_bytes_for_encode(props, self.ctx.strings()).map_err(Error::from)?;
+        let payload =
+            nil_unparse_bytes_for_encode(props, self.ctx.strings()).map_err(Error::from)?;
         write_byte_aligned(out, bit_count, &payload).map_err(Error::from)?;
         self.write_terminator(props, out, bit_count, None, None)?;
         Ok(())
@@ -1310,13 +1326,11 @@ fn optional_sequence_particle_absent(
 
 fn child_skips_encode(enc: &Encoder<'_>, node_id: u32) -> Result<bool> {
     match enc.ctx.program.node(node_id)? {
-        IrNode::Element { props, .. } => Ok(
-            props.input_value_calc.is_some()
-                || props.input_value_calc_sibling.is_some()
-                || props.input_value_calc_segments.is_some()
-                || props.input_value_calc_path.is_some()
-                || props.input_value_calc_expression.is_some(),
-        ),
+        IrNode::Element { props, .. } => Ok(props.input_value_calc.is_some()
+            || props.input_value_calc_sibling.is_some()
+            || props.input_value_calc_segments.is_some()
+            || props.input_value_calc_path.is_some()
+            || props.input_value_calc_expression.is_some()),
         _ => Ok(false),
     }
 }
@@ -1334,10 +1348,7 @@ fn sequence_separator_deferred_to_child_occurrences(
         || props.occurs_min > 1)
 }
 
-fn ovc_length_cycle_error(
-    enc: &Encoder<'_>,
-    children: &[u32],
-) -> Result<()> {
+fn ovc_length_cycle_error(enc: &Encoder<'_>, children: &[u32]) -> Result<()> {
     let strings = enc.ctx.strings();
     for &a in children {
         let IrNode::Element {
@@ -1408,7 +1419,8 @@ fn collect_ovc_elements_in_sequence_subtree(
                 child,
                 ..
             } => {
-                if props.output_value_calc_conditional && props.output_value_calc_literal.is_none() {
+                if props.output_value_calc_conditional && props.output_value_calc_literal.is_none()
+                {
                     let elem = enc.ctx.strings().get(*name)?;
                     return Err(VmError::InvalidValue {
                         message: alloc::format!(
@@ -1431,7 +1443,9 @@ fn collect_ovc_elements_in_sequence_subtree(
                     collect_ovc_elements_in_subtree(enc, *inner, out)?;
                 }
             }
-            IrNode::Sequence { children: nested, .. } => {
+            IrNode::Sequence {
+                children: nested, ..
+            } => {
                 collect_ovc_elements_in_sequence_subtree(enc, nested, out)?;
             }
             _ => {}
@@ -1446,7 +1460,9 @@ fn collect_ovc_elements_in_subtree(
     out: &mut Vec<OvcPrecomputeEntry>,
 ) -> Result<()> {
     match enc.ctx.program.node(node_id)? {
-        IrNode::Sequence { children, .. } => collect_ovc_elements_in_sequence_subtree(enc, children, out),
+        IrNode::Sequence { children, .. } => {
+            collect_ovc_elements_in_sequence_subtree(enc, children, out)
+        }
         IrNode::Element { child: Some(c), .. } => collect_ovc_elements_in_subtree(enc, *c, out),
         _ => Ok(()),
     }
@@ -1521,24 +1537,20 @@ fn precompute_output_values<'a>(
             if ovc_deferred_to_encode_occurrence(&entry.props) {
                 continue;
             }
-            let computed = match eval_output_value_calc(
-                enc,
-                &entry.props,
-                &effective,
-                children,
-                parent_props,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    if matches!(
-                        entry.props.output_value_calc,
-                        Some(OutputValueCalc::FnError)
-                    ) {
-                        return Err(e);
+            let computed =
+                match eval_output_value_calc(enc, &entry.props, &effective, children, parent_props)
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if matches!(
+                            entry.props.output_value_calc,
+                            Some(OutputValueCalc::FnError)
+                        ) {
+                            return Err(e);
+                        }
+                        continue;
                     }
-                    continue;
-                }
-            };
+                };
             let computed = ovc_value_for_element_kind(entry.kind, computed);
             let prev = effective.get(&entry.name_key);
             if prev == Some(&computed) {
@@ -1620,16 +1632,15 @@ fn delimited_value_length_bits_from_encode(
 ) -> Result<usize> {
     let strings = enc.ctx.strings();
     let encoding = encoding_name(props, strings)?;
-    let output_nl = resolve_output_new_line_for_encode(props, encode_scope, strings)?
-        .map(|s| s as String);
+    let output_nl =
+        resolve_output_new_line_for_encode(props, encode_scope, strings)?.map(|s| s as String);
     let output_nl_ref = output_nl.as_deref();
     let mut total_bits = encoded_value_length_bits(buf.len(), bit_count);
     if let Some(id) = props.initiator {
         let raw = strings.get(id)?;
         let pat = resolve_encode_property_pattern(raw, encode_scope);
         if !pat.is_empty() {
-            let bytes =
-                encode_framing_delimiter_bytes(&pat, output_nl_ref, encoding, None);
+            let bytes = encode_framing_delimiter_bytes(&pat, output_nl_ref, encoding, None);
             total_bits = total_bits.saturating_sub(encoded_bit_length(bytes.len(), 0));
         }
     }
@@ -1637,8 +1648,7 @@ fn delimited_value_length_bits_from_encode(
         let raw = strings.get(id)?;
         let pat = resolve_encode_property_pattern(raw, encode_scope);
         if !pat.is_empty() {
-            let bytes =
-                encode_framing_delimiter_bytes(&pat, output_nl_ref, encoding, None);
+            let bytes = encode_framing_delimiter_bytes(&pat, output_nl_ref, encoding, None);
             total_bits = total_bits.saturating_sub(encoded_bit_length(bytes.len(), 0));
         }
     }
@@ -1684,7 +1694,11 @@ fn find_particle_by_local_name(
 
 fn root_sequence_children(enc: &Encoder<'_>) -> Result<Vec<u32>> {
     let root = enc.ctx.program.root;
-    let IrNode::Element { child: Some(seq_id), .. } = enc.ctx.program.node(root)? else {
+    let IrNode::Element {
+        child: Some(seq_id),
+        ..
+    } = enc.ctx.program.node(root)?
+    else {
         return Ok(Vec::new());
     };
     match enc.ctx.program.node(*seq_id)? {
@@ -1707,24 +1721,25 @@ fn apply_ovc_path_step_index(
                         "outputValueCalc path `{local}[dfdl:occursIndex()]` missing occurrence context"
                     ),
                 })?;
-                return items
-                    .get(idx.saturating_sub(1))
-                    .cloned()
-                    .ok_or_else(|| VmError::InvalidValue {
+                return items.get(idx.saturating_sub(1)).cloned().ok_or_else(|| {
+                    VmError::InvalidValue {
                         message: alloc::format!(
                             "outputValueCalc path missing `{local}[dfdl:occursIndex()]`"
                         ),
                     }
-                    .into());
+                    .into()
+                });
             }
             if let Some(n) = step.index {
                 return items
                     .get((n as usize).saturating_sub(1))
                     .cloned()
-                    .ok_or_else(|| VmError::InvalidValue {
-                        message: alloc::format!("outputValueCalc path missing `{local}[{n}]`"),
-                    }
-                    .into());
+                    .ok_or_else(|| {
+                        VmError::InvalidValue {
+                            message: alloc::format!("outputValueCalc path missing `{local}[{n}]`"),
+                        }
+                        .into()
+                    });
             }
         }
         other if !step.index_from_occurs && step.index.is_none() => return Ok(other),
@@ -1765,7 +1780,8 @@ fn resolve_output_value_calc_path_value(
     } else if let Some(cid) = find_particle_by_local_in_children(enc, scope, first_local)? {
         synthesize_element_subtree_value(enc, cid, map, scope)?
     } else if scope != sequence_children {
-        if let Some(cid) = find_particle_by_local_in_children(enc, sequence_children, first_local)? {
+        if let Some(cid) = find_particle_by_local_in_children(enc, sequence_children, first_local)?
+        {
             synthesize_element_subtree_value(enc, cid, map, sequence_children)?
         } else {
             resolve_path_step_value(enc, scope, map, first_local)?
@@ -1780,13 +1796,12 @@ fn resolve_output_value_calc_path_value(
         return Ok(value);
     }
     let root_scope = root_sequence_children(enc)?;
-    let path_scope_vec = if let Some(b_id) =
-        find_particle_by_local_in_children(enc, &root_scope, first_local)?
-    {
-        inner_sequence_children_of_element(enc, b_id).unwrap_or_else(|| scope.to_vec())
-    } else {
-        scope.to_vec()
-    };
+    let path_scope_vec =
+        if let Some(b_id) = find_particle_by_local_in_children(enc, &root_scope, first_local)? {
+            inner_sequence_children_of_element(enc, b_id).unwrap_or_else(|| scope.to_vec())
+        } else {
+            scope.to_vec()
+        };
     let path_scope = path_scope_vec.as_slice();
     for step in steps.iter().skip(1) {
         let local = strings.get(step.local)?;
@@ -1803,7 +1818,8 @@ fn resolve_output_value_calc_path_value(
                     seq.fields.get(&k).cloned()
                 } else if let Ok(v) = resolve_path_step_value(enc, path_scope, &step_map, local) {
                     Some(v)
-                } else if let Ok(Some(cid)) = find_particle_by_local_in_children(enc, path_scope, local)
+                } else if let Ok(Some(cid)) =
+                    find_particle_by_local_in_children(enc, path_scope, local)
                 {
                     synthesize_element_subtree_value(enc, cid, &step_map, path_scope).ok()
                 } else {
@@ -1908,7 +1924,10 @@ fn resolve_path_step_value(
         if props.output_value_calc.is_some() || props.output_value_calc_conditional {
             return eval_output_value_calc(enc, props, map, sequence_children, props);
         }
-        if let IrNode::Element { child: Some(cid), .. } = enc.ctx.program.node(child_id)? {
+        if let IrNode::Element {
+            child: Some(cid), ..
+        } = enc.ctx.program.node(child_id)?
+        {
             return synthesize_element_subtree_value(enc, *cid, map, sequence_children);
         }
     }
@@ -1941,7 +1960,9 @@ fn synthesize_element_subtree_value(
                 let val = synthesize_element_subtree_value(enc, cid, map, sequence_children)?;
                 effective.insert(key.to_string(), val);
             }
-            Ok(DfdlValue::Sequence(crate::value::SequenceValue::new(effective)))
+            Ok(DfdlValue::Sequence(crate::value::SequenceValue::new(
+                effective,
+            )))
         }
         IrNode::Element {
             name,
@@ -1955,16 +1976,16 @@ fn synthesize_element_subtree_value(
                     return Ok(v.clone());
                 }
             }
-        if props.output_value_calc.is_some() || props.output_value_calc_conditional {
-            return eval_output_value_calc(enc, props, map, sequence_children, props);
-        }
-        if let Some(cid) = child {
-            return synthesize_element_subtree_value(enc, *cid, map, sequence_children);
-        }
-        Err(VmError::InvalidValue {
-            message: alloc::format!("outputValueCalc path missing `{key}`"),
-        }
-        .into())
+            if props.output_value_calc.is_some() || props.output_value_calc_conditional {
+                return eval_output_value_calc(enc, props, map, sequence_children, props);
+            }
+            if let Some(cid) = child {
+                return synthesize_element_subtree_value(enc, *cid, map, sequence_children);
+            }
+            Err(VmError::InvalidValue {
+                message: alloc::format!("outputValueCalc path missing `{key}`"),
+            }
+            .into())
         }
         _ => Err(VmError::InvalidValue {
             message: "outputValueCalc path unsupported particle".into(),
@@ -2019,10 +2040,7 @@ fn ir_props_encodable_without_infoset(props: &IrProps) -> bool {
 fn infoset_particle_can_absent_enc(enc: &Encoder<'_>, node_id: u32) -> Result<bool> {
     match enc.ctx.program.node(node_id)? {
         IrNode::Element {
-            props,
-            child,
-            kind,
-            ..
+            props, child, kind, ..
         } => {
             if ir_props_encodable_without_infoset(props) {
                 return Ok(true);
@@ -2057,10 +2075,7 @@ fn infoset_particle_can_absent_enc(enc: &Encoder<'_>, node_id: u32) -> Result<bo
 fn ir_branch_encodable_without_infoset(enc: &Encoder<'_>, branch_node: u32) -> Result<bool> {
     match enc.ctx.program.node(branch_node)? {
         IrNode::Element {
-            props,
-            child,
-            kind,
-            ..
+            props, child, kind, ..
         } => {
             if ir_props_encodable_without_infoset(props) {
                 return Ok(true);
@@ -2111,7 +2126,10 @@ fn choice_branches_are_all_hidden(
     Ok(!branches.is_empty())
 }
 
-fn choice_branch_infoset_local_key_enc(enc: &Encoder<'_>, branch_node: u32) -> Result<Option<String>> {
+fn choice_branch_infoset_local_key_enc(
+    enc: &Encoder<'_>,
+    branch_node: u32,
+) -> Result<Option<String>> {
     match enc.ctx.program.node(branch_node)? {
         IrNode::Element { name, props, .. } => {
             if ir_props_encodable_without_infoset(props) {
@@ -2242,10 +2260,7 @@ fn measure_value_length(
         }
     }
     if let Ok(IrNode::Element {
-        kind,
-        child,
-        props,
-        ..
+        kind, child, props, ..
     }) = enc.ctx.program.node(node_id)
     {
         if child.is_none()
@@ -2278,19 +2293,11 @@ fn measure_value_length(
     };
     enc.encode_node(encode_id, value, &mut buf, &mut bit_count, encode_scope)?;
     let value_bits = if let Ok(IrNode::Element {
-        props,
-        child: None,
-        ..
+        props, child: None, ..
     }) = enc.ctx.program.node(encode_id)
     {
         if props.length_kind == LengthKind::Delimited {
-            delimited_value_length_bits_from_encode(
-                enc,
-                props,
-                &buf,
-                bit_count,
-                encode_scope,
-            )?
+            delimited_value_length_bits_from_encode(enc, props, &buf, bit_count, encode_scope)?
         } else {
             encoded_value_length_bits(buf.len(), bit_count)
         }
@@ -2424,11 +2431,12 @@ fn eval_ovc_concat_segments(
             IrInputValueCalcSegment::ValueLength { sibling, units } => {
                 let sib_name = strings.get(*sibling)?;
                 let sib = sibling_from_map(Some(*sibling), map, strings)?;
-                let len = if let Some(child_id) = find_child_element_by_name(enc, children, sib_name)? {
-                    measure_value_length(enc, child_id, sib, *units, Some(map))?
-                } else {
-                    length_in_units(value_byte_length(sib)?, *units)?
-                };
+                let len =
+                    if let Some(child_id) = find_child_element_by_name(enc, children, sib_name)? {
+                        measure_value_length(enc, child_id, sib, *units, Some(map))?
+                    } else {
+                        length_in_units(value_byte_length(sib)?, *units)?
+                    };
                 out.push_str(&len.to_string());
             }
         }
@@ -2531,6 +2539,33 @@ fn eval_xpath_string_value(
         }
         return Ok(String::new());
     }
+    if let Some(body) = expr
+        .strip_prefix("fn:substring(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let parts = split_top_level_commas_ovc(body);
+        let src = eval_xpath_string_value(
+            enc,
+            parts.first().ok_or_else(|| VmError::InvalidValue {
+                message: "fn:substring missing source argument".into(),
+            })?,
+            map,
+            children,
+        )?;
+        let start_str = parts.get(1).ok_or_else(|| VmError::InvalidValue {
+            message: "fn:substring missing start argument".into(),
+        })?;
+        let start_num: usize = start_str.trim().parse().unwrap_or(1);
+        let start0 = start_num.saturating_sub(1);
+        if let Some(len_str) = parts.get(2) {
+            let len_num: usize = len_str.trim().parse().unwrap_or(src.len());
+            let res: String = src.chars().skip(start0).take(len_num).collect();
+            return Ok(res);
+        } else {
+            let res: String = src.chars().skip(start0).collect();
+            return Ok(res);
+        }
+    }
     if let Some(path) = expr.strip_prefix("../") {
         let local = path.rsplit(':').next().unwrap_or(path).trim();
         return lookup_sibling_string_in_encode_map(map, local);
@@ -2554,18 +2589,17 @@ fn eval_xpath_output_value_calc(
     let expr = expr.trim();
     if let Some(arg) = xpath_cast_inner(expr, "xs:date") {
         let s = eval_xpath_string_value(enc, arg, map, children)?;
-        let norm = crate::vm::calendar_binary::normalize_xs_date_lexical(&s)
-            .unwrap_or(s);
+        let norm = crate::vm::calendar_binary::normalize_xs_date_lexical(&s).unwrap_or(s);
         return Ok(DfdlValue::DateTime(norm));
     }
-    if let Some(arg) = xpath_cast_inner(expr, "xs:dateTime")
-        .or_else(|| xpath_cast_inner(expr, "xs:time"))
+    if let Some(arg) =
+        xpath_cast_inner(expr, "xs:dateTime").or_else(|| xpath_cast_inner(expr, "xs:time"))
     {
         let s = eval_xpath_string_value(enc, arg, map, children)?;
         return Ok(DfdlValue::DateTime(s));
     }
-    if let Some(arg) = xpath_cast_inner(expr, "xs:integer")
-        .or_else(|| xpath_cast_inner(expr, "xs:long"))
+    if let Some(arg) =
+        xpath_cast_inner(expr, "xs:integer").or_else(|| xpath_cast_inner(expr, "xs:long"))
     {
         let s = eval_xpath_string_value(enc, arg, map, children)?;
         let n: i64 = s.trim().parse().map_err(|_| VmError::InvalidValue {
@@ -2656,36 +2690,46 @@ fn eval_output_value_calc(
 ) -> Result<DfdlValue> {
     let strings = enc.ctx.strings();
     if props.output_value_calc_conditional {
-        let lit_id = props.output_value_calc_literal.ok_or_else(|| VmError::InvalidValue {
-            message: "missing xpath outputValueCalc".into(),
-        })?;
+        let lit_id = props
+            .output_value_calc_literal
+            .ok_or_else(|| VmError::InvalidValue {
+                message: "missing xpath outputValueCalc".into(),
+            })?;
         let expr = strings.get(lit_id)?;
         return eval_xpath_output_value_calc(enc, expr, map, children);
     }
-    let calc = props.output_value_calc.ok_or_else(|| VmError::InvalidValue {
-        message: "missing outputValueCalc".into(),
-    })?;
+    let calc = props
+        .output_value_calc
+        .ok_or_else(|| VmError::InvalidValue {
+            message: "missing outputValueCalc".into(),
+        })?;
     match calc {
         OutputValueCalc::FnError => {
-            let lit_id = props.output_value_calc_literal.ok_or_else(|| VmError::InvalidValue {
-                message: "missing outputValueCalc fn:error".into(),
-            })?;
+            let lit_id = props
+                .output_value_calc_literal
+                .ok_or_else(|| VmError::InvalidValue {
+                    message: "missing outputValueCalc fn:error".into(),
+                })?;
             let expr = strings.get(lit_id)?;
             return eval_fn_error_ovc(expr, map, strings);
         }
         OutputValueCalc::FnConcat => {
-            let segments = props.output_value_calc_segments.as_ref().ok_or_else(|| {
-                VmError::InvalidValue {
-                    message: "missing outputValueCalc fn:concat segments".into(),
-                }
-            })?;
+            let segments =
+                props
+                    .output_value_calc_segments
+                    .as_ref()
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: "missing outputValueCalc fn:concat segments".into(),
+                    })?;
             let text = eval_ovc_concat_segments(enc, segments, map, children)?;
             return Ok(DfdlValue::string(text));
         }
         OutputValueCalc::HexBinaryFromLexical => {
-            let lit_id = props.output_value_calc_literal.ok_or_else(|| VmError::InvalidValue {
-                message: "missing outputValueCalc hex literal".into(),
-            })?;
+            let lit_id = props
+                .output_value_calc_literal
+                .ok_or_else(|| VmError::InvalidValue {
+                    message: "missing outputValueCalc hex literal".into(),
+                })?;
             let text = strings.get(lit_id)?;
             let bytes = decode_hex_binary(text)?;
             return Ok(DfdlValue::HexBinary(bytes));
@@ -2710,33 +2754,48 @@ fn eval_output_value_calc(
             return Ok(DfdlValue::HexBinary(int_bytes(i64::from(v), 2, false)));
         }
         OutputValueCalc::InfosetPathAddend => {
-            let steps = props.output_value_calc_path.as_ref().ok_or_else(|| VmError::InvalidValue {
-                message: "missing outputValueCalc path".into(),
-            })?;
+            let steps =
+                props
+                    .output_value_calc_path
+                    .as_ref()
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: "missing outputValueCalc path".into(),
+                    })?;
             let addend = props.output_value_calc_path_addend.unwrap_or(0);
             if addend == 0 {
                 return resolve_output_value_calc_path_value(enc, steps, children, map);
             }
             let base = eval_output_infoset_path(enc, steps, children, map)?;
             let len = base.saturating_add(addend);
-            return Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {
-                message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
+            return Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| {
+                VmError::InvalidValue {
+                    message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
+                }
             })?));
         }
         OutputValueCalc::FnCountPath => {
-            let steps = props.output_value_calc_path.as_ref().ok_or_else(|| VmError::InvalidValue {
-                message: "missing outputValueCalc fn:count path".into(),
-            })?;
+            let steps =
+                props
+                    .output_value_calc_path
+                    .as_ref()
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: "missing outputValueCalc fn:count path".into(),
+                    })?;
             let value = resolve_output_value_calc_path_value(enc, steps, children, map)?;
             let n = count_dfdl_value_for_fn_count(&value);
-            return Ok(DfdlValue::Int(i32::try_from(n).map_err(|_| VmError::InvalidValue {
-                message: alloc::format!("fn:count result `{n}` out of range for int"),
+            return Ok(DfdlValue::Int(i32::try_from(n).map_err(|_| {
+                VmError::InvalidValue {
+                    message: alloc::format!("fn:count result `{n}` out of range for int"),
+                }
             })?));
         }
         OutputValueCalc::OccursIndexPath { multiply } => {
-            let (idx, _) = enc.array_occurrence_for_ovc.get().ok_or_else(|| VmError::InvalidValue {
-                message: "occursIndex outputValueCalc missing occurrence context".into(),
-            })?;
+            let (idx, _) =
+                enc.array_occurrence_for_ovc
+                    .get()
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: "occursIndex outputValueCalc missing occurrence context".into(),
+                    })?;
             let idx = idx as i64;
             let addend = props.output_value_calc_path_addend.unwrap_or(0);
             let steps = props.output_value_calc_path.as_deref().unwrap_or(&[]);
@@ -2754,14 +2813,20 @@ fn eval_output_value_calc(
                     idx.saturating_add(path_val).saturating_add(addend)
                 }
             };
-            return Ok(DfdlValue::Int(i32::try_from(v).map_err(|_| VmError::InvalidValue {
-                message: alloc::format!("outputValueCalc result `{v}` out of range for int"),
+            return Ok(DfdlValue::Int(i32::try_from(v).map_err(|_| {
+                VmError::InvalidValue {
+                    message: alloc::format!("outputValueCalc result `{v}` out of range for int"),
+                }
             })?));
         }
         OutputValueCalc::ValueLengthInfosetPath(units, addend) => {
-            let steps = props.output_value_calc_path.as_ref().ok_or_else(|| VmError::InvalidValue {
-                message: "missing outputValueCalc path".into(),
-            })?;
+            let steps =
+                props
+                    .output_value_calc_path
+                    .as_ref()
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: "missing outputValueCalc path".into(),
+                    })?;
             let val = resolve_output_value_calc_path_value(enc, steps, children, map)?;
             let last = steps.last().ok_or_else(|| VmError::InvalidValue {
                 message: "missing outputValueCalc path".into(),
@@ -2769,17 +2834,17 @@ fn eval_output_value_calc(
             let child_id = find_particle_for_ovc_path(enc, children, steps)?.ok_or_else(|| {
                 let last_local = strings.get(last.local).unwrap_or("?");
                 VmError::InvalidValue {
-                    message: alloc::format!(
-                        "outputValueCalc sibling `{last_local}` not available"
-                    ),
+                    message: alloc::format!("outputValueCalc sibling `{last_local}` not available"),
                 }
             })?;
             let len = apply_output_value_calc_scale(
                 props,
                 measure_value_length(enc, child_id, &val, units, Some(map))? as i64 + addend,
             );
-            return Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {
-                message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
+            return Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| {
+                VmError::InvalidValue {
+                    message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
+                }
             })?));
         }
         OutputValueCalc::HexBinaryFromByteSibling => {
@@ -2789,9 +2854,11 @@ fn eval_output_value_calc(
                 DfdlValue::Int(v) => i8::try_from(*v).map_err(|_| VmError::InvalidValue {
                     message: alloc::format!("value `{v}` out of range for byte"),
                 })?,
-                DfdlValue::String(s) => s.text.parse::<i8>().map_err(|_| VmError::InvalidValue {
-                    message: alloc::format!("invalid byte `{text}`", text = s.text),
-                })?,
+                DfdlValue::String(s) => {
+                    s.text.parse::<i8>().map_err(|_| VmError::InvalidValue {
+                        message: alloc::format!("invalid byte `{text}`", text = s.text),
+                    })?
+                }
                 other => {
                     return Err(VmError::InvalidValue {
                         message: alloc::format!("dfdl:hexBinary(xs:byte(...)) on `{other:?}`"),
@@ -2838,13 +2905,11 @@ fn eval_output_value_calc(
         }
         OutputValueCalc::ValueLengthSibling(units, addend) => {
             let sib = sibling_from_map(props.output_value_calc_sibling, map, strings)?;
-            let sib_name = strings.get(
-                props
-                    .output_value_calc_sibling
-                    .ok_or_else(|| VmError::InvalidValue {
-                        message: "outputValueCalc sibling missing".into(),
-                    })?,
-            )?;
+            let sib_name = strings.get(props.output_value_calc_sibling.ok_or_else(|| {
+                VmError::InvalidValue {
+                    message: "outputValueCalc sibling missing".into(),
+                }
+            })?)?;
             if let Some(child_id) = find_child_element_by_name(enc, children, sib_name)? {
                 apply_output_value_calc_scale(
                     props,
@@ -2874,11 +2939,13 @@ fn eval_output_value_calc(
             return Ok(DfdlValue::string(slice));
         }
         OutputValueCalc::RepeatIndicatorFromParentCount => {
-            let (idx, total) = enc.array_occurrence_for_ovc.get().ok_or_else(|| {
-                VmError::InvalidValue {
-                    message: "repeatIndicator outputValueCalc missing occurrence context".into(),
-                }
-            })?;
+            let (idx, total) =
+                enc.array_occurrence_for_ovc
+                    .get()
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: "repeatIndicator outputValueCalc missing occurrence context"
+                            .into(),
+                    })?;
             let v = if idx < total { 1 } else { 0 };
             return Ok(DfdlValue::Int(v));
         }
@@ -2887,7 +2954,7 @@ fn eval_output_value_calc(
         | OutputValueCalc::HexBinaryFromShort(_)
         | OutputValueCalc::HexBinaryFromByteSibling
         | OutputValueCalc::InfosetPathAddend
-        |         OutputValueCalc::OccursIndexPath { .. }
+        | OutputValueCalc::OccursIndexPath { .. }
         | OutputValueCalc::FnCountPath
         | OutputValueCalc::FnConcat
         | OutputValueCalc::FnError
@@ -2898,8 +2965,10 @@ fn eval_output_value_calc(
             .into());
         }
     };
-    Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| VmError::InvalidValue {
-        message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
+    Ok(DfdlValue::Int(i32::try_from(len).map_err(|_| {
+        VmError::InvalidValue {
+            message: alloc::format!("outputValueCalc result `{len}` out of range for int"),
+        }
     })?))
 }
 
@@ -2937,10 +3006,7 @@ fn dfdl_hex_binary_lexical_from_integer(n: i64) -> String {
         return s;
     }
     let raw = hex_binary_from_integer(n, Some(1));
-    let s: String = raw
-        .iter()
-        .map(|b| alloc::format!("{:02x}", b))
-        .collect();
+    let s: String = raw.iter().map(|b| alloc::format!("{:02x}", b)).collect();
     let trimmed = s.trim_start_matches('0');
     if trimmed.is_empty() {
         return "00".into();
@@ -2959,29 +3025,29 @@ fn parse_sibling_property_expr(raw: &str) -> Option<String> {
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
     let path = inner.strip_prefix("../")?;
-    Some(
-        path.rsplit(':')
-            .next()
-            .unwrap_or(path)
-            .trim()
-            .to_string(),
-    )
+    Some(path.rsplit(':').next().unwrap_or(path).trim().to_string())
 }
 
 fn lookup_sibling_string_in_encode_map(
     map: &BTreeMap<String, DfdlValue>,
     sibling: &str,
 ) -> Result<String> {
-    let sib_val = lookup_sibling_value_in_map(map, sibling).ok_or_else(|| VmError::InvalidValue {
-        message: alloc::format!("property sibling `{sibling}` not available"),
-    })?;
+    let sib_val =
+        lookup_sibling_value_in_map(map, sibling).ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("property sibling `{sibling}` not available"),
+        })?;
     match sib_val {
         DfdlValue::String(s) => Ok(s.text.clone()),
         DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => Ok(s.clone()),
-        other => Err(VmError::InvalidValue {
-            message: alloc::format!("property sibling must be string, got `{other:?}`"),
-        }
-        .into()),
+        DfdlValue::Int(n) => Ok(n.to_string()),
+        DfdlValue::Long(n) => Ok(n.to_string()),
+        DfdlValue::Short(n) => Ok(n.to_string()),
+        DfdlValue::Byte(n) => Ok(n.to_string()),
+        DfdlValue::UnsignedInt(n) => Ok(n.to_string()),
+        DfdlValue::UnsignedShort(n) => Ok(n.to_string()),
+        DfdlValue::UnsignedByte(n) => Ok(n.to_string()),
+        DfdlValue::Integer(s) => Ok(s.clone()),
+        other => Ok(crate::vm::decoder::xpath::dfdl_value_to_string(other)),
     }
 }
 
@@ -3049,15 +3115,17 @@ fn resolve_encoding_for_encode(
     };
     let enc = lookup_sibling_string_in_encode_map(map, &sibling)?;
     let mut resolved = props.clone();
-    resolved.encoding = lookup_encoding_string_id(strings, &enc).ok_or_else(|| {
-        VmError::InvalidValue {
+    resolved.encoding =
+        lookup_encoding_string_id(strings, &enc).ok_or_else(|| VmError::InvalidValue {
             message: alloc::format!("resolved encoding `{enc}` not in string pool"),
-        }
-    })?;
+        })?;
     Ok(resolved)
 }
 
-fn lookup_encoding_string_id(pool: &crate::ir::StringPool, enc: &str) -> Option<crate::ir::StringId> {
+fn lookup_encoding_string_id(
+    pool: &crate::ir::StringPool,
+    enc: &str,
+) -> Option<crate::ir::StringId> {
     if let Some(id) = pool.lookup(enc) {
         return Some(id);
     }
@@ -3285,14 +3353,10 @@ fn length_in_units(byte_len: usize, units: LengthUnits) -> Result<usize> {
 fn blob_payload_bytes(value: &DfdlValue) -> Result<alloc::vec::Vec<u8>> {
     match value {
         DfdlValue::Blob(b) => Ok(b.clone()),
-        DfdlValue::String(s) => crate::tdml::resolve_blob_uri_to_bytes(&s.text).map_err(
-            |m| VmError::InvalidValue { message: m }.into(),
-        ),
-        DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => {
-            crate::tdml::resolve_blob_uri_to_bytes(s).map_err(|m| {
-                VmError::InvalidValue { message: m }.into()
-            })
-        }
+        DfdlValue::String(s) => crate::tdml::resolve_blob_uri_to_bytes(&s.text)
+            .map_err(|m| VmError::InvalidValue { message: m }.into()),
+        DfdlValue::Decimal(s) | DfdlValue::DateTime(s) => crate::tdml::resolve_blob_uri_to_bytes(s)
+            .map_err(|m| VmError::InvalidValue { message: m }.into()),
         other => Err(VmError::InvalidValue {
             message: alloc::format!("valueLength on unsupported blob value `{other:?}`"),
         }
@@ -3486,17 +3550,7 @@ mod tests {
 
     #[test]
     fn infix_separator_skips_first_item() {
-        assert!(!should_emit_separator(
-            SeparatorPosition::Infix,
-            0,
-            3,
-            true,
-        ));
-        assert!(should_emit_separator(
-            SeparatorPosition::Infix,
-            1,
-            3,
-            true,
-        ));
+        assert!(!should_emit_separator(SeparatorPosition::Infix, 0, 3, true,));
+        assert!(should_emit_separator(SeparatorPosition::Infix, 1, 3, true,));
     }
 }

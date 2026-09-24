@@ -23,9 +23,7 @@ pub fn facet_validation_error(
             message: "Assertion failed: Assertion failed for dfdl:checkConstraints(.)".into(),
         };
     }
-    VmError::InvalidValue {
-        message: _detail,
-    }
+    VmError::InvalidValue { message: _detail }
 }
 
 /// Facets that may disambiguate choice branches during parse (not min/max/pattern).
@@ -150,10 +148,7 @@ pub fn validate_assert_eq_occurs_index(
     Ok(())
 }
 
-pub fn validate_assert_int_eq(
-    value: &DfdlValue,
-    props: &IrProps,
-) -> Result<(), VmError> {
+pub fn validate_assert_int_eq(value: &DfdlValue, props: &IrProps) -> Result<(), VmError> {
     let Some(expected) = props.assert_int_eq else {
         return Ok(());
     };
@@ -300,9 +295,7 @@ fn validate_datetime_range_facets(
     let date_only = props.calendar_date_only || !lex.contains('T');
     if let Some(id) = props.value_min_inclusive_lexical {
         let min = strings.get(id)?;
-        if lexical_calendar_cmp(lex, min, date_only, false)
-            == Some(core::cmp::Ordering::Less)
-        {
+        if lexical_calendar_cmp(lex, min, date_only, false) == Some(core::cmp::Ordering::Less) {
             return Err(facet_validation_error(
                 props,
                 strings,
@@ -312,9 +305,7 @@ fn validate_datetime_range_facets(
     }
     if let Some(id) = props.value_max_inclusive_lexical {
         let max = strings.get(id)?;
-        if lexical_calendar_cmp(lex, max, date_only, false)
-            == Some(core::cmp::Ordering::Greater)
-        {
+        if lexical_calendar_cmp(lex, max, date_only, false) == Some(core::cmp::Ordering::Greater) {
             let epoch_ms = datetime_facet_bound_epoch_ms(max);
             return Err(facet_validation_error(
                 props,
@@ -325,9 +316,7 @@ fn validate_datetime_range_facets(
     }
     if let Some(id) = props.value_min_exclusive_lexical {
         let min = strings.get(id)?;
-        if lexical_calendar_cmp(lex, min, date_only, false)
-            != Some(core::cmp::Ordering::Greater)
-        {
+        if lexical_calendar_cmp(lex, min, date_only, false) != Some(core::cmp::Ordering::Greater) {
             return Err(facet_validation_error(
                 props,
                 strings,
@@ -337,9 +326,7 @@ fn validate_datetime_range_facets(
     }
     if let Some(id) = props.value_max_exclusive_lexical {
         let max = strings.get(id)?;
-        if lexical_calendar_cmp(lex, max, date_only, false)
-            != Some(core::cmp::Ordering::Less)
-        {
+        if lexical_calendar_cmp(lex, max, date_only, false) != Some(core::cmp::Ordering::Less) {
             return Err(facet_validation_error(
                 props,
                 strings,
@@ -590,7 +577,11 @@ fn validate_facet_length_count(
     Ok(())
 }
 
-fn validate_string_facets(text: &str, props: &IrProps, strings: &StringPool) -> Result<(), VmError> {
+fn validate_string_facets(
+    text: &str,
+    props: &IrProps,
+    strings: &StringPool,
+) -> Result<(), VmError> {
     let char_count = text.chars().count();
     if props.facet_length.is_some() {
         return validate_facet_length_count(char_count, props, strings);
@@ -719,7 +710,10 @@ fn xsd_fraction_digits(lexical: &str) -> usize {
     frac.chars().filter(|c| c.is_ascii_digit()).count()
 }
 
-fn decimal_lexical_for_digit_facets(value: &DfdlValue, kind: ValueKind) -> Option<alloc::string::String> {
+fn decimal_lexical_for_digit_facets(
+    value: &DfdlValue,
+    kind: ValueKind,
+) -> Option<alloc::string::String> {
     match (kind, value) {
         (_, DfdlValue::Decimal(s)) => Some(s.clone()),
         (ValueKind::Integer, DfdlValue::Integer(s)) => Some(s.clone()),
@@ -808,11 +802,7 @@ fn validate_float_facets(
     Ok(())
 }
 
-fn validate_numeric_facets(
-    n: i64,
-    props: &IrProps,
-    strings: &StringPool,
-) -> Result<(), VmError> {
+fn validate_numeric_facets(n: i64, props: &IrProps, strings: &StringPool) -> Result<(), VmError> {
     if let Some(min) = props.value_min_inclusive {
         if n < min {
             return Err(facet_validation_error(

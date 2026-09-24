@@ -1,14 +1,10 @@
-use crate::vm::encoding::hex_charset_order;
 use crate::error::{SchemaError, VmError};
 use crate::ir::{IrProps, StringId, StringPool, ValueKind};
 use crate::schema::{BinaryNumberRep, LengthKind, LengthUnits, Representation};
+use crate::vm::encoding::hex_charset_order;
 
 fn uses_hex_charset_encoding(strings: &StringPool, enc: StringId) -> bool {
-    strings
-        .get(enc)
-        .ok()
-        .and_then(hex_charset_order)
-        .is_some()
+    strings.get(enc).ok().and_then(hex_charset_order).is_some()
 }
 
 fn text_encoding_alignment_bits(encoding: &str) -> u64 {
@@ -91,9 +87,7 @@ pub fn validate_text_alignment_schema(
     let Some(type_name) = text_prim_type_name(kind) else {
         return Ok(());
     };
-    let encoding = strings
-        .get(props.encoding)
-        .unwrap_or("utf-8");
+    let encoding = strings.get(props.encoding).unwrap_or("utf-8");
     if encoding.contains("DFDL") || encoding.contains("BIT-PACKED") {
         return Ok(());
     }
@@ -108,8 +102,7 @@ pub fn validate_text_alignment_schema(
         return Ok(());
     }
     let enc_align = implicit_text_encoding_alignment_bits(kind, encoding);
-    let (align, units) =
-        crate::vm::alignment::resolved_alignment(kind, props, encoding);
+    let (align, units) = crate::vm::alignment::resolved_alignment(kind, props, encoding);
     let align_bits = match units {
         LengthUnits::Bits => align,
         LengthUnits::Bytes | LengthUnits::Characters => align.saturating_mul(8),
@@ -163,7 +156,9 @@ pub fn validate_packed_binary_properties_schema(
     if kind == ValueKind::Complex {
         return Ok(());
     }
-    if props.representation != Representation::Binary || !is_packed_binary_rep(props.binary_number_rep) {
+    if props.representation != Representation::Binary
+        || !is_packed_binary_rep(props.binary_number_rep)
+    {
         return Ok(());
     }
     if !uses_hex_charset_encoding(strings, props.encoding) {
@@ -320,11 +315,7 @@ impl Default for DaffodilTunables {
     }
 }
 
-pub fn hex_binary_max_length_error(
-    max: u32,
-    len: u64,
-    unparse: bool,
-) -> crate::error::VmError {
+pub fn hex_binary_max_length_error(max: u32, len: u64, unparse: bool) -> crate::error::VmError {
     let prefix = if unparse {
         "Unparse Error"
     } else {
@@ -336,10 +327,10 @@ pub fn hex_binary_max_length_error(
 }
 
 fn max_bits_for_kind(kind: ValueKind) -> Option<u64> {
-    use ValueKind::{Byte, Double, Float, Int, Long, Short, UnsignedByte, UnsignedInt, UnsignedShort};
+    use ValueKind::{
+        Byte, Int, Long, Short, UnsignedByte, UnsignedInt, UnsignedShort,
+    };
     match kind {
-        Float => Some(32),
-        Double => Some(64),
         Byte | UnsignedByte => Some(8),
         Short | UnsignedShort => Some(16),
         Int | UnsignedInt => Some(32),
@@ -411,7 +402,6 @@ fn bit_length(length: u64, units: LengthUnits) -> Option<u64> {
         LengthUnits::Characters => None,
     }
 }
-
 
 /// Compile-time float/double explicit bit-length validation.
 pub fn validate_float_double_bit_length_schema(
@@ -485,9 +475,7 @@ fn daffodil_length_error(
     if let Some(type_label) = integer_type_label(kind, runtime) {
         let min_label = min_bit_width_label(kind);
         if bit_length == 0 {
-            return alloc::format!(
-                "{prefix}. {type_label}. {min_label} bit(s). 0 out of range"
-            );
+            return alloc::format!("{prefix}. {type_label}. {min_label} bit(s). 0 out of range");
         }
         return alloc::format!(
             "{prefix}. {type_label}. {bit_length} bit(s). {bit_length} out of range between 1 and {max_bits}"
@@ -502,12 +490,11 @@ fn daffodil_signed_one_bit_error(kind: ValueKind, runtime: bool) -> alloc::strin
     } else {
         "Schema Definition Error"
     };
-    let type_label = if runtime {
+    let type_label = if runtime || kind == ValueKind::Decimal {
         "signed binary number"
     } else {
         "signed binary integer"
     };
-    let _ = kind;
     alloc::format!("{prefix}. {type_label}. 2 bit(s). 1 out of range")
 }
 
@@ -546,13 +533,9 @@ fn daffodil_decimal_length_error(
     };
     let min_label = if signed { 2 } else { 1 };
     if bit_length == 0 {
-        return alloc::format!(
-            "{prefix}. {type_label}. {min_label} bit(s). 0 out of range"
-        );
+        return alloc::format!("{prefix}. {type_label}. {min_label} bit(s). 0 out of range");
     }
-    alloc::format!(
-        "{prefix}. {type_label}. {bit_length} bit(s). {bit_length} out of range"
-    )
+    alloc::format!("{prefix}. {type_label}. {bit_length} bit(s). {bit_length} out of range")
 }
 
 fn daffodil_decimal_signed_one_bit_error(
@@ -623,8 +606,10 @@ pub fn validate_decimal_data_length_schema(
     length: u64,
     units: LengthUnits,
 ) -> Result<(), SchemaError> {
-    validate_decimal_length_inner(length, units).map_err(|bit_length| SchemaError::InvalidProperty {
-        message: daffodil_decimal_length_error(signed, bit_length, true, None, false),
+    validate_decimal_length_inner(length, units).map_err(|bit_length| {
+        SchemaError::InvalidProperty {
+            message: daffodil_decimal_length_error(signed, bit_length, true, None, false),
+        }
     })
 }
 
@@ -721,6 +706,7 @@ pub fn validate_data_length_schema(
     units: LengthUnits,
     rep: BinaryNumberRep,
 ) -> Result<(), SchemaError> {
+    validate_float_double_bit_length_schema(kind, length, units)?;
     validate_data_length_inner(kind, length, units, rep).map_err(|(bit_length, max_bits)| {
         SchemaError::InvalidProperty {
             message: daffodil_length_error(kind, bit_length, max_bits, false),
@@ -751,9 +737,8 @@ pub fn validate_signed_one_bit_length_schema(
     units: LengthUnits,
     tunables: &DaffodilTunables,
 ) -> Result<(), SchemaError> {
-    validate_signed_one_bit_length_inner(kind, length, units, tunables, false).map_err(|msg| {
-        SchemaError::InvalidProperty { message: msg }
-    })
+    validate_signed_one_bit_length_inner(kind, length, units, tunables, false)
+        .map_err(|msg| SchemaError::InvalidProperty { message: msg })
 }
 
 /// Runtime encode/decode variant of [`validate_signed_one_bit_length_schema`].
@@ -763,9 +748,8 @@ pub fn validate_signed_one_bit_length_vm(
     units: LengthUnits,
     tunables: &DaffodilTunables,
 ) -> Result<(), VmError> {
-    validate_signed_one_bit_length_inner(kind, length, units, tunables, true).map_err(|msg| {
-        VmError::InvalidValue { message: msg }
-    })
+    validate_signed_one_bit_length_inner(kind, length, units, tunables, true)
+        .map_err(|msg| VmError::InvalidValue { message: msg })
 }
 
 /// Reject invalid `dfdl:alignmentUnits="characters"` (XSD facet).
@@ -813,7 +797,9 @@ pub fn validate_fill_byte_schema(
     let char_count = if bytes.iter().all(|b| b.is_ascii()) {
         bytes.len()
     } else {
-        core::str::from_utf8(bytes).map(|s| s.chars().count()).unwrap_or(bytes.len())
+        core::str::from_utf8(bytes)
+            .map(|s| s.chars().count())
+            .unwrap_or(bytes.len())
     };
     if char_count != 1 {
         return Err(SchemaError::InvalidProperty {
@@ -856,14 +842,13 @@ mod tests {
 
     #[test]
     fn rejects_unsigned_long_byte_length_over_8_bytes() {
-        let err =
-            validate_data_length_schema(
-                ValueKind::Long,
-                16,
-                LengthUnits::Bytes,
-                BinaryNumberRep::Binary,
-            )
-            .unwrap_err();
+        let err = validate_data_length_schema(
+            ValueKind::Long,
+            16,
+            LengthUnits::Bytes,
+            BinaryNumberRep::Binary,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("128 out of range"));
     }
 

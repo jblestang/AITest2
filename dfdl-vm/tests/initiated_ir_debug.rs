@@ -15,7 +15,9 @@ fn print_e1_initiators() {
     fn walk(prog: &dfdl_vm::IrProgram, id: u32, depth: usize) {
         let pad = " ".repeat(depth * 2);
         match prog.node(id).unwrap() {
-            IrNode::Element { name, props, child, .. } => {
+            IrNode::Element {
+                name, props, child, ..
+            } => {
                 let n = prog.strings.get(*name).unwrap();
                 let init = props
                     .initiator
@@ -25,12 +27,17 @@ fn print_e1_initiators() {
                     .terminator
                     .and_then(|i| prog.strings.get(i).ok())
                     .unwrap_or("");
-                eprintln!("{pad}el {n} init={init:?} term={term:?} min={}", props.occurs_min);
+                eprintln!(
+                    "{pad}el {n} init={init:?} term={term:?} min={}",
+                    props.occurs_min
+                );
                 if let Some(c) = child {
                     walk(prog, *c, depth + 1);
                 }
             }
-            IrNode::Sequence { children, props, .. } => {
+            IrNode::Sequence {
+                children, props, ..
+            } => {
                 eprintln!("{pad}seq initiated={}", props.initiated_content);
                 for &c in children {
                     walk(prog, c, depth + 1);

@@ -1,6 +1,6 @@
 use dfdl_vm::tdml::{
-    parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
-    TdmlSuite,
+    parse_tdml, run_parser_test, run_unparser_test, TdmlResourceContext, TdmlSchema, TdmlSuite,
+    TestOutcome,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -30,7 +30,9 @@ fn enrich(suite: &mut TdmlSuite, path: &Path) {
             continue;
         }
         let p = dir.join(&model);
-        let Ok(xsd) = fs::read_to_string(&p) else { continue };
+        let Ok(xsd) = fs::read_to_string(&p) else {
+            continue;
+        };
         suite.schemas.insert(
             model.clone(),
             TdmlSchema {
@@ -66,8 +68,12 @@ fn scan_section02() {
     for path in &files {
         let mut pf = 0usize;
         let mut ff = 0usize;
-        let Ok(tdml) = fs::read_to_string(path) else { continue };
-        let Ok(mut suite) = parse_tdml(&tdml) else { continue };
+        let Ok(tdml) = fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(mut suite) = parse_tdml(&tdml) else {
+            continue;
+        };
         enrich(&mut suite, path);
         for t in &suite.tests {
             let Ok(r) = run_parser_test(&suite, t) else {
@@ -78,9 +84,11 @@ fn scan_section02() {
                 TestOutcome::Pass => pf += 1,
                 TestOutcome::Fail(msg) => {
                     ff += 1;
-                    if ff <= 3 {
-                        eprintln!("{}::{}: {msg}", path.file_name().unwrap().to_string_lossy(), t.name);
-                    }
+                    eprintln!(
+                        "FAIL {}::{}: {msg}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        t.name
+                    );
                 }
                 _ => {}
             }
@@ -94,12 +102,19 @@ fn scan_section02() {
                 TestOutcome::Pass => pf += 1,
                 TestOutcome::Fail(msg) => {
                     ff += 1;
-                    eprintln!("{}::unparse:{}: {msg}", path.file_name().unwrap().to_string_lossy(), t.name);
+                    eprintln!(
+                        "{}::unparse:{}: {msg}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        t.name
+                    );
                 }
                 _ => {}
             }
         }
-        eprintln!("{}: pass={pf} fail={ff}", path.file_name().unwrap().to_string_lossy());
+        eprintln!(
+            "{}: pass={pf} fail={ff}",
+            path.file_name().unwrap().to_string_lossy()
+        );
         pass += pf;
         fail += ff;
     }

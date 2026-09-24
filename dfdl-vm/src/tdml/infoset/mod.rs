@@ -111,9 +111,7 @@ fn infoset_node_to_ir_value(
         IrNode::Sequence { children, .. } => {
             infoset_sequence_children_to_value(program, children, node)
         }
-        IrNode::Choice { branches, .. } => {
-            choice_matched_branch_value(program, branches, node)
-        }
+        IrNode::Choice { branches, .. } => choice_matched_branch_value(program, branches, node),
     }
 }
 
@@ -126,10 +124,7 @@ fn insert_choice_branch_value(
 ) -> Result<(), String> {
     match value {
         DfdlValue::Sequence(nested) => {
-            let hoist = matches!(
-                program.node(branch_node),
-                Ok(IrNode::Sequence { .. })
-            );
+            let hoist = matches!(program.node(branch_node), Ok(IrNode::Sequence { .. }));
             if hoist {
                 map.extend(nested.fields);
             } else {
@@ -155,10 +150,7 @@ fn infoset_props_can_absent(props: &IrProps) -> bool {
 fn infoset_particle_can_absent(program: &IrProgram, node_id: u32) -> Result<bool, String> {
     match program.node(node_id).map_err(|e| e.to_string())? {
         IrNode::Element {
-            props,
-            child,
-            kind,
-            ..
+            props, child, kind, ..
         } => {
             if infoset_props_can_absent(props) {
                 return Ok(true);
@@ -196,7 +188,9 @@ fn collect_branch_discriminator_locals(
     out: &mut Vec<String>,
 ) -> Result<(), String> {
     match program.node(node_id).map_err(|e| e.to_string())? {
-        IrNode::Element { name, props, child, .. } => {
+        IrNode::Element {
+            name, props, child, ..
+        } => {
             if props.hidden {
                 return Ok(());
             }
@@ -267,16 +261,16 @@ fn choice_matched_branch_value(
         let local = local_name_str(branch_name);
         if !find_infoset_children(node, local).is_empty() {
             let branch_nodes = find_infoset_children(node, local);
-        let value = if branch_nodes.len() == 1 {
-            infoset_node_to_ir_value(program, branch.node, branch_nodes[0])?
-        } else {
-            DfdlValue::Array(
-                branch_nodes
-                    .iter()
-                    .map(|n| infoset_node_to_ir_value(program, branch.node, n))
-                    .collect::<Result<_, _>>()?,
-            )
-        };
+            let value = if branch_nodes.len() == 1 {
+                infoset_node_to_ir_value(program, branch.node, branch_nodes[0])?
+            } else {
+                DfdlValue::Array(
+                    branch_nodes
+                        .iter()
+                        .map(|n| infoset_node_to_ir_value(program, branch.node, n))
+                        .collect::<Result<_, _>>()?,
+                )
+            };
             let mut map = BTreeMap::new();
             insert_choice_branch_value(program, branch.node, branch_name, value, &mut map)?;
             return Ok(DfdlValue::sequence(map));
@@ -623,13 +617,20 @@ fn parse_infoset_elements_with_default_ns(
 ) -> Result<Vec<InfosetNode>, String> {
     let wrapped = infoset_root_xmlns(default_ns.as_deref(), xml);
     let mut reader = XmlReader::new(&wrapped);
-    reader.expect_start("infosetRoot").map_err(|e| e.to_string())?;
+    reader
+        .expect_start("infosetRoot")
+        .map_err(|e| e.to_string())?;
 
     let mut nodes = Vec::new();
     loop {
         reader.skip_insignificant_ws().map_err(|e| e.to_string())?;
-        if reader.peek_is_end("infosetRoot").map_err(|e| e.to_string())? {
-            reader.expect_end("infosetRoot").map_err(|e| e.to_string())?;
+        if reader
+            .peek_is_end("infosetRoot")
+            .map_err(|e| e.to_string())?
+        {
+            reader
+                .expect_end("infosetRoot")
+                .map_err(|e| e.to_string())?;
             break;
         }
         match reader.peek_start_local().map_err(|e| e.to_string())? {
@@ -644,7 +645,9 @@ fn parse_infoset_element(
     reader: &mut XmlReader<'_>,
     inherited_default_ns: Option<String>,
 ) -> Result<InfosetNode, String> {
-    let XmlEvent::StartElement { name, attributes, .. } = reader.next_event().map_err(|e| e.to_string())?
+    let XmlEvent::StartElement {
+        name, attributes, ..
+    } = reader.next_event().map_err(|e| e.to_string())?
     else {
         return Err("expected infoset element".into());
     };
@@ -654,8 +657,8 @@ fn parse_infoset_element(
     if let Some(xmlns) = attrs.get("xmlns") {
         default_ns = Some(xmlns.clone());
     }
-    let unprefixed_under_empty_default = default_ns.as_deref() == Some("")
-        && name.prefix.as_ref().is_none_or(|p| p.is_empty());
+    let unprefixed_under_empty_default =
+        default_ns.as_deref() == Some("") && name.prefix.as_ref().is_none_or(|p| p.is_empty());
     let namespace = if unprefixed_under_empty_default {
         None
     } else {
@@ -670,8 +673,13 @@ fn parse_infoset_element(
         .or_else(|| attrs.get("{http://www.w3.org/2001/XMLSchema-instance}nil"))
         .is_some_and(|v| v == "true");
 
-    if reader.peek_is_end(&element_name).map_err(|e| e.to_string())? {
-        reader.expect_end(&element_name).map_err(|e| e.to_string())?;
+    if reader
+        .peek_is_end(&element_name)
+        .map_err(|e| e.to_string())?
+    {
+        reader
+            .expect_end(&element_name)
+            .map_err(|e| e.to_string())?;
         return Ok(InfosetNode {
             name: element_name,
             namespace,
@@ -683,8 +691,13 @@ fn parse_infoset_element(
     }
 
     reader.skip_insignificant_ws().map_err(|e| e.to_string())?;
-    if reader.peek_is_end(&element_name).map_err(|e| e.to_string())? {
-        reader.expect_end(&element_name).map_err(|e| e.to_string())?;
+    if reader
+        .peek_is_end(&element_name)
+        .map_err(|e| e.to_string())?
+    {
+        reader
+            .expect_end(&element_name)
+            .map_err(|e| e.to_string())?;
         return Ok(InfosetNode {
             name: element_name,
             namespace,
@@ -713,7 +726,9 @@ fn parse_infoset_element(
             })
         }
         None => {
-            let text = reader.read_text_until_end(&element_name).map_err(|e| e.to_string())?;
+            let text = reader
+                .read_text_until_end(&element_name)
+                .map_err(|e| e.to_string())?;
             Ok(InfosetNode {
                 name: element_name,
                 namespace,
@@ -730,14 +745,15 @@ fn choice_branch_fields_for_infoset(
     discriminator: String,
     value: DfdlValue,
 ) -> BTreeMap<String, DfdlValue> {
-    match (discriminator.as_str(), value) {
-        ("choice", DfdlValue::Choice { discriminator, value }) => {
-            choice_branch_fields_for_infoset(discriminator, *value)
-        }
-        ("sequence", DfdlValue::Sequence(seq)) => seq.fields,
-        (name, v) => {
+    match value {
+        DfdlValue::Choice {
+            discriminator: inner_disc,
+            value: inner_val,
+        } => choice_branch_fields_for_infoset(inner_disc, *inner_val),
+        DfdlValue::Sequence(seq) => seq.fields,
+        v => {
             let mut map = BTreeMap::new();
-            map.insert(name.to_string(), v);
+            map.insert(discriminator, v);
             map
         }
     }
@@ -761,11 +777,15 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
             namespace: None,
             text: None,
             nil: false,
-            children: seq
-                .fields
-                .iter()
-                .map(|(k, v)| (k.clone(), field_values_to_infoset_nodes(k, v)))
-                .collect(),
+            children: {
+                let mut map: BTreeMap<String, Vec<InfosetNode>> = BTreeMap::new();
+                for (k, v) in &seq.fields {
+                    for node in field_values_to_infoset_nodes(k, v) {
+                        map.entry(node.name.clone()).or_default().push(node);
+                    }
+                }
+                map
+            },
             blob_bytes: None,
         },
         DfdlValue::Array(items) => InfosetNode {
@@ -773,13 +793,23 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
             namespace: None,
             text: None,
             nil: false,
-            children: BTreeMap::from([(name.to_string(), items.iter().map(|v| value_to_node(name, v)).collect())]),
+            children: BTreeMap::from([(
+                name.to_string(),
+                items.iter().map(|v| value_to_node(name, v)).collect(),
+            )]),
             blob_bytes: None,
         },
-        DfdlValue::Choice { discriminator, value } => {
+        DfdlValue::Choice {
+            discriminator,
+            value,
+        } => {
             let fields = choice_branch_fields_for_infoset(discriminator.clone(), (**value).clone());
-            if fields.len() == 1 && fields.contains_key(discriminator.as_str()) {
-                return value_to_node(discriminator, value);
+            if fields.len() == 1 {
+                if let Some((k, v)) = fields.iter().next() {
+                    if k == name {
+                        return value_to_node(name, v);
+                    }
+                }
             }
             InfosetNode {
                 name: name.to_string(),
@@ -823,238 +853,28 @@ fn value_to_node(name: &str, value: &DfdlValue) -> InfosetNode {
 fn field_values_to_infoset_nodes(name: &str, value: &DfdlValue) -> Vec<InfosetNode> {
     match value {
         DfdlValue::Array(items) => items.iter().map(|v| value_to_node(name, v)).collect(),
+        DfdlValue::Choice { .. } => vec![value_to_node(name, value)],
+        DfdlValue::Sequence(seq) => {
+            if name == "sequence" || name == "choice" {
+                if seq.fields.is_empty() {
+                    return Vec::new();
+                }
+                let mut nodes = Vec::new();
+                for (k, v) in &seq.fields {
+                    nodes.extend(field_values_to_infoset_nodes(k, v));
+                }
+                return nodes;
+            }
+            if seq.fields.len() == 1 {
+                if let Some(inner) = seq.fields.get(name) {
+                    return field_values_to_infoset_nodes(name, inner);
+                }
+            }
+            vec![value_to_node(name, value)]
+        }
         other => vec![value_to_node(name, other)],
     }
 }
 
-fn format_float_for_infoset(v: f32) -> String {
-    if !v.is_finite() {
-        return v.to_string();
-    }
-    let av = f32_abs(v);
-    if av >= 1_000_000.0 || (av > 0.0 && av < 0.0001) {
-        let mut s = alloc::format!("{v:e}");
-        if let Some(idx) = s.find('e') {
-            s.replace_range(idx..idx + 1, "E");
-        }
-        return s;
-    }
-    let whole = (v as i64) as f32;
-    if f32_abs(v - whole) < f32::EPSILON {
-        alloc::format!("{v:.1}")
-    } else {
-        v.to_string()
-    }
-}
-
-fn f32_abs(v: f32) -> f32 {
-    if v.is_sign_negative() { -v } else { v }
-}
-
-fn calendar_infoset_texts_equal(expected: &str, actual: &str) -> bool {
-    if expected == actual {
-        return true;
-    }
-    if expected.contains('T') && !expected.contains('+') && !expected.contains('Z') {
-        if let Some(rest) = actual.strip_prefix(expected) {
-            if rest == "+00:00" || rest == "Z" {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn float_infoset_texts_equal(expected: &str, actual: &str) -> bool {
-    let Ok(exp) = expected.trim().parse::<f32>() else {
-        return false;
-    };
-    let Ok(act) = actual.trim().parse::<f32>() else {
-        return false;
-    };
-    if exp.to_bits() == act.to_bits() {
-        return true;
-    }
-    let diff = f32_abs(exp - act);
-    let mut scale = f32_abs(exp);
-    if f32_abs(act) > scale {
-        scale = f32_abs(act);
-    }
-    if scale < 1.0 {
-        scale = 1.0;
-    }
-    diff <= scale * 1e-5
-}
-
-fn scalar_to_string(value: &DfdlValue) -> String {
-    match value {
-        DfdlValue::Boolean(v) => v.to_string(),
-        DfdlValue::Int(v) => v.to_string(),
-        DfdlValue::Integer(v) => v.clone(),
-        DfdlValue::Long(v) => v.to_string(),
-        DfdlValue::UnsignedLong(v) => v.to_string(),
-        DfdlValue::Short(v) => v.to_string(),
-        DfdlValue::Byte(v) => v.to_string(),
-        DfdlValue::UnsignedInt(v) => v.to_string(),
-        DfdlValue::UnsignedShort(v) => v.to_string(),
-        DfdlValue::UnsignedByte(v) => v.to_string(),
-        DfdlValue::Float(v) => format_float_for_infoset(*v),
-        DfdlValue::Double(v) => format_float_for_infoset(*v as f32),
-        DfdlValue::Decimal(v) => v.clone(),
-        DfdlValue::DateTime(v) => v.clone(),
-        DfdlValue::String(v) => v.text.clone(),
-        DfdlValue::HexBinary(v) => hex_encode(v),
-        DfdlValue::Blob(_) => String::new(),
-        DfdlValue::Null => String::new(),
-        DfdlValue::Array(_) | DfdlValue::Sequence(_) | DfdlValue::Choice { .. } => String::new(),
-    }
-}
-
-/// Load blob bytes for unparse from a TDML `xs:anyURI` reference or `file:` URI.
-pub fn resolve_blob_uri_to_bytes(uri: &str) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
-    let uri = uri.trim();
-    if uri.contains('\'') {
-        return Err("Illegal character".into());
-    }
-    if uri.contains("://") && !uri.starts_with("file:") {
-        return Err(alloc::format!("Blob URI must be a file: {uri}"));
-    }
-    #[cfg(feature = "std")]
-    {
-        let path = if let Some(rest) = uri.strip_prefix("file:") {
-            std::path::PathBuf::from(rest)
-        } else {
-            std::path::PathBuf::from(tdml_blob_reference_path(uri))
-        };
-        std::fs::read(&path).map_err(|_| {
-            alloc::format!("Unable to open blob for reading: {uri}")
-        })
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        let _ = uri;
-        Err("blob unparse requires the `std` feature".into())
-    }
-}
-
-fn tdml_blob_reference_path(uri: &str) -> alloc::string::String {
-    alloc::format!(
-        "{}/../third_party/daffodil/daffodil-test/src/test/resources/{}",
-        env!("CARGO_MANIFEST_DIR"),
-        uri.trim_start_matches('/')
-    )
-}
-
-fn compare_blob_reference(expected_uri: &str, actual: &[u8]) -> Result<(), String> {
-    #[cfg(feature = "std")]
-    {
-        let path = tdml_blob_reference_path(expected_uri);
-        let reference = std::fs::read(&path).map_err(|e| {
-            alloc::format!("blob reference read `{path}`: {e}")
-        })?;
-        if reference != actual {
-            return Err(alloc::format!(
-                "blob bytes mismatch for `{expected_uri}`: expected {} byte(s), got {} byte(s)",
-                reference.len(),
-                actual.len()
-            ));
-        }
-        Ok(())
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        let _ = (expected_uri, actual);
-        Err("blob infoset compare requires the `std` feature".into())
-    }
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
-}
-
-fn compare_nodes(expected: &[InfosetNode], actual: &[InfosetNode]) -> Result<(), String> {
-    if expected.len() != actual.len() {
-        return Err(alloc::format!(
-            "root child count mismatch: expected {}, got {}",
-            expected.len(),
-            actual.len()
-        ));
-    }
-    for (e, a) in expected.iter().zip(actual.iter()) {
-        compare_node(e, a)?;
-    }
-    Ok(())
-}
-
-fn compare_node(expected: &InfosetNode, actual: &InfosetNode) -> Result<(), String> {
-    if local_name_str(&expected.name) != local_name_str(&actual.name) {
-        return Err(alloc::format!(
-            "element name mismatch: expected `{}`, got `{}`",
-            expected.name, actual.name
-        ));
-    }
-    if let Some(exp_text) = &expected.text {
-        if exp_text.contains("/blobs/") && exp_text.ends_with(".bin") {
-            let blob = actual.blob_bytes.as_deref().ok_or_else(|| {
-                alloc::format!(
-                    "expected blob data for `{}`, got text `{:?}`",
-                    expected.name,
-                    actual.text
-                )
-            })?;
-            compare_blob_reference(exp_text, blob)?;
-        } else {
-            let act_text = actual.text.as_deref().unwrap_or("");
-            let exp_trim = exp_text.trim();
-            let act_trim = act_text.trim();
-            if exp_trim != act_trim
-                && !float_infoset_texts_equal(exp_trim, act_trim)
-                && !calendar_infoset_texts_equal(exp_trim, act_trim)
-            {
-                return Err(alloc::format!(
-                    "text mismatch for `{}`: expected `{exp_text}`, got `{act_text}`",
-                    expected.name
-                ));
-            }
-        }
-    }
-    for (name, exp_children) in &expected.children {
-        let key = local_name_str(name);
-        let act_children = actual
-            .children
-            .iter()
-            .find(|(k, _)| local_name_str(k) == key)
-            .map(|(_, v)| v.as_slice())
-            .unwrap_or(&[]);
-        if exp_children.len() != act_children.len() {
-            return Err(alloc::format!(
-                "child count mismatch for `{key}`: expected {}, got {}",
-                exp_children.len(),
-                act_children.len()
-            ));
-        }
-        for (e, a) in exp_children.iter().zip(act_children.iter()) {
-            compare_node(e, a)?;
-        }
-    }
-    for (name, act_children) in &actual.children {
-        let key = local_name_str(name);
-        if !expected
-            .children
-            .keys()
-            .any(|k| local_name_str(k) == key)
-        {
-            return Err(alloc::format!(
-                "unexpected child `{key}` ({} occurrence(s))",
-                act_children.len()
-            ));
-        }
-    }
-    Ok(())
-}
+pub mod compare;
+pub use compare::*;

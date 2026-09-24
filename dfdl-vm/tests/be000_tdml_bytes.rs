@@ -1,9 +1,11 @@
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome, TdmlSchema, TdmlSuite};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, TdmlSchema, TdmlSuite, TestOutcome};
 use std::collections::HashSet;
 use std::path::Path;
 
 fn enrich(suite: &mut TdmlSuite, tdml_path: &Path) {
-    let Some(dir) = tdml_path.parent() else { return };
+    let Some(dir) = tdml_path.parent() else {
+        return;
+    };
     let dir_str = dir.to_string_lossy().into_owned();
     let mut models = HashSet::new();
     for t in &suite.tests {
@@ -17,7 +19,9 @@ fn enrich(suite: &mut TdmlSuite, tdml_path: &Path) {
             continue;
         }
         let path = dir.join(&model);
-        let Ok(xsd) = std::fs::read_to_string(&path) else { continue };
+        let Ok(xsd) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         suite.schemas.insert(
             model.clone(),
             TdmlSchema {
@@ -31,7 +35,8 @@ fn enrich(suite: &mut TdmlSuite, tdml_path: &Path) {
 
 #[test]
 fn be000_tdml_decode() {
-    let path = Path::new("/workspace/third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section14/unordered_sequences/BE.tdml");
+    let path_buf = format!("{}/../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section14/unordered_sequences/BE.tdml", env!("CARGO_MANIFEST_DIR"));
+    let path = Path::new(&path_buf);
     let tdml = std::fs::read_to_string(path).unwrap();
     let mut suite = parse_tdml(&tdml).unwrap();
     enrich(&mut suite, path);

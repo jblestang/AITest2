@@ -1,6 +1,6 @@
 use dfdl_vm::tdml::{
-    parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
-    TdmlSuite,
+    parse_tdml, run_parser_test, run_unparser_test, TdmlResourceContext, TdmlSchema, TdmlSuite,
+    TestOutcome,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::fs;

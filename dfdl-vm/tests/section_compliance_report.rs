@@ -7,8 +7,8 @@
 //!   cargo test -p dfdl-vm --test section_compliance_report compliance_all_sections_table -- --ignored --nocapture
 
 use dfdl_vm::tdml::{
-    parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
-    TdmlSuite,
+    parse_tdml, run_parser_test, run_unparser_test, TdmlResourceContext, TdmlSchema, TdmlSuite,
+    TestOutcome,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -208,9 +208,21 @@ fn compliance_all_sections_table() {
                 )
             });
         let parts: Vec<&str> = line.split('\t').collect();
-        let pass = parts[2].strip_prefix("pass=").unwrap_or("0").parse().unwrap_or(0);
-        let fail = parts[3].strip_prefix("fail=").unwrap_or("0").parse().unwrap_or(0);
-        let skip = parts[4].strip_prefix("skip=").unwrap_or("0").parse().unwrap_or(0);
+        let pass = parts[2]
+            .strip_prefix("pass=")
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+        let fail = parts[3]
+            .strip_prefix("fail=")
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+        let skip = parts[4]
+            .strip_prefix("skip=")
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
         let parse_fail = parts[5]
             .strip_prefix("parse_fail=")
             .unwrap_or("0")

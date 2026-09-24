@@ -20,11 +20,20 @@ impl fmt::Display for Error {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
-    InvalidXml { message: alloc::string::String },
+    InvalidXml {
+        message: alloc::string::String,
+    },
     UnexpectedEof,
-    MissingAttribute { element: alloc::string::String, attribute: alloc::string::String },
-    UnknownElement { name: alloc::string::String },
-    UnknownType { name: alloc::string::String },
+    MissingAttribute {
+        element: alloc::string::String,
+        attribute: alloc::string::String,
+    },
+    UnknownElement {
+        name: alloc::string::String,
+    },
+    UnknownType {
+        name: alloc::string::String,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -72,11 +81,22 @@ pub enum VmError {
     InvalidChoice {
         branch_errors: alloc::vec::Vec<alloc::string::String>,
     },
-    LengthMismatch { expected: usize, actual: usize },
-    InvalidValue { message: alloc::string::String },
-    TypeMismatch { expected: alloc::string::String },
-    MissingField { name: alloc::string::String },
-    UnsupportedOperation { op: alloc::string::String },
+    LengthMismatch {
+        expected: usize,
+        actual: usize,
+    },
+    InvalidValue {
+        message: alloc::string::String,
+    },
+    TypeMismatch {
+        expected: alloc::string::String,
+    },
+    MissingField {
+        name: alloc::string::String,
+    },
+    UnsupportedOperation {
+        op: alloc::string::String,
+    },
     /// Optional element (minOccurs=0) absent at current offset.
     ElementAbsent,
 }
@@ -103,12 +123,8 @@ impl fmt::Display for VmError {
                     if detail.is_empty() {
                         continue;
                     }
-                    let detail = detail
-                        .strip_prefix("vm error: ")
-                        .unwrap_or(detail.as_str());
-                    let detail = detail
-                        .strip_prefix("Parse Error. ")
-                        .unwrap_or(detail);
+                    let detail = detail.strip_prefix("vm error: ").unwrap_or(detail.as_str());
+                    let detail = detail.strip_prefix("Parse Error. ").unwrap_or(detail);
                     write!(f, "\nParse Error. {detail}")?;
                 }
                 Ok(())

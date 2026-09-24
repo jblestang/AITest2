@@ -1,9 +1,9 @@
-use alloc::vec::Vec;
 use crate::error::Result;
 use crate::ir::{compile, compile_named, compile_named_with_tunables, IrProgram};
 use crate::schema::{parse_schema, SchemaDocument};
 use crate::value::DfdlValue;
 use crate::vm::{Decoder, Encoder, RuntimeConfig};
+use alloc::vec::Vec;
 
 /// Compiled DFDL specification: XSD parsed, IR built, ready for VM encode/decode.
 #[derive(Debug, Clone)]
@@ -88,7 +88,8 @@ impl DfdlSpec {
         if let Some(msg) = namespace_entity_limit_error(&self.schema, &self.program.root_element) {
             return Err(crate::error::VmError::InvalidValue { message: msg }.into());
         }
-        self.decoder().decode_with_bit_limit(input, frame_bits, None)
+        self.decoder()
+            .decode_with_bit_limit(input, frame_bits, None)
     }
 
     pub fn decode_with_bit_limit_and_transmission(
@@ -133,10 +134,7 @@ impl DfdlSpec {
     }
 }
 
-pub(crate) fn namespace_entity_limit_error(
-    schema: &SchemaDocument,
-    root: &str,
-) -> Option<String> {
+pub(crate) fn namespace_entity_limit_error(schema: &SchemaDocument, root: &str) -> Option<String> {
     const MAX_ENTITY_PREFIX_LEN: usize = 5248;
     let ge = crate::schema::get_global_element(schema, root)?;
     let q = ge.type_xsd_qname.as_ref()?;

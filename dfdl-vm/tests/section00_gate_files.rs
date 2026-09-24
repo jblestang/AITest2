@@ -1,7 +1,7 @@
 //! Per-file pass/fail counts for section00 TDML (ignored diagnostic).
 use dfdl_vm::tdml::{
-    parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
-    TdmlSuite,
+    parse_tdml, run_parser_test, run_unparser_test, TdmlResourceContext, TdmlSchema, TdmlSuite,
+    TestOutcome,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -30,7 +30,9 @@ fn enrich(suite: &mut TdmlSuite, path: &Path) {
             continue;
         }
         let p = dir.join(&model);
-        let Ok(xsd) = fs::read_to_string(&p) else { continue };
+        let Ok(xsd) = fs::read_to_string(&p) else {
+            continue;
+        };
         suite.schemas.insert(
             model.clone(),
             TdmlSchema {
@@ -43,7 +45,9 @@ fn enrich(suite: &mut TdmlSuite, path: &Path) {
 }
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -62,8 +66,12 @@ fn section00_per_file_stats() {
     collect(dir, &mut files);
     files.sort();
     for path in files {
-        let Ok(tdml) = fs::read_to_string(&path) else { continue };
-        let Ok(mut suite) = parse_tdml(&tdml) else { continue };
+        let Ok(tdml) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut suite) = parse_tdml(&tdml) else {
+            continue;
+        };
         enrich(&mut suite, &path);
         suite.resource_context = TdmlResourceContext::from_tdml_path(&path.to_string_lossy());
         let mut pass = 0usize;

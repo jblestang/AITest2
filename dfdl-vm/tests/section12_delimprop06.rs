@@ -17,20 +17,12 @@ fn delimprop_06_expected_error() {
         .iter()
         .find(|t| t.name == "DelimProp_06")
         .expect("case");
-    let xsd = suite
-        .schemas
-        .get(&test.model)
-        .expect("model")
-        .xsd
-        .clone();
+    let xsd = suite.schemas.get(&test.model).expect("model").xsd.clone();
     let t0 = Instant::now();
     let schema = dfdl_vm::schema::parse_schema(&xsd).expect("parse schema");
-    let spec = DfdlSpec::from_schema_root_with_tunables(
-        schema,
-        Some(&test.root),
-        Default::default(),
-    )
-    .expect("compile");
+    let spec =
+        DfdlSpec::from_schema_root_with_tunables(schema, Some(&test.root), Default::default())
+            .expect("compile");
     eprintln!("compile {:?}", t0.elapsed());
 
     let doc = &test.documents[0];

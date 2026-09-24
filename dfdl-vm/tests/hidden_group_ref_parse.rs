@@ -1,4 +1,4 @@
-use dfdl_vm::schema::{parse_schema, ComplexContent, Particle, TypeDef, get_global_element};
+use dfdl_vm::schema::{get_global_element, parse_schema, ComplexContent, Particle, TypeDef};
 
 #[test]
 fn nested_sequence_hidden_group_ref_attribute() {
@@ -26,7 +26,12 @@ fn nested_sequence_hidden_group_ref_attribute() {
     let ComplexContent::Sequence(outer) = content else {
         panic!("outer sequence");
     };
-    assert_eq!(outer.props.separator.as_deref(), Some("|"), "outer: {:?}", outer.props);
+    assert_eq!(
+        outer.props.separator.as_deref(),
+        Some("|"),
+        "outer: {:?}",
+        outer.props
+    );
     assert_eq!(outer.particles.len(), 2);
     let Particle::Sequence(inner) = &outer.particles[0] else {
         panic!("inner");

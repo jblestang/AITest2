@@ -1,6 +1,6 @@
 use dfdl_vm::tdml::{
-    parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
-    TdmlSuite,
+    parse_tdml, run_parser_test, run_unparser_test, TdmlResourceContext, TdmlSchema, TdmlSuite,
+    TestOutcome,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -33,7 +33,9 @@ fn enrich(suite: &mut TdmlSuite, path: &Path) {
             continue;
         }
         let p = dir.join(&model);
-        let Ok(xsd) = fs::read_to_string(&p) else { continue };
+        let Ok(xsd) = fs::read_to_string(&p) else {
+            continue;
+        };
         suite.schemas.insert(
             model.clone(),
             TdmlSchema {
@@ -53,7 +55,11 @@ fn list_section00_gate_failures() {
         "/../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section00"
     ));
     for entry in walkdir(root) {
-        let rel = entry.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = entry
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         if SKIP.iter().any(|s| *s == rel) {
             continue;
         }
@@ -77,7 +83,9 @@ fn list_section00_gate_failures() {
 
 fn walkdir(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
-    let Ok(rd) = fs::read_dir(dir) else { return out };
+    let Ok(rd) = fs::read_dir(dir) else {
+        return out;
+    };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {

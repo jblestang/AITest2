@@ -4,11 +4,9 @@ use crate::length_validate::DaffodilTunables;
 /// Parse a subset of XSD dateTime epoch literals used in DFDL tests (UTC / fixed offset).
 pub fn parse_calendar_epoch_unix(iso: &str) -> Result<i64, VmError> {
     let (core, offset_secs) = split_epoch_timezone(iso.trim());
-    let (date, time) = core
-        .split_once('T')
-        .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("invalid binaryCalendarEpoch `{iso}`"),
-        })?;
+    let (date, time) = core.split_once('T').ok_or_else(|| VmError::InvalidValue {
+        message: alloc::format!("invalid binaryCalendarEpoch `{iso}`"),
+    })?;
     let (y, m, d) = parse_date_ymd(date)?;
     let (hh, mm, ss) = parse_time_hms(time)?;
     let utc = unix_from_utc_ymdhms(y, m, d, hh, mm, ss)?;
@@ -149,10 +147,7 @@ fn format_tz_suffix(offset_secs: i64) -> alloc::string::String {
 fn epoch_had_explicit_timezone(epoch_raw: &str) -> bool {
     let iso = epoch_raw.trim();
     iso.rfind('+').is_some_and(|i| i > 10)
-        || iso
-            .get(10..)
-            .and_then(|tail| tail.rfind('-'))
-            .is_some()
+        || iso.get(10..).and_then(|tail| tail.rfind('-')).is_some()
 }
 
 fn format_tz_suffix_from_epoch(epoch_raw: &str, offset_secs: i64) -> alloc::string::String {
@@ -352,15 +347,17 @@ pub fn format_unix_datetime_utc_millis(secs: i64, millis: u32) -> alloc::string:
     if millis == 0 {
         alloc::format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}")
     } else {
-        alloc::format!(
-            "{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:06}"
-        )
+        alloc::format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:06}")
     }
 }
 
 fn civil_from_days(z: i64) -> (i32, u32, u32) {
     let z = z + 719468;
-    let era = if z >= 0 { z / 146097 } else { (z - 146096) / 146097 };
+    let era = if z >= 0 {
+        z / 146097
+    } else {
+        (z - 146096) / 146097
+    };
     let doe = z - era * 146097;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
@@ -371,7 +368,10 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
     (y as i32, m as u32, d as u32)
 }
 
-pub fn validate_calendar_year_tunables(text: &str, tunables: &DaffodilTunables) -> Result<(), VmError> {
+pub fn validate_calendar_year_tunables(
+    text: &str,
+    tunables: &DaffodilTunables,
+) -> Result<(), VmError> {
     let year_str = text
         .split('-')
         .next()
@@ -415,9 +415,7 @@ const ICU_CALENDAR_MAX_MILLIS: i64 = (0x7F00_0000_i64 - 2_440_588) * 86_400_000;
 
 /// Match Java `epochCalendar.getTimeInMillis + millisToAdd` (signed 64-bit wrap).
 fn java_calendar_total_millis(base_secs: i64, delta_ms: i64) -> i64 {
-    base_secs
-        .saturating_mul(1000)
-        .wrapping_add(delta_ms)
+    base_secs.saturating_mul(1000).wrapping_add(delta_ms)
 }
 
 pub fn format_binary_calendar_from_millis_delta(
@@ -443,9 +441,8 @@ pub fn format_binary_calendar_from_millis_delta(
 
     // ICU `Calendar` at exact min/max millis yields years outside tunables (dateTimeBin12/14).
     if total_ms == ICU_CALENDAR_MIN_MILLIS || total_ms == ICU_CALENDAR_MAX_MILLIS {
-        return validate_calendar_year_tunables("10000-01-01T00:00:00", tunables).map(|_| {
-            alloc::string::String::new()
-        });
+        return validate_calendar_year_tunables("10000-01-01T00:00:00", tunables)
+            .map(|_| alloc::string::String::new());
     }
 
     let secs = total_ms.div_euclid(1000);
@@ -638,10 +635,7 @@ pub fn bcd_digits_from_raw_bits(raw: u64, num_bits: usize) -> alloc::string::Str
 pub fn decode_binary_seconds_value(bytes: &[u8], le: bool) -> Result<i64, VmError> {
     if bytes.len() != 4 {
         return Err(VmError::InvalidValue {
-            message: alloc::format!(
-                "binarySeconds expects 4 bytes, got {}",
-                bytes.len()
-            ),
+            message: alloc::format!("binarySeconds expects 4 bytes, got {}", bytes.len()),
         });
     }
     let mut buf = [0u8; 4];
@@ -709,8 +703,8 @@ pub(crate) fn normalize_xs_date_lexical(text: &str) -> Result<alloc::string::Str
 
 fn parse_xs_time_lexical(text: &str) -> Result<alloc::string::String, VmError> {
     let (core, tz) = split_time_timezone(text);
-    let (hh, mm, ss, frac) = parse_time_hms_frac(core)
-        .map_err(|_| calendar_parse_error("xs:time", text))?;
+    let (hh, mm, ss, frac) =
+        parse_time_hms_frac(core).map_err(|_| calendar_parse_error("xs:time", text))?;
     validate_hms(hh, mm, ss).map_err(|_| calendar_parse_error("xs:time", text))?;
     Ok(format_iso_time(hh, mm, ss, frac, tz))
 }
@@ -722,8 +716,8 @@ fn parse_xs_datetime_lexical(text: &str) -> Result<alloc::string::String, VmErro
     let (y, m, d) = parse_date_ymd(date).map_err(|_| calendar_parse_error("xs:dateTime", text))?;
     validate_ymd(y, m, d).map_err(|_| calendar_parse_error("xs:dateTime", text))?;
     let (core, tz) = split_time_timezone(rest);
-    let (hh, mm, ss, frac) = parse_time_hms_frac(core)
-        .map_err(|_| calendar_parse_error("xs:dateTime", text))?;
+    let (hh, mm, ss, frac) =
+        parse_time_hms_frac(core).map_err(|_| calendar_parse_error("xs:dateTime", text))?;
     validate_hms(hh, mm, ss).map_err(|_| calendar_parse_error("xs:dateTime", text))?;
     let frac_s = frac
         .filter(|&f| f != 0)
@@ -788,7 +782,11 @@ pub(crate) fn days_in_month(y: i32, m: u32) -> u32 {
         4 | 6 | 9 | 11 => 30,
         2 => {
             let leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
-            if leap { 29 } else { 28 }
+            if leap {
+                29
+            } else {
+                28
+            }
         }
         _ => 30,
     }
@@ -900,19 +898,25 @@ fn normalize_implicit_tz_suffix(raw: &str) -> alloc::string::String {
     raw.into()
 }
 
-fn split_implicit_time_core_tz(text: &str) -> Result<(alloc::string::String, Option<alloc::string::String>), VmError> {
+fn split_implicit_time_core_tz(
+    text: &str,
+) -> Result<(alloc::string::String, Option<alloc::string::String>), VmError> {
     if text.len() < 8
         || text.as_bytes().get(2) != Some(&b':')
         || text.as_bytes().get(5) != Some(&b':')
     {
         return Err(VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {text}"),
+            message: alloc::format!(
+                "Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {text}"
+            ),
         });
     }
     let core = &text[..8];
     if !core.chars().all(|c| c.is_ascii_digit() || c == ':') {
         return Err(VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {text}"),
+            message: alloc::format!(
+                "Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {text}"
+            ),
         });
     }
     let rest = text[8..].trim();
@@ -924,48 +928,62 @@ fn split_implicit_time_core_tz(text: &str) -> Result<(alloc::string::String, Opt
 
 fn parse_hms_core(core: &str) -> Result<(u32, u32, u32), VmError> {
     let mut parts = core.split(':');
-    let h: u32 = parts
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {core}"),
-        })?;
-    let m: u32 = parts
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {core}"),
-        })?;
-    let s: u32 = parts
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let h: u32 =
+        parts
+            .next()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!(
+                "Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {core}"
+            ),
+            })?;
+    let m: u32 =
+        parts
+            .next()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!(
+                "Parse Error: Failed to parse xs:time / Unable to parse xs:time from text: {core}"
+            ),
+            })?;
+    let s: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     Ok((h, m, s))
 }
 
 fn parse_ymd_core(text: &str) -> Result<(i32, u32, u32), VmError> {
     let mut parts = text.split('-');
-    let y: i32 = parts
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"),
-        })?;
-    let m: u32 = parts
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"),
-        })?;
-    let d: u32 = parts
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"),
-        })?;
+    let y: i32 =
+        parts
+            .next()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!(
+                "Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"
+            ),
+            })?;
+    let m: u32 =
+        parts
+            .next()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!(
+                "Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"
+            ),
+            })?;
+    let d: u32 =
+        parts
+            .next()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!(
+                "Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"
+            ),
+            })?;
     if parts.next().is_some() {
         return Err(VmError::InvalidValue {
-            message: alloc::format!("Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"),
+            message: alloc::format!(
+                "Parse Error: Failed to parse xs:date / Unable to parse xs:date from text: {text}"
+            ),
         });
     }
     Ok((y, m, d))
@@ -1057,11 +1075,14 @@ pub fn calendar_pattern_has_time_fields(pattern: &str) -> bool {
 pub fn calendar_pattern_time_only(pattern: &str) -> bool {
     let letters = calendar_pattern_letters_only(pattern);
     let has_date = letters.chars().any(|c| {
-        matches!(c, 'y' | 'Y' | 'M' | 'd' | 'D' | 'E' | 'e' | 'F' | 'w' | 'W' | 'G')
+        matches!(
+            c,
+            'y' | 'Y' | 'M' | 'd' | 'D' | 'E' | 'e' | 'F' | 'w' | 'W' | 'G'
+        )
     });
-    let has_time = letters.chars().any(|c| {
-        matches!(c, 'H' | 'h' | 'k' | 'K' | 'm' | 's' | 'S')
-    });
+    let has_time = letters
+        .chars()
+        .any(|c| matches!(c, 'H' | 'h' | 'k' | 'K' | 'm' | 's' | 'S'));
     !has_date && has_time
 }
 
@@ -1081,7 +1102,8 @@ pub fn strict_binary_calendar_component_ranges(
     }
     if kind == ValueKind::Time {
         let (core, _) = split_implicit_time_core_tz(text)?;
-        let (h, m, s) = parse_hms_core(&core).map_err(|_| strict_time_range_error("HOUR_OF_DAY", 0, 0, 23, text))?;
+        let (h, m, s) = parse_hms_core(&core)
+            .map_err(|_| strict_time_range_error("HOUR_OF_DAY", 0, 0, 23, text))?;
         if h > 23 || m > 59 || s > 59 {
             return Err(strict_time_range_error("HOUR_OF_DAY", h, 0, 23, text));
         }
@@ -1136,16 +1158,16 @@ pub fn process_implicit_calendar_text(
         }
         return Ok(out);
     }
-    let implicit_datetime_error = || VmError::InvalidValue {
+    let implicit_datetime_error = || {
+        VmError::InvalidValue {
         message: alloc::format!("Parse Error: Failed to parse xs:dateTime / Unable to parse xs:dateTime from text: {text}"),
+    }
     };
     let Some(sep) = text.find('T') else {
         return Err(implicit_datetime_error());
     };
     let date_part = &text[..sep];
-    if !date_part.contains('-')
-        || date_part.chars().any(|c| !(c.is_ascii_digit() || c == '-'))
-    {
+    if !date_part.contains('-') || date_part.chars().any(|c| !(c.is_ascii_digit() || c == '-')) {
         return Err(implicit_datetime_error());
     }
     let time_part = &text[sep + 1..];
@@ -1161,7 +1183,8 @@ pub fn process_implicit_calendar_text(
     }
     let (y, mo, d) = parse_ymd_core(date_part).map_err(|_| implicit_datetime_error())?;
     validate_calendar_year_tunables(&alloc::format!("{y:04}-{mo:02}-{d:02}"), tunables)?;
-    let (core, tz) = split_implicit_time_core_tz(time_part).map_err(|_| implicit_datetime_error())?;
+    let (core, tz) =
+        split_implicit_time_core_tz(time_part).map_err(|_| implicit_datetime_error())?;
     let (h, m, s) = parse_hms_core(&core)?;
     if lax {
         let (h, m, s, day_carry) = normalize_lenient_hms_with_day_carry(h, m, s, false);
@@ -1196,7 +1219,12 @@ fn validate_hms(hh: u32, mm: u32, ss: u32) -> Result<(), VmError> {
     Ok(())
 }
 
-fn format_iso_date(y: i32, m: u32, d: u32, tz: Option<alloc::string::String>) -> alloc::string::String {
+fn format_iso_date(
+    y: i32,
+    m: u32,
+    d: u32,
+    tz: Option<alloc::string::String>,
+) -> alloc::string::String {
     alloc::format!(
         "{y:04}-{m:02}-{d:02}{}",
         tz.unwrap_or_else(|| "+00:00".into())
@@ -1223,10 +1251,7 @@ fn format_iso_time(
 pub fn decode_binary_milliseconds_value(bytes: &[u8], le: bool) -> Result<(i64, u32), VmError> {
     if bytes.len() != 8 {
         return Err(VmError::InvalidValue {
-            message: alloc::format!(
-                "binaryMilliseconds expects 8 bytes, got {}",
-                bytes.len()
-            ),
+            message: alloc::format!("binaryMilliseconds expects 8 bytes, got {}", bytes.len()),
         });
     }
     let mut buf = [0u8; 8];
@@ -1408,7 +1433,8 @@ pub fn validate_text_calendar_schema(
     let letters = calendar_pattern_letters_only(pattern);
     if letters.is_empty() {
         return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error: dfdl:calendarPatttern contains no pattern letters".into(),
+            message: "Schema Definition Error: dfdl:calendarPatttern contains no pattern letters"
+                .into(),
         });
     }
     let xsd = calendar_xsd_type_label(kind, props.calendar_date_only);
@@ -1531,7 +1557,10 @@ pub fn validate_binary_calendar_schema(
     }
 
     let rep = props.binary_calendar_rep;
-    if matches!(rep, BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds) {
+    if matches!(
+        rep,
+        BinaryNumberRep::BinarySeconds | BinaryNumberRep::BinaryMilliseconds
+    ) {
         if props.calendar_date_only {
             return Err(SchemaError::InvalidProperty {
                 message: alloc::format!(
@@ -1585,7 +1614,8 @@ pub fn validate_binary_calendar_schema(
 
     if rep == BinaryNumberRep::PackedBcd && !props.binary_packed_sign_codes_defined {
         return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error: Property binaryPackedSignCodes is not defined.".into(),
+            message: "Schema Definition Error: Property binaryPackedSignCodes is not defined."
+                .into(),
         });
     }
 
@@ -1667,7 +1697,10 @@ pub fn validate_implicit_binary_length_schema(
     if crate::ir::ir_props_has_input_value_calc(props) {
         return Ok(());
     }
-    if matches!(kind, ValueKind::String | ValueKind::HexBinary | ValueKind::Complex) {
+    if matches!(
+        kind,
+        ValueKind::String | ValueKind::HexBinary | ValueKind::Complex
+    ) {
         return Ok(());
     }
     if matches!(kind, ValueKind::DateTime | ValueKind::Time) {
@@ -1754,21 +1787,15 @@ mod calendar_tests {
             -184304863567519001,
             "millis value less than lower bounds for a Calendar"
         ));
-        let tunable = format_binary_calendar_from_millis_delta(
-            epoch,
-            183881207882081000,
-            &tunables,
-        )
-        .unwrap_err()
-        .to_string();
+        let tunable =
+            format_binary_calendar_from_millis_delta(epoch, 183881207882081000, &tunables)
+                .unwrap_err()
+                .to_string();
         assert!(tunable.contains("Tunable Limit Exceeded Error"));
-        let tunable_min = format_binary_calendar_from_millis_delta(
-            epoch,
-            -184304863567519000,
-            &tunables,
-        )
-        .unwrap_err()
-        .to_string();
+        let tunable_min =
+            format_binary_calendar_from_millis_delta(epoch, -184304863567519000, &tunables)
+                .unwrap_err()
+                .to_string();
         assert!(tunable_min.contains("Tunable Limit Exceeded Error"));
     }
 }

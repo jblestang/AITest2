@@ -16,10 +16,23 @@ fn header_creator_has_ovc() {
   </xs:sequence></xs:complexType></xs:element>
 </xs:schema>"##;
     let doc = parse_schema(xsd).expect("parse");
-    let t = doc.resolve_type(&TypeName::new("header")).expect("header type");
-    let dfdl_vm::schema::TypeDef::Complex { content, .. } = t else { panic!("complex") };
-    let ComplexContent::Sequence(seq) = content else { panic!("seq") };
-    let Particle::Element(c) = &seq.particles[0] else { panic!() };
-    assert!(c.props.output_value_calc.is_some() || c.props.output_value_calc_literal.is_some() || c.props.output_value_calc_conditional,
-        "Creator OVC not parsed: {:?}", c.props);
+    let t = doc
+        .resolve_type(&TypeName::new("header"))
+        .expect("header type");
+    let dfdl_vm::schema::TypeDef::Complex { content, .. } = t else {
+        panic!("complex")
+    };
+    let ComplexContent::Sequence(seq) = content else {
+        panic!("seq")
+    };
+    let Particle::Element(c) = &seq.particles[0] else {
+        panic!()
+    };
+    assert!(
+        c.props.output_value_calc.is_some()
+            || c.props.output_value_calc_literal.is_some()
+            || c.props.output_value_calc_conditional,
+        "Creator OVC not parsed: {:?}",
+        c.props
+    );
 }

@@ -12,6 +12,7 @@ use xml_no_std::writer::{EmitterConfig, EventWriter};
 pub struct XmlReader<'a> {
     reader: EventReader<'a, core::slice::Iter<'a, u8>>,
     peeked: Option<XmlEvent>,
+    depth: usize,
 }
 
 impl<'a> XmlReader<'a> {
@@ -20,19 +21,40 @@ impl<'a> XmlReader<'a> {
         Self {
             reader: EventReader::new_with_config(input.as_bytes().iter(), config),
             peeked: None,
+            depth: 0,
         }
     }
 
-    pub fn next_event(&mut self) -> Result<XmlEvent> {
-        if let Some(ev) = self.peeked.take() {
-            return Ok(ev);
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
+    pub fn skip_to_depth(&mut self, target_depth: usize) -> Result<()> {
+        while self.depth > target_depth {
+            if matches!(self.next_event()?, XmlEvent::EndDocument) {
+                break;
+            }
         }
-        map_xml_err(self.reader.next())
+        Ok(())
+    }
+
+    pub fn next_event(&mut self) -> Result<XmlEvent> {
+        let ev = if let Some(ev) = self.peeked.take() {
+            ev
+        } else {
+            map_xml_err(self.reader.next())?
+        };
+        match &ev {
+            XmlEvent::StartElement { .. } => self.depth += 1,
+            XmlEvent::EndElement { .. } => self.depth = self.depth.saturating_sub(1),
+            _ => {}
+        }
+        Ok(ev)
     }
 
     pub fn peek(&mut self) -> Result<&XmlEvent> {
         if self.peeked.is_none() {
-            self.peeked = Some(self.next_event()?);
+            self.peeked = Some(map_xml_err(self.reader.next())?);
         }
         match self.peeked.as_ref() {
             Some(ev) => Ok(ev),
@@ -76,7 +98,9 @@ impl<'a> XmlReader<'a> {
     pub fn expect_start(&mut self, local: &str) -> Result<BTreeMap<String, String>> {
         loop {
             match self.next_event()? {
-                XmlEvent::StartElement { name, attributes, .. } if name.local_name == local => {
+                XmlEvent::StartElement {
+                    name, attributes, ..
+                } if name.local_name == local => {
                     return Ok(attrs_to_map(&attributes));
                 }
                 XmlEvent::EndDocument => {
@@ -106,19 +130,24 @@ impl<'a> XmlReader<'a> {
 
     /// Consume the next `StartElement` and return attributes plus in-scope namespace bindings.
     pub fn take_start_element(&mut self) -> Result<(BTreeMap<String, String>, Namespace)> {
-        match self.next_event()? {
-            XmlEvent::StartElement {
-                attributes,
-                namespace,
-                ..
-            } => Ok((attrs_to_map(&attributes), namespace)),
-            other => Err(ParseError::InvalidXml {
-                message: alloc::format!(
-                    "expected start element, found {:?}",
-                    event_label(&other)
-                ),
+        loop {
+            match self.next_event()? {
+                XmlEvent::StartElement {
+                    attributes,
+                    namespace,
+                    ..
+                } => return Ok((attrs_to_map(&attributes), namespace)),
+                XmlEvent::StartDocument { .. } | XmlEvent::ProcessingInstruction { .. } => {}
+                other => {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "expected start element, found {:?}",
+                            event_label(&other)
+                        ),
+                    }
+                    .into());
+                }
             }
-            .into()),
         }
     }
 
@@ -201,33 +230,27 @@ impl<'a> XmlReader<'a> {
                 XmlEvent::StartElement { .. } => {
                     depth += 1;
                     if let Some(we) = ev.as_writer_event() {
-                        writer
-                            .write(we)
-                            .map_err(|e| ParseError::InvalidXml {
-                                message: alloc::format!("xml write error: {e}"),
-                            })?;
+                        writer.write(we).map_err(|e| ParseError::InvalidXml {
+                            message: alloc::format!("xml write error: {e}"),
+                        })?;
                     }
                 }
                 XmlEvent::EndElement { .. } => {
                     depth -= 1;
                     if depth > 0 {
                         if let Some(we) = ev.as_writer_event() {
-                            writer
-                                .write(we)
-                                .map_err(|e| ParseError::InvalidXml {
-                                    message: alloc::format!("xml write error: {e}"),
-                                })?;
+                            writer.write(we).map_err(|e| ParseError::InvalidXml {
+                                message: alloc::format!("xml write error: {e}"),
+                            })?;
                         }
                     }
                 }
                 XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
                 _ => {
                     if let Some(we) = ev.as_writer_event() {
-                        writer
-                            .write(we)
-                            .map_err(|e| ParseError::InvalidXml {
-                                message: alloc::format!("xml write error: {e}"),
-                            })?;
+                        writer.write(we).map_err(|e| ParseError::InvalidXml {
+                            message: alloc::format!("xml write error: {e}"),
+                        })?;
                     }
                 }
             }
@@ -506,10 +529,12 @@ fn event_label(ev: &XmlEvent) -> &'static str {
 }
 
 fn map_xml_err<T>(res: xml_no_std::reader::Result<T>) -> Result<T> {
-    res.map_err(|e| ParseError::InvalidXml {
-        message: alloc::format!("{e}"),
-    }
-    .into())
+    res.map_err(|e| {
+        ParseError::InvalidXml {
+            message: alloc::format!("{e}"),
+        }
+        .into()
+    })
 }
 
 #[cfg(test)]
@@ -518,13 +543,16 @@ mod tests {
 
     #[test]
     fn dedupe_duplicate_attributes_last_wins() {
-        let raw = r#"<dfdl:escapeScheme escapeCharacter="/" extraEscapedCharacters="?" extraEscapedCharacters="" />"#;
+        let raw = r#"<dfdl:escapeScheme xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/" escapeCharacter="/" extraEscapedCharacters="?" extraEscapedCharacters="" />"#;
         let fixed = dedupe_xml_duplicate_attributes(raw);
         assert!(!fixed.contains("extraEscapedCharacters=\"?\""));
         assert!(fixed.contains("extraEscapedCharacters=\"\""));
         let mut reader = XmlReader::new(&fixed);
         let attrs = reader.take_start_attributes().expect("start");
-        assert_eq!(attrs.get("extraEscapedCharacters").map(String::as_str), Some(""));
+        assert_eq!(
+            attrs.get("extraEscapedCharacters").map(String::as_str),
+            Some("")
+        );
     }
 
     #[test]

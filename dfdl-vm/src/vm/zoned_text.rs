@@ -97,10 +97,7 @@ fn convert_from_ascii_tandem_modified(digit: char) -> Result<(u8, bool), VmError
     })
 }
 
-fn decode_overpunch(
-    ch: char,
-    style: TextZonedSignStyle,
-) -> Result<(u8, bool), VmError> {
+fn decode_overpunch(ch: char, style: TextZonedSignStyle) -> Result<(u8, bool), VmError> {
     match style {
         TextZonedSignStyle::Ebcdic => convert_from_zoned_ebcdic(ch),
         TextZonedSignStyle::AsciiStandard => convert_from_ascii_standard(ch),
@@ -223,8 +220,9 @@ pub(crate) fn validate_zoned_text_number_pattern_runtime(
     }
     if !has_leading && !has_trailing {
         let require_plus = match kind {
-            ValueKind::UnsignedByte | ValueKind::UnsignedShort | ValueKind::UnsignedInt =>
-                check_policy == BinaryNumberCheckPolicy::Lax,
+            ValueKind::UnsignedByte | ValueKind::UnsignedShort | ValueKind::UnsignedInt => {
+                check_policy == BinaryNumberCheckPolicy::Lax
+            }
             _ => true,
         };
         if require_plus {
@@ -281,9 +279,12 @@ pub(crate) fn zoned_to_number(
         OverpunchLocation::End => chars.len() - 1,
         OverpunchLocation::None => return Ok(raw.to_string()),
     };
-    let ch = chars.get(opindex).copied().ok_or_else(|| VmError::InvalidValue {
-        message: "Invalid zoned overpunch index".into(),
-    })?;
+    let ch = chars
+        .get(opindex)
+        .copied()
+        .ok_or_else(|| VmError::InvalidValue {
+            message: "Invalid zoned overpunch index".into(),
+        })?;
     let (digit, negative) = decode_overpunch(ch, style)?;
     chars[opindex] = char::from(b'0' + digit);
     let all_digits: String = chars.into_iter().collect();

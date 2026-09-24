@@ -1,6 +1,4 @@
-use super::ast::{
-    BuiltinType, LengthKind, RestrictionBase, SchemaDocument, SimpleBase, TypeDef,
-};
+use super::ast::{BuiltinType, LengthKind, RestrictionBase, SchemaDocument, SimpleBase, TypeDef};
 use crate::error::SchemaError;
 use crate::ir::{IrProps, ValueKind};
 use alloc::string::String;
@@ -95,14 +93,22 @@ impl SchemaDocument {
                 out.max_inclusive = merge_inclusive_min(out.max_inclusive, *max_inclusive);
                 out.min_exclusive = merge_exclusive_max(out.min_exclusive, *min_exclusive);
                 out.max_exclusive = merge_exclusive_min(out.max_exclusive, *max_exclusive);
-                out.min_inclusive_lexical =
-                    merge_lexical_inclusive_max(out.min_inclusive_lexical.clone(), min_inclusive_lexical.clone());
-                out.max_inclusive_lexical =
-                    merge_lexical_inclusive_min(out.max_inclusive_lexical.clone(), max_inclusive_lexical.clone());
-                out.min_exclusive_lexical =
-                    merge_lexical_inclusive_max(out.min_exclusive_lexical.clone(), min_exclusive_lexical.clone());
-                out.max_exclusive_lexical =
-                    merge_lexical_inclusive_min(out.max_exclusive_lexical.clone(), max_exclusive_lexical.clone());
+                out.min_inclusive_lexical = merge_lexical_inclusive_max(
+                    out.min_inclusive_lexical.clone(),
+                    min_inclusive_lexical.clone(),
+                );
+                out.max_inclusive_lexical = merge_lexical_inclusive_min(
+                    out.max_inclusive_lexical.clone(),
+                    max_inclusive_lexical.clone(),
+                );
+                out.min_exclusive_lexical = merge_lexical_inclusive_max(
+                    out.min_exclusive_lexical.clone(),
+                    min_exclusive_lexical.clone(),
+                );
+                out.max_exclusive_lexical = merge_lexical_inclusive_min(
+                    out.max_exclusive_lexical.clone(),
+                    max_exclusive_lexical.clone(),
+                );
                 out.total_digits = merge_min_u64(out.total_digits, *total_digits);
                 out.fraction_digits = merge_min_u64(out.fraction_digits, *fraction_digits);
                 if !patterns.is_empty() {
@@ -597,13 +603,17 @@ pub fn validate_length_facets_for_type(
     } = base
     {
         if let Some(type_def) = schema.resolve_type(base_name) {
-            if let crate::schema::TypeDef::Simple { base: parent_base, .. } = type_def {
+            if let crate::schema::TypeDef::Simple {
+                base: parent_base, ..
+            } = type_def
+            {
                 let parent_eff = schema.effective_facets(parent_base);
                 if let Some(base_len) = parent_eff.length {
                     if base_len != *local_len {
                         return Err(SchemaError::InvalidProperty {
                             message: "Schema Definition Error length-valid-restriction: \
-                                 value of length must be = the value of that of the base type".to_string(),
+                                 value of length must be = the value of that of the base type"
+                                .to_string(),
                         });
                     }
                 }
@@ -616,9 +626,7 @@ pub fn validate_length_facets_for_type(
     validate_value_space_facets(schema, base, diagnostic)?;
 
     let builtin = schema.builtin_for_simple_base(base);
-    let prim_name = builtin
-        .map(builtin_type_name)
-        .unwrap_or("unknown");
+    let prim_name = builtin.map(builtin_type_name).unwrap_or("unknown");
 
     let has_length = eff.length.is_some();
     let has_min = eff.min_length.is_some();
@@ -765,9 +773,6 @@ pub fn apply_effective_facets_to_ir(
         props.facet_pattern_groups.push(strings.intern(combined));
     }
     if let Some(values) = &eff.enumeration {
-        props.facet_enumeration = values
-            .iter()
-            .map(|v| strings.intern(v.clone()))
-            .collect();
+        props.facet_enumeration = values.iter().map(|v| strings.intern(v.clone())).collect();
     }
 }

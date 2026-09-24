@@ -25,5 +25,8 @@ fn non_negative_integer_bin6() {
 
 #[test]
 fn date_time_calendar_tz_empty() {
-    assert!(matches!(run("dateTime_calendarTimeZone_EmptyString"), TestOutcome::Pass));
+    assert!(matches!(
+        run("dateTime_calendarTimeZone_EmptyString"),
+        TestOutcome::Pass
+    ));
 }

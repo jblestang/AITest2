@@ -33,12 +33,8 @@ fn nillable_complex_ct_length_kind() {
     assert_eq!(props, Some(dfdl_vm::schema::LengthKind::Implicit));
     for n in &program.nodes {
         if let IrNode::Sequence { props, .. } = n {
-            let sep = props
-                .separator
-                .and_then(|id| program.strings.get(id).ok());
-            let term = props
-                .terminator
-                .and_then(|id| program.strings.get(id).ok());
+            let sep = props.separator.and_then(|id| program.strings.get(id).ok());
+            let term = props.terminator.and_then(|id| program.strings.get(id).ok());
             eprintln!("seq sep={sep:?} term={term:?}");
         }
     }

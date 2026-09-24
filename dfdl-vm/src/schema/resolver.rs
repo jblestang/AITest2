@@ -180,16 +180,10 @@ impl SchemaResolver {
         {
             use std::path::Path;
             let search = |base: &Path| -> Option<(String, Option<String>)> {
-                let candidates = [
-                    base.join(loc),
-                    base.join(normalized),
-                    base.join(file_name),
-                ];
+                let candidates = [base.join(loc), base.join(normalized), base.join(file_name)];
                 for path in &candidates {
                     if let Ok(content) = read_schema_text_file(path) {
-                        let parent = path
-                            .parent()
-                            .map(|p| p.to_string_lossy().into_owned());
+                        let parent = path.parent().map(|p| p.to_string_lossy().into_owned());
                         return Some((content, parent));
                     }
                 }
@@ -261,21 +255,11 @@ fn normalize_decoded_schema_xml_decl(mut text: String) -> String {
     let (decl, rest) = text.split_at(end);
     let mut normalized = decl.to_string();
     for enc in [
-        "UTF-16BE",
-        "UTF-16LE",
-        "UTF-16",
-        "utf-16be",
-        "utf-16le",
-        "utf-16",
+        "UTF-16BE", "UTF-16LE", "UTF-16", "utf-16be", "utf-16le", "utf-16",
     ] {
-        normalized = normalized.replace(
-            &alloc::format!("encoding=\"{enc}\""),
-            "encoding=\"UTF-8\"",
-        );
-        normalized = normalized.replace(
-            &alloc::format!("encoding='{enc}'"),
-            "encoding=\"UTF-8\"",
-        );
+        normalized =
+            normalized.replace(&alloc::format!("encoding=\"{enc}\""), "encoding=\"UTF-8\"");
+        normalized = normalized.replace(&alloc::format!("encoding='{enc}'"), "encoding=\"UTF-8\"");
     }
     text = alloc::format!("{normalized}{rest}");
     text

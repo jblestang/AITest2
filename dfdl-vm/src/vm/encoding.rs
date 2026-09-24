@@ -111,6 +111,18 @@ pub(crate) fn bits_charset_spec(name: &str) -> Option<BitsCharsetSpec> {
             alphabet: "01234567ABCDEFGHJKLMNPQRSTUVWXYZ",
             bit_order: BitOrder::LeastSignificantBitFirst,
         })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-6-BIT-DFI-264-DUI-001") {
+        Some(BitsCharsetSpec {
+            width: 6,
+            alphabet: " 123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}0",
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-5-BIT-DFI-1661-DUI-001") {
+        Some(BitsCharsetSpec {
+            width: 5,
+            alphabet: "\u{00A0}ABCDEFGHIJKLMNOPQRSTUVWXYZ\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}",
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
     } else if eq_ascii_ignore_case(name, "X-DFDL-US-ASCII-7-BIT-PACKED")
         || eq_ascii_ignore_case(name, "us-ascii-7-bit-packed")
     {
@@ -193,14 +205,16 @@ fn five_bit_packed_code(ch: char, spec: &BitsCharsetSpec) -> Option<usize> {
     spec.alphabet.find(ch)
 }
 
-pub(crate) fn encode_bits_charset_text(text: &str, spec: BitsCharsetSpec) -> Result<Vec<u8>, VmError> {
+pub(crate) fn encode_bits_charset_text(
+    text: &str,
+    spec: BitsCharsetSpec,
+) -> Result<Vec<u8>, VmError> {
     let mut out = Vec::new();
     let mut bit_count = 0u8;
     for ch in text.chars() {
-        let idx = five_bit_packed_code(ch, &spec)
-            .ok_or_else(|| VmError::InvalidValue {
-                message: alloc::format!("character `{ch}` not in bits charset"),
-            })? as u8;
+        let idx = five_bit_packed_code(ch, &spec).ok_or_else(|| VmError::InvalidValue {
+            message: alloc::format!("character `{ch}` not in bits charset"),
+        })? as u8;
         for i in 0..spec.width {
             let bit = match spec.bit_order {
                 BitOrder::MostSignificantBitFirst => (idx >> (spec.width - 1 - i)) & 1,
@@ -238,11 +252,13 @@ pub(crate) fn decode_bits_charset_payload(
                 BitOrder::LeastSignificantBitFirst => idx |= bit << i,
             }
         }
-        let ch = spec.alphabet.chars().nth(idx as usize).ok_or_else(|| {
-            VmError::InvalidValue {
+        let ch = spec
+            .alphabet
+            .chars()
+            .nth(idx as usize)
+            .ok_or_else(|| VmError::InvalidValue {
                 message: "invalid bits charset code unit".into(),
-            }
-        })?;
+            })?;
         out.push(ch);
     }
     Ok(out)
@@ -309,29 +325,23 @@ const EBCDIC037_DECODE: [char; 256] = [
     '\u{0090}', '\u{0091}', '\u{0016}', '\u{0093}', '\u{0094}', '\u{0095}', '\u{0096}', '\u{0004}',
     '\u{0098}', '\u{0099}', '\u{009A}', '\u{009B}', '\u{0014}', '\u{0015}', '\u{009E}', '\u{001A}',
     ' ', '\u{00A0}', '\u{00E2}', '\u{00E4}', '\u{00E0}', '\u{00E1}', '\u{00E3}', '\u{00E5}',
-    '\u{00E7}', '\u{00F1}', '\u{00A2}', '.', '<', '(', '+', '|',
-    '&', '\u{00E9}', '\u{00EA}', '\u{00EB}', '\u{00E8}', '\u{00ED}', '\u{00EE}', '\u{00EF}',
-    '\u{00EC}', '\u{00DF}', '!', '$', '*', ')', ';', '\u{00AC}',
-    '-', '/', '\u{00C2}', '\u{00C4}', '\u{00C0}', '\u{00C1}', '\u{00C3}', '\u{00C5}',
-    '\u{00C7}', '\u{00D1}', '\u{00A6}', ',', '%', '_', '>', '?',
+    '\u{00E7}', '\u{00F1}', '\u{00A2}', '.', '<', '(', '+', '|', '&', '\u{00E9}', '\u{00EA}',
+    '\u{00EB}', '\u{00E8}', '\u{00ED}', '\u{00EE}', '\u{00EF}', '\u{00EC}', '\u{00DF}', '!', '$',
+    '*', ')', ';', '\u{00AC}', '-', '/', '\u{00C2}', '\u{00C4}', '\u{00C0}', '\u{00C1}',
+    '\u{00C3}', '\u{00C5}', '\u{00C7}', '\u{00D1}', '\u{00A6}', ',', '%', '_', '>', '?',
     '\u{00F8}', '\u{00C9}', '\u{00CA}', '\u{00CB}', '\u{00C8}', '\u{00CD}', '\u{00CE}', '\u{00CF}',
-    '\u{00CC}', '`', ':', '#', '@', '\'', '=', '"',
-    '\u{00D8}', 'a', 'b', 'c', 'd', 'e', 'f', 'g',
-    'h', 'i', '\u{00AB}', '\u{00BB}', '\u{00F0}', '\u{00FD}', '\u{00FE}', '\u{00B1}',
-    '\u{00B0}', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
-    'q', 'r', '\u{00AA}', '\u{00BA}', '\u{00E6}', '\u{00B8}', '\u{00C6}', '\u{00A4}',
-    '\u{00B5}', '~', 's', 't', 'u', 'v', 'w', 'x',
-    'y', 'z', '\u{00A1}', '\u{00BF}', '\u{00D0}', '\u{00DD}', '\u{00DE}', '\u{00AE}',
-    '^', '\u{00A3}', '\u{00A5}', '\u{00B7}', '\u{00A9}', '\u{00A7}', '\u{00B6}', '\u{00BC}',
-    '\u{00BD}', '\u{00BE}', '[', ']', '\u{00AF}', '\u{00A8}', '\u{00B4}', '\u{00D7}',
-    '{', 'A', 'B', 'C', 'D', 'E', 'F', 'G',
-    'H', 'I', '\u{00AD}', '\u{00F4}', '\u{00F6}', '\u{00F2}', '\u{00F3}', '\u{00F5}',
-    '}', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
-    'Q', 'R', '\u{00B9}', '\u{00FB}', '\u{00FC}', '\u{00F9}', '\u{00FA}', '\u{00FF}',
-    '\\', '\u{00F7}', 'S', 'T', 'U', 'V', 'W', 'X',
-    'Y', 'Z', '\u{00B2}', '\u{00D4}', '\u{00D6}', '\u{00D2}', '\u{00D3}', '\u{00D5}',
-    '0', '1', '2', '3', '4', '5', '6', '7',
-    '8', '9', '\u{00B3}', '\u{00DB}', '\u{00DC}', '\u{00D9}', '\u{00DA}', '\u{009F}',
+    '\u{00CC}', '`', ':', '#', '@', '\'', '=', '"', '\u{00D8}', 'a', 'b', 'c', 'd', 'e', 'f', 'g',
+    'h', 'i', '\u{00AB}', '\u{00BB}', '\u{00F0}', '\u{00FD}', '\u{00FE}', '\u{00B1}', '\u{00B0}',
+    'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', '\u{00AA}', '\u{00BA}', '\u{00E6}', '\u{00B8}',
+    '\u{00C6}', '\u{00A4}', '\u{00B5}', '~', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '\u{00A1}',
+    '\u{00BF}', '\u{00D0}', '\u{00DD}', '\u{00DE}', '\u{00AE}', '^', '\u{00A3}', '\u{00A5}',
+    '\u{00B7}', '\u{00A9}', '\u{00A7}', '\u{00B6}', '\u{00BC}', '\u{00BD}', '\u{00BE}', '[', ']',
+    '\u{00AF}', '\u{00A8}', '\u{00B4}', '\u{00D7}', '{', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
+    'I', '\u{00AD}', '\u{00F4}', '\u{00F6}', '\u{00F2}', '\u{00F3}', '\u{00F5}', '}', 'J', 'K',
+    'L', 'M', 'N', 'O', 'P', 'Q', 'R', '\u{00B9}', '\u{00FB}', '\u{00FC}', '\u{00F9}', '\u{00FA}',
+    '\u{00FF}', '\\', '\u{00F7}', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '\u{00B2}', '\u{00D4}',
+    '\u{00D6}', '\u{00D2}', '\u{00D3}', '\u{00D5}', '0', '1', '2', '3', '4', '5', '6', '7', '8',
+    '9', '\u{00B3}', '\u{00DB}', '\u{00DC}', '\u{00D9}', '\u{00DA}', '\u{009F}',
 ];
 
 /// ASCII (0..127) → EBCDIC CP037; `0xFF` = not representable.
@@ -522,16 +532,13 @@ pub(crate) fn decode_text_bytes(
                     return Ok(text);
                 }
                 // Daffodil treats `encodingErrorPolicy="error"` as replace for ASCII (not fully implemented).
-                if matches!(policy, EncodingErrorPolicy::Replace | EncodingErrorPolicy::Error) {
+                if matches!(
+                    policy,
+                    EncodingErrorPolicy::Replace | EncodingErrorPolicy::Error
+                ) {
                     return Ok(bytes
                         .iter()
-                        .map(|&b| {
-                            if b <= 0x7f {
-                                b as char
-                            } else {
-                                '\u{FFFD}'
-                            }
-                        })
+                        .map(|&b| if b <= 0x7f { b as char } else { '\u{FFFD}' })
                         .collect());
                 }
                 return Err(VmError::InvalidValue {
@@ -568,11 +575,11 @@ pub(crate) fn character_span_byte_length(
 ) -> Result<usize, VmError> {
     match normalize_encoding_name(encoding) {
         Some("utf-8") | Some("ascii") | Some("iso-8859-1") | Some("ebcdic-cp-us") => Ok(char_count),
-        Some("utf-16be") | Some("utf-16le") => char_count
-            .checked_mul(2)
-            .ok_or(VmError::InvalidValue {
+        Some("utf-16be") | Some("utf-16le") => {
+            char_count.checked_mul(2).ok_or(VmError::InvalidValue {
                 message: "character span overflow".into(),
-            }),
+            })
+        }
         _ => Err(VmError::UnsupportedOperation {
             op: alloc::format!("character span bytes for encoding `{encoding}`"),
         }),
@@ -666,10 +673,7 @@ pub(crate) fn read_one_utf8_char(
             if b1 & 0xC0 != 0x80 {
                 return malformed_utf8(1, policy);
             }
-            (
-                2,
-                ((b0 & 0x1F) as u32) << 6 | ((b1 & 0x3F) as u32),
-            )
+            (2, ((b0 & 0x1F) as u32) << 6 | ((b1 & 0x3F) as u32))
         }
         0xE0..=0xEF => {
             if pos + 2 >= data.len() {
@@ -682,9 +686,7 @@ pub(crate) fn read_one_utf8_char(
             }
             (
                 3,
-                ((b0 & 0x0F) as u32) << 12
-                    | ((b1 & 0x3F) as u32) << 6
-                    | ((b2 & 0x3F) as u32),
+                ((b0 & 0x0F) as u32) << 12 | ((b1 & 0x3F) as u32) << 6 | ((b2 & 0x3F) as u32),
             )
         }
         0xF0..=0xF4 => {
@@ -723,11 +725,13 @@ pub(crate) fn read_one_utf8_char(
 
 fn decode_utf8_text(bytes: &[u8], policy: EncodingErrorPolicy) -> Result<String, VmError> {
     match policy {
-        EncodingErrorPolicy::Error => core::str::from_utf8(bytes)
-            .map(str::to_string)
-            .map_err(|_| VmError::InvalidValue {
-                message: "invalid UTF-8".into(),
-            }),
+        EncodingErrorPolicy::Error => {
+            core::str::from_utf8(bytes)
+                .map(str::to_string)
+                .map_err(|_| VmError::InvalidValue {
+                    message: "invalid UTF-8".into(),
+                })
+        }
         EncodingErrorPolicy::Replace => {
             let mut out = String::new();
             let mut pos = 0usize;
@@ -907,7 +911,10 @@ mod tests {
     #[test]
     fn ebcdic_cp_us_document_text_roundtrip_ascii() {
         let bytes = encode_ebcdic_cp_us("y876543012").unwrap();
-        assert_eq!(bytes, [0xA8, 0xF8, 0xF7, 0xF6, 0xF5, 0xF4, 0xF3, 0xF0, 0xF1, 0xF2]);
+        assert_eq!(
+            bytes,
+            [0xA8, 0xF8, 0xF7, 0xF6, 0xF5, 0xF4, 0xF3, 0xF0, 0xF1, 0xF2]
+        );
         assert_eq!(decode_ebcdic_cp_us(&bytes), "y876543012");
     }
 
@@ -916,12 +923,14 @@ mod tests {
         let bytes = [0xB5, 0xF8, 0xF7, 0xF6, 0xF5, 0xF4, 0xF3, 0xF0, 0xF1, 0xF2];
         let text = decode_ebcdic_cp_us(&bytes);
         let first = text.chars().next().unwrap();
-        assert_eq!(first as u32, 0x00A7, "expected section sign, got U+{:04X}", first as u32);
-        use crate::vm::zoned_text::{
-            zoned_to_number, OverpunchLocation, TextZonedSignStyle,
-        };
-        let num = zoned_to_number(&text, TextZonedSignStyle::Ebcdic, OverpunchLocation::Start)
-            .unwrap();
+        assert_eq!(
+            first as u32, 0x00A7,
+            "expected section sign, got U+{:04X}",
+            first as u32
+        );
+        use crate::vm::zoned_text::{zoned_to_number, OverpunchLocation, TextZonedSignStyle};
+        let num =
+            zoned_to_number(&text, TextZonedSignStyle::Ebcdic, OverpunchLocation::Start).unwrap();
         assert_eq!(num, "-5876543012");
     }
 }

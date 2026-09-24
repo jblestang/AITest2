@@ -1,5 +1,5 @@
 //! Count failures per section05 TDML file (ignored, slow).
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome, TdmlSchema, TdmlSuite};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, TdmlSchema, TdmlSuite, TestOutcome};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

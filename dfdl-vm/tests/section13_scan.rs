@@ -33,17 +33,33 @@ fn scan_file_detailed(
     per_test_limit: Duration,
 ) -> (usize, usize, usize, Vec<(String, String)>, Vec<String>) {
     let Ok(tdml) = fs::read_to_string(path) else {
-        return (0, 1, 0, Vec::new(), vec![format!("{}: read error", path.display())]);
+        return (
+            0,
+            1,
+            0,
+            Vec::new(),
+            vec![format!("{}: read error", path.display())],
+        );
     };
     let Ok(suite) = parse_tdml(&tdml) else {
-        return (0, 1, 0, Vec::new(), vec![format!("{}: parse error", path.display())]);
+        return (
+            0,
+            1,
+            0,
+            Vec::new(),
+            vec![format!("{}: parse error", path.display())],
+        );
     };
     let mut pass = 0usize;
     let mut fail = 0usize;
     let mut skip = 0usize;
     let mut passing = Vec::new();
     let mut notes = Vec::new();
-    let relp = path.strip_prefix(TDML_ROOT).unwrap_or(path).display().to_string();
+    let relp = path
+        .strip_prefix(TDML_ROOT)
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     for t in &suite.tests {
         let start = Instant::now();
@@ -56,7 +72,11 @@ fn scan_file_detailed(
             }
         };
         if start.elapsed() > per_test_limit {
-            notes.push(format!("{relp}::{}: slow (>{}ms)", t.name, per_test_limit.as_millis()));
+            notes.push(format!(
+                "{relp}::{}: slow (>{}ms)",
+                t.name,
+                per_test_limit.as_millis()
+            ));
         }
         match outcome {
             TestOutcome::Pass => {
@@ -150,11 +170,7 @@ fn section13_scan_text_number_props() {
 #[test]
 #[ignore = "diagnostic: single TDML file"]
 fn section13_scan_zoned() {
-    for rel in [
-        "zoned/pv.tdml",
-        "zoned/zoned.tdml",
-        "zoned/zoned2.tdml",
-    ] {
+    for rel in ["zoned/pv.tdml", "zoned/zoned.tdml", "zoned/zoned2.tdml"] {
         report_file(rel);
     }
 }

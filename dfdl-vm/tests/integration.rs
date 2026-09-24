@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
 use dfdl_vm::{DfdlSpec, DfdlValue};
+use std::collections::BTreeMap;
 
 #[test]
 fn binary_record_round_trip() {
@@ -19,9 +19,7 @@ fn binary_record_encode_from_value() {
     let mut fields = BTreeMap::new();
     fields.insert("id".into(), DfdlValue::UnsignedInt(42));
     fields.insert("flags".into(), DfdlValue::UnsignedByte(3));
-    let encoded = spec
-        .encode(&DfdlValue::sequence(fields))
-        .expect("encode");
+    let encoded = spec.encode(&DfdlValue::sequence(fields)).expect("encode");
     assert_eq!(encoded, vec![0x00, 0x00, 0x00, 0x2A, 0x03]);
 }
 
@@ -61,7 +59,11 @@ fn initiator_before_delimited_float() {
 
 #[test]
 fn initiator_before_delimited_float_ref() {
-    let spec = DfdlSpec::from_xsd_root(include_str!("fixtures/initiator_delimited_ref.xsd"), Some("Row")).expect("spec");
+    let spec = DfdlSpec::from_xsd_root(
+        include_str!("fixtures/initiator_delimited_ref.xsd"),
+        Some("Row"),
+    )
+    .expect("spec");
     let decoded = spec.decode(b"30,$17.99").expect("decode");
     assert_eq!(decoded.field("qty"), Some(&DfdlValue::Int(30)));
     match decoded.field("price").expect("price") {
@@ -72,9 +74,11 @@ fn initiator_before_delimited_float_ref() {
 
 #[test]
 fn initiator_list_ref_row() {
-    let spec =
-        DfdlSpec::from_xsd_root(include_str!("fixtures/initiator_item_ref.xsd"), Some("list"))
-            .expect("spec");
+    let spec = DfdlSpec::from_xsd_root(
+        include_str!("fixtures/initiator_item_ref.xsd"),
+        Some("list"),
+    )
+    .expect("spec");
     spec.decoder()
         .decode(b"Shirts,Sold on Monday,30,$17.99")
         .expect("decode one item");
@@ -85,9 +89,11 @@ fn initiator_list_ref_row() {
 
 #[test]
 fn initiator_item_ref_row() {
-    let spec =
-        DfdlSpec::from_xsd_root(include_str!("fixtures/initiator_item_ref.xsd"), Some("Item"))
-            .expect("spec");
+    let spec = DfdlSpec::from_xsd_root(
+        include_str!("fixtures/initiator_item_ref.xsd"),
+        Some("Item"),
+    )
+    .expect("spec");
     spec.decoder()
         .decode(b"Shirts,Sold on Monday,30,$17.99")
         .expect("decode");

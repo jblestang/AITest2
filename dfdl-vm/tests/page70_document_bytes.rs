@@ -19,7 +19,11 @@ fn page70_and_mil_urn_document_load() {
             doc.load_error
         );
         assert!(!doc.data.is_empty(), "{name}: empty document");
-        eprintln!("{name}: len={} first_bytes={:02x?}", doc.data.len(), &doc.data[..doc.data.len().min(4)]);
+        eprintln!(
+            "{name}: len={} first_bytes={:02x?}",
+            doc.data.len(),
+            &doc.data[..doc.data.len().min(4)]
+        );
     }
 }
 

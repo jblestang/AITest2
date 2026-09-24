@@ -4,8 +4,8 @@
 //! - `daffodil_full_suite_report` — baseline report for all sections (ignored; may stack-overflow)
 //! - `section_compliance_report` + `scripts/run-compliance-by-section.sh` — per-bucket scans (preferred)
 use dfdl_vm::tdml::{
-    parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
-    TdmlSuite,
+    parse_tdml, run_parser_test, run_unparser_test, TdmlResourceContext, TdmlSchema, TdmlSuite,
+    TestOutcome,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -23,8 +23,7 @@ fn enrich_external_tdml_models(suite: &mut TdmlSuite, tdml_path: &Path) {
     for t in &suite.unparser_tests {
         models.insert(t.model.clone());
     }
-    suite.resource_context =
-        TdmlResourceContext::from_tdml_path(&tdml_path.to_string_lossy());
+    suite.resource_context = TdmlResourceContext::from_tdml_path(&tdml_path.to_string_lossy());
     for model in models {
         if suite.schemas.contains_key(&model) {
             continue;
@@ -98,16 +97,16 @@ const SECTION00_BASELINE_PASS_MIN: usize = 140;
 const SECTION00_BASELINE_FAIL_MAX: usize = 10;
 
 /// Baseline for all `section02/**` TDML (validation + processing error suites).
-const SECTION02_BASELINE_PASS_MIN: usize = 70;
-const SECTION02_BASELINE_FAIL_MAX: usize = 25;
+const SECTION02_BASELINE_PASS_MIN: usize = 96;
+const SECTION02_BASELINE_FAIL_MAX: usize = 0;
 
 /// Baseline for all `section05/**` TDML.
-const SECTION05_BASELINE_PASS_MIN: usize = 640;
-const SECTION05_BASELINE_FAIL_MAX: usize = 170;
+const SECTION05_BASELINE_PASS_MIN: usize = 811;
+const SECTION05_BASELINE_FAIL_MAX: usize = 0;
 
 /// Baseline for all `section06/**` TDML (namespaces + entities).
-const SECTION06_BASELINE_PASS_MIN: usize = 120;
-const SECTION06_BASELINE_FAIL_MAX: usize = 55;
+const SECTION06_BASELINE_PASS_MIN: usize = 160;
+const SECTION06_BASELINE_FAIL_MAX: usize = 15;
 
 /// Baseline for all `section13/**` TDML.
 const SECTION13_BASELINE_PASS_MIN: usize = 440;
@@ -127,7 +126,12 @@ fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
         let r = match run_parser_test(&suite, test) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("[FAIL PARSER ERR] {} :: {} => {:?}", path.file_name().unwrap_or_default().to_string_lossy(), test.name, e);
+                eprintln!(
+                    "[FAIL PARSER ERR] {} :: {} => {:?}",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    test.name,
+                    e
+                );
                 stats.fail += 1;
                 continue;
             }
@@ -140,9 +144,19 @@ fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
                     || test.name.contains("timeTextInvalid")
                     || test.name.contains("dateTimeTextInvalid")
                 {
-                    eprintln!("[DETAILED_FAIL] {} :: {} => {}", path.file_name().unwrap_or_default().to_string_lossy(), test.name, msg);
+                    eprintln!(
+                        "[DETAILED_FAIL] {} :: {} => {}",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        test.name,
+                        msg
+                    );
                 } else {
-                    eprintln!("[FAIL PARSER] {} :: {} => {}", path.file_name().unwrap_or_default().to_string_lossy(), test.name, msg);
+                    eprintln!(
+                        "[FAIL PARSER] {} :: {} => {}",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        test.name,
+                        msg
+                    );
                 }
                 stats.fail += 1;
             }
@@ -153,7 +167,12 @@ fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
         let r = match run_unparser_test(&suite, test) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("[FAIL UNPARSER ERR] {} :: {} => {:?}", path.file_name().unwrap_or_default().to_string_lossy(), test.name, e);
+                eprintln!(
+                    "[FAIL UNPARSER ERR] {} :: {} => {:?}",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    test.name,
+                    e
+                );
                 stats.fail += 1;
                 continue;
             }
@@ -161,7 +180,12 @@ fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
         match r.outcome {
             TestOutcome::Pass => stats.pass += 1,
             TestOutcome::Fail(msg) => {
-                eprintln!("[FAIL UNPARSER] {} :: {} => {}", path.file_name().unwrap_or_default().to_string_lossy(), test.name, msg);
+                eprintln!(
+                    "[FAIL UNPARSER] {} :: {} => {}",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    test.name,
+                    msg
+                );
                 stats.fail += 1;
             }
             TestOutcome::Skip(_) => stats.skip += 1,
@@ -235,7 +259,10 @@ fn daffodil_section02_regression_gate() {
         "section02 gate: pass={} fail={} skip={} parse_fail={}",
         stats.pass, stats.fail, stats.skip, stats.parse_fail
     );
-    assert_eq!(stats.parse_fail, 0, "section02 TDML parse errors: {stats:?}");
+    assert_eq!(
+        stats.parse_fail, 0,
+        "section02 TDML parse errors: {stats:?}"
+    );
     assert!(
         stats.pass >= SECTION02_BASELINE_PASS_MIN,
         "section02 regression: pass={} (need >={SECTION02_BASELINE_PASS_MIN}), fail={}",
@@ -300,10 +327,7 @@ fn daffodil_section00_core_zero_fail_gate() {
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        if SECTION00_GATE_SKIP_FILES
-            .iter()
-            .any(|skip| rel == *skip)
-        {
+        if SECTION00_GATE_SKIP_FILES.iter().any(|skip| rel == *skip) {
             continue;
         }
         run_tdml_file(&path, &mut stats);
@@ -447,7 +471,10 @@ fn daffodil_section12_length_properties_regression_gate() {
     let root = assert_tdml_root().join("section12/length_properties");
     let mut files = Vec::new();
     collect_tdml_files(&root, &mut files);
-    assert!(!files.is_empty(), "section12/length_properties TDML missing");
+    assert!(
+        !files.is_empty(),
+        "section12/length_properties TDML missing"
+    );
 
     let mut stats = SectionStats::default();
     for path in files {
@@ -491,10 +518,7 @@ fn daffodil_section06_regression_gate() {
         "section06: pass={} fail={} skip={} parse_fail={}",
         stats.pass, stats.fail, stats.skip, stats.parse_fail
     );
-    assert_eq!(
-        stats.parse_fail, 0,
-        "section06 TDML load errors: {stats:?}"
-    );
+    assert_eq!(stats.parse_fail, 0, "section06 TDML load errors: {stats:?}");
     assert!(
         stats.pass >= SECTION06_BASELINE_PASS_MIN,
         "section06: expected at least {} passing cases, got pass={} fail={} skip={}",
@@ -503,12 +527,10 @@ fn daffodil_section06_regression_gate() {
         stats.fail,
         stats.skip
     );
-    assert!(
-        stats.fail <= SECTION06_BASELINE_FAIL_MAX,
-        "section06 regression: too many failures pass={} fail={} skip={}",
-        stats.pass,
-        stats.fail,
-        stats.skip
+    assert_eq!(
+        stats.fail, SECTION06_BASELINE_FAIL_MAX,
+        "section06 regression: unexpected failures pass={} fail={} skip={}",
+        stats.pass, stats.fail, stats.skip
     );
 }
 
@@ -528,10 +550,7 @@ fn daffodil_section05_regression_gate() {
         "section05: pass={} fail={} skip={} parse_fail={}",
         stats.pass, stats.fail, stats.skip, stats.parse_fail
     );
-    assert_eq!(
-        stats.parse_fail, 0,
-        "section05 TDML load errors: {stats:?}"
-    );
+    assert_eq!(stats.parse_fail, 0, "section05 TDML load errors: {stats:?}");
     assert!(
         stats.pass >= SECTION05_BASELINE_PASS_MIN,
         "section05: expected at least {} passing cases, got pass={} fail={} skip={}",
@@ -569,10 +588,7 @@ fn daffodil_section13_regression_gate() {
         }
         run_tdml_file(&path, &mut stats);
     }
-    assert_eq!(
-        stats.parse_fail, 0,
-        "section13 TDML load errors: {stats:?}"
-    );
+    assert_eq!(stats.parse_fail, 0, "section13 TDML load errors: {stats:?}");
     assert!(
         stats.pass >= SECTION13_BASELINE_PASS_MIN,
         "section13: expected at least {} passing cases, got pass={} fail={} skip={}",
@@ -614,8 +630,7 @@ fn run_section_gate(section_name: &str, min_pass: usize, max_fail: usize) {
         assert_eq!(
             stats.fail, 0,
             "{section_name} regression: fail={} (expected 0), pass={}",
-            stats.fail,
-            stats.pass
+            stats.fail, stats.pass
         );
     } else {
         assert!(
@@ -629,7 +644,7 @@ fn run_section_gate(section_name: &str, min_pass: usize, max_fail: usize) {
 
 #[test]
 fn daffodil_section07_regression_gate() {
-    run_section_gate("section07", 140, 165);
+    run_section_gate("section07", 191, 112);
 }
 
 #[test]
@@ -716,4 +731,3 @@ fn daffodil_unparser_regression_gate() {
 fn daffodil_usertests_regression_gate() {
     run_section_gate("usertests", 10, 30);
 }
-

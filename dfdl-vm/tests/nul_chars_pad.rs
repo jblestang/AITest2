@@ -1,4 +1,4 @@
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome, TdmlSchema};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, TdmlSchema, TestOutcome};
 use std::fs;
 use std::path::Path;
 

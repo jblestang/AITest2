@@ -1,16 +1,16 @@
 pub(crate) mod builder;
 
-pub use builder::{compile, compile_named, compile_named_with_tunables};
 use crate::error::VmError;
 use crate::schema::{
     BinaryFloatRep, BinaryNumberCheckPolicy, BinaryNumberRep, BitOrder, ByteOrder,
-    EncodingErrorPolicy, EscapeSchemeDef, InputValueCalc,
-    LengthKind, LengthUnits, NilKind, ObjectKind, OccursCountKind, OutputValueCalc,
-    ChoiceLengthKind, Representation, SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind,
-    TextNumberJustification, TextPadKind, TextStringJustification, TextTrimKind,
+    ChoiceLengthKind, EncodingErrorPolicy, EscapeSchemeDef, InputValueCalc, LengthKind,
+    LengthUnits, NilKind, ObjectKind, OccursCountKind, OutputValueCalc, Representation,
+    SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind, TextNumberJustification,
+    TextPadKind, TextStringJustification, TextTrimKind,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
+pub use builder::{compile, compile_named, compile_named_with_tunables};
 
 /// Compiled in-memory intermediate representation executed by the DFDL VM.
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +119,7 @@ pub enum IrIvcXsCast {
     Float,
     Double,
     String,
+    HexBinary,
 }
 
 pub fn ir_props_has_input_value_calc(props: &IrProps) -> bool {
@@ -128,6 +129,15 @@ pub fn ir_props_has_input_value_calc(props: &IrProps) -> bool {
         || props.input_value_calc_segments.is_some()
         || props.input_value_calc_path.is_some()
         || props.input_value_calc_expression.is_some()
+}
+
+pub fn ir_props_has_output_value_calc(props: &IrProps) -> bool {
+    props.output_value_calc.is_some()
+        || props.output_value_calc_literal.is_some()
+        || props.output_value_calc_sibling.is_some()
+        || props.output_value_calc_path.is_some()
+        || props.output_value_calc_segments.is_some()
+        || props.output_value_calc_conditional
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,11 +162,17 @@ pub enum IrInputValueCalcExpression {
     },
     Ceiling(alloc::boxed::Box<IrInputValueCalcExpression>),
     Variable(StringId),
+    ValueLength {
+        sibling: StringId,
+        units: crate::schema::LengthUnits,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IrProps {
     pub representation: Representation,
+    /// True when `dfdl:representation` was explicitly set (not just defaulted).
+    pub representation_defined: bool,
     pub byte_order: ByteOrder,
     /// True when `dfdl:byteOrder` was present on merged DFDL props (not schema default only).
     pub byte_order_defined: bool,
@@ -331,8 +347,9 @@ pub struct IrProps {
     pub separator_suppression_policy: Option<SeparatorSuppressionPolicy>,
     pub empty_element_parse_policy: crate::schema::EmptyElementParsePolicy,
     pub occurs_count_kind: OccursCountKind,
-    /// `fn:count(...)` steps for `occursCountKind="expression"`.
     pub occurs_count_fn_path: Option<Vec<IrInputPathStep>>,
+    /// Raw expression string for `occursCountKind="expression"`.
+    pub occurs_count_expr: Option<StringId>,
     /// When true, parsed value is not placed in the infoset (hidden model group member).
     pub hidden: bool,
     pub ignore_case: bool,
@@ -356,12 +373,15 @@ pub struct IrProps {
     pub choice_dispatch_sibling_int: Option<StringId>,
     /// `dfdl:setVariable` pairs applied when this sequence node is entered.
     pub set_variables: alloc::vec::Vec<(StringId, StringId)>,
+    /// `dfdl:newVariableInstance` pairs applied when this node is entered.
+    pub new_variable_instances: alloc::vec::Vec<(StringId, Option<StringId>)>,
 }
 
 impl Default for IrProps {
     fn default() -> Self {
         Self {
             representation: Representation::Binary,
+            representation_defined: false,
             byte_order: ByteOrder::BigEndian,
             byte_order_defined: false,
             byte_order_conditional_test: None,
@@ -518,6 +538,7 @@ impl Default for IrProps {
             empty_element_parse_policy: crate::schema::EmptyElementParsePolicy::TreatAsEmpty,
             occurs_count_kind: OccursCountKind::Parsed,
             occurs_count_fn_path: None,
+            occurs_count_expr: None,
             hidden: false,
             ignore_case: false,
             initiated_content: false,
@@ -531,6 +552,7 @@ impl Default for IrProps {
             choice_dispatch_literal: None,
             choice_dispatch_sibling_int: None,
             set_variables: alloc::vec::Vec::new(),
+            new_variable_instances: alloc::vec::Vec::new(),
         }
     }
 }
@@ -583,9 +605,11 @@ impl StringPool {
 
 impl IrProgram {
     pub fn node(&self, id: u32) -> Result<&IrNode, VmError> {
-        self.nodes.get(id as usize).ok_or_else(|| VmError::InvalidValue {
-            message: alloc::format!("invalid IR node id {id}"),
-        })
+        self.nodes
+            .get(id as usize)
+            .ok_or_else(|| VmError::InvalidValue {
+                message: alloc::format!("invalid IR node id {id}"),
+            })
     }
 
     /// Merged format `bitOrder` on the root particle (stream bit extraction within bytes).

@@ -107,7 +107,11 @@ pub fn resolve_text_boolean_rep_token(
                     .ok_or_else(|| alloc::format!("unsupported xs:string argument `{arg}`"))?;
                 let name = sibling_ref_name(sib_part.trim())
                     .ok_or_else(|| alloc::format!("unsupported xs:string argument `{arg}`"))?;
-                if let Some(units) = inner_arg.split(',').nth(1).map(|u| u.trim().trim_matches('\'')) {
+                if let Some(units) = inner_arg
+                    .split(',')
+                    .nth(1)
+                    .map(|u| u.trim().trim_matches('\''))
+                {
                     if units.eq_ignore_ascii_case("bytes") {
                         return sibling_content_byte_length(sibling_content_bytes, &name);
                     }
@@ -120,7 +124,9 @@ pub fn resolve_text_boolean_rep_token(
             }
             return Err(alloc::format!("unsupported xs:string argument `{arg}`"));
         }
-        return Err(alloc::format!("unsupported boolean rep expression `{inner}`"));
+        return Err(alloc::format!(
+            "unsupported boolean rep expression `{inner}`"
+        ));
     }
     Ok(trimmed.to_string())
 }

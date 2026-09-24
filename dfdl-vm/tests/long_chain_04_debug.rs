@@ -1,5 +1,5 @@
 use dfdl_vm::schema::{parse_schema_with_options, ParseOptions, Representation};
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome, TdmlResourceContext, TdmlSchema};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, TdmlResourceContext, TdmlSchema, TestOutcome};
 
 const ROOT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -19,11 +19,12 @@ fn inspect_nest_type3_and_run() {
         },
     )
     .unwrap();
-    eprintln!("format_defaults.length={:?}", doc.format_defaults.props.length);
+    eprintln!(
+        "format_defaults.length={:?}",
+        doc.format_defaults.props.length
+    );
     for key in doc.types.keys() {
-        if key.as_str().contains("nest")
-            || key.as_str().contains("subNest")
-        {
+        if key.as_str().contains("nest") || key.as_str().contains("subNest") {
             let eff = doc.effective_simple_type_props(key).unwrap();
             eprintln!(
                 "{:?}: repr={:?} len={:?} len_kind={:?} units={:?}",

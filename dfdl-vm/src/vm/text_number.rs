@@ -34,8 +34,7 @@ impl Default for TextNumberFormatProps<'_> {
 
 fn slice_starts_with_ignore_case(text: &str, prefix: &str) -> bool {
     text.len() >= prefix.len()
-        && text.as_bytes()[..prefix.len()]
-            .eq_ignore_ascii_case(prefix.as_bytes())
+        && text.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
 }
 
 #[allow(dead_code)]
@@ -290,7 +289,10 @@ fn strip_unquoted_substr(s: &str, sub: &str) -> String {
             i += 1;
             continue;
         }
-        if !in_quote && i + sub_chars.len() <= chars.len() && chars[i..i + sub_chars.len()] == sub_chars[..] {
+        if !in_quote
+            && i + sub_chars.len() <= chars.len()
+            && chars[i..i + sub_chars.len()] == sub_chars[..]
+        {
             i += sub_chars.len();
             continue;
         }
@@ -378,7 +380,11 @@ fn apply_configured_separators_to_input(
     s
 }
 
-fn needs_separator_preprocess(work: &str, pattern: &str, props: &TextNumberFormatProps<'_>) -> bool {
+fn needs_separator_preprocess(
+    work: &str,
+    pattern: &str,
+    props: &TextNumberFormatProps<'_>,
+) -> bool {
     let bare = pattern_without_quoted_regions(pattern);
     if props
         .grouping_separator
@@ -387,9 +393,10 @@ fn needs_separator_preprocess(work: &str, pattern: &str, props: &TextNumberForma
         return true;
     }
     if !bare.contains('.') {
-        return props.decimal_separators.iter().any(|ds| {
-            !ds.is_empty() && ds != "." && work.contains(ds.as_str())
-        });
+        return props
+            .decimal_separators
+            .iter()
+            .any(|ds| !ds.is_empty() && ds != "." && work.contains(ds.as_str()));
     }
     false
 }
@@ -470,7 +477,10 @@ pub(crate) fn parse_standard_text_number(
     } else {
         vec![match_pattern.as_str()]
     };
-    let positive_match = match_subs.first().copied().unwrap_or(match_pattern.as_str());
+    let positive_match = match_subs
+        .first()
+        .copied()
+        .unwrap_or(match_pattern.as_str());
 
     for (idx, sub) in match_subs.iter().enumerate() {
         if idx > 0 && sub.is_empty() {
@@ -488,15 +498,7 @@ pub(crate) fn parse_standard_text_number(
                 v_int_slots,
             )
         } else {
-            match_subpattern(
-                &mut scratch,
-                sub,
-                props,
-                lax,
-                false,
-                v_frac,
-                v_int_slots,
-            )
+            match_subpattern(&mut scratch, sub, props, lax, false, v_frac, v_int_slots)
         };
         match result {
             Ok(num) => {
@@ -584,10 +586,7 @@ fn match_decimal_separator(
             return true;
         }
     }
-    if props.decimal_separators.is_empty()
-        && *pos < bytes.len()
-        && bytes[*pos] == b'.'
-    {
+    if props.decimal_separators.is_empty() && *pos < bytes.len() && bytes[*pos] == b'.' {
         *pos += 1;
         return true;
     }
@@ -621,11 +620,10 @@ fn negative_template_span(pattern: &str) -> (usize, usize) {
             }
             break;
         }
-        if chars[i] == '*'
-            && i + 1 < chars.len() {
-                i += 2;
-                continue;
-            }
+        if chars[i] == '*' && i + 1 < chars.len() {
+            i += 2;
+            continue;
+        }
         if is_negative_template_char(chars[i]) {
             break;
         }
@@ -636,11 +634,10 @@ fn negative_template_span(pattern: &str) -> (usize, usize) {
         if chars[i] == '\'' {
             break;
         }
-        if chars[i] == '*'
-            && i + 1 < chars.len() {
-                i += 2;
-                continue;
-            }
+        if chars[i] == '*' && i + 1 < chars.len() {
+            i += 2;
+            continue;
+        }
         if chars[i] == ' ' {
             let mut j = i;
             while j < chars.len() && chars[j] == ' ' {
@@ -992,9 +989,7 @@ fn try_parse_trailing_exponent(
     }
     let mut p = 0usize;
     let b0 = bytes[p];
-    let is_exp = b0 == b'E'
-        || b0 == b'e'
-        || props.exponent_chars.contains(b0 as char);
+    let is_exp = b0 == b'E' || b0 == b'e' || props.exponent_chars.contains(b0 as char);
     if !is_exp {
         return None;
     }
@@ -1021,13 +1016,7 @@ fn try_parse_trailing_exponent(
     if tail != bytes.len() {
         return None;
     }
-    Some((
-        TrailingExponent {
-            digits,
-            negative,
-        },
-        leading_ws + p,
-    ))
+    Some((TrailingExponent { digits, negative }, leading_ws + p))
 }
 
 fn match_subpattern(
@@ -1101,7 +1090,14 @@ fn match_subpattern(
                 let min_digits = 0usize;
                 let stops_at_dot = j < chars.len() && chars[j] == '.';
 
-                skip_pad(bytes, &mut pos, props.pad_character, lax, props, saw_decimal);
+                skip_pad(
+                    bytes,
+                    &mut pos,
+                    props.pad_character,
+                    lax,
+                    props,
+                    saw_decimal,
+                );
                 if in_exponent && exponent.as_ref().is_none_or(|e| e.is_empty()) {
                     if pos < bytes.len() && bytes[pos] == b'+' {
                         exp_explicit_sign = true;
@@ -1112,17 +1108,19 @@ fn match_subpattern(
                         pos += 1;
                     }
                 }
-                if !in_exponent && !saw_decimal
-                    && match_decimal_separator(bytes, &mut pos, props) {
-                        saw_decimal = true;
-                    }
+                if !in_exponent && !saw_decimal && match_decimal_separator(bytes, &mut pos, props) {
+                    saw_decimal = true;
+                }
                 let start = pos;
                 while pos < bytes.len() && bytes[pos].is_ascii_digit() {
-                    if stops_at_dot && !saw_decimal && !in_exponent
-                        && match_decimal_separator(bytes, &mut pos, props) {
-                            saw_decimal = true;
-                            break;
-                        }
+                    if stops_at_dot
+                        && !saw_decimal
+                        && !in_exponent
+                        && match_decimal_separator(bytes, &mut pos, props)
+                    {
+                        saw_decimal = true;
+                        break;
+                    }
                     pos += 1;
                 }
                 let digit_count = pos - start;
@@ -1209,16 +1207,15 @@ fn match_subpattern(
                         continue;
                     }
                 }
-                if props.exponent_chars.contains(chars[i])
-                    && pos < bytes.len() {
-                        let b = bytes[pos];
-                        if b == b'E' || b == b'e' || props.exponent_chars.contains(b as char) {
-                            pos += 1;
-                            in_exponent = true;
-                            i += 1;
-                            continue;
-                        }
+                if props.exponent_chars.contains(chars[i]) && pos < bytes.len() {
+                    let b = bytes[pos];
+                    if b == b'E' || b == b'e' || props.exponent_chars.contains(b as char) {
+                        pos += 1;
+                        in_exponent = true;
+                        i += 1;
+                        continue;
                     }
+                }
                 // fall through literal
                 let lit = chars[i];
                 skip_ws(bytes, &mut pos, lax);
@@ -1375,20 +1372,17 @@ fn match_subpattern(
     if let Some(exp) = exponent {
         if !exp.is_empty() {
             let bare = pattern_without_quoted_regions(pattern);
-            let exp_section = bare
-                .split(['E', 'e'])
-                .nth(1)
-                .unwrap_or("");
-            let pattern_signed_exp =
-                exp_section.contains('+') || exp_section.contains('-');
+            let exp_section = bare.split(['E', 'e']).nth(1).unwrap_or("");
+            let pattern_signed_exp = exp_section.contains('+') || exp_section.contains('-');
             if exp_explicit_sign || exp_negative || pattern_signed_exp {
-                return Ok(apply_scientific_exponent(&out, &exp, exp_negative, negative));
+                return Ok(apply_scientific_exponent(
+                    &out,
+                    &exp,
+                    exp_negative,
+                    negative,
+                ));
             }
-            if saw_decimal
-                || !frac_digits.is_empty()
-                || bare.contains('E')
-                || bare.contains('e')
-            {
+            if saw_decimal || !frac_digits.is_empty() || bare.contains('E') || bare.contains('e') {
                 let exp_sign = if exp_negative { "-" } else { "" };
                 let mut sci = format!("{out}E{exp_sign}{exp}");
                 if negative && !sci.starts_with('-') {
@@ -1396,7 +1390,12 @@ fn match_subpattern(
                 }
                 return Ok(sci);
             }
-            return Ok(apply_scientific_exponent(&out, &exp, exp_negative, negative));
+            return Ok(apply_scientific_exponent(
+                &out,
+                &exp,
+                exp_negative,
+                negative,
+            ));
         }
     }
 
@@ -1538,8 +1537,7 @@ mod tests {
             pad_character: Some('0'),
             ..TextNumberFormatProps::default()
         };
-        let strict =
-            parse_standard_text_number("$5 00", "'$'#0.00", &strict_props).unwrap();
+        let strict = parse_standard_text_number("$5 00", "'$'#0.00", &strict_props).unwrap();
         assert_eq!(strict, "5.00", "strict baseline got `{strict}`");
         let n = parse_standard_text_number("$5 00", "'$'#0.00", &lax_props).unwrap();
         assert_eq!(n, "5.00", "lax parse got `{n}` (strict=`{strict}`)");
@@ -1617,8 +1615,7 @@ mod tests {
         let (pre, suf) = negative_affixes("##0PP-", "##0PP+");
         assert_eq!(pre, "");
         assert_eq!(suf, "-");
-        let n =
-            parse_standard_text_number("123-", "##0PP+;##0PP-", &props).unwrap();
+        let n = parse_standard_text_number("123-", "##0PP+;##0PP-", &props).unwrap();
         assert_eq!(n, "-12300");
     }
 
@@ -1634,12 +1631,7 @@ mod tests {
             ..TextNumberFormatProps::default()
         };
         let pat = "**######;*/$###### 'is negative!'";
-        let n = parse_standard_text_number(
-            "******$123456 is negative!",
-            pat,
-            &props,
-        )
-        .unwrap();
+        let n = parse_standard_text_number("******$123456 is negative!", pat, &props).unwrap();
         assert_eq!(n, "-123456");
     }
 
@@ -1688,12 +1680,8 @@ mod tests {
             pad_character: Some('0'),
             ..TextNumberFormatProps::default()
         };
-        let n = parse_standard_text_number(
-            "5.325762300373444E10",
-            "###0.###;-###0.###",
-            &props,
-        )
-        .unwrap();
+        let n = parse_standard_text_number("5.325762300373444E10", "###0.###;-###0.###", &props)
+            .unwrap();
         assert_eq!(n, "5.325762300373444E10");
     }
 
@@ -1723,15 +1711,9 @@ mod tests {
             decimal_separators: &dec,
             ..TextNumberFormatProps::default()
         };
-        let n =
-            parse_standard_text_number("999999999", "######0V00;-######0V00", &props).unwrap();
+        let n = parse_standard_text_number("999999999", "######0V00;-######0V00", &props).unwrap();
         assert_eq!(n, "9999999.99");
-        let n2 = parse_standard_text_number(
-            "[999]",
-            "[######0V00];(######0V00)",
-            &props,
-        )
-        .unwrap();
+        let n2 = parse_standard_text_number("[999]", "[######0V00];(######0V00)", &props).unwrap();
         assert_eq!(n2, "9.99");
     }
 
@@ -1787,12 +1769,8 @@ mod tests {
             pad_character: Some('0'),
             ..TextNumberFormatProps::default()
         };
-        let n = parse_standard_text_number(
-            "                 12 o'clock",
-            "* #0 o''clock",
-            &props,
-        )
-        .unwrap();
+        let n = parse_standard_text_number("                 12 o'clock", "* #0 o''clock", &props)
+            .unwrap();
         assert_eq!(n, "12");
     }
 
@@ -1807,12 +1785,8 @@ mod tests {
             pad_character: Some('0'),
             ..TextNumberFormatProps::default()
         };
-        let n = parse_standard_text_number(
-            "                 12 o'clock",
-            "* #0 o'clock",
-            &props,
-        )
-        .unwrap();
+        let n = parse_standard_text_number("                 12 o'clock", "* #0 o'clock", &props)
+            .unwrap();
         assert_eq!(n, "12");
         let n2 = parse_standard_text_number(
             "4>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> right",

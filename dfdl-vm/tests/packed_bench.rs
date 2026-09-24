@@ -1,8 +1,6 @@
 //! Investigate packed.tdml slowness (ignored by default).
 use dfdl_vm::schema::parse_schema;
-use dfdl_vm::tdml::{
-    effective_round_trip, parse_tdml, run_parser_test, RoundTrip,
-};
+use dfdl_vm::tdml::{effective_round_trip, parse_tdml, run_parser_test, RoundTrip};
 use dfdl_vm::DfdlSpec;
 use std::collections::BTreeSet;
 use std::fs;
@@ -26,7 +24,11 @@ fn packed_tdml_timing_breakdown() {
         keys.insert((t.model.clone(), t.root.clone()));
     }
 
-    let sample = suite.tests.iter().find(|t| t.name == "hexCharset01").unwrap();
+    let sample = suite
+        .tests
+        .iter()
+        .find(|t| t.name == "hexCharset01")
+        .unwrap();
     let xsd = suite.schemas.get(&sample.model).unwrap().xsd.clone();
 
     let t = Instant::now();
@@ -34,15 +36,20 @@ fn packed_tdml_timing_breakdown() {
     let parse_schema_ms = t.elapsed().as_millis();
 
     let t = Instant::now();
-    let spec = DfdlSpec::from_schema_root_with_tunables(schema, Some(&sample.root), Default::default())
-        .expect("compile");
+    let spec =
+        DfdlSpec::from_schema_root_with_tunables(schema, Some(&sample.root), Default::default())
+            .expect("compile");
     let compile_once_ms = t.elapsed().as_millis();
 
     let t = Instant::now();
     for _ in 0..50 {
         let schema = parse_schema(&xsd).expect("parse_schema");
-        let _ = DfdlSpec::from_schema_root_with_tunables(schema, Some(&sample.root), Default::default())
-            .expect("compile");
+        let _ = DfdlSpec::from_schema_root_with_tunables(
+            schema,
+            Some(&sample.root),
+            Default::default(),
+        )
+        .expect("compile");
     }
     let compile_50x_ms = t.elapsed().as_millis();
 
@@ -86,12 +93,18 @@ fn packed_tdml_timing_breakdown() {
     eprintln!("tests with twoPass (incl default): ~{two_pass}");
     eprintln!("parse_schema once: {parse_schema_ms} ms");
     eprintln!("compile once: {compile_once_ms} ms");
-    eprintln!("50x parse+compile: {compile_50x_ms} ms (~{} ms each)", compile_50x_ms / 50);
+    eprintln!(
+        "50x parse+compile: {compile_50x_ms} ms (~{} ms each)",
+        compile_50x_ms / 50
+    );
     eprintln!(
         "5000x decode (cached spec): {decode_5000x_ms} ms (~{:.3} ms each)",
         decode_5000x_ms as f64 / 5000.0
     );
-    eprintln!("all {n} run_parser_test: {all_ms} ms (~{:.1} ms each)", all_ms as f64 / n as f64);
+    eprintln!(
+        "all {n} run_parser_test: {all_ms} ms (~{:.1} ms each)",
+        all_ms as f64 / n as f64
+    );
     eprintln!("top 10 slowest cases:");
     for (d, name) in slowest.into_iter().take(10) {
         eprintln!("  {d:>7?}  {name}");

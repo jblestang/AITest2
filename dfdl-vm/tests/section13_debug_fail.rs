@@ -15,7 +15,11 @@ fn tdml(path: &str) -> PathBuf {
 fn debug_parser(tdml_rel: &str, case_name: &str) {
     let text = fs::read_to_string(tdml(tdml_rel)).expect("read");
     let suite = parse_tdml(&text).expect("parse tdml");
-    let test = suite.tests.iter().find(|t| t.name == case_name).expect("case");
+    let test = suite
+        .tests
+        .iter()
+        .find(|t| t.name == case_name)
+        .expect("case");
     match run_parser_test(&suite, test) {
         Ok(r) => eprintln!("{case_name}: {:?}", r.outcome),
         Err(e) => eprintln!("{case_name}: compile/run err: {e}"),
@@ -46,7 +50,10 @@ fn debug_remaining_section13() {
         ("section13/nillable/nillable2.tdml", "foo1"),
         ("section13/nillable/literal-character-nils.tdml", "text_03"),
         ("section13/nillable/nillable.tdml", "litNil4"),
-        ("section13/nillable/literal-value-nils.tdml", "test_complex_nil"),
+        (
+            "section13/nillable/literal-value-nils.tdml",
+            "test_complex_nil",
+        ),
         ("section13/nillable/nillable.tdml", "complexNillable_02"),
         ("section13/zoned/pv.tdml", "bad_byte_vpattern_01"),
     ];

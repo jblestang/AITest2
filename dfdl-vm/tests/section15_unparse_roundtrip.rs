@@ -14,7 +14,9 @@ fn enrich(suite: &mut TdmlSuite, path: &Path) {
             continue;
         }
         let p = dir.join(&model);
-        let Ok(xsd) = fs::read_to_string(&p) else { continue };
+        let Ok(xsd) = fs::read_to_string(&p) else {
+            continue;
+        };
         suite.schemas.insert(
             model.clone(),
             TdmlSchema {
@@ -29,7 +31,9 @@ fn enrich(suite: &mut TdmlSuite, path: &Path) {
         if suite.schemas.contains_key(&model) {
             continue;
         }
-        if !(model.ends_with(".xsd") || model.ends_with(".dfdl.xsd")) && !suite.schemas.contains_key(&model) {
+        if !(model.ends_with(".xsd") || model.ends_with(".dfdl.xsd"))
+            && !suite.schemas.contains_key(&model)
+        {
             if let Some(def) = suite.schemas.get(&model) {
                 suite.schemas.insert(model.clone(), def.clone());
             }
@@ -48,7 +52,11 @@ fn initiated_content_parse_then_unparse() {
     let mut suite = parse_tdml(&tdml).unwrap();
     enrich(&mut suite, Path::new(path));
 
-    let parse = suite.tests.iter().find(|t| t.name == "initiatedContentChoice1").unwrap();
+    let parse = suite
+        .tests
+        .iter()
+        .find(|t| t.name == "initiatedContentChoice1")
+        .unwrap();
     let pr = run_parser_test(&suite, parse).unwrap();
     eprintln!("parse: {:?}", pr.outcome);
 

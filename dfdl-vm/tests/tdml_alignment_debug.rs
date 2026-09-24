@@ -1,4 +1,4 @@
-use dfdl_vm::ir::{IrNode, compile_named};
+use dfdl_vm::ir::{compile_named, IrNode};
 use dfdl_vm::schema::{parse_schema_with_options, ParseOptions};
 use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome};
 use dfdl_vm::DfdlSpec;
@@ -38,7 +38,10 @@ fn tdml_e3_one_has_leading_skip_in_ir() {
 #[test]
 fn tdml_hb_decode_via_spec() {
     let suite = parse_tdml(TDML).expect("tdml");
-    let def = suite.schemas.get("implicitAlignmentSchema").expect("schema");
+    let def = suite
+        .schemas
+        .get("implicitAlignmentSchema")
+        .expect("schema");
     let schema = parse_schema_with_options(
         &def.xsd,
         &ParseOptions {
@@ -62,20 +65,12 @@ fn tdml_hb_decode_via_spec() {
     let frame = doc.significant_bit_length();
     let value = spec
         .decoder()
-        .decode_with_tdml_options(
-            &doc.data,
-            frame,
-            Some(doc.transmission_bit_order),
-            None,
-        )
+        .decode_with_tdml_options(&doc.data, frame, Some(doc.transmission_bit_order), None)
         .expect("decode");
     let dfdl_vm::value::DfdlValue::Sequence(fields) = value else {
         panic!("expected root wrap");
     };
-    let h = fields
-        .fields
-        .get("hB")
-        .expect("hB field");
+    let h = fields.fields.get("hB").expect("hB field");
     let dfdl_vm::value::DfdlValue::HexBinary(bytes) = h else {
         panic!("expected hex");
     };
@@ -85,7 +80,11 @@ fn tdml_hb_decode_via_spec() {
 #[test]
 fn tdml_alignment02_parser_test() {
     let suite = parse_tdml(TDML).expect("tdml");
-    let test = suite.tests.iter().find(|t| t.name == "alignment02").expect("t");
+    let test = suite
+        .tests
+        .iter()
+        .find(|t| t.name == "alignment02")
+        .expect("t");
     let r = run_parser_test(&suite, test).expect("run");
     match r.outcome {
         TestOutcome::Pass => {}

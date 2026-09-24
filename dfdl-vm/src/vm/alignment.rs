@@ -34,16 +34,32 @@ pub fn implicit_alignment_in_bits(kind: ValueKind, props: &IrProps, encoding: &s
         ValueKind::Double => 64,
         ValueKind::HexBinary => 8,
         ValueKind::Long => {
-            if packed { 8 } else { 64 }
+            if packed {
+                8
+            } else {
+                64
+            }
         }
         ValueKind::Integer => {
-            if packed { 8 } else { 8 }
+            if packed {
+                8
+            } else {
+                8
+            }
         }
         ValueKind::Int | ValueKind::UnsignedInt => {
-            if packed { 8 } else { 32 }
+            if packed {
+                8
+            } else {
+                32
+            }
         }
         ValueKind::Short | ValueKind::UnsignedShort => {
-            if packed { 8 } else { 16 }
+            if packed {
+                8
+            } else {
+                16
+            }
         }
         ValueKind::Byte | ValueKind::UnsignedByte | ValueKind::Decimal => 8,
         ValueKind::DateTime | ValueKind::Time => 64,
@@ -61,11 +77,7 @@ fn text_encoding_alignment_bits(encoding: &str) -> usize {
 }
 
 /// Whether implicit/explicit pre-element alignment runs before a binary bit-length field.
-pub fn pre_element_alignment_applies(
-    kind: ValueKind,
-    props: &IrProps,
-    encoding: &str,
-) -> bool {
+pub fn pre_element_alignment_applies(kind: ValueKind, props: &IrProps, encoding: &str) -> bool {
     use crate::schema::{LengthKind, LengthUnits, Representation};
     if kind == ValueKind::HexBinary
         && props.length_units == LengthUnits::Bits
@@ -220,7 +232,8 @@ pub fn write_trailing_skip(
             write_stream_bit(out, bit_count, props.fill_byte & 1, props.bit_order);
         }
     }
-    if props.alignment_units == LengthUnits::Bytes && *bit_count == 0 && skip_bits.is_multiple_of(8) {
+    if props.alignment_units == LengthUnits::Bytes && *bit_count == 0 && skip_bits.is_multiple_of(8)
+    {
         let nbytes = skip_bits / 8;
         write_byte_aligned(out, bit_count, &alloc::vec![props.fill_byte; nbytes])?;
         return Ok(());
@@ -311,7 +324,6 @@ mod tests {
 
     #[test]
     fn consume_element_framing_uses_type_leading_skip() {
-        
         use crate::vm::runtime::consume_element_framing;
         let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
             xmlns:dfdl="http://www.ogf.org/dfdl/dfdl-1.0/"
@@ -335,11 +347,9 @@ mod tests {
             .nodes
             .iter()
             .find_map(|n| match n {
-                IrNode::Element { name, props, kind, .. }
-                    if program.strings.get(*name).ok() == Some("one") =>
-                {
-                    Some((props.clone(), *kind))
-                }
+                IrNode::Element {
+                    name, props, kind, ..
+                } if program.strings.get(*name).ok() == Some("one") => Some((props.clone(), *kind)),
                 _ => None,
             })
             .expect("one");
@@ -375,11 +385,9 @@ mod tests {
             .nodes
             .iter()
             .find_map(|n| match n {
-                IrNode::Element { name, props, kind, .. }
-                    if program.strings.get(*name).ok() == Some("one") =>
-                {
-                    Some((props.clone(), *kind))
-                }
+                IrNode::Element {
+                    name, props, kind, ..
+                } if program.strings.get(*name).ok() == Some("one") => Some((props.clone(), *kind)),
                 _ => None,
             })
             .expect("one");
@@ -443,7 +451,11 @@ mod tests {
         let schema = parse_schema(xsd).expect("parse");
         let program = compile_named(&schema, Some("root")).expect("compile");
         let root = program.node(program.root).expect("root");
-        let IrNode::Element { child: Some(seq_id), .. } = root else {
+        let IrNode::Element {
+            child: Some(seq_id),
+            ..
+        } = root
+        else {
             panic!("root not complex");
         };
         let seq = program.node(*seq_id).expect("seq");
@@ -462,13 +474,17 @@ mod tests {
     #[test]
     fn tdml_alignment02_first_field_manual() {
         use crate::length_validate::DaffodilTunables;
-        use crate::vm::runtime::{read_binary_scalar, consume_element_framing, Cursor};
         use crate::tdml::parse_tdml;
+        use crate::vm::runtime::{consume_element_framing, read_binary_scalar, Cursor};
         const TDML: &str = include_str!(
             "../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/Aligned_Data.tdml"
         );
         let suite = parse_tdml(TDML).expect("tdml");
-        let test = suite.tests.iter().find(|t| t.name == "alignment02").expect("t");
+        let test = suite
+            .tests
+            .iter()
+            .find(|t| t.name == "alignment02")
+            .expect("t");
         let def = suite.schemas.get("alignmentSchema").expect("schema");
         let schema = crate::schema::parse_schema_with_options(
             &def.xsd,
@@ -480,7 +496,11 @@ mod tests {
         .expect("parse");
         let program = compile_named(&schema, Some("e3")).expect("ir");
         let root = program.node(program.root).expect("root");
-        let IrNode::Element { child: Some(seq_id), .. } = root else {
+        let IrNode::Element {
+            child: Some(seq_id),
+            ..
+        } = root
+        else {
             panic!("root");
         };
         let seq = program.node(*seq_id).expect("seq");
@@ -489,10 +509,7 @@ mod tests {
         };
         let child = program.node(children[0]).expect("child");
         let IrNode::Element {
-            name,
-            kind,
-            props,
-            ..
+            name, kind, props, ..
         } = child
         else {
             panic!("child");
@@ -500,10 +517,8 @@ mod tests {
         assert_eq!(program.strings.get(*name).ok(), Some("one"));
         assert_eq!(props.leading_skip, 4);
         let doc = &test.documents[0];
-        let mut cursor = Cursor::with_frame_bits(
-            &doc.data,
-            doc.significant_bit_length().expect("bits"),
-        );
+        let mut cursor =
+            Cursor::with_frame_bits(&doc.data, doc.significant_bit_length().expect("bits"));
         let enc = program.strings.get(props.encoding).expect("enc");
         consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
         assert_eq!(cursor.absolute_bit_index(), 4);
@@ -535,7 +550,10 @@ mod tests {
             .iter()
             .find(|t| t.name == "impAlignmentHexBinary")
             .expect("t");
-        let def = suite.schemas.get("implicitAlignmentSchema").expect("schema");
+        let def = suite
+            .schemas
+            .get("implicitAlignmentSchema")
+            .expect("schema");
         let schema = crate::schema::parse_schema_with_options(
             &def.xsd,
             &crate::schema::ParseOptions {
@@ -550,15 +568,13 @@ mod tests {
             panic!("root");
         };
         let doc = &test.documents[0];
-        let mut cursor = Cursor::with_frame_bits(
-            &doc.data,
-            doc.significant_bit_length().expect("bits"),
-        );
+        let mut cursor =
+            Cursor::with_frame_bits(&doc.data, doc.significant_bit_length().expect("bits"));
         let enc = program.strings.get(props.encoding).expect("enc");
         consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
         assert_eq!(cursor.absolute_bit_index(), 8, "skip+implicit align");
-        let bytes = read_delimited_bytes(&mut cursor, props, &program.strings, false, &[])
-            .expect("delim");
+        let bytes =
+            read_delimited_bytes(&mut cursor, props, &program.strings, false, &[]).expect("delim");
         assert_eq!(bytes, [0xF4], "got {bytes:02x?}");
     }
 
@@ -572,7 +588,11 @@ mod tests {
             "../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/Aligned_Data.tdml"
         );
         let suite = parse_tdml(TDML).expect("tdml");
-        let test = suite.tests.iter().find(|t| t.name == "alignment03").expect("t");
+        let test = suite
+            .tests
+            .iter()
+            .find(|t| t.name == "alignment03")
+            .expect("t");
         let def = suite.schemas.get("alignmentSchema").expect("schema");
         let schema = crate::schema::parse_schema_with_options(
             &def.xsd,
@@ -584,7 +604,11 @@ mod tests {
         .expect("parse");
         let program = compile_named(&schema, Some("e4")).expect("ir");
         let root = program.node(program.root).expect("root");
-        let IrNode::Element { child: Some(seq_id), .. } = root else {
+        let IrNode::Element {
+            child: Some(seq_id),
+            ..
+        } = root
+        else {
             panic!("root");
         };
         let seq = program.node(*seq_id).expect("seq");
@@ -599,10 +623,8 @@ mod tests {
         assert_eq!(props.framing_alignment, 4, "type post-align");
         assert_eq!(props.leading_skip, 4);
         let doc = &test.documents[0];
-        let mut cursor = Cursor::with_frame_bits(
-            &doc.data,
-            doc.significant_bit_length().expect("bits"),
-        );
+        let mut cursor =
+            Cursor::with_frame_bits(&doc.data, doc.significant_bit_length().expect("bits"));
         let enc = program.strings.get(props.encoding).unwrap();
         let tunables = DaffodilTunables::default();
         consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
@@ -625,14 +647,18 @@ mod tests {
         )
         .expect("read");
         assert!(matches!(v, DfdlValue::UnsignedByte(1)));
-        assert_eq!(cursor.absolute_bit_index(), 12, "post framing align to 4-bit boundary");
+        assert_eq!(
+            cursor.absolute_bit_index(),
+            12,
+            "post framing align to 4-bit boundary"
+        );
     }
 
     #[test]
     fn tdml_implicit_unsigned_long_framing_cursor() {
+        use crate::length_validate::DaffodilTunables;
         use crate::tdml::parse_tdml;
         use crate::vm::runtime::{consume_element_framing, read_binary_scalar, Cursor};
-        use crate::length_validate::DaffodilTunables;
         const TDML: &str = include_str!(
             "../../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section12/aligned_data/Aligned_Data.tdml"
         );
@@ -642,7 +668,10 @@ mod tests {
             .iter()
             .find(|t| t.name == "implicitAlignmentUnsignedLong")
             .expect("t");
-        let def = suite.schemas.get("implicitAlignmentSchema").expect("schema");
+        let def = suite
+            .schemas
+            .get("implicitAlignmentSchema")
+            .expect("schema");
         let schema = crate::schema::parse_schema_with_options(
             &def.xsd,
             &crate::schema::ParseOptions {
@@ -656,13 +685,15 @@ mod tests {
         let IrNode::Element { props, kind, .. } = root else {
             panic!("root");
         };
-        assert!(props.alignment_implicit, "uLong implicit align, got {}", props.alignment);
+        assert!(
+            props.alignment_implicit,
+            "uLong implicit align, got {}",
+            props.alignment
+        );
         assert_eq!(props.alignment_units, LengthUnits::Bits);
         let doc = &test.documents[0];
-        let mut cursor = Cursor::with_frame_bits(
-            &doc.data,
-            doc.significant_bit_length().expect("bits"),
-        );
+        let mut cursor =
+            Cursor::with_frame_bits(&doc.data, doc.significant_bit_length().expect("bits"));
         let enc = program.strings.get(props.encoding).unwrap();
         consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
         assert_eq!(cursor.absolute_bit_index(), 64, "after skip+align");
@@ -678,7 +709,10 @@ mod tests {
             None,
         )
         .expect("read");
-        assert!(matches!(v, crate::value::DfdlValue::UnsignedLong(12_345_678)));
+        assert!(matches!(
+            v,
+            crate::value::DfdlValue::UnsignedLong(12_345_678)
+        ));
     }
 
     fn tdml_implicit_unsigned_long_document_layout() {
@@ -714,7 +748,11 @@ mod tests {
         .expect("parse");
         let program = compile_named(&schema, Some("e7")).expect("ir");
         let root = program.node(program.root).expect("root");
-        let IrNode::Element { child: Some(seq_id), .. } = root else {
+        let IrNode::Element {
+            child: Some(seq_id),
+            ..
+        } = root
+        else {
             panic!("root");
         };
         let seq = program.node(*seq_id).expect("seq");
@@ -736,5 +774,4 @@ mod tests {
             assert_eq!(props.alignment_units, LengthUnits::Bytes);
         }
     }
-
 }

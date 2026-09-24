@@ -25,7 +25,10 @@ fn blob_01_root_has_object_kind_bytes() {
     let xsd = &suite.schemas.get("Blob.dfdl.xsd").expect("schema").xsd;
     let schema = parse_schema(xsd).expect("parse");
     let el = dfdl_vm::schema::get_global_element(&schema, "blob_01").expect("blob_01");
-    assert_eq!(el.props.length_kind, Some(dfdl_vm::schema::LengthKind::Explicit));
+    assert_eq!(
+        el.props.length_kind,
+        Some(dfdl_vm::schema::LengthKind::Explicit)
+    );
     assert_eq!(
         el.props.object_kind,
         Some(ObjectKind::Bytes),

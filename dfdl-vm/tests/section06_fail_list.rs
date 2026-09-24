@@ -1,4 +1,4 @@
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome, TdmlResourceContext, TdmlSchema};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, TdmlResourceContext, TdmlSchema, TestOutcome};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -53,15 +53,25 @@ fn collect_tdml(dir: &Path, out: &mut Vec<PathBuf>) {
 fn list_section06_failures() {
     let mut files = Vec::new();
     collect_tdml(Path::new(TDML_ROOT), &mut files);
+    let mut pass = 0;
+    let mut fail = 0;
     for path in files {
         let tdml = fs::read_to_string(&path).unwrap();
         let mut suite = parse_tdml(&tdml).unwrap();
         enrich(&mut suite, &path);
+        eprintln!("TDML FILE: {:?}", path.file_name().unwrap());
         for test in &suite.tests {
+            eprintln!("  TEST: {}", test.name);
             let r = run_parser_test(&suite, test).unwrap();
-            if let TestOutcome::Fail(m) = r.outcome {
-                eprintln!("FAIL {} :: {}", test.name, m);
+            match r.outcome {
+                TestOutcome::Pass => pass += 1,
+                TestOutcome::Fail(m) => {
+                    fail += 1;
+                    eprintln!("FAIL {} :: {}", test.name, m);
+                }
+                TestOutcome::Skip(_) => {}
             }
         }
     }
+    eprintln!("TOTAL PASS: {}, TOTAL FAIL: {}", pass, fail);
 }

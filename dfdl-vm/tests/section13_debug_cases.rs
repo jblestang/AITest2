@@ -31,13 +31,34 @@ fn run(case: &str, tdml_rel: &str) -> TestOutcome {
 #[ignore]
 fn debug_section13_cases() {
     for (case, file) in [
-        ("standardZeroRep04b", "section13/text_number_props/TextNumberProps.tdml"),
-        ("standardZeroRep11", "section13/text_number_props/TextNumberProps.tdml"),
-        ("lengthDeterminedFirst02", "section13/text_number_props/TextNumberProps.tdml"),
-        ("dynamic", "section13/text_number_props/TextNumberProps.tdml"),
-        ("textStandardFloatPatternNoSeparators1", "section13/text_number_props/TextNumberProps.tdml"),
-        ("textNumberIntWithDecimal01", "section13/text_number_props/TextNumberProps.tdml"),
-        ("textNumberPaddingAmbiguity02", "section13/text_number_props/TextNumberProps.tdml"),
+        (
+            "standardZeroRep04b",
+            "section13/text_number_props/TextNumberProps.tdml",
+        ),
+        (
+            "standardZeroRep11",
+            "section13/text_number_props/TextNumberProps.tdml",
+        ),
+        (
+            "lengthDeterminedFirst02",
+            "section13/text_number_props/TextNumberProps.tdml",
+        ),
+        (
+            "dynamic",
+            "section13/text_number_props/TextNumberProps.tdml",
+        ),
+        (
+            "textStandardFloatPatternNoSeparators1",
+            "section13/text_number_props/TextNumberProps.tdml",
+        ),
+        (
+            "textNumberIntWithDecimal01",
+            "section13/text_number_props/TextNumberProps.tdml",
+        ),
+        (
+            "textNumberPaddingAmbiguity02",
+            "section13/text_number_props/TextNumberProps.tdml",
+        ),
         (
             "unparse:textStandardDecimalSeparator09u",
             "section13/text_number_props/TextNumberProps.tdml",

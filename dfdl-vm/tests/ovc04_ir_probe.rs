@@ -1,5 +1,5 @@
-use dfdl_vm::ir::IrNode;
 use dfdl_vm::ir::compile_named;
+use dfdl_vm::ir::IrNode;
 use dfdl_vm::schema::parse_schema_with_options;
 use dfdl_vm::tdml::parse_tdml;
 use std::fs;
@@ -46,7 +46,12 @@ fn ovc_04_x_has_output_new_line_sibling_in_ir() {
                 .terminator
                 .and_then(|id| program.strings.get(id).ok())
                 .unwrap_or("");
-            eprintln!("{local}: term={term:?} sib={:?}", props.output_new_line_sibling.map(|id| program.strings.get(id).ok()));
+            eprintln!(
+                "{local}: term={term:?} sib={:?}",
+                props
+                    .output_new_line_sibling
+                    .map(|id| program.strings.get(id).ok())
+            );
         }
         if local == "x" {
             assert!(
@@ -126,18 +131,20 @@ fn ovc_04_resolve_xonl_for_x_element_props() {
         "map keys: {:?}",
         map.keys().collect::<Vec<_>>()
     );
-    let resolved =
-        resolve_output_new_line_for_encode(&x_props, Some(&map), &program.strings).expect("resolve");
+    let resolved = resolve_output_new_line_for_encode(&x_props, Some(&map), &program.strings)
+        .expect("resolve");
     assert_eq!(
         resolved.as_deref(),
         Some("\u{0085}"),
         "resolved={resolved:?} sibling={:?}",
-        x_props.output_new_line_sibling.map(|id| program.strings.get(id).ok())
+        x_props
+            .output_new_line_sibling
+            .map(|id| program.strings.get(id).ok())
     );
     map.clear();
     map.insert("xonl".into(), DfdlValue::string("\u{0085}"));
-    let resolved2 =
-        resolve_output_new_line_for_encode(&x_props, Some(&map), &program.strings).expect("resolve2");
+    let resolved2 = resolve_output_new_line_for_encode(&x_props, Some(&map), &program.strings)
+        .expect("resolve2");
     assert_eq!(resolved2.as_deref(), Some("\u{0085}"));
 }
 
@@ -148,7 +155,10 @@ fn ovc_04_compare_xy_output_new_line_ir() {
     );
     let tdml = std::fs::read_to_string(&tdml_path).expect("tdml");
     let suite = dfdl_vm::tdml::parse_tdml(&tdml).expect("parse tdml");
-    let def = suite.schemas.get("outputValueCalc-Embedded.dfdl.xsd").expect("schema");
+    let def = suite
+        .schemas
+        .get("outputValueCalc-Embedded.dfdl.xsd")
+        .expect("schema");
     let schema = dfdl_vm::schema::parse_schema_with_options(
         &def.xsd,
         &dfdl_vm::schema::ParseOptions {
@@ -158,15 +168,30 @@ fn ovc_04_compare_xy_output_new_line_ir() {
     )
     .expect("parse xsd");
     let program = dfdl_vm::ir::compile_named(&schema, Some("ovc_04")).expect("compile");
-    let IrNode::Element { child: Some(seq_id), .. } = program.node(program.root).expect("root") else { panic!() };
-    let IrNode::Sequence { children, .. } = program.node(*seq_id).expect("seq") else { panic!() };
+    let IrNode::Element {
+        child: Some(seq_id),
+        ..
+    } = program.node(program.root).expect("root")
+    else {
+        panic!()
+    };
+    let IrNode::Sequence { children, .. } = program.node(*seq_id).expect("seq") else {
+        panic!()
+    };
     for cid in children {
-        let IrNode::Element { name, props, child, .. } = program.node(*cid).expect("child") else { continue };
+        let IrNode::Element {
+            name, props, child, ..
+        } = program.node(*cid).expect("child")
+        else {
+            continue;
+        };
         let local = dfdl_vm::xml_util::local_name_str(program.strings.get(*name).expect("n"));
         if local == "x" || local == "y" {
             eprintln!(
                 "{local}: sib={:?} onl={:?} child={:?} initiator={:?}",
-                props.output_new_line_sibling.map(|id| program.strings.get(id).ok()),
+                props
+                    .output_new_line_sibling
+                    .map(|id| program.strings.get(id).ok()),
                 props.output_new_line.map(|id| program.strings.get(id).ok()),
                 child,
                 props.initiator.map(|id| program.strings.get(id).ok()),

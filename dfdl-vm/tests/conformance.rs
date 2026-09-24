@@ -1,6 +1,6 @@
 use dfdl_vm::tdml::{
-    effective_round_trip, parse_tdml, run_parser_test, run_parser_test_with_options, run_unparser_test,
-    ParserTestRunOptions, RoundTrip, TestOutcome,
+    effective_round_trip, parse_tdml, run_parser_test, run_parser_test_with_options,
+    run_unparser_test, ParserTestRunOptions, RoundTrip, TestOutcome,
 };
 
 macro_rules! daffodil_tdml {
@@ -74,6 +74,7 @@ fn assert_decode_encode_roundtrip(tdml: &str, test_name: &str) {
     let spec = dfdl_vm::api::DfdlSpec::from_xsd_root(&xsd, Some(&test.root)).expect("spec");
     let input = &test.documents[0].data;
     let decoded = spec.decode(input).expect("decode");
+    println!("DECODED: {decoded:?}");
     let encoded = spec.encode(&decoded).expect("encode");
     assert_eq!(encoded, *input, "roundtrip mismatch for {test_name}");
 }
@@ -102,7 +103,10 @@ fn daffodil_ai_length_kind_pattern() {
 
 #[test]
 fn daffodil_explicit_length_address() {
-    assert_named_test_passes(daffodil_tdml!("ExplicitTests.tdml"), "Lesson1_lengthKind_explicit");
+    assert_named_test_passes(
+        daffodil_tdml!("ExplicitTests.tdml"),
+        "Lesson1_lengthKind_explicit",
+    );
 }
 
 #[test]
@@ -212,7 +216,10 @@ fn daffodil_length_kind_pattern_unicode_fail() {
 
 #[test]
 fn daffodil_length_kind_delimited_address() {
-    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "Lesson1_lengthKind_delimited");
+    assert_named_test_passes(
+        daffodil_tdml!("DelimitedTests.tdml"),
+        "Lesson1_lengthKind_delimited",
+    );
 }
 
 #[test]
@@ -302,7 +309,10 @@ fn daffodil_section12_pattern_extended_suite() {
 
 #[test]
 fn daffodil_delimited_binary_int_seq_sep_sde() {
-    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "delimited_binary_int_seqSep");
+    assert_named_test_passes(
+        daffodil_tdml!("DelimitedTests.tdml"),
+        "delimited_binary_int_seqSep",
+    );
 }
 
 #[test]
@@ -507,22 +517,34 @@ fn daffodil_delimited_prefix_separator_complex() {
 
 #[test]
 fn daffodil_delimited_compound_wsp_separator_space() {
-    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "lengthKindDelimited_01");
+    assert_named_test_passes(
+        daffodil_tdml!("DelimitedTests.tdml"),
+        "lengthKindDelimited_01",
+    );
 }
 
 #[test]
 fn daffodil_delimited_compound_wsp_separator_tab() {
-    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "lengthKindDelimited_02");
+    assert_named_test_passes(
+        daffodil_tdml!("DelimitedTests.tdml"),
+        "lengthKindDelimited_02",
+    );
 }
 
 #[test]
 fn daffodil_delimited_unused_trailing_bytes() {
-    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "lengthKindDelimited_03");
+    assert_named_test_passes(
+        daffodil_tdml!("DelimitedTests.tdml"),
+        "lengthKindDelimited_03",
+    );
 }
 
 #[test]
 fn daffodil_delimited_unused_trailing_bytes_no_extra_elem() {
-    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "lengthKindDelimited_04");
+    assert_named_test_passes(
+        daffodil_tdml!("DelimitedTests.tdml"),
+        "lengthKindDelimited_04",
+    );
 }
 
 // --- Implicit complex element (Section 12) ---
@@ -539,7 +561,10 @@ fn daffodil_implicit_complex_element_terminator_max_one() {
 
 #[test]
 fn daffodil_delimited_binary_fail() {
-    assert_named_test_passes(daffodil_tdml!("DelimitedTests.tdml"), "binary_delimited_fail");
+    assert_named_test_passes(
+        daffodil_tdml!("DelimitedTests.tdml"),
+        "binary_delimited_fail",
+    );
 }
 
 #[test]
@@ -551,7 +576,10 @@ fn daffodil_delimited_terminator_check() {
 
 #[test]
 fn daffodil_prefixed_text_string_bytes() {
-    assert_named_test_passes(daffodil_tdml!("PrefixedTests.tdml"), "pl_text_string_txt_bytes");
+    assert_named_test_passes(
+        daffodil_tdml!("PrefixedTests.tdml"),
+        "pl_text_string_txt_bytes",
+    );
 }
 
 #[test]
@@ -564,7 +592,10 @@ fn daffodil_prefixed_text_string_bytes_includes() {
 
 #[test]
 fn daffodil_prefixed_text_string_bits() {
-    assert_named_test_passes(daffodil_tdml!("PrefixedTests.tdml"), "pl_text_string_txt_bits");
+    assert_named_test_passes(
+        daffodil_tdml!("PrefixedTests.tdml"),
+        "pl_text_string_txt_bits",
+    );
 }
 
 #[test]
@@ -577,12 +608,18 @@ fn daffodil_prefixed_text_string_bits_includes() {
 
 #[test]
 fn daffodil_prefixed_text_string_binary_prefix() {
-    assert_named_test_passes(daffodil_tdml!("PrefixedTests.tdml"), "pl_text_string_bin_bytes");
+    assert_named_test_passes(
+        daffodil_tdml!("PrefixedTests.tdml"),
+        "pl_text_string_bin_bytes",
+    );
 }
 
 #[test]
 fn daffodil_prefixed_text_int_bytes() {
-    assert_named_test_passes(daffodil_tdml!("PrefixedTests.tdml"), "pl_text_int_txt_bytes");
+    assert_named_test_passes(
+        daffodil_tdml!("PrefixedTests.tdml"),
+        "pl_text_int_txt_bytes",
+    );
 }
 
 #[test]
@@ -592,7 +629,10 @@ fn daffodil_prefixed_text_int_bits() {
 
 #[test]
 fn daffodil_prefixed_nested_prefix_length_type() {
-    assert_named_test_passes(daffodil_tdml!("PrefixedTests.tdml"), "pl_text_string_pl_txt_bytes");
+    assert_named_test_passes(
+        daffodil_tdml!("PrefixedTests.tdml"),
+        "pl_text_string_pl_txt_bytes",
+    );
 }
 
 #[test]
@@ -757,8 +797,12 @@ fn daffodil_prefixed_canonical_roundtrip_suite() {
         .expect("run test");
         match result.outcome {
             TestOutcome::Pass => {}
-            TestOutcome::Fail(msg) => panic!("canonical roundtrip test `{}` failed: {msg}", test.name),
-            TestOutcome::Skip(msg) => panic!("canonical roundtrip test `{}` skipped: {msg}", test.name),
+            TestOutcome::Fail(msg) => {
+                panic!("canonical roundtrip test `{}` failed: {msg}", test.name)
+            }
+            TestOutcome::Skip(msg) => {
+                panic!("canonical roundtrip test `{}` skipped: {msg}", test.name)
+            }
         }
     }
 }

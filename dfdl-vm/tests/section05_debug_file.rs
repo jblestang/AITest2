@@ -1,5 +1,5 @@
 //! Debug failures for a single section05 TDML file.
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome, TdmlSchema, TdmlSuite};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, TdmlSchema, TdmlSuite, TestOutcome};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -21,7 +21,9 @@ fn enrich(suite: &mut TdmlSuite, path: &Path) {
             continue;
         }
         let p = dir.join(&model);
-        let Ok(xsd) = fs::read_to_string(&p) else { continue };
+        let Ok(xsd) = fs::read_to_string(&p) else {
+            continue;
+        };
         suite.schemas.insert(
             model.clone(),
             TdmlSchema {
@@ -43,7 +45,9 @@ fn section05_debug_file_failures() {
     enrich(&mut suite, &path);
     let mut n = 0;
     for t in &suite.tests {
-        let Ok(r) = run_parser_test(&suite, t) else { continue };
+        let Ok(r) = run_parser_test(&suite, t) else {
+            continue;
+        };
         if let TestOutcome::Fail(msg) = r.outcome {
             eprintln!("{}: {msg}", t.name);
             n += 1;

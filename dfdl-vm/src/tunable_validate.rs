@@ -3,7 +3,10 @@ use crate::length_validate::DaffodilTunables;
 use crate::schema::{
     ComplexContent, ElementDecl, GlobalElement, GroupDecl, Particle, SchemaDocument, TypeDef,
 };
-fn check_format_props(props: &crate::schema::DfdlProps, tunables: &DaffodilTunables) -> Result<(), SchemaError> {
+fn check_format_props(
+    props: &crate::schema::DfdlProps,
+    tunables: &DaffodilTunables,
+) -> Result<(), SchemaError> {
     if tunables.require_text_bidi_property == Some(true) && props.text_bidi.is_none() {
         return Err(SchemaError::InvalidProperty {
             message: "Schema Definition Error: Property textBidi is not defined.".into(),
@@ -11,7 +14,8 @@ fn check_format_props(props: &crate::schema::DfdlProps, tunables: &DaffodilTunab
     }
     if props.text_bidi == Some(true) {
         return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error: Property value textBidi='yes' is not supported.".into(),
+            message: "Schema Definition Error: Property value textBidi='yes' is not supported."
+                .into(),
         });
     }
     if tunables.require_floating_property == Some(true) && props.floating.is_none() {
@@ -21,7 +25,8 @@ fn check_format_props(props: &crate::schema::DfdlProps, tunables: &DaffodilTunab
     }
     if props.floating == Some(true) {
         return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error: Property value floating='yes' is not supported.".into(),
+            message: "Schema Definition Error: Property value floating='yes' is not supported."
+                .into(),
         });
     }
     Ok(())
@@ -41,7 +46,9 @@ fn walk_particles(
                 let local = gr.name.rsplit(':').next().unwrap_or(&gr.name);
                 if let Some(group) = schema.groups.get(local) {
                     match group {
-                        GroupDecl::Sequence(seq) => walk_particles(schema, &seq.particles, tunables)?,
+                        GroupDecl::Sequence(seq) => {
+                            walk_particles(schema, &seq.particles, tunables)?
+                        }
                         GroupDecl::Choice(ch) => walk_particles(schema, &ch.branches, tunables)?,
                     }
                 }
@@ -81,7 +88,11 @@ fn walk_complex(
     }
 }
 
-fn walk_global(schema: &SchemaDocument, g: &GlobalElement, tunables: &DaffodilTunables) -> Result<(), SchemaError> {
+fn walk_global(
+    schema: &SchemaDocument,
+    g: &GlobalElement,
+    tunables: &DaffodilTunables,
+) -> Result<(), SchemaError> {
     check_format_props(&schema.format_defaults.props, tunables)?;
     check_format_props(&g.props, tunables)?;
     if let Some(TypeDef::Complex { content, .. }) = schema.resolve_type(&g.type_name) {

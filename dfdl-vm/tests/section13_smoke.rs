@@ -192,8 +192,8 @@ fn section13_text_standard_base_max_samples() {
 
 #[test]
 fn section13_text_standard_base_schema_loads() {
-    let text =
-        fs::read_to_string(tdml("section13/text_number_props/TextStandardBase.tdml")).expect("read");
+    let text = fs::read_to_string(tdml("section13/text_number_props/TextStandardBase.tdml"))
+        .expect("read");
     parse_tdml(&text).expect("TextStandardBase.tdml should parse after textStandardBase support");
 }
 
@@ -244,7 +244,6 @@ fn section13_packed_tdml_scan() {
         "packed.tdml: expected all parser cases to pass, got pass={pass} fail={fail}"
     );
 }
-
 
 #[test]
 fn section13_separator_sde_smoke() {

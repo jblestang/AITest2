@@ -38,8 +38,7 @@ fn check_compatible(
     child_name: &str,
     child_policy: ParseUnparsePolicy,
 ) -> Result<(), SchemaError> {
-    let compatible =
-        root_policy == child_policy || child_policy == ParseUnparsePolicy::Both;
+    let compatible = root_policy == child_policy || child_policy == ParseUnparsePolicy::Both;
     if compatible {
         return Ok(());
     }
@@ -98,7 +97,10 @@ fn walk_complex(
     }
 }
 
-pub fn validate_parse_unparse_policy(schema: &SchemaDocument, root: &str) -> Result<(), SchemaError> {
+pub fn validate_parse_unparse_policy(
+    schema: &SchemaDocument,
+    root: &str,
+) -> Result<(), SchemaError> {
     let Some(root_el) = get_global_element(schema, root) else {
         return Ok(());
     };
@@ -133,7 +135,12 @@ pub fn root_allows_parse(schema: &SchemaDocument, root: &str) -> bool {
 pub fn root_allows_unparse(schema: &SchemaDocument, root: &str) -> bool {
     get_global_element(schema, root)
         .map(global_policy)
-        .map(|p| matches!(p, ParseUnparsePolicy::Both | ParseUnparsePolicy::UnparseOnly))
+        .map(|p| {
+            matches!(
+                p,
+                ParseUnparsePolicy::Both | ParseUnparsePolicy::UnparseOnly
+            )
+        })
         .unwrap_or(true)
 }
 

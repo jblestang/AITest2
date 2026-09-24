@@ -1,8 +1,8 @@
+use dfdl_vm::ir::compile_named;
 use dfdl_vm::ir::{IrNode, IrProgram};
 use dfdl_vm::schema::parse_schema_with_resolver;
 use dfdl_vm::schema::SchemaResolver;
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome, TdmlSchema, TdmlSuite};
-use dfdl_vm::ir::compile_named;
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, TdmlSchema, TdmlSuite, TestOutcome};
 use std::fs;
 use std::path::Path;
 
@@ -58,7 +58,9 @@ fn dump_ir(prog: &IrProgram, id: u32, depth: usize) {
                 dump_ir(prog, b.node, depth + 1);
             }
         }
-        IrNode::Element { name, kind, child, .. } => {
+        IrNode::Element {
+            name, kind, child, ..
+        } => {
             let n = prog.strings.get(*name).unwrap_or("?");
             eprintln!("{pad}Element {n} {kind:?} child={child:?}");
             if let Some(c) = child {
@@ -73,7 +75,12 @@ fn group_ref_ir_shape() {
     let path = Path::new(TDML);
     let tdml = fs::read_to_string(path).expect("read");
     let suite = parse_tdml(&tdml).expect("parse tdml");
-    let xsd = suite.schemas.get("groupRef.xsd").expect("schema").xsd.clone();
+    let xsd = suite
+        .schemas
+        .get("groupRef.xsd")
+        .expect("schema")
+        .xsd
+        .clone();
     let base = path.parent().unwrap().to_string_lossy().into_owned();
     let resolver = SchemaResolver::new().with_base_dir(base);
     let schema = parse_schema_with_resolver(&xsd, resolver).expect("parse xsd");
@@ -95,7 +102,11 @@ fn group_ref_list_parses() {
     let tdml = fs::read_to_string(path).expect("read");
     let mut suite = parse_tdml(&tdml).expect("parse tdml");
     enrich(&mut suite, path);
-    let t = suite.tests.iter().find(|t| t.name == "groupRef").expect("case");
+    let t = suite
+        .tests
+        .iter()
+        .find(|t| t.name == "groupRef")
+        .expect("case");
     let r = run_parser_test(&suite, t).expect("run");
     eprintln!("{r:?}");
     assert!(matches!(r.outcome, TestOutcome::Pass));

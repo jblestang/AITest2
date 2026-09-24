@@ -39,9 +39,19 @@ fn unescape_block(input: &str, scheme: &EscapeSchemeDef) -> Result<String, VmErr
     if start.is_empty() || end.is_empty() {
         return Ok(input.to_string());
     }
-    let inner = if input.starts_with(start) && input.ends_with(end) && input.len() >= start.len() + end.len()
+    let ee = scheme.escape_escape_character.as_deref().unwrap_or("");
+    let has_escaped_end = !ee.is_empty()
+        && input.starts_with(start)
+        && input.ends_with(end)
+        && input[..input.len() - end.len()].ends_with(ee);
+    let inner = if input.starts_with(start)
+        && input.ends_with(end)
+        && input.len() >= start.len() + end.len()
+        && !has_escaped_end
     {
         &input[start.len()..input.len() - end.len()]
+    } else if input.starts_with(start) {
+        &input[start.len()..]
     } else {
         input
     };
@@ -51,10 +61,26 @@ fn unescape_block(input: &str, scheme: &EscapeSchemeDef) -> Result<String, VmErr
         .is_some_and(|s| !s.is_empty())
     {
         let esc = scheme.escape_escape_character.clone();
+        let mut extras = scheme.extra_escaped_characters.clone();
+        if let Some(ref end) = scheme.escape_block_end {
+            for c in end.chars() {
+                if !extras.contains(&c) {
+                    extras.push(c);
+                }
+            }
+        }
+        if let Some(ref start) = scheme.escape_block_start {
+            for c in start.chars() {
+                if !extras.contains(&c) {
+                    extras.push(c);
+                }
+            }
+        }
         let inner_scheme = EscapeSchemeDef {
             escape_kind: EscapeKind::EscapeCharacter,
             escape_character: esc,
             escape_escape_character: Some(String::new()),
+            extra_escaped_characters: extras,
             ..Default::default()
         };
         return Ok(unescape_character(inner, &inner_scheme));
@@ -101,7 +127,9 @@ pub(crate) fn advance_escape_scan_index(data: &[u8], i: usize, scheme: &EscapeSc
             }
             if i + esc_bytes.len() < data.len() && &data[i..i + esc_bytes.len()] == esc_bytes {
                 let next = i + esc_bytes.len();
-                if let Some(n) = extra_escaped_char_len(data, next, &scheme.extra_escaped_characters) {
+                if let Some(n) =
+                    extra_escaped_char_len(data, next, &scheme.extra_escaped_characters)
+                {
                     return next + n;
                 }
                 return next + 1;
@@ -142,19 +170,21 @@ fn unescape_character(input: &str, scheme: &EscapeSchemeDef) -> String {
     let mut i = 0usize;
     while i < bytes.len() {
         if let Some(ee) = esc_esc_bytes {
-            if i + ee.len() <= bytes.len() && &bytes[i..i + ee.len()] == ee
+            if i + ee.len() <= bytes.len()
+                && &bytes[i..i + ee.len()] == ee
                 && i + ee.len() + esc_bytes.len() <= bytes.len()
-                    && &bytes[i + ee.len()..i + ee.len() + esc_bytes.len()] == esc_bytes
-                {
-                    out.extend_from_slice(esc_bytes);
-                    i += ee.len() + esc_bytes.len();
-                    continue;
-                }
+                && &bytes[i + ee.len()..i + ee.len() + esc_bytes.len()] == esc_bytes
+            {
+                out.extend_from_slice(esc_bytes);
+                i += ee.len() + esc_bytes.len();
+                continue;
+            }
         }
         if i + esc_bytes.len() <= bytes.len() && &bytes[i..i + esc_bytes.len()] == esc_bytes {
             i += esc_bytes.len();
             if i < bytes.len() {
-                if let Some(n) = extra_escaped_char_len(bytes, i, &scheme.extra_escaped_characters) {
+                if let Some(n) = extra_escaped_char_len(bytes, i, &scheme.extra_escaped_characters)
+                {
                     out.extend_from_slice(&bytes[i..i + n]);
                     i += n;
                 } else {
@@ -194,8 +224,7 @@ fn escape_block_field(
     }
     let needs_wrap = block_field_needs_wrap(input, scheme, markup);
     let interior_markup = block_interior_markup_only(scheme);
-    let interior_refs: alloc::vec::Vec<&str> =
-        interior_markup.iter().map(|s| s.as_str()).collect();
+    let interior_refs: alloc::vec::Vec<&str> = interior_markup.iter().map(|s| s.as_str()).collect();
     let inner = escape_block_interior(input, scheme, &interior_refs, needs_wrap);
     if inner.starts_with(start) && inner.ends_with(end) && !needs_wrap {
         return inner;
@@ -268,7 +297,9 @@ fn escape_block_interior(
     let mut i = 0usize;
     while i < bytes.len() {
         let mut matched = false;
-        if !start.is_empty() && i + start_b.len() <= bytes.len() && &bytes[i..i + start_b.len()] == start_b
+        if !start.is_empty()
+            && i + start_b.len() <= bytes.len()
+            && &bytes[i..i + start_b.len()] == start_b
         {
             if i == 0 {
                 out.extend_from_slice(start_b);
@@ -284,14 +315,18 @@ fn escape_block_interior(
                 i += start_b.len();
                 matched = true;
             }
-        } else if !end.is_empty() && i + end_b.len() <= bytes.len() && &bytes[i..i + end_b.len()] == end_b
+        } else if !end.is_empty()
+            && i + end_b.len() <= bytes.len()
+            && &bytes[i..i + end_b.len()] == end_b
         {
             let at_suffix = i + end_b.len() == bytes.len();
             let escape_end = if i == 0 && !will_wrap {
                 false
             } else if at_suffix && will_wrap {
                 true
-            } else { !at_suffix };
+            } else {
+                !at_suffix
+            };
             if escape_end {
                 if let Some(e) = ee_bytes {
                     out.extend_from_slice(e);
@@ -417,10 +452,7 @@ mod tests {
             escape_escape_character: Some("^".into()),
             ..Default::default()
         };
-        assert_eq!(
-            escape_field_text("test;ing", &scheme, &[";"]),
-            "testx;ing"
-        );
+        assert_eq!(escape_field_text("test;ing", &scheme, &[";"]), "testx;ing");
     }
 
     #[test]

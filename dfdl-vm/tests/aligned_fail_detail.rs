@@ -21,13 +21,21 @@ fn print_all_failures_with_messages() {
         for t in &suite.tests {
             let r = run_parser_test(&suite, t).expect("run");
             if let TestOutcome::Fail(msg) = r.outcome {
-                eprintln!("PARSER FAIL {} :: {}", t.name, msg.chars().take(120).collect::<String>());
+                eprintln!(
+                    "PARSER FAIL {} :: {}",
+                    t.name,
+                    msg.chars().take(120).collect::<String>()
+                );
             }
         }
         for t in &suite.unparser_tests {
             let r = run_unparser_test(&suite, t).expect("run");
             if let TestOutcome::Fail(msg) = r.outcome {
-                eprintln!("UNPARSER FAIL {} :: {}", t.name, msg.chars().take(120).collect::<String>());
+                eprintln!(
+                    "UNPARSER FAIL {} :: {}",
+                    t.name,
+                    msg.chars().take(120).collect::<String>()
+                );
             }
         }
     }

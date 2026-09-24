@@ -1,4 +1,6 @@
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlSchema, TdmlSuite};
+use dfdl_vm::tdml::{
+    parse_tdml, run_parser_test, run_unparser_test, TdmlSchema, TdmlSuite, TestOutcome,
+};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -44,7 +46,9 @@ const TDML_ROOT: &str = concat!(
 );
 
 fn collect_tdml(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -66,8 +70,12 @@ fn scan_one_subdir() {
     let mut pass = 0usize;
     let mut fail = 0usize;
     for path in files {
-        let Ok(tdml) = fs::read_to_string(&path) else { continue };
-        let Ok(mut suite) = parse_tdml(&tdml) else { continue };
+        let Ok(tdml) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut suite) = parse_tdml(&tdml) else {
+            continue;
+        };
         enrich_external_tdml_models(&mut suite, &path);
         for t in &suite.tests {
             match run_parser_test(&suite, t) {

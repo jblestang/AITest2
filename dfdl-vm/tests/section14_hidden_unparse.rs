@@ -1,5 +1,7 @@
 //! Section 14 hidden group unparse cases.
-use dfdl_vm::tdml::{parse_tdml, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema, TdmlSuite};
+use dfdl_vm::tdml::{
+    parse_tdml, run_unparser_test, TdmlResourceContext, TdmlSchema, TdmlSuite, TestOutcome,
+};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -47,8 +49,15 @@ fn hidden_nested_group_unparse() {
     let tdml = std::fs::read_to_string(path).unwrap();
     let mut suite = parse_tdml(&tdml).unwrap();
     enrich(&mut suite, path);
-    for name in ["unparseNestedHiddenAndRegularRef", "unparseNestedRegularAndHiddenRef"] {
-        let t = suite.unparser_tests.iter().find(|t| t.name == name).unwrap();
+    for name in [
+        "unparseNestedHiddenAndRegularRef",
+        "unparseNestedRegularAndHiddenRef",
+    ] {
+        let t = suite
+            .unparser_tests
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap();
         let r = run_unparser_test(&suite, t).unwrap();
         match r.outcome {
             TestOutcome::Pass => {}

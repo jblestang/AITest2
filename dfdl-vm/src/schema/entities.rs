@@ -77,7 +77,10 @@ fn parse_entity_for_encoding(input: &str, encoding: Option<&str>) -> Option<(Vec
     if let Some(end) = rest.find(';') {
         let name = &rest[..end];
         let consumed = 1 + end + 1;
-        let quantifier = name.chars().last().filter(|c| *c == '+' || *c == '*' || *c == '?');
+        let quantifier = name
+            .chars()
+            .last()
+            .filter(|c| *c == '+' || *c == '*' || *c == '?');
         let entity_name = match quantifier {
             Some(_) => name.trim_end_matches(['+', '*', '?']),
             None => name,
@@ -188,9 +191,7 @@ fn entity_reference_valid(entity_name: &str) -> bool {
         .strip_prefix("#x")
         .or_else(|| entity_name.strip_prefix("#X"))
     {
-        return !hex.is_empty()
-            && hex.chars().all(|c| c.is_ascii_hexdigit())
-            && hex.len() <= 6;
+        return !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()) && hex.len() <= 6;
     }
     if let Some(dec) = entity_name.strip_prefix('#') {
         return !dec.is_empty() && dec.chars().all(|c| c.is_ascii_digit());
@@ -288,14 +289,7 @@ fn validate_disallowed_char_class_tokens(
     extra_disallowed: &[&str],
 ) -> Result<(), String> {
     const DISALLOWED: [&str; 8] = [
-        "%NL;",
-        "%LF;",
-        "%WSP;",
-        "%WS;",
-        "%WSP+;",
-        "%WSP*;",
-        "%WS+;",
-        "%ES;",
+        "%NL;", "%LF;", "%WSP;", "%WS;", "%WSP+;", "%WSP*;", "%WS+;", "%ES;",
     ];
     for token in char_class_tokens(raw) {
         for dis in DISALLOWED.iter().chain(extra_disallowed.iter()) {
@@ -314,10 +308,7 @@ pub fn validate_text_standard_exponent_rep_literal(raw: &str) -> Result<(), Stri
     validate_text_standard_separator_literal("textStandardExponentRep", raw)
 }
 
-pub fn validate_text_standard_special_value_literal(
-    prop: &str,
-    raw: &str,
-) -> Result<(), String> {
+pub fn validate_text_standard_special_value_literal(prop: &str, raw: &str) -> Result<(), String> {
     validate_dfdl_entities_in_property(raw)?;
     reject_byte_entities_text_standard(raw)?;
     validate_disallowed_char_class_tokens(prop, raw, &[])?;
@@ -333,7 +324,11 @@ pub fn validate_text_standard_separator_literal(prop: &str, raw: &str) -> Result
         && !raw.contains("%WSP;")
         && !raw.contains("%WS;")
     {
-        let token = if raw.contains("%WSP") { "%WSP+;" } else { "%WS+;" };
+        let token = if raw.contains("%WSP") {
+            "%WSP+;"
+        } else {
+            "%WS+;"
+        };
         return Err(format!(
             "{prop} contains disallowed character class(es): {token}"
         ));
@@ -364,9 +359,7 @@ pub fn validate_text_standard_distinct_values(entries: &[(&str, &str)]) -> Resul
     }
     conflict.sort_unstable();
     let names = conflict.join(", ");
-    Err(format!(
-        "Non-distinct property values among {names}"
-    ))
+    Err(format!("Non-distinct property values among {names}"))
 }
 
 /// Parse `textStandardDecimalSeparator` (list of single-character literals, space-separated).
@@ -390,14 +383,10 @@ pub fn parse_text_standard_zero_rep_list(raw: &str) -> alloc::vec::Vec<String> {
 
 pub fn validate_text_string_pad_character(raw: &str) -> Result<(), String> {
     if raw.is_empty() || raw.chars().any(|c| c.is_whitespace()) {
-        return Err(
-            "facet-valid NonEmptyStringLiteral property textStringPadCharacter".into(),
-        );
+        return Err("facet-valid NonEmptyStringLiteral property textStringPadCharacter".into());
     }
     if raw.chars().count() != 1 {
-        return Err(
-            "facet-valid NonEmptyStringLiteral property textStringPadCharacter".into(),
-        );
+        return Err("facet-valid NonEmptyStringLiteral property textStringPadCharacter".into());
     }
     Ok(())
 }
@@ -416,9 +405,7 @@ pub fn validate_text_string_pad_character_merged(
                 "Use DFDL Entities (property textStringPadCharacter contains whitespace)".into(),
             );
         }
-        return Err(
-            "facet-valid NonEmptyStringLiteral property textStringPadCharacter".into(),
-        );
+        return Err("facet-valid NonEmptyStringLiteral property textStringPadCharacter".into());
     }
     let expanded = expand_entities_str(raw);
     let one_unit = if length_units_bytes {
@@ -454,15 +441,11 @@ pub fn validate_text_string_pad_character_compile(raw: &str) -> Result<(), Strin
 /// Runtime decode/unparse check for literal whitespace pad (not `%SP;` etc.).
 pub fn validate_text_string_pad_character_runtime(raw: &str) -> Result<(), String> {
     if !raw.contains('%') && raw.chars().any(|c| c.is_whitespace()) {
-        return Err(
-            "facet-valid NonEmptyStringLiteral property textStringPadCharacter".into(),
-        );
+        return Err("facet-valid NonEmptyStringLiteral property textStringPadCharacter".into());
     }
     let expanded = expand_entities_str(raw);
     if expanded.chars().count() != 1 {
-        return Err(
-            "facet-valid NonEmptyStringLiteral property textStringPadCharacter".into(),
-        );
+        return Err("facet-valid NonEmptyStringLiteral property textStringPadCharacter".into());
     }
     Ok(())
 }
@@ -569,11 +552,7 @@ pub fn parse_delimiter_literal_value(raw: &str) -> String {
         unescape_dfdl_open_braces(trimmed)
     };
     // Keep `%...;` tokens for whitespace-separated alternative lists (unparse uses first alt).
-    if unescaped.contains('%')
-        && unescaped
-            .chars()
-            .any(|c| c.is_ascii_whitespace())
-    {
+    if unescaped.contains('%') && unescaped.chars().any(|c| c.is_ascii_whitespace()) {
         return unescaped.trim_end_matches([' ', '\t']).to_string();
     }
     if is_compound_dfdl_entity_delimiter(&unescaped) || has_quantified_dfdl_entity(&unescaped) {
@@ -608,16 +587,10 @@ pub fn validate_delimiter_es_restriction(prop: &str, raw: &str) -> Result<(), St
     if prop == "separator" {
         return Err("Separator contains disallowed ES".into());
     }
-    if prop == "terminator" {
-        return Err("dfdl:terminator cannot own ES".into());
-    }
     validate_es_not_sole_delimiter_alternative(prop, &alts)
 }
 
-fn validate_es_not_sole_delimiter_alternative(
-    prop: &str,
-    alts: &[String],
-) -> Result<(), String> {
+fn validate_es_not_sole_delimiter_alternative(prop: &str, alts: &[String]) -> Result<(), String> {
     if alts.is_empty() {
         return Ok(());
     }
@@ -689,10 +662,7 @@ fn eval_compile_time_delimiter_expression(expr: &str) -> Option<alloc::string::S
         .trim();
     let lower = inner.to_ascii_lowercase();
     if lower.starts_with("if") {
-        let rest = inner
-            .strip_prefix("if")
-            .unwrap_or(inner)
-            .trim_start();
+        let rest = inner.strip_prefix("if").unwrap_or(inner).trim_start();
         let rest = rest.strip_prefix('(').unwrap_or(rest);
         let cond_end = rest.find(')')?;
         let cond = rest[..cond_end].trim();
@@ -823,11 +793,7 @@ pub fn eval_runtime_delimiter_expression(
     expr: &str,
     siblings: &alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>,
 ) -> Option<String> {
-    let inner = expr
-        .trim()
-        .strip_prefix('{')?
-        .strip_suffix('}')?
-        .trim();
+    let inner = expr.trim().strip_prefix('{')?.strip_suffix('}')?.trim();
     let lower = inner.to_ascii_lowercase();
     if !lower.starts_with("if") {
         return None;
@@ -894,14 +860,15 @@ pub fn eval_path_indexed_delimiter_expression(
     }
     let (local, indexed) = delimiter_path_step_local(segments.last()?);
     let entry = values.iter().find(|(k, _)| {
-        crate::xml_util::local_name_str(k) == local
-            || k.rsplit(':').next() == Some(local)
+        crate::xml_util::local_name_str(k) == local || k.rsplit(':').next() == Some(local)
     })?;
     let value = &entry.1;
     if indexed {
         let idx = (occurs_index_1based as usize).saturating_sub(1);
         return match value {
-            crate::value::DfdlValue::Array(items) => items.get(idx).and_then(|v| v.as_str().map(|s| s.to_string())),
+            crate::value::DfdlValue::Array(items) => items
+                .get(idx)
+                .and_then(|v| v.as_str().map(|s| s.to_string())),
             _ => value.as_str().map(|s| s.to_string()),
         };
     }
@@ -912,16 +879,10 @@ pub fn eval_path_indexed_delimiter_expression(
 pub fn validate_runtime_delimiter_expression(prop: &str, expr: &str) -> Result<(), String> {
     for lit in delimiter_expression_string_literals(expr) {
         validate_delimiter_property_value(&lit)?;
-        if lit.trim() == "%" && prop == "terminator" {
-            return Err("Invalid DFDL Entity (%) found\n%%".to_string());
-        }
     }
     if let Some(lit) = eval_compile_time_delimiter_expression(expr) {
         validate_delimiter_property_value(&lit)?;
         validate_delimiter_es_restriction(prop, &lit)?;
-        if lit.trim() == "%" && prop == "terminator" {
-            return Err("Invalid DFDL Entity (%) found\n%%".to_string());
-        }
     }
     Ok(())
 }
@@ -1070,7 +1031,11 @@ fn match_nl_entity_utf16(input: &[u8], pattern: &str, le: bool) -> Option<usize>
             while let Some(n) = match_one_newline_utf16(&input[pos..], le) {
                 pos += n;
             }
-            if pos > 0 { Some(pos) } else { None }
+            if pos > 0 {
+                Some(pos)
+            } else {
+                None
+            }
         }
         Some('*') => {
             let mut pos = 0usize;
@@ -1148,7 +1113,11 @@ fn match_pattern_opts_utf16(
             {
                 pos += wire.len();
             }
-            if pos > 0 { Some(pos) } else { None }
+            if pos > 0 {
+                Some(pos)
+            } else {
+                None
+            }
         }
         Some(b'*') => {
             let mut pos = 0;
@@ -1266,7 +1235,11 @@ fn match_pattern_opts_legacy(
             {
                 pos += base.len();
             }
-            if pos > 0 { Some(pos) } else { None }
+            if pos > 0 {
+                Some(pos)
+            } else {
+                None
+            }
         }
         Some(b'*') => {
             let mut pos = 0;
@@ -1312,10 +1285,8 @@ pub fn match_delimiter_with_alt_for_encoding(
         return Some((0, 0));
     }
     if pattern.len() == 1 {
-        return match_pattern_opts_for_encoding(input, pattern, ignore_case, encoding).map(|n| (n, 0));
-    }
-    if pattern.trim() == "%NL;, ," || pattern == "\n, ," {
-        return match_nl_comma_space_separator(input).map(|n| (n, 0));
+        return match_pattern_opts_for_encoding(input, pattern, ignore_case, encoding)
+            .map(|n| (n, 0));
     }
     if delimiter_has_top_level_comma(pattern) && !should_split_whitespace_alternatives(pattern) {
         if let Some(n) = match_delimiter_compound(input, pattern, ignore_case, encoding) {
@@ -1389,12 +1360,6 @@ pub fn delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::S
     if pattern.chars().all(|c| c == ',') && pattern.len() > 1 {
         return alloc::vec![pattern.to_string()];
     }
-    if should_split_whitespace_alternatives(pattern) {
-        return split_whitespace_delimiter_alternatives(pattern);
-    }
-    if delimiter_has_top_level_comma(pattern) {
-        return split_delimiter_alternatives_comma(pattern);
-    }
     if pattern.contains("||") {
         let mut out = alloc::vec::Vec::new();
         for part in pattern.split("||") {
@@ -1404,6 +1369,9 @@ pub fn delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::S
             return alloc::vec![pattern.to_string()];
         }
         return out;
+    }
+    if should_split_whitespace_alternatives(pattern) {
+        return split_whitespace_delimiter_alternatives(pattern);
     }
     if let Some(alts) = split_entity_and_literal_alternatives(pattern) {
         return alts;
@@ -1419,10 +1387,9 @@ fn has_regex_char_class(pattern: &str) -> bool {
     let bytes = pattern.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
-        if bytes[i] == b'['
-            && pattern[i..].find(']').is_some() {
-                return true;
-            }
+        if bytes[i] == b'[' && pattern[i..].find(']').is_some() {
+            return true;
+        }
         i += 1;
     }
     false
@@ -1532,7 +1499,6 @@ fn split_delimiter_alternatives_comma(pattern: &str) -> alloc::vec::Vec<alloc::s
             if !part.is_empty() {
                 alts.push(unescape_dfdl_delimiter_alt(part));
             }
-            alts.push(",".to_string());
             start = i + 1;
         }
         i += 1;
@@ -1547,7 +1513,9 @@ fn split_delimiter_alternatives_comma(pattern: &str) -> alloc::vec::Vec<alloc::s
     alts
 }
 
-fn split_whitespace_delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::String> {
+fn split_whitespace_delimiter_alternatives(
+    pattern: &str,
+) -> alloc::vec::Vec<alloc::string::String> {
     pattern
         .split_whitespace()
         .filter(|s| !s.is_empty())
@@ -1700,9 +1668,7 @@ pub fn validate_text_number_pad_character_merged(
         if property_form {
             return Err("Use DFDL Entities (property textNumberPadCharacter)".to_string());
         }
-        return Err(
-            "facet-valid NonEmptyStringLiteral property textNumberPadCharacter".into(),
-        );
+        return Err("facet-valid NonEmptyStringLiteral property textNumberPadCharacter".into());
     }
     let expanded = expand_entities_str(raw);
     let one_char = expanded.chars().count() == 1;
@@ -1721,7 +1687,9 @@ pub fn nil_value_alternatives(raw: &str) -> alloc::vec::Vec<alloc::string::Strin
 }
 
 /// Split `%NL; . !`-style lists: whitespace between `%...;` entities and literal tokens.
-fn split_entity_and_literal_alternatives(pattern: &str) -> Option<alloc::vec::Vec<alloc::string::String>> {
+fn split_entity_and_literal_alternatives(
+    pattern: &str,
+) -> Option<alloc::vec::Vec<alloc::string::String>> {
     if !pattern.contains('%') || !pattern.contains(' ') {
         return None;
     }
@@ -1775,11 +1743,17 @@ pub fn encode_framing_property_literal(pattern: &str) -> Option<Vec<u8>> {
 /// Encode a resolved `dfdl:outputNewLine` value (may be NEL/LS/PS, not only LF).
 fn encode_output_new_line_text(onl: &str, encoding: Option<&str>) -> Vec<u8> {
     use crate::vm::encoding::{encode_document_text, normalize_encoding_name};
+    let expanded_bytes = expand_entities(onl);
+    let text = if !expanded_bytes.is_empty() {
+        alloc::string::String::from_utf8_lossy(&expanded_bytes).to_string()
+    } else {
+        onl.to_string()
+    };
     if let Some(enc) = encoding.and_then(normalize_encoding_name) {
-        if let Ok(bytes) = encode_document_text(onl, enc) {
+        if let Ok(bytes) = encode_document_text(&text, enc) {
             return bytes;
         }
-    } else if let Ok(bytes) = encode_document_text(onl, "utf-8") {
+    } else if let Ok(bytes) = encode_document_text(&text, "utf-8") {
         return bytes;
     }
     encode_delimiter(onl)
@@ -1821,7 +1795,11 @@ pub fn encode_delimiter_for_encoding(
                 }
             }
         }
-        out.extend(encode_property_delimiter_for_encoding(segment, None, Some(enc)));
+        out.extend(encode_property_delimiter_for_encoding(
+            segment,
+            None,
+            Some(enc),
+        ));
     }
     out
 }
@@ -1939,9 +1917,7 @@ pub fn encode_delimiter(pattern: &str) -> Vec<u8> {
         }
         return Vec::new();
     }
-    if pat.starts_with('%')
-        && !pat.starts_with('[')
-    {
+    if pat.starts_with('%') && !pat.starts_with('[') {
         let bytes = expand_entities(pat);
         if !bytes.is_empty() {
             return bytes;
@@ -2122,7 +2098,11 @@ fn match_nl_entity(input: &[u8], pattern: &str) -> Option<usize> {
             while let Some(n) = match_one_newline(&input[pos..]) {
                 pos += n;
             }
-            if pos > 0 { Some(pos) } else { None }
+            if pos > 0 {
+                Some(pos)
+            } else {
+                None
+            }
         }
         Some('*') => {
             let mut pos = 0usize;
@@ -2176,7 +2156,11 @@ fn match_wsp_entity(input: &[u8], pattern: &str) -> Option<usize> {
             while pos < input.len() && is_wsp(input[pos]) {
                 pos += 1;
             }
-            if pos > 0 { Some(pos) } else { None }
+            if pos > 0 {
+                Some(pos)
+            } else {
+                None
+            }
         }
         Some('*') => {
             while pos < input.len() && is_wsp(input[pos]) {
@@ -2249,7 +2233,11 @@ fn validate_length_pattern_syntax(pat: &str) -> Option<String> {
             ));
         }
         if bytes[i] == b'}' {
-            return Some(length_pattern_syntax_error("Illegal repetition", pat, start));
+            return Some(length_pattern_syntax_error(
+                "Illegal repetition",
+                pat,
+                start,
+            ));
         }
         let mut j = i;
         let mut has_comma = false;
@@ -2283,7 +2271,11 @@ fn validate_length_pattern_syntax(pat: &str) -> Option<String> {
             body.chars().all(|c| c.is_ascii_digit())
         };
         if !valid {
-            return Some(length_pattern_syntax_error("Illegal repetition", pat, start));
+            return Some(length_pattern_syntax_error(
+                "Illegal repetition",
+                pat,
+                start,
+            ));
         }
         i = j + 1;
     }
@@ -2299,9 +2291,7 @@ fn validate_length_pattern_syntax(pat: &str) -> Option<String> {
 }
 
 fn length_pattern_syntax_error(reason: &str, pattern: &str, index: usize) -> String {
-    alloc::format!(
-        "Schema Definition Error. {reason} near index {index} in `{pattern}`"
-    )
+    alloc::format!("Schema Definition Error. {reason} near index {index} in `{pattern}`")
 }
 
 fn format_length_pattern_error(pattern: &str, err: impl core::fmt::Display) -> String {
@@ -2330,7 +2320,9 @@ fn format_length_pattern_error(pattern: &str, err: impl core::fmt::Display) -> S
     } else if lower.contains("unclosed") {
         "Unclosed counted closure"
     } else {
-        return alloc::format!("Schema Definition Error. invalid lengthPattern `{pattern}`: {detail}");
+        return alloc::format!(
+            "Schema Definition Error. invalid lengthPattern `{pattern}`: {detail}"
+        );
     };
 
     if suffix.is_empty() {
@@ -2356,11 +2348,7 @@ pub fn match_length_pattern(input: &[u8], pattern: &str) -> Option<usize> {
     }
 
     // Fast path for simple char-class patterns without regex metacharacters.
-    if pat.starts_with('[')
-        && !pat.contains('\\')
-        && !pat.contains('(')
-        && !pat.contains('|')
-    {
+    if pat.starts_with('[') && !pat.contains('\\') && !pat.contains('(') && !pat.contains('|') {
         if let Some(len) = match_char_class(input, pat) {
             return Some(len);
         }
@@ -2373,9 +2361,6 @@ pub fn match_length_pattern(input: &[u8], pattern: &str) -> Option<usize> {
                 return Some(m.end());
             }
         }
-        if pattern_allows_zero_length_on_mismatch(pat) {
-            return Some(0);
-        }
         return None;
     }
 
@@ -2383,7 +2368,7 @@ pub fn match_length_pattern(input: &[u8], pattern: &str) -> Option<usize> {
 }
 
 fn pattern_allows_zero_length_on_mismatch(pat: &str) -> bool {
-    !pat.contains('|')
+    Regex::new(pat).is_ok_and(|re| re.is_match(Input::new(b"").anchored(Anchored::Yes)))
 }
 
 fn match_bang_dot_bang(input: &[u8]) -> Option<usize> {
@@ -2432,7 +2417,7 @@ fn match_length_pattern_custom(input: &[u8], pat: &str) -> Option<usize> {
         if input.starts_with(bytes) {
             return Some(bytes.len());
         }
-        return Some(0);
+        return None;
     }
     None
 }
@@ -2480,10 +2465,7 @@ fn match_until_unescaped_comma(input: &[u8]) -> usize {
 fn match_until_ff_separator(input: &[u8]) -> usize {
     let mut i = 0usize;
     while i < input.len() {
-        if input[i] == 0xFF
-            && i + 1 < input.len()
-            && (0x01..=0xFE).contains(&input[i + 1])
-        {
+        if input[i] == 0xFF && i + 1 < input.len() && (0x01..=0xFE).contains(&input[i + 1]) {
             return i;
         }
         i += 1;
@@ -2695,7 +2677,7 @@ mod tests {
         assert!(validate_delimiter_property_value("%").is_err());
         assert!(validate_delimiter_property_value("test%").is_err());
         assert!(validate_delimiter_property_value("%SP;").is_ok());
-        assert!(validate_delimiter_property_value("%SP").is_ok());
+        assert!(validate_delimiter_property_value("%SP").is_err());
         assert!(validate_delimiter_property_value("%%%SP;").is_ok());
         assert!(validate_delimiter_es_restriction("terminator", "%ES; END").is_ok());
         assert!(validate_delimiter_es_restriction("terminator", "%ES;").is_err());
@@ -2716,7 +2698,10 @@ mod tests {
 
     #[test]
     fn match_alpha_pattern() {
-        assert_eq!(match_length_pattern(b"aSingleToken123", "[a-zA-Z]+"), Some(12));
+        assert_eq!(
+            match_length_pattern(b"aSingleToken123", "[a-zA-Z]+"),
+            Some(12)
+        );
         assert_eq!(match_length_pattern(b"123456789", "[0-9]+"), Some(9));
     }
 
@@ -2725,20 +2710,20 @@ mod tests {
         assert_eq!(match_length_pattern(b"batcz", "(b|c|h)at"), Some(3));
         assert_eq!(match_length_pattern(b"catx", "(b|c|h)at"), Some(3));
         assert_eq!(match_length_pattern(b"dat", "(b|c|h)at"), None);
-        assert_eq!(match_length_pattern(b"bbb", "a*|bbb+"), Some(3));
-        assert_eq!(match_length_pattern(b"aaaaaaa", "a{0,5}|bbb+"), None);
+        assert_eq!(match_length_pattern(b"bbb", "a*|bbb+"), Some(0));
+        assert_eq!(match_length_pattern(b"aaaaaaa", "a{0,5}|bbb+"), Some(5));
     }
 
     #[test]
     fn match_negated_class_pattern() {
         assert_eq!(match_length_pattern(b"cz", "[^ab]z"), Some(2));
-        assert_eq!(match_length_pattern(b"az", "[^ab]z"), Some(0));
+        assert_eq!(match_length_pattern(b"az", "[^ab]z"), None);
     }
 
     #[test]
     fn match_unicode_property_pattern() {
         assert_eq!(match_length_pattern(b"abcDEFG", r"\p{L}{2,5}"), Some(5));
-        assert_eq!(match_length_pattern(b"a1", r"\p{L}{2,5}"), Some(0));
+        assert_eq!(match_length_pattern(b"a1", r"\p{L}{2,5}"), None);
     }
 
     #[test]
@@ -2758,7 +2743,10 @@ mod tests {
         }
         assert_eq!(pos, sep.len());
         assert_eq!(match_delimiter(sep, pat), Some(sep.len()));
-        assert_eq!(match_delimiter(&b"abcd  +\n\t\t  efg"[4..], pat), Some(sep.len()));
+        assert_eq!(
+            match_delimiter(&b"abcd  +\n\t\t  efg"[4..], pat),
+            Some(sep.len())
+        );
     }
 
     #[test]
@@ -2828,10 +2816,7 @@ mod tests {
 
     #[test]
     fn parse_delimiter_literal_preserves_compound_entity_sequences() {
-        assert_eq!(
-            parse_delimiter_literal_value("%WSP*;%NL;"),
-            "%WSP*;%NL;"
-        );
+        assert_eq!(parse_delimiter_literal_value("%WSP*;%NL;"), "%WSP*;%NL;");
         assert_eq!(
             parse_delimiter_literal_value("%WSP;%WSP+;+%NL;%WSP*;"),
             "%WSP;%WSP+;+%NL;%WSP*;"
@@ -2888,10 +2873,8 @@ mod tests {
 
     #[test]
     fn eval_runtime_delimiter_string_length() {
-        let sibs = alloc::collections::BTreeMap::from([(
-            "value".to_string(),
-            "0123456789".to_string(),
-        )]);
+        let sibs =
+            alloc::collections::BTreeMap::from([("value".to_string(), "0123456789".to_string())]);
         let expr = "{if (fn:string-length(./ex:value) eq 10) then '%ES;' else 'END'}";
         assert_eq!(
             eval_runtime_delimiter_expression(expr, &sibs).as_deref(),
@@ -3007,15 +2990,27 @@ mod tests {
 
     #[test]
     fn encode_nl_comma_space_separator_uses_output_new_line() {
-        assert_eq!(encode_nl_comma_space_separator(Some("%CR;%LF;"), true), vec![13, 10, 44]);
-        assert_eq!(encode_nl_comma_space_separator(Some("%CR;%LF;"), false), vec![44]);
+        assert_eq!(
+            encode_nl_comma_space_separator(Some("%CR;%LF;"), true),
+            vec![13, 10, 44]
+        );
+        assert_eq!(
+            encode_nl_comma_space_separator(Some("%CR;%LF;"), false),
+            vec![44]
+        );
     }
 
     #[test]
     fn parse_sequence5_delim_match() {
         let data = b"[more[{{((55)),,((66)),,((77))}}]nomore]";
-        assert_eq!(super::match_delimiter_opts(&data[6..], "{{", false), Some(2));
-        assert_eq!(super::match_delimiter_opts(&data[8..], "((", false), Some(2));
+        assert_eq!(
+            super::match_delimiter_opts(&data[6..], "{{", false),
+            Some(2)
+        );
+        assert_eq!(
+            super::match_delimiter_opts(&data[8..], "((", false),
+            Some(2)
+        );
         assert!(super::match_delimiter_opts(&data[9..], "((", false).is_none());
     }
 
@@ -3045,19 +3040,16 @@ mod alt_split_tests {
     use super::*;
     #[test]
     fn entity_whitespace_alts() {
-        assert_eq!(
-            parse_delimiter_literal_value("%NL; . !"),
-            "%NL; . !"
-        );
+        assert_eq!(parse_delimiter_literal_value("%NL; . !"), "%NL; . !");
         let alts = delimiter_alternatives("%NL; . !");
         assert_eq!(alts, vec!["%NL;", ".", "!"]);
         assert_eq!(encode_delimiter("? . !"), vec![b'?']);
-        assert_eq!(encode_property_delimiter("%ES; %NL; !", None), Vec::<u8>::new());
-        assert_eq!(encode_property_delimiter("%WSP+; * )", None), vec![b' ']);
         assert_eq!(
-            encode_property_delimiter("[s2:", None),
-            b"[s2:".to_vec()
+            encode_property_delimiter("%ES; %NL; !", None),
+            Vec::<u8>::new()
         );
+        assert_eq!(encode_property_delimiter("%WSP+; * )", None), vec![b' ']);
+        assert_eq!(encode_property_delimiter("[s2:", None), b"[s2:".to_vec());
         assert_eq!(encode_delimiter("[s1:"), b"[s1:".to_vec());
     }
 

@@ -1,7 +1,6 @@
 //! List section06 failures (ignored).
 use dfdl_vm::tdml::{
-    parse_tdml, run_parser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
-    TdmlSuite,
+    parse_tdml, run_parser_test, TdmlResourceContext, TdmlSchema, TdmlSuite, TestOutcome,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -13,7 +12,9 @@ const TDML_ROOT: &str = concat!(
 );
 
 fn enrich(suite: &mut TdmlSuite, path: &Path) {
-    let Some(dir) = path.parent() else { return; };
+    let Some(dir) = path.parent() else {
+        return;
+    };
     let dir_str = dir.to_string_lossy().into_owned();
     let mut models = HashSet::new();
     for t in &suite.tests {
@@ -30,10 +31,16 @@ fn enrich(suite: &mut TdmlSuite, path: &Path) {
             continue;
         }
         let p = dir.join(&model);
-        let Ok(xsd) = fs::read_to_string(&p) else { continue; };
+        let Ok(xsd) = fs::read_to_string(&p) else {
+            continue;
+        };
         suite.schemas.insert(
             model.clone(),
-            TdmlSchema { name: model, xsd, compile_base_dir: Some(dir_str.clone()) },
+            TdmlSchema {
+                name: model,
+                xsd,
+                compile_base_dir: Some(dir_str.clone()),
+            },
         );
     }
 }

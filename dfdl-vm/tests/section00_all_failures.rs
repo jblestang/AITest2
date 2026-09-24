@@ -1,6 +1,6 @@
 use dfdl_vm::tdml::{
-    parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlResourceContext, TdmlSchema,
-    TdmlSuite,
+    parse_tdml, run_parser_test, run_unparser_test, TdmlResourceContext, TdmlSchema, TdmlSuite,
+    TestOutcome,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -30,7 +30,9 @@ fn enrich(suite: &mut TdmlSuite, path: &Path) {
             continue;
         }
         let p = dir.join(&model);
-        let Ok(xsd) = fs::read_to_string(&p) else { continue };
+        let Ok(xsd) = fs::read_to_string(&p) else {
+            continue;
+        };
         suite.schemas.insert(
             model.clone(),
             TdmlSchema {
@@ -64,13 +66,19 @@ fn list_all_failures() {
     let mut by_prefix: BTreeMap<String, usize> = BTreeMap::new();
     let mut n = 0usize;
     for path in files {
-        let Ok(tdml) = fs::read_to_string(&path) else { continue };
-        let Ok(mut suite) = parse_tdml(&tdml) else { continue };
+        let Ok(tdml) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut suite) = parse_tdml(&tdml) else {
+            continue;
+        };
         enrich(&mut suite, &path);
         let file = path.file_name().unwrap().to_string_lossy();
         let mut file_fail = 0usize;
         for t in &suite.tests {
-            let Ok(r) = run_parser_test(&suite, t) else { continue };
+            let Ok(r) = run_parser_test(&suite, t) else {
+                continue;
+            };
             if let TestOutcome::Fail(msg) = r.outcome {
                 n += 1;
                 file_fail += 1;
@@ -82,7 +90,9 @@ fn list_all_failures() {
             }
         }
         for t in &suite.unparser_tests {
-            let Ok(r) = run_unparser_test(&suite, t) else { continue };
+            let Ok(r) = run_unparser_test(&suite, t) else {
+                continue;
+            };
             if let TestOutcome::Fail(msg) = r.outcome {
                 n += 1;
                 file_fail += 1;
@@ -102,11 +112,3 @@ fn list_all_failures() {
         eprintln!("  {v:>3}  {k}");
     }
 }
-
-
-
-
-
-
-
-

@@ -23,8 +23,7 @@ impl TdmlResourceContext {
 pub fn tdml_resource_path_from_fs_path(path: &str) -> Option<String> {
     let path = path.replace('\\', "/");
     let marker = "org/apache/daffodil/";
-    path.find(marker)
-        .map(|i| path[i..].to_string())
+    path.find(marker).map(|i| path[i..].to_string())
 }
 
 fn daffodil_test_resources_root() -> String {
@@ -70,4 +69,13 @@ pub fn load_tdml_resource(res_name: &str, ctx: &TdmlResourceContext) -> Result<V
         let _ = (res_name, ctx);
         Err("TDML file resources require the `std` feature".into())
     }
+}
+
+/// Load text string for a TDML resource.
+pub fn load_tdml_resource_string(
+    res_name: &str,
+    ctx: &TdmlResourceContext,
+) -> Result<String, String> {
+    let bytes = load_tdml_resource(res_name, ctx)?;
+    String::from_utf8(bytes).map_err(|e| alloc::format!("invalid UTF-8 in resource file: {e}"))
 }

@@ -12,13 +12,13 @@ pub use infoset::{
     InfosetNode,
 };
 pub use parser::{
-    effective_round_trip, effective_validation, parse_tdml, ParserTestCase, RoundTrip,
-    TdmlConfig, TdmlDocument, TdmlSchema, TdmlSuite, TdmlValidationMode, UnparserTestCase,
+    effective_round_trip, effective_validation, parse_tdml, ParserTestCase, RoundTrip, TdmlConfig,
+    TdmlDocument, TdmlSchema, TdmlSuite, TdmlValidationMode, UnparserTestCase,
+};
+pub use runner::{
+    run_parser_test, run_parser_test_with_options, run_suite, run_unparser_test,
+    ParserTestRunOptions, TestOutcome, TestResult,
 };
 pub use validation::{
     collect_post_decode_validation_errors, collect_post_decode_validation_errors_with_document,
-};
-pub use runner::{
-    run_parser_test, run_parser_test_with_options, run_unparser_test, run_suite, ParserTestRunOptions,
-    TestOutcome, TestResult,
 };

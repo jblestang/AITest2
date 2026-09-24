@@ -1,5 +1,7 @@
 //! Categorize section05 failures for prioritization.
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, run_unparser_test, TestOutcome, TdmlSchema, TdmlSuite};
+use dfdl_vm::tdml::{
+    parse_tdml, run_parser_test, run_unparser_test, TdmlSchema, TdmlSuite, TestOutcome,
+};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,7 +29,9 @@ fn enrich(suite: &mut TdmlSuite, path: &Path) {
             continue;
         }
         let p = dir.join(&model);
-        let Ok(xsd) = fs::read_to_string(&p) else { continue };
+        let Ok(xsd) = fs::read_to_string(&p) else {
+            continue;
+        };
         suite.schemas.insert(
             model.clone(),
             TdmlSchema {
@@ -148,17 +152,25 @@ fn section05_list_all_failures() {
     files.sort();
     for path in files {
         let rel = path.strip_prefix(root).unwrap().to_string_lossy();
-        let Ok(tdml) = fs::read_to_string(&path) else { continue };
-        let Ok(mut suite) = parse_tdml(&tdml) else { continue };
+        let Ok(tdml) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut suite) = parse_tdml(&tdml) else {
+            continue;
+        };
         enrich(&mut suite, &path);
         for t in &suite.tests {
-            let Ok(r) = run_parser_test(&suite, t) else { continue };
+            let Ok(r) = run_parser_test(&suite, t) else {
+                continue;
+            };
             if let TestOutcome::Fail(msg) = r.outcome {
                 eprintln!("P {rel} :: {} :: {msg}", t.name);
             }
         }
         for t in &suite.unparser_tests {
-            let Ok(r) = run_unparser_test(&suite, t) else { continue };
+            let Ok(r) = run_unparser_test(&suite, t) else {
+                continue;
+            };
             if let TestOutcome::Fail(msg) = r.outcome {
                 eprintln!("U {rel} :: {} :: {msg}", t.name);
             }
@@ -178,7 +190,9 @@ fn debug_bitorder_tdml_parse() {
 }
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -198,16 +212,28 @@ fn section05_compile_unexpected_samples() {
     files.sort();
     let mut n = 0;
     for path in files {
-        let Ok(tdml) = fs::read_to_string(&path) else { continue };
-        let Ok(mut suite) = parse_tdml(&tdml) else { continue };
+        let Ok(tdml) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut suite) = parse_tdml(&tdml) else {
+            continue;
+        };
         enrich(&mut suite, &path);
         for t in &suite.tests {
-            let Ok(r) = run_parser_test(&suite, t) else { continue };
+            let Ok(r) = run_parser_test(&suite, t) else {
+                continue;
+            };
             if let TestOutcome::Fail(msg) = r.outcome {
                 if msg.starts_with("compile error:") && t.expected_errors.is_none() {
-                    eprintln!("{}::{}: {msg}", path.strip_prefix(root).unwrap().display(), t.name);
+                    eprintln!(
+                        "{}::{}: {msg}",
+                        path.strip_prefix(root).unwrap().display(),
+                        t.name
+                    );
                     n += 1;
-                    if n >= 20 { return; }
+                    if n >= 20 {
+                        return;
+                    }
                 }
             }
         }
@@ -223,16 +249,28 @@ fn section05_compile_mismatch_samples() {
     files.sort();
     let mut n = 0;
     for path in files {
-        let Ok(tdml) = fs::read_to_string(&path) else { continue };
-        let Ok(mut suite) = parse_tdml(&tdml) else { continue };
+        let Ok(tdml) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut suite) = parse_tdml(&tdml) else {
+            continue;
+        };
         enrich(&mut suite, &path);
         for t in &suite.tests {
-            let Ok(r) = run_parser_test(&suite, t) else { continue };
+            let Ok(r) = run_parser_test(&suite, t) else {
+                continue;
+            };
             if let TestOutcome::Fail(msg) = r.outcome {
                 if msg.contains("compile error mismatch") {
-                    eprintln!("{}::{}: {msg}", path.strip_prefix(root).unwrap().display(), t.name);
+                    eprintln!(
+                        "{}::{}: {msg}",
+                        path.strip_prefix(root).unwrap().display(),
+                        t.name
+                    );
                     n += 1;
-                    if n >= 25 { return; }
+                    if n >= 25 {
+                        return;
+                    }
                 }
             }
         }
