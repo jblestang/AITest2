@@ -480,7 +480,6 @@ impl<'a> Encoder<'a> {
                         )
                     }
                 } else {
-                    self.check_bit_order_change(props, *bit_count)?;
                     write_leading_skip(out, bit_count, props).map_err(Error::from)?;
                     write_alignment_for_kind(
                         out,
@@ -491,6 +490,7 @@ impl<'a> Encoder<'a> {
                         Some(&self.ctx.config),
                     )
                     .map_err(Error::from)?;
+                    self.check_bit_order_change(props, *bit_count)?;
                     let schema_ctx = schema_context_field_name(self.ctx.strings().get(*name)?);
                     let props = encode_scope
                         .map(|scope| {
@@ -618,8 +618,8 @@ impl<'a> Encoder<'a> {
             {
                 self.write_occurrence_separator(sep_props, out, bit_count, idx, encode_len)?;
             }
-            self.check_bit_order_change(props, *bit_count)?;
             write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
+            self.check_bit_order_change(props, *bit_count)?;
             self.write_initiator(props, out, bit_count, None, encode_siblings)?;
             if matches!(item, DfdlValue::Null) {
                 let nil_bytes =
@@ -1023,8 +1023,8 @@ impl<'a> Encoder<'a> {
                     continue;
                 }
             }
-            self.check_bit_order_change(props, *bit_count)?;
             write_alignment_with_config(out, bit_count, props, Some(&self.ctx.config))?;
+            self.check_bit_order_change(props, *bit_count)?;
             write_simple(
                 out,
                 bit_count,

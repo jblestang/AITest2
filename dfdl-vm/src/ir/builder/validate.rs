@@ -3,8 +3,8 @@ use super::props::dfdl_props_for_element_ref;
 use crate::error::{Result, SchemaError};
 use crate::length_validate::validate_float_double_bit_length_schema;
 use crate::schema::{
-    DfdlProps, ElementDecl, LengthKind, LengthUnits, OccursCountKind, Particle, SchemaDocument,
-    TypeName,
+    BinaryNumberRep, DfdlProps, ElementDecl, LengthKind, LengthUnits, OccursCountKind, Particle,
+    SchemaDocument, TypeName,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -88,9 +88,41 @@ pub(crate) fn text_number_pattern_has_grouping_and_exponent(pattern: &str) -> bo
 }
 
 pub(crate) fn validate_text_number_pattern_unquoted_special(pattern: &str) -> Result<()> {
+    if pattern.starts_with(';') {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: textNumberPattern positive part is mandatory".into(),
+        }
+        .into());
+    }
+    if text_number_pattern_has_grouping_and_exponent(pattern) {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: Invalid textNumberPattern `{pattern}`. Cannot have grouping separator in scientific notation."
+            ),
+        }
+        .into());
+    }
     for sub in pattern.split(';') {
         let bare = text_number_pattern_bare(sub);
         let chars: Vec<char> = bare.chars().collect();
+        let mut pad_spec_count = 0;
+        let mut p_idx = 0;
+        while p_idx < chars.len() {
+            if chars[p_idx] == '*' {
+                pad_spec_count += 1;
+                p_idx += 2;
+            } else {
+                p_idx += 1;
+            }
+        }
+        if pad_spec_count > 1 {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: Invalid textNumberPattern `{pattern}` - multiple pad specifiers"
+                ),
+            }
+            .into());
+        }
         for (i, c) in chars.iter().enumerate() {
             if *c == '_' {
                 let pad_suffix = i > 0 && chars[i - 1] == '*';
@@ -253,7 +285,7 @@ pub(crate) fn validate_text_standard_sibling_order(
         if !prior_names.iter().any(|n| n == target) {
             return Err(SchemaError::InvalidProperty {
                 message: alloc::format!(
-                    "Schema Definition Error. {label} refers to `{target}` which is not a prior sibling element."
+                    "Schema Definition Error: {label} refers to `{target}` which does not exist as a prior sibling element."
                 ),
             }
             .into());
@@ -294,6 +326,63 @@ pub(crate) fn validate_text_standard_separator_semantics(
             }
         }
     }
+    if let Some(pat_id) = ir.text_number_pattern {
+        let pattern = strings.get(pat_id).unwrap_or("");
+        if text_number_pattern_requires_decimal_separator(pattern) {
+            if !ir.text_standard_decimal_separator_defined
+                && ir.text_standard_decimal_separator_sibling.is_none()
+                && ir.resolved_text_standard_decimal_separator.is_none()
+            {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: Property textStandardDecimalSeparator is not defined".into(),
+                }
+                .into());
+            }
+            if ir.text_standard_decimal_separator_defined {
+                let dec = strings.get(ir.text_standard_decimal_separator).unwrap_or("");
+                if dec.is_empty() {
+                    return Err(SchemaError::InvalidProperty {
+                        message: "Schema Definition Error: Property textStandardDecimalSeparator cannot be empty".into(),
+                    }
+                    .into());
+                }
+            }
+        }
+        if text_number_pattern_requires_grouping_separator(pattern) {
+            if !ir.text_standard_grouping_separator_defined
+                && ir.text_standard_grouping_separator_sibling.is_none()
+                && ir.resolved_text_standard_grouping_separator.is_none()
+            {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: Property textStandardGroupingSeparator is not defined".into(),
+                }
+                .into());
+            }
+            if ir.text_standard_grouping_separator_defined {
+                let grp = ir
+                    .text_standard_grouping_separator
+                    .and_then(|id| strings.get(id).ok())
+                    .unwrap_or("");
+                if grp.is_empty() {
+                    return Err(SchemaError::InvalidProperty {
+                        message: "Schema Definition Error: textStandardGroupingSeparator must be exactly 1 character".into(),
+                    }
+                    .into());
+                }
+            }
+        }
+        if text_number_pattern_requires_exponent(pattern)
+            && ir.text_standard_exponent_rep_defined
+        {
+            let exp = strings.get(ir.text_standard_exponent_rep).unwrap_or("");
+            if exp.is_empty() {
+                return Err(SchemaError::InvalidProperty {
+                    message: "Schema Definition Error: Property textStandardExponentRep cannot be empty".into(),
+                }
+                .into());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -311,7 +400,7 @@ pub(crate) fn text_number_pattern_requires_decimal_separator(pattern: &str) -> b
             i += 1;
             continue;
         }
-        if !in_quote && chars[i] == '.' {
+        if !in_quote && matches!(chars[i], '.' | 'E' | 'e' | '@') {
             return true;
         }
         i += 1;
@@ -543,6 +632,45 @@ pub(crate) fn dfdl_props_has_input_value_calc(props: &DfdlProps) -> bool {
         || props.input_value_calc_segments.is_some()
         || props.input_value_calc_path.is_some()
         || props.input_value_calc_expression.is_some()
+}
+
+pub(crate) fn validate_packed_number_rep_props(ir: &IrProps, kind: ValueKind) -> Result<()> {
+    if kind == ValueKind::Complex {
+        return Ok(());
+    }
+    let rep = ir.binary_number_rep;
+    if matches!(
+        rep,
+        BinaryNumberRep::PackedBcd | BinaryNumberRep::Bcd | BinaryNumberRep::Ibm4690Packed
+    ) {
+        if ir.length_kind == LengthKind::Implicit {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error: lengthKind='implicit' is not allowed with packed binary formats".into(),
+            }
+            .into());
+        }
+        if ir.alignment_units == LengthUnits::Bits && !ir.alignment.is_multiple_of(4) {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: The given alignment ({}) must be a multiple of 4 when using packed binary formats",
+                    ir.alignment
+                ),
+            }
+            .into());
+        }
+        if rep == BinaryNumberRep::Bcd
+            && matches!(
+                kind,
+                ValueKind::Byte | ValueKind::Short | ValueKind::Int | ValueKind::Long
+            )
+        {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error: not an allowed type for bcd".into(),
+            }
+            .into());
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_format_has_no_input_value_calc(schema: &SchemaDocument) -> Result<()> {

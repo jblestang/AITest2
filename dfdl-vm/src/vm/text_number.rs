@@ -409,6 +409,16 @@ pub(crate) fn parse_standard_text_number(
     let lax = props.check_policy == BinaryNumberCheckPolicy::Lax;
     let mut work = if lax {
         input.trim().to_string()
+    } else if let Some(pad) = props.pad_character {
+        let pad_str = pad.to_string();
+        let t = crate::vm::runtime::trim_pad_char_for_justification(input, &pad_str, crate::schema::TextStringJustification::Right);
+        if t.is_empty() && !input.is_empty() && pad == '0' {
+            "0".to_string()
+        } else if t.is_empty() && !input.is_empty() {
+            input.to_string()
+        } else {
+            t.to_string()
+        }
     } else {
         input.to_string()
     };
@@ -909,7 +919,7 @@ fn skip_pad_chars(
     props: &TextNumberFormatProps<'_>,
     after_decimal: bool,
 ) {
-    if !lax && !pattern_pad {
+    if !lax && !pattern_pad && props.pad_character.is_none() {
         return;
     }
     loop {
@@ -1090,14 +1100,16 @@ fn match_subpattern(
                 let min_digits = 0usize;
                 let stops_at_dot = j < chars.len() && chars[j] == '.';
 
-                skip_pad(
-                    bytes,
-                    &mut pos,
-                    props.pad_character,
-                    lax,
-                    props,
-                    saw_decimal,
-                );
+                if !saw_digit {
+                    skip_pad(
+                        bytes,
+                        &mut pos,
+                        props.pad_character,
+                        lax,
+                        props,
+                        saw_decimal,
+                    );
+                }
                 if in_exponent && exponent.as_ref().is_none_or(|e| e.is_empty()) {
                     if pos < bytes.len() && bytes[pos] == b'+' {
                         exp_explicit_sign = true;

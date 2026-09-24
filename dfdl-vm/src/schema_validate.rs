@@ -72,6 +72,7 @@ pub fn validate_compiled_schema(
     types::validate_element_type_qnames(schema, root)?;
     types::validate_simple_restriction_bases(schema, root)?;
     types::validate_name_and_ref(schema)?;
+    types::validate_element_default_values(schema)?;
     delimiters::validate_escape_separator_distinct(schema, root)?;
     restrictions::validate_invalid_restrictions(schema, root, tunables)?;
     restrictions::validate_max_hex_binary_length(schema, root, tunables)?;

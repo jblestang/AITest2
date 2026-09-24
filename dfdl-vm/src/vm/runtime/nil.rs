@@ -307,6 +307,9 @@ pub(crate) fn try_consume_nillable_element_nil(
                         )
                         .is_some()
                     {
+                        if parent.separator_position == crate::schema::SeparatorPosition::Infix {
+                            return Ok(true);
+                        }
                         let enc = encoding_name(parent, strings).ok();
                         let _ = cursor.consume_delimiter(sep, parent.ignore_case, enc);
                         return Ok(true);

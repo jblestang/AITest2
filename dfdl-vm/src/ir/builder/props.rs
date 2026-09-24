@@ -279,11 +279,9 @@ pub(crate) fn overlay_dfdl_to_ir(
     if props.calendar_check_policy_lax == Some(true) {
         base.calendar_check_policy_lax = true;
     }
-    if props.text_number_pattern.is_some() {
-        base.text_number_pattern = props
-            .text_number_pattern
-            .as_ref()
-            .map(|s| strings.intern(s.clone()));
+    if let Some(ref raw) = props.text_number_pattern {
+        super::validate::validate_text_number_pattern_unquoted_special(raw)?;
+        base.text_number_pattern = Some(strings.intern(raw.clone()));
         base.custom_text_number_pattern = true;
     }
     if let Some(v) = props.text_number_check_policy {
@@ -1527,6 +1525,8 @@ pub(crate) fn finalize_element_props(
                 .into());
         }
     }
+    super::validate::validate_packed_number_rep_props(&ir, kind)?;
+    super::validate::validate_text_standard_separator_semantics(&ir, strings)?;
     if schema.is_some() {
         super::validate::validate_delimiter_props(&DfdlProps::default(), &DfdlProps::default())?;
     }

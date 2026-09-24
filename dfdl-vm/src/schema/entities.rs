@@ -319,6 +319,14 @@ pub fn validate_text_standard_separator_literal(prop: &str, raw: &str) -> Result
     validate_dfdl_entities_in_property(raw)?;
     reject_byte_entities_text_standard(raw)?;
     validate_disallowed_char_class_tokens(prop, raw, &[])?;
+    if prop == "textStandardDecimalSeparator" {
+        let list = parse_text_standard_separator_list(raw);
+        if list.len() > 1 {
+            return Err(format!(
+                "{prop} cannot have more than one separator"
+            ));
+        }
+    }
     if (prop == "textStandardGroupingSeparator" || prop == "textStandardDecimalSeparator")
         && (raw.contains("%WSP") || raw.contains("%WS"))
         && !raw.contains("%WSP;")

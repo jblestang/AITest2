@@ -406,3 +406,33 @@ pub(crate) fn all_choice_particle_lists(schema: &SchemaDocument) -> Vec<&[Partic
     }
     out
 }
+
+pub(crate) fn validate_element_default_values(schema: &SchemaDocument) -> Result<(), SchemaError> {
+    for ge in schema.global_elements.values() {
+        if let Some(ref d) = ge.props.default_value {
+            validate_default_value_for_type(&ge.type_name, d)?;
+        }
+    }
+    for particles in all_particle_lists(schema) {
+        for p in particles {
+            if let Particle::Element(el) = p {
+                if let Some(ref d) = el.props.default_value {
+                    validate_default_value_for_type(&el.type_name, d)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_default_value_for_type(type_name: &TypeName, default_val: &str) -> Result<(), SchemaError> {
+    let t = type_name.as_str();
+    if (t == "xs:boolean" || t == "boolean") && !matches!(default_val, "true" | "false" | "1" | "0") {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: Invalid value constraint value '{default_val}' for type xs:boolean"
+            ),
+        });
+    }
+    Ok(())
+}

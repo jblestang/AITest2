@@ -841,6 +841,17 @@ pub(crate) fn is_suppressible_empty_representation(
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<bool, crate::error::VmError> {
+    if let Some(id) = props.initiator {
+        let raw = strings.get(id).unwrap_or("");
+        let list: Vec<&str> = raw.split_whitespace().collect();
+        if !list.is_empty()
+            && list
+                .iter()
+                .all(|s| !crate::schema::expand_entities_str(s).is_empty())
+        {
+            return Ok(false);
+        }
+    }
     match value {
         crate::value::DfdlValue::Null => {
             if props.nillable && nil_value_includes_empty(props, strings)? {

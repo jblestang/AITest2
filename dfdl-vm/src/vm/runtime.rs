@@ -842,8 +842,7 @@ fn resolved_text_number_format_parts(
     let pad = props
         .text_number_pad_character
         .and_then(|id| strings.get(id).ok())
-        .and_then(|p| p.chars().next())
-        .or(Some('0'));
+        .and_then(|p| p.chars().next());
     (
         dec_seps,
         grouping,
@@ -2398,6 +2397,8 @@ pub(crate) fn read_text_scalar(
                 return Err(unable_parse_from_text("xs:int", trimmed));
             }
             if props.length_kind == LengthKind::Delimited
+                && !props.custom_text_number_pattern
+                && props.text_number_pattern.is_none()
                 && trimmed.chars().any(|c| c.is_ascii_alphabetic() || c == ':')
             {
                 return Err(unable_parse_from_text("xs:int", trimmed));
@@ -2479,9 +2480,12 @@ pub(crate) fn read_text_scalar(
             }
         }
         Float => {
+            let (dec_seps, grouping, _, _, _) = resolved_text_number_format_parts(props, strings);
+            let colon_allowed = dec_seps.iter().any(|s| s.contains(':'))
+                || grouping.as_deref().is_some_and(|g| g.contains(':'));
             if props.length_kind == LengthKind::Delimited
                 && !is_text_float_infinity_or_nan(trimmed)
-                && (trimmed.contains(':')
+                && ((!colon_allowed && trimmed.contains(':'))
                     || trimmed
                         .chars()
                         .any(|c| c.is_ascii_alphabetic() && c != 'e' && c != 'E'))
@@ -2501,9 +2505,12 @@ pub(crate) fn read_text_scalar(
             Ok(v)
         }
         Double => {
+            let (dec_seps, grouping, _, _, _) = resolved_text_number_format_parts(props, strings);
+            let colon_allowed = dec_seps.iter().any(|s| s.contains(':'))
+                || grouping.as_deref().is_some_and(|g| g.contains(':'));
             if props.length_kind == LengthKind::Delimited
                 && !is_text_float_infinity_or_nan(trimmed)
-                && (trimmed.contains(':')
+                && ((!colon_allowed && trimmed.contains(':'))
                     || trimmed
                         .chars()
                         .any(|c| c.is_ascii_alphabetic() && c != 'e' && c != 'E'))
@@ -4366,7 +4373,7 @@ fn pad_char_for_kind(
     }
     pad_char_from_props(props, strings)
         .map(|s| s.to_string())
-        .unwrap_or_else(|| alloc::string::String::from(" "))
+        .unwrap_or_else(|| alloc::string::String::from("0"))
 }
 
 #[allow(dead_code)]
@@ -4514,7 +4521,12 @@ fn trim_text_value<'a>(
                 trim_pad_char_for_justification(input, &pad, just)
             } else {
                 let just = text_justification_for_kind(props, kind);
-                trim_pad_char_for_justification(input, &pad, just)
+                let trimmed = trim_pad_char_for_justification(input, &pad, just);
+                if trimmed.is_empty() && !input.is_empty() && pad == "0" {
+                    "0"
+                } else {
+                    trimmed
+                }
             }
         }
     }
@@ -4534,7 +4546,7 @@ fn trim_pad_char<'a>(input: &'a str, pad: &str) -> &'a str {
     trim_pad_char_for_justification(input, pad, TextStringJustification::Center)
 }
 
-fn trim_pad_char_for_justification<'a>(
+pub(crate) fn trim_pad_char_for_justification<'a>(
     input: &'a str,
     pad: &str,
     justification: TextStringJustification,
@@ -4595,7 +4607,10 @@ where
 }
 
 fn unsigned_uses_text_number_pattern(trimmed: &str, props: &IrProps) -> bool {
-    props.custom_text_number_pattern || trimmed.contains(',')
+    props.custom_text_number_pattern
+        || props.text_number_pattern.is_some()
+        || props.text_number_check_policy == crate::schema::BinaryNumberCheckPolicy::Strict
+        || trimmed.contains(',')
 }
 
 fn explicit_length_unsigned_short_whitespace(type_name: &str, props: &IrProps) -> bool {

@@ -657,7 +657,18 @@ pub(crate) fn resolve_length_props(
             if kind == ValueKind::Decimal {
                 validate_explicit_decimal_before_decode(kind, &resolved, tunables, strings)?;
             } else if let Some(len) = resolved.length {
-                if binary_length_validation_applies(kind, resolved.binary_number_rep) {
+                if crate::length_validate::is_packed_binary_rep(resolved.binary_number_rep) {
+                    let n_bits = match resolved.length_units {
+                        LengthUnits::Bits => len as usize,
+                        LengthUnits::Bytes => len.saturating_mul(8) as usize,
+                        LengthUnits::Characters => len as usize,
+                    };
+                    crate::length_validate::validate_packed_binary_bit_length_parse(
+                        n_bits,
+                        kind,
+                        resolved.binary_number_rep,
+                    )?;
+                } else if binary_length_validation_applies(kind, resolved.binary_number_rep) {
                     validate_data_length_vm(
                         kind,
                         len,

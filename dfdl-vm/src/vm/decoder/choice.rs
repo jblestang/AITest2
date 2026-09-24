@@ -413,6 +413,7 @@ pub(crate) fn sibling_state<'a>(
 ) -> Result<&'a SiblingState> {
     let name_id = props
         .input_value_calc_literal
+        .or(props.input_value_calc_sibling)
         .ok_or_else(|| VmError::InvalidValue {
             message: "missing sibling name for boolean inputValueCalc".into(),
         })?;
