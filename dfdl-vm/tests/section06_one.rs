@@ -227,3 +227,29 @@ fn test_lion_eater_01() {
         );
     }
 }
+
+#[test]
+#[ignore]
+fn debug_remaining_5() {
+    let path = Path::new(ROOT).join("namespaces/namespaces.tdml");
+    let mut suite = parse_tdml(&fs::read_to_string(&path).unwrap()).unwrap();
+    enrich(&mut suite, &path);
+    for name in [
+        "long_chain_05",
+        "combinations_03",
+        "multi_encoding_04",
+        "indexOutOfBounds_01",
+        "nonsense_namespace_03",
+    ] {
+        if let Some(t) = suite.tests.iter().find(|t| t.name == name) {
+            let r = run_parser_test(&suite, t).unwrap();
+            eprintln!("{name}: {:?}", r.outcome);
+            eprintln!("  EXPECTED ERRORS: {:?}", t.expected_errors);
+            if let TestOutcome::Fail(m) = r.outcome {
+                eprintln!("  FAIL REASON: {m}");
+            }
+        } else {
+            eprintln!("NOT FOUND: {name}");
+        }
+    }
+}

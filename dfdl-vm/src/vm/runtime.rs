@@ -5460,6 +5460,35 @@ fn field_terminator_starts_at_cursor(
     Ok(m > 0 || (m == 0 && props.terminator.is_some()))
 }
 
+fn cursor_at_deferred_sequence_separator(
+    cursor: &Cursor<'_>,
+    _field_props: &IrProps,
+    strings: &StringPool,
+    stop_sequences: &[&IrProps],
+) -> Result<bool, crate::error::VmError> {
+    for seq in stop_sequences {
+        let Some(sid) = seq.separator else {
+            continue;
+        };
+        let pat = strings.get(sid)?;
+        if pat.is_empty() {
+            continue;
+        }
+        let enc = encoding_name(seq, strings).ok();
+        if crate::schema::match_delimiter_opts_for_encoding(
+            &cursor.data[cursor.pos..],
+            pat,
+            seq.ignore_case,
+            enc,
+        )
+        .is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn defer_delimited_enclosing_consume(
     cursor: &Cursor<'_>,
     props: &IrProps,
@@ -5506,6 +5535,9 @@ fn defer_delimited_enclosing_consume(
         return Ok(false);
     }
     if cursor_at_deferred_sequence_terminator(cursor, props, strings, stop_sequences)? {
+        return Ok(true);
+    }
+    if cursor_at_deferred_sequence_separator(cursor, props, strings, stop_sequences)? {
         return Ok(true);
     }
     if field_terminator_starts_at_cursor(cursor, props, strings, scan_ctx)? {

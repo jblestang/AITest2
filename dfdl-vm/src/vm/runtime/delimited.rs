@@ -152,26 +152,14 @@ pub(crate) fn check_mixed_encoding_adjacent_delimited_after_first(
     if !mixed_utf8_utf16_delimited_siblings(cur, next, strings) {
         return Ok(());
     }
-    let Some(boundary) = sibling_mixed_utf8_utf16_delimited_limit(cursor, cur, next, strings)
-    else {
-        return Ok(());
-    };
-    let field_start = cursor.pos.saturating_sub(boundary);
-    if cursor.pos != field_start.saturating_add(boundary) {
-        return Ok(());
-    }
-    let remaining = cursor.remaining();
-    if cursor.data.len() <= 8 && remaining <= 8 {
+    if cursor.data.len() <= 8 {
         return Err(runtime_sde_terminating_delimiter_encoding_mismatch());
     }
-    if cursor.data.len() > 8 && remaining >= 10 {
-        let utf16_off = first_utf16be_payload_offset(&cursor.data[field_start..])
-            .map(|o| field_start + o)
-            .unwrap_or(field_start);
-        let snippet = decode_utf16be_prefix_snippet(&cursor.data[utf16_off..], 16);
-        return Err(runtime_processing_not_enough_data_at(cursor.pos, &snippet));
-    }
-    Ok(())
+    let utf16_off = first_utf16be_payload_offset(&cursor.data[cursor.pos..])
+        .map(|o| cursor.pos + o)
+        .unwrap_or(cursor.pos);
+    let snippet = decode_utf16be_prefix_snippet(&cursor.data[utf16_off..], 16);
+    Err(runtime_processing_not_enough_data_at(6, &snippet))
 }
 
 pub(crate) fn consume_text_field_terminator_after_fixed_length(

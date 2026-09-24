@@ -70,6 +70,10 @@ impl<'a> XsdParser<'a> {
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &xsd_attrs);
+        if !props.max_occurs_specified {
+            props.max_occurs_specified = true;
+            props.occurs_max = Some(1);
+        }
         if xsd_attrs.get("nillable").is_some_and(|v| v == "true") {
             props.nillable = Some(true);
         }
@@ -224,6 +228,10 @@ impl<'a> XsdParser<'a> {
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         merge_occurs(&mut props, &xsd_attrs);
+        if !props.max_occurs_specified {
+            props.max_occurs_specified = true;
+            props.occurs_max = Some(1);
+        }
         if xsd_attrs.get("nillable").is_some_and(|v| v == "true") {
             props.nillable = Some(true);
         }

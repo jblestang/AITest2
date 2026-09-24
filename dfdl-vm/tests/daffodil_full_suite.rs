@@ -105,8 +105,8 @@ const SECTION05_BASELINE_PASS_MIN: usize = 811;
 const SECTION05_BASELINE_FAIL_MAX: usize = 0;
 
 /// Baseline for all `section06/**` TDML (namespaces + entities).
-const SECTION06_BASELINE_PASS_MIN: usize = 160;
-const SECTION06_BASELINE_FAIL_MAX: usize = 15;
+const SECTION06_BASELINE_PASS_MIN: usize = 178;
+const SECTION06_BASELINE_FAIL_MAX: usize = 0;
 
 /// Baseline for all `section13/**` TDML.
 const SECTION13_BASELINE_PASS_MIN: usize = 440;
@@ -269,8 +269,8 @@ fn daffodil_section02_regression_gate() {
         stats.pass,
         stats.fail
     );
-    assert!(
-        stats.fail <= SECTION02_BASELINE_FAIL_MAX,
+    assert_eq!(
+        stats.fail, SECTION02_BASELINE_FAIL_MAX,
         "section02 regression: too many failures pass={} fail={} (max {SECTION02_BASELINE_FAIL_MAX})",
         stats.pass,
         stats.fail
@@ -559,8 +559,8 @@ fn daffodil_section05_regression_gate() {
         stats.fail,
         stats.skip
     );
-    assert!(
-        stats.fail <= SECTION05_BASELINE_FAIL_MAX,
+    assert_eq!(
+        stats.fail, SECTION05_BASELINE_FAIL_MAX,
         "section05 regression: too many failures pass={} fail={} (max {SECTION05_BASELINE_FAIL_MAX}) skip={}",
         stats.pass,
         stats.fail,

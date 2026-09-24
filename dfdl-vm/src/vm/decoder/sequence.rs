@@ -451,6 +451,27 @@ impl<'a> Decoder<'a> {
                             continue;
                         }
                     }
+                    if i + 1 < total {
+                        if let (
+                            Ok(IrNode::Element {
+                                props: cur_props, ..
+                            }),
+                            Ok(IrNode::Element {
+                                props: next_props, ..
+                            }),
+                        ) = (
+                            self.ctx.program.node(child),
+                            self.ctx.program.node(children[i + 1]),
+                        ) {
+                            crate::vm::runtime::check_mixed_encoding_adjacent_delimited_after_first(
+                                cursor,
+                                cur_props,
+                                next_props,
+                                props,
+                                self.ctx.strings(),
+                            )?;
+                        }
+                    }
                     let child_start = cursor.pos;
                     let child_res = self.decode_particle(
                         child,

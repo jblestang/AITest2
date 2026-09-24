@@ -300,7 +300,10 @@ pub(crate) fn validate_dfdl_prop_overlap(
                 && element.$field != type_props.$field
             {
                 return Err(SchemaError::InvalidProperty {
-                    message: alloc::format!("Schema Definition Error. Property overlap {}", $name),
+                    message: alloc::format!(
+                        "Schema Definition Error. Overlapping properties. {} overlaps between element and type.",
+                        $name
+                    ),
                 }
                 .into());
             }

@@ -639,14 +639,17 @@ pub(crate) fn props_from_attrs_with_variables(
                 if value.contains("%%") {
                     props.initiator_percent_escaped = true;
                 }
+                props.raw_initiator = Some(value.to_string());
                 let lit = parse_delimiter_literal(value)?;
                 props.initiator = Some(lit);
             }
             "terminator" => {
+                props.raw_terminator = Some(value.to_string());
                 let lit = parse_delimiter_literal(value)?;
                 props.terminator = Some(lit);
             }
             "separator" => {
+                props.raw_separator = Some(value.to_string());
                 let lit = parse_delimiter_literal(value)?;
                 props.separator = Some(lit);
             }
@@ -843,8 +846,6 @@ pub(crate) fn props_from_attrs_with_variables(
 }
 
 fn parse_delimiter_literal(raw: &str) -> Result<String> {
-    crate::schema::validate_delimiter_schema_attribute(raw)
-        .map_err(|e| ParseError::InvalidXml { message: e })?;
     Ok(crate::schema::parse_delimiter_literal_value(raw))
 }
 
@@ -2356,11 +2357,11 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.occurs_min.is_some() {
         base.occurs_min = overlay.occurs_min;
     }
-    if overlay.occurs_max.is_some() {
-        base.occurs_max = overlay.occurs_max;
-    }
     if overlay.max_occurs_specified {
+        base.occurs_max = overlay.occurs_max;
         base.max_occurs_specified = true;
+    } else if overlay.occurs_max.is_some() {
+        base.occurs_max = overlay.occurs_max;
     }
     if overlay.choice_dispatch_key.is_some() {
         base.choice_dispatch_key = overlay.choice_dispatch_key;

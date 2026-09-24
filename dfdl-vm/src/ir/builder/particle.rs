@@ -53,7 +53,11 @@ impl<'a> IrBuilder<'a> {
                         .discriminator_xpath_prefixes
                         .as_ref()
                         .unwrap_or(&empty);
-                    crate::schema_validate::validate_discriminator_xpath_prefixes(test, prefixes)?;
+                    crate::schema_validate::validate_discriminator_xpath_prefixes(
+                        test,
+                        prefixes,
+                        &self.schema.namespace_prefixes,
+                    )?;
                 }
                 let mut merged =
                     self.merge_props_full(inherited, &DfdlProps::default(), &element_props)?;
@@ -425,7 +429,7 @@ impl<'a> IrBuilder<'a> {
                                 &seq.props,
                                 &DfdlProps::default(),
                             )?;
-                            let group_inherited = particle_inherited_for_children(inherited);
+                            let group_inherited = particle_inherited_for_children(&ir_props);
                             let mut group_children = Vec::new();
                             let mut group_prior: Vec<String> = Vec::new();
                             for particle in &seq.particles {
@@ -439,10 +443,9 @@ impl<'a> IrBuilder<'a> {
                                     group_prior.push(el.name.clone());
                                 }
                             }
-                            let inline_hidden =
-                                seq.props.separator.as_deref().is_none_or(|s| s.is_empty())
-                                    && seq.props.terminator.as_deref().is_none_or(|s| s.is_empty())
-                                    && seq.props.initiator.as_deref().is_none_or(|s| s.is_empty());
+                            let inline_hidden = ir_props.separator.is_none()
+                                && ir_props.terminator.is_none()
+                                && ir_props.initiator.is_none();
                             if inline_hidden {
                                 children.extend(group_children);
                             } else {

@@ -865,11 +865,6 @@ fn field_values_to_infoset_nodes(name: &str, value: &DfdlValue) -> Vec<InfosetNo
                 }
                 return nodes;
             }
-            if seq.fields.len() == 1 {
-                if let Some(inner) = seq.fields.get(name) {
-                    return field_values_to_infoset_nodes(name, inner);
-                }
-            }
             vec![value_to_node(name, value)]
         }
         other => vec![value_to_node(name, other)],

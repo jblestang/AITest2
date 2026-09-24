@@ -150,16 +150,24 @@ pub(crate) struct ParsedRestrictionFacets {
 
 pub(crate) fn backfill_type_format_contexts(doc: &mut SchemaDocument) {
     let defaults = doc.format_defaults.props.clone();
-    if !defaults.length_kind_defined {
-        return;
-    }
     for td in doc.types.values_mut() {
         match td {
             TypeDef::Simple { format_context, .. } | TypeDef::Complex { format_context, .. } => {
-                if !format_context.length_kind_defined {
-                    *format_context = merge_dfdl_props(format_context.clone(), defaults.clone());
+                if !format_context.format_context_finalized {
+                    if !format_context.length_kind_defined && defaults.length_kind_defined {
+                        *format_context = merge_dfdl_props(format_context.clone(), defaults.clone());
+                    }
+                    format_context.format_context_finalized = true;
                 }
             }
+        }
+    }
+    for ge in doc.global_elements.values_mut() {
+        if !ge.format_context.format_context_finalized {
+            if !ge.format_context.length_kind_defined && defaults.length_kind_defined {
+                ge.format_context = merge_dfdl_props(ge.format_context.clone(), defaults.clone());
+            }
+            ge.format_context.format_context_finalized = true;
         }
     }
 }
@@ -238,10 +246,23 @@ impl<'a> XsdParser<'a> {
 
     pub(crate) fn merge_included(
         &mut self,
-        other: SchemaDocument,
+        mut other: SchemaDocument,
         kind: SchemaMergeKind,
     ) -> Result<()> {
         let included_target = other.target_namespace.clone();
+        if kind == SchemaMergeKind::Import {
+            for td in other.types.values_mut() {
+                match td {
+                    TypeDef::Simple { format_context, .. }
+                    | TypeDef::Complex { format_context, .. } => {
+                        format_context.format_context_finalized = true;
+                    }
+                }
+            }
+            for ge in other.global_elements.values_mut() {
+                ge.format_context.format_context_finalized = true;
+            }
+        }
         for (k, v) in other.types {
             self.doc.types.insert(k, v);
         }
@@ -270,8 +291,10 @@ impl<'a> XsdParser<'a> {
             }
             self.doc.global_elements.insert(key, v);
         }
-        for (prefix, uri) in other.namespace_prefixes {
-            self.doc.namespace_prefixes.entry(prefix).or_insert(uri);
+        if kind == SchemaMergeKind::Include {
+            for (prefix, uri) in other.namespace_prefixes {
+                self.doc.namespace_prefixes.entry(prefix).or_insert(uri);
+            }
         }
         for (k, v) in other.named_formats {
             let local = format_local_from_storage_key(&k);
@@ -2173,7 +2196,17 @@ pub(crate) fn supplement_namespace_prefixes_from_text(
     text: &str,
     out: &mut BTreeMap<String, String>,
 ) {
-    let mut rest = text;
+    let header = if let Some(schema_idx) = text.find("<schema").or_else(|| text.find("<xs:schema")).or_else(|| text.find("<xsd:schema")) {
+        let after_schema = &text[schema_idx..];
+        if let Some(end_gt) = after_schema.find('>') {
+            &after_schema[..end_gt]
+        } else {
+            text
+        }
+    } else {
+        text
+    };
+    let mut rest = header;
     while let Some(idx) = rest.find("xmlns:") {
         rest = &rest[idx + 6..];
         let Some(eq) = rest.find('=') else {

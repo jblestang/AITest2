@@ -1000,6 +1000,56 @@ impl<'a> Decoder<'a> {
         Ok(false)
     }
 
+    pub(crate) fn eval_xpath_path_dfdl_value(&self, path: &str) -> Result<DfdlValue> {
+        let trimmed = path.trim();
+        let mut up = 0;
+        let mut rest = trimmed;
+        while rest.starts_with("../") {
+            up += 1;
+            rest = &rest[3..];
+        }
+        let map = self.sibling_map_for_discriminator_up(up);
+        let mut value: Option<DfdlValue> = None;
+        for (i, step) in rest.split('/').filter(|s| !s.is_empty()).enumerate() {
+            let (local, index) = parse_discriminator_path_step(step)?;
+            let target = crate::xml_util::local_name_str(local);
+            if i == 0 {
+                let state = map
+                    .iter()
+                    .find(|(k, _)| crate::xml_util::local_name_str(k) == target)
+                    .map(|(_, v)| v.clone())
+                    .or_else(|| {
+                        self.xpath_siblings
+                            .borrow()
+                            .iter()
+                            .find(|(k, _)| crate::xml_util::local_name_str(k) == target)
+                            .map(|(_, v)| v.clone())
+                    })
+                    .ok_or_else(|| VmError::InvalidValue {
+                        message: alloc::format!(
+                            "Schema Definition Error: No element corresponding to step {local} found."
+                        ),
+                    })?;
+                value = Some(if let Some(idx) = index {
+                    single_or_array_item_at(&state.value, idx)?
+                } else {
+                    state.value.clone()
+                });
+            } else {
+                let cur = value.ok_or_else(|| VmError::InvalidValue {
+                    message: "path step without root".into(),
+                })?;
+                value = Some(navigate_discriminator_path_step(&cur, target, index)?);
+            }
+        }
+        value.ok_or_else(|| {
+            VmError::InvalidValue {
+                message: "empty path".into(),
+            }
+            .into()
+        })
+    }
+
     pub(crate) fn eval_occurs_count_xpath_expr(
         &self,
         expr: &str,
@@ -1031,6 +1081,24 @@ impl<'a> Decoder<'a> {
         }
         if let Ok(n) = inner.parse::<u64>() {
             return Ok(n);
+        }
+        if let Some(fn_inner) = inner.strip_prefix("fn:count(").and_then(|s| s.strip_suffix(')')) {
+            let path = fn_inner.trim();
+            if let Ok(val) = self.eval_xpath_path_dfdl_value(path) {
+                match val {
+                    DfdlValue::Array(items) => return Ok(items.len() as u64),
+                    DfdlValue::Null => return Ok(0),
+                    _ => return Ok(1),
+                }
+            }
+        }
+        if let Ok(val) = self.eval_xpath_path_dfdl_value(inner) {
+            if let Some(n) = val.as_i64() {
+                if n >= 0 {
+                    return Ok(n as u64);
+                }
+            }
+            return Ok(count_dfdl_value_nodes(&val));
         }
         Ok(0)
     }

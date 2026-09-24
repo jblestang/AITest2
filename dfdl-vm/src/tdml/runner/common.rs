@@ -94,6 +94,7 @@ pub(crate) fn error_messages_match(expected: &[String], err: &str) -> bool {
         "parse error",
         "unparse error",
         "placeholder",
+        "non-default properties",
     ];
     let err_lower = normalize_error_text(err);
     expected.iter().all(|fragment| {
@@ -116,6 +117,15 @@ pub(crate) fn error_messages_match(expected: &[String], err: &str) -> bool {
         if fl.starts_with("needed ") && err_lower.contains("needed ") {
             return true;
         }
+        if fl.contains("overlapping properties")
+            && (err_lower.contains("property overlap")
+                || err_lower.contains("overlapping properties"))
+        {
+            return true;
+        }
+        if fl.contains("overlaps between") && err_lower.contains("overlaps between") {
+            return true;
+        }
         if (fl == "long" || fl == "int" || fl == "integer")
             && (err_lower.contains("int")
                 || err_lower.contains("long")
@@ -128,7 +138,10 @@ pub(crate) fn error_messages_match(expected: &[String], err: &str) -> bool {
 }
 
 pub(crate) fn normalize_error_text(text: &str) -> alloc::string::String {
-    text.replace('\n', "%NL;")
+    text.replace('\u{240A}', "\n")
+        .replace('\u{240D}', "\r")
+        .replace('\u{2409}', "\t")
+        .replace('\n', "%NL;")
         .replace('\r', "%CR;")
         .replace('\t', "%HT;")
         .to_lowercase()

@@ -95,6 +95,8 @@ fn scan_dir_skipping(
             samples.push(format!("{}: parse error", path.display()));
             continue;
         };
+        suite.resource_context =
+            dfdl_vm::tdml::TdmlResourceContext::from_tdml_path(&path.to_string_lossy());
         enrich_external_tdml_models(&mut suite, &path);
         let relp = path
             .strip_prefix(TDML_ROOT)
@@ -219,7 +221,7 @@ regression_gate!(daffodil_section00_regression_gate_scan, "section00", 146, 4);
 regression_gate!(daffodil_section02_regression_gate_scan, "section02", 96, 0);
 regression_gate!(daffodil_section05_regression_gate_scan, "section05", 811, 0);
 scan_test!(scan_section06, "section06");
-regression_gate!(daffodil_section06_regression_gate, "section06", 160, 20);
+regression_gate!(daffodil_section06_regression_gate, "section06", 178, 0);
 scan_test!(scan_section07, "section07");
 
 #[test]

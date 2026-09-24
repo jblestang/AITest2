@@ -603,7 +603,18 @@ impl SchemaDocument {
     }
 
     pub fn resolve_type(&self, name: &TypeName) -> Option<&TypeDef> {
-        self.types.get(name)
+        if let Some(td) = self.types.get(name) {
+            return Some(td);
+        }
+        if !name.0.contains('|') {
+            if let Some(ns) = self.target_namespace.as_deref() {
+                let scoped = TypeName(crate::schema::format_storage_key(&name.0, Some(ns)));
+                if let Some(td) = self.types.get(&scoped) {
+                    return Some(td);
+                }
+            }
+        }
+        None
     }
 
     /// Merge DFDL properties along `restriction base="ex:…"` simple type chains.

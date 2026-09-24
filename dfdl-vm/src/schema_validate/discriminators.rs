@@ -8,6 +8,7 @@ const XPATH_FUNCTIONS_NS: &str = "http://www.w3.org/2005/xpath-functions";
 pub fn validate_discriminator_xpath_prefixes(
     test: &str,
     prefix_map: &BTreeMap<String, String>,
+    schema_prefixes: &BTreeMap<String, String>,
 ) -> Result<(), SchemaError> {
     let inner = test
         .trim()
@@ -21,12 +22,9 @@ pub fn validate_discriminator_xpath_prefixes(
     if !test.contains("fn:") {
         return Ok(());
     }
-    let bound = prefix_map
-        .get("fn")
-        .is_none_or(|uri| uri == XPATH_FUNCTIONS_NS);
-    if !bound {
+    if !prefix_map.contains_key("fn") && !schema_prefixes.contains_key("fn") {
         return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error: Prefix 'fn' has not been declared".into(),
+            message: "Schema Definition Error: Prefix 'fn' has no corresponding namespace declaration in the schema.".into(),
         });
     }
     Ok(())
@@ -45,9 +43,10 @@ pub(crate) fn validate_discriminators_in_reachable_schema(
                 .discriminator_xpath_prefixes
                 .as_ref()
                 .unwrap_or(&empty);
-            validate_discriminator_xpath_prefixes(test, prefixes)?;
+            validate_discriminator_xpath_prefixes(test, prefixes, &schema.namespace_prefixes)?;
         }
-        if let Some(td) = schema.resolve_type(&ge.type_name) {
+        let td_opt = schema.resolve_type(&ge.type_name);
+        if let Some(td) = td_opt {
             if let TypeDef::Complex { content, .. } = td {
                 enqueue_complex_content_for_discriminator_walk(schema, content, &mut queue)?;
             }
@@ -62,7 +61,10 @@ pub(crate) fn validate_discriminators_in_reachable_schema(
                         .discriminator_xpath_prefixes
                         .as_ref()
                         .unwrap_or(&empty);
-                    validate_discriminator_xpath_prefixes(test, prefixes)?;
+                    validate_discriminator_xpath_prefixes(test, prefixes, &schema.namespace_prefixes)?;
+                }
+                if let Some(ref child_p) = el.particle {
+                    queue.push_back(alloc::vec![(**child_p).clone()]);
                 }
                 if let Some(td) = schema.resolve_type(&el.type_name) {
                     if let TypeDef::Complex { content, .. } = td {

@@ -83,34 +83,6 @@ impl<'a> Decoder<'a> {
         pattern_text_frame: bool,
         stop_sequences: &[&IrProps],
     ) -> Result<DfdlValue> {
-        if let Ok(IrNode::Sequence { children, .. }) = self.ctx.program.node(node_id) {
-            if self.is_hidden_group_carrier(children) {
-                let mut map = BTreeMap::new();
-                for &child in children {
-                    let value = self.decode_particle(
-                        child,
-                        cursor,
-                        has_following_sibling,
-                        parent_sequence,
-                        siblings,
-                        content_scope_bytes,
-                        pattern_text_frame,
-                        stop_sequences,
-                    )?;
-                    insert_child(&mut map, child, value, self.ctx.program)?;
-                }
-                return Ok(DfdlValue::Sequence(crate::value::SequenceValue {
-                    fields: map,
-                    meta: crate::value::SequenceMeta {
-                        infix_sep_newline_prefix: Vec::new(),
-                        initiator_alt: None,
-                        terminator_alt: None,
-                        separator_alts: Vec::new(),
-                        field_delimiters: BTreeMap::new(),
-                    },
-                }));
-            }
-        }
         match self.ctx.program.node(node_id)? {
             IrNode::Element { props, .. } => self.decode_element_occurrences(
                 node_id,
@@ -381,28 +353,33 @@ impl<'a> Decoder<'a> {
         let mut max = props.occurs_max.unwrap_or(u64::MAX);
         let mut occurs_from_expression = false;
         if props.occurs_count_kind == OccursCountKind::Expression {
-            if let Some(steps) = props.occurs_count_fn_path.as_ref() {
-                let mut sib_snap = self.xpath_siblings_snapshot();
-                if let Some(s) = siblings {
-                    for (k, v) in s {
-                        sib_snap.entry(k.clone()).or_insert_with(|| v.clone());
+            if let Some(expr_id) = props.occurs_count_expr {
+                let expr = self.ctx.strings().get(expr_id)?;
+                if let Ok(n) = self.eval_occurs_count_xpath_expr(expr, siblings) {
+                    min = n;
+                    max = n;
+                    occurs_from_expression = true;
+                }
+            }
+            if !occurs_from_expression {
+                if let Some(steps) = props.occurs_count_fn_path.as_ref() {
+                    let mut sib_snap = self.xpath_siblings_snapshot();
+                    if let Some(s) = siblings {
+                        for (k, v) in s {
+                            sib_snap.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                    }
+                    if let Ok(n) = eval_occurs_count_expression(
+                        steps,
+                        Some(&sib_snap),
+                        self.ctx.strings(),
+                        &self.ctx.program.tunables,
+                    ) {
+                        min = n;
+                        max = n;
+                        occurs_from_expression = true;
                     }
                 }
-                let n = eval_occurs_count_expression(
-                    steps,
-                    Some(&sib_snap),
-                    self.ctx.strings(),
-                    &self.ctx.program.tunables,
-                )?;
-                min = n;
-                max = n;
-                occurs_from_expression = true;
-            } else if let Some(expr_id) = props.occurs_count_expr {
-                let expr = self.ctx.strings().get(expr_id)?;
-                let n = self.eval_occurs_count_xpath_expr(expr, siblings)?;
-                min = n;
-                max = n;
-                occurs_from_expression = true;
             }
         }
         if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
@@ -435,7 +412,7 @@ impl<'a> Decoder<'a> {
                 return Ok(DfdlValue::Array(Vec::new()));
             }
         }
-        if props.occurs_count_kind == OccursCountKind::Parsed {
+        if props.occurs_count_kind == OccursCountKind::Parsed && props.occurs_max != Some(1) {
             if props.occurs_max == Some(0) && min == 0 {
                 max = u64::MAX;
             } else if max != u64::MAX && min == max {

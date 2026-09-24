@@ -1369,6 +1369,38 @@ pub(crate) fn finalize_element_props(
         }
     }
     if let Some(ref scheme) = ir.escape_scheme {
+        if let Some(raw) = scheme.escape_block_start_raw.as_deref() {
+            if let Err(msg) = crate::schema::validate_escape_block_property(raw) {
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!("Schema Definition Error. {msg}"),
+                }
+                .into());
+            }
+        }
+        if let Some(raw) = scheme.escape_block_end_raw.as_deref() {
+            if let Err(msg) = crate::schema::validate_escape_block_property(raw) {
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!("Schema Definition Error. {msg}"),
+                }
+                .into());
+            }
+        }
+        if let Some(raw) = scheme.escape_character_raw.as_deref() {
+            if let Err(msg) = crate::schema::validate_escape_character_property(raw) {
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!("Schema Definition Error. {msg}"),
+                }
+                .into());
+            }
+        }
+        if let Some(raw) = scheme.escape_escape_character_raw.as_deref() {
+            if let Err(msg) = crate::schema::validate_escape_character_property(raw) {
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!("Schema Definition Error. {msg}"),
+                }
+                .into());
+            }
+        }
         let p_esc = scheme
             .escape_character
             .as_deref()
