@@ -751,7 +751,7 @@ fn parse_int_typed_with_base_i64(
 ) -> Result<i64, crate::error::VmError> {
     if base != 10 {
         let val = parse_non_base10_signed_string(s, type_name, base)?;
-        return val.parse::<i64>().map_err(|_| parse_out_of_range(type_name, s));
+        return val.parse::<i64>().map_err(|_| parse_out_of_range(type_name, &val));
     }
     let (sign, digits) = split_sign_digits(s)?;
     let abs = parse_u128_radix_base10(digits, base, type_name, field_text)?;
