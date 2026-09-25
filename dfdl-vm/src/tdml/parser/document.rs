@@ -166,7 +166,7 @@ pub(crate) fn parse_document(
         let mut bit_part_chunks: Vec<Vec<String>> = Vec::new();
         let mut saw_bits_part = false;
         let mut part_transitions: Vec<(DocumentBitOrder, usize, bool)> = Vec::new();
-        let mut saw_rtl_byte_order = false;
+        let mut _saw_rtl_byte_order = false;
         let mut mixed_bits_text_document = false;
         let mut part_bit_order_regions: Vec<(BitOrder, usize)> = Vec::new();
         let mut file_resource: Option<String> = None;
@@ -208,7 +208,7 @@ pub(crate) fn parse_document(
                 saw_bits_part = true;
                 kind = DocumentKind::Bits;
                 if part.byte_order == DocumentByteOrder::Rtl {
-                    saw_rtl_byte_order = true;
+                    _saw_rtl_byte_order = true;
                 }
                 for chunk in &chunks {
                     for c in chunk.chars() {
@@ -241,16 +241,12 @@ pub(crate) fn parse_document(
                 }
             } else if saw_bits_part && part.kind == DocumentKind::Text {
                 mixed_bits_text_document = true;
-                if saw_rtl_byte_order {
-                    if let Some(chunks) = part.data_bit_chunks.clone() {
-                        bit_part_chunks.push(chunks);
-                    } else {
-                        flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
-                        data.extend(part.data);
-                    }
+                if let Some(chunks) = part.data_bit_chunks {
+                    bit_part_chunks.push(chunks);
                 } else {
-                    flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
-                    data.extend(part.data);
+                    let chunks: Vec<String> =
+                        part.data.iter().map(|b| alloc::format!("{:08b}", b)).collect();
+                    bit_part_chunks.push(chunks);
                 }
             } else {
                 flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);
@@ -292,11 +288,21 @@ pub(crate) fn parse_document(
         );
 
         if !bit_part_chunks.is_empty() {
+            if !data.is_empty() {
+                let chunks: Vec<String> = data
+                    .iter()
+                    .map(|b| alloc::format!("{:08b}", b))
+                    .collect();
+                bit_part_chunks.insert(0, chunks);
+                data.clear();
+            }
             let (bits_data, trailing) =
                 assemble_tdml_document_bytes(&bit_part_chunks, effective_doc_bit_order);
-            data.extend(bits_data);
+            data = bits_data;
             if trailing > 0 {
                 last_byte_bit_count = Some(trailing);
+            } else {
+                last_byte_bit_count = None;
             }
         } else {
             flush_pending_bits(&mut pending_bits, &mut data, &mut last_byte_bit_count);

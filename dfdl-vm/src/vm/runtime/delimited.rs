@@ -6,7 +6,7 @@ use super::encoding_name;
 use super::nil::{nil_first_alternative, nil_value_includes_empty};
 use crate::ir::{IrProps, StringId, StringPool};
 use crate::schema::{
-    BitOrder, LengthKind, SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind,
+    BitOrder, LengthKind, Representation, SeparatorPosition, SeparatorSuppressionPolicy, SequenceKind,
 };
 use crate::vm::encoding::{bits_charset_spec, normalize_encoding_name};
 
@@ -952,4 +952,98 @@ pub(crate) fn should_suppress_occurrence_separator(
     } else {
         Ok(matches!(sep_props.separator_position, SeparatorPosition::Postfix) && current_empty)
     }
+}
+
+pub(crate) fn field_terminator_matches_at_cursor(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
+) -> Result<Option<usize>, crate::error::VmError> {
+    let Some(tid) = props.terminator else {
+        return Ok(None);
+    };
+    let pat = stop_delimiter_literal(tid, strings, scan_ctx)?;
+    if pat.is_empty() {
+        return Ok(None);
+    }
+    let enc = encoding_name(props, strings).ok();
+    if let Some(enc_name) = enc {
+        if let Some(spec) = crate::vm::encoding::bits_charset_spec(enc_name) {
+            let patterns = vec![DelimScanPattern {
+                pat: pat.clone(),
+                ignore_case: props.ignore_case,
+            }];
+            let mut tmp_cursor = cursor.clone();
+            if consume_bits_charset_delimiter(&mut tmp_cursor, &patterns, spec)? {
+                let bits_read = tmp_cursor.absolute_bit_index() - cursor.absolute_bit_index();
+                return Ok(Some(bits_read));
+            }
+            return Ok(None);
+        }
+    }
+    Ok(crate::schema::match_delimiter_opts_for_encoding(
+        &cursor.data[cursor.pos..],
+        &pat,
+        props.ignore_case,
+        enc,
+    ))
+}
+
+pub(crate) fn field_terminator_starts_at_cursor(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
+) -> Result<bool, crate::error::VmError> {
+    let Some(m) = field_terminator_matches_at_cursor(cursor, props, strings, scan_ctx)? else {
+        return Ok(false);
+    };
+    Ok(m > 0 || (m == 0 && props.terminator.is_some()))
+}
+
+pub(crate) fn defer_delimited_enclosing_consume(
+    cursor: &Cursor<'_>,
+    props: &IrProps,
+    strings: &StringPool,
+    value: &crate::value::DfdlValue,
+    stop_sequences: &[&IrProps],
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
+) -> Result<bool, crate::error::VmError> {
+    use crate::value::DfdlValue;
+    if let Some(ctx) = scan_ctx {
+        if ctx.parent_infix_consumed_by_occurrence_loop {
+            let enc = encoding_name(props, strings).ok();
+            for seq in stop_sequences {
+                if seq.separator_position != SeparatorPosition::Infix {
+                    continue;
+                }
+                for id in delimiter_pattern_ids(seq) {
+                    let pat = strings.get(id)?;
+                    if crate::schema::match_delimiter_opts_for_encoding(
+                        &cursor.data[cursor.pos..],
+                        pat,
+                        seq.ignore_case,
+                        enc,
+                    )
+                    .is_some_and(|n| n == 0)
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(enc) = encoding_name(props, strings) {
+        if crate::vm::encoding::bits_charset_spec(enc).is_some() {
+            return Ok(false);
+        }
+    }
+    if props.representation == Representation::Binary {
+        return Ok(false);
+    }
+    if matches!(value, DfdlValue::Null) {
+        return Ok(false);
+    }
+    Ok(false)
 }

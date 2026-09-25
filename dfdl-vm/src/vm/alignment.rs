@@ -91,17 +91,21 @@ pub fn pre_element_alignment_applies(kind: ValueKind, props: &IrProps, encoding:
     if !matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed) {
         return true;
     }
+    if props.length == Some(0) {
+        return false;
+    }
     if props.length_units != LengthUnits::Bits {
         return true;
     }
-    let Some(len) = props.length else {
-        return true;
-    };
     if !props.alignment_implicit {
         return true;
     }
-    let implicit_bits = implicit_alignment_in_bits(kind, props, encoding);
-    if (len as usize) <= implicit_bits && implicit_bits <= 8 {
+    if let Some(len) = props.length {
+        let implicit_bits = implicit_alignment_in_bits(kind, props, encoding);
+        if (len as usize) <= implicit_bits && implicit_bits <= 8 {
+            return false;
+        }
+    } else if props.length_sibling.is_some() {
         return false;
     }
     true
@@ -356,7 +360,7 @@ mod tests {
         assert_eq!(props.leading_skip, 4);
         let mut cursor = Cursor::new(&[0x0E_u8]);
         let enc = program.strings.get(props.encoding).expect("enc");
-        consume_element_framing(&mut cursor, &props, kind, enc).expect("framing");
+        consume_element_framing(&mut cursor, &props, kind, enc, &program.strings).expect("framing");
         assert_eq!(cursor.absolute_bit_index(), 4);
     }
 
@@ -520,7 +524,7 @@ mod tests {
         let mut cursor =
             Cursor::with_frame_bits(&doc.data, doc.significant_bit_length().expect("bits"));
         let enc = program.strings.get(props.encoding).expect("enc");
-        consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
+        consume_element_framing(&mut cursor, props, *kind, enc, &crate::ir::StringPool::new()).expect("framing");
         assert_eq!(cursor.absolute_bit_index(), 4);
         let v = read_binary_scalar(
             &mut cursor,
@@ -571,7 +575,7 @@ mod tests {
         let mut cursor =
             Cursor::with_frame_bits(&doc.data, doc.significant_bit_length().expect("bits"));
         let enc = program.strings.get(props.encoding).expect("enc");
-        consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
+        consume_element_framing(&mut cursor, props, *kind, enc, &crate::ir::StringPool::new()).expect("framing");
         assert_eq!(cursor.absolute_bit_index(), 8, "skip+implicit align");
         let bytes =
             read_delimited_bytes(&mut cursor, props, &program.strings, false, &[]).expect("delim");
@@ -627,7 +631,7 @@ mod tests {
             Cursor::with_frame_bits(&doc.data, doc.significant_bit_length().expect("bits"));
         let enc = program.strings.get(props.encoding).unwrap();
         let tunables = DaffodilTunables::default();
-        consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
+        consume_element_framing(&mut cursor, props, *kind, enc, &crate::ir::StringPool::new()).expect("framing");
         assert_eq!(cursor.absolute_bit_index(), 8);
         let v = read_simple(
             &mut cursor,
@@ -695,7 +699,7 @@ mod tests {
         let mut cursor =
             Cursor::with_frame_bits(&doc.data, doc.significant_bit_length().expect("bits"));
         let enc = program.strings.get(props.encoding).unwrap();
-        consume_element_framing(&mut cursor, props, *kind, enc).expect("framing");
+        consume_element_framing(&mut cursor, props, *kind, enc, &crate::ir::StringPool::new()).expect("framing");
         assert_eq!(cursor.absolute_bit_index(), 64, "after skip+align");
         let v = read_binary_scalar(
             &mut cursor,

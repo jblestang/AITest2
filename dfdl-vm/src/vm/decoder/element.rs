@@ -208,6 +208,7 @@ impl<'a> Decoder<'a> {
                     &props,
                     *kind,
                     encoding_name(&props, self.ctx.strings())?,
+                    self.ctx.strings(),
                 )?;
                 if let Some(child_id) = child {
                     crate::vm::runtime::validate_nil_value_runtime(&props, self.ctx.strings())?;

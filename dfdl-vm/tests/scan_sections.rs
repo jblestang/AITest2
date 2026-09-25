@@ -146,6 +146,7 @@ fn scan_dir_skipping(
             }
         }
     }
+    eprintln!("FAIL SAMPLES in {rel} (pass={pass}, fail={fail}, skip={skip}):\n{samples:#?}");
     (pass, fail, skip, parse_fail, samples)
 }
 

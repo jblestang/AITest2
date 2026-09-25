@@ -635,7 +635,7 @@ pub(crate) fn dfdl_props_has_input_value_calc(props: &DfdlProps) -> bool {
 }
 
 pub(crate) fn validate_packed_number_rep_props(ir: &IrProps, kind: ValueKind) -> Result<()> {
-    if kind == ValueKind::Complex {
+    if kind == ValueKind::Complex || ir.input_value_calc_expression.is_some() {
         return Ok(());
     }
     let rep = ir.binary_number_rep;
