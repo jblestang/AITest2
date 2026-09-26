@@ -955,11 +955,14 @@ impl<'a> Decoder<'a> {
             return Ok(true);
         }
         if !dot.is_empty() {
-            if crate::schema::match_pattern(dot.as_bytes(), inner).is_some() {
+            if crate::vm::facet_validate::pattern_group_matches(dot, inner)
+                || crate::vm::facet_validate::pattern_prefix_matches(dot, inner)
+            {
                 return Ok(true);
             }
         } else if let Some(c) = cursor {
-            if !c.is_empty() && crate::schema::match_pattern(&c.data[c.pos..], inner).is_some() {
+            let text = core::str::from_utf8(&c.data[c.pos..]).unwrap_or("");
+            if !text.is_empty() && crate::vm::facet_validate::pattern_prefix_matches(text, inner) {
                 return Ok(true);
             }
         }
