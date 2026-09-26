@@ -148,6 +148,7 @@ pub struct DfdlProps {
     pub default_value: Option<String>,
     pub alignment: Option<u64>,
     pub alignment_implicit: Option<bool>,
+    pub alignment_manual: Option<bool>,
     pub alignment_units: Option<LengthUnits>,
     pub leading_skip: Option<u64>,
     pub trailing_skip: Option<u64>,

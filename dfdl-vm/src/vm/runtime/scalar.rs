@@ -317,6 +317,22 @@ pub(crate) fn coerce_value_for_kind(
         (UnsignedInt, v @ DfdlValue::UnsignedInt(_)) => v.clone(),
         (Long, DfdlValue::Int(v)) => DfdlValue::Long(*v as i64),
         (Long, v @ DfdlValue::Long(_)) => v.clone(),
+        (String, v @ DfdlValue::String(_)) => v.clone(),
+        (String, DfdlValue::Int(v)) => DfdlValue::string(v.to_string()),
+        (String, DfdlValue::Long(v)) => DfdlValue::string(v.to_string()),
+        (String, DfdlValue::UnsignedInt(v)) => DfdlValue::string(v.to_string()),
+        (String, DfdlValue::UnsignedLong(v)) => DfdlValue::string(v.to_string()),
+        (String, DfdlValue::Short(v)) => DfdlValue::string(v.to_string()),
+        (String, DfdlValue::UnsignedShort(v)) => DfdlValue::string(v.to_string()),
+        (String, DfdlValue::Byte(v)) => DfdlValue::string(v.to_string()),
+        (String, DfdlValue::UnsignedByte(v)) => DfdlValue::string(v.to_string()),
+        (String, DfdlValue::Float(v)) => DfdlValue::string(v.to_string()),
+        (String, DfdlValue::Double(v)) => DfdlValue::string(v.to_string()),
+        (String, DfdlValue::Boolean(v)) => DfdlValue::string(v.to_string()),
+        (String, DfdlValue::Integer(s)) => DfdlValue::string(s.clone()),
+        (String, DfdlValue::Decimal(s)) => DfdlValue::string(s.clone()),
+        (String, DfdlValue::DateTime(s)) => DfdlValue::string(s.clone()),
+        (String, DfdlValue::HexBinary(b)) => DfdlValue::string(encode_hex(b)),
         (HexBinary, DfdlValue::String(s)) => {
             decode_hex_binary(&s.text).map(DfdlValue::HexBinary)?
         }
@@ -645,11 +661,8 @@ pub(crate) fn write_simple(
             write_byte_aligned(out, bit_count, &bytes)?;
         }
     }
-    match props.representation {
-        Representation::Binary => write_binary_scalar(
-            out, bit_count, &value, kind, props, strings, tunables, config, field_name,
-        )?,
-        Representation::Text => write_text_scalar(
+    if kind == ValueKind::String || props.representation == Representation::Text {
+        write_text_scalar(
             out,
             bit_count,
             &value,
@@ -660,7 +673,11 @@ pub(crate) fn write_simple(
             field_name,
             encode_siblings,
             encode_escape_parent,
-        )?,
+        )?;
+    } else {
+        write_binary_scalar(
+            out, bit_count, &value, kind, props, strings, tunables, config, field_name,
+        )?;
     }
     if let Some(id) = props.terminator {
         let raw = strings.get(id)?;

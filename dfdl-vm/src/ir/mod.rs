@@ -275,6 +275,7 @@ pub struct IrProps {
     pub choice_length: Option<u64>,
     pub alignment: u64,
     pub alignment_implicit: bool,
+    pub alignment_manual: bool,
     pub alignment_units: LengthUnits,
     /// Pre-element alignment from type/format before an element `dfdl:alignment` override (0 = none).
     pub framing_alignment: u64,
@@ -480,6 +481,7 @@ impl Default for IrProps {
             choice_length: None,
             alignment: 0,
             alignment_implicit: false,
+            alignment_manual: false,
             alignment_units: LengthUnits::Bytes,
             framing_alignment: 0,
             framing_alignment_units: LengthUnits::Bytes,

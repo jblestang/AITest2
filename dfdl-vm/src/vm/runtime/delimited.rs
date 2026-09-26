@@ -553,14 +553,12 @@ pub(crate) fn read_until_delimiters(
     let patterns = enclosing_delimiter_scan_patterns(props, strings, stop_sequences, scan_ctx)?;
     if let Some(enc) = encoding {
         if let Some(spec) = bits_charset_spec(enc) {
-            if !patterns.is_empty() {
-                return read_until_delimiters_bits_charset(
-                    cursor,
-                    &patterns,
-                    require_delimiter,
-                    spec,
-                );
-            }
+            return read_until_delimiters_bits_charset(
+                cursor,
+                &patterns,
+                require_delimiter,
+                spec,
+            );
         }
     }
     if patterns.is_empty() {

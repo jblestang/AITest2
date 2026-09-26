@@ -114,7 +114,7 @@ pub(crate) fn bits_charset_spec(name: &str) -> Option<BitsCharsetSpec> {
     } else if eq_ascii_ignore_case(name, "X-DFDL-6-BIT-DFI-264-DUI-001") {
         Some(BitsCharsetSpec {
             width: 6,
-            alphabet: " 123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}0",
+            alphabet: "0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}",
             bit_order: BitOrder::LeastSignificantBitFirst,
         })
     } else if eq_ascii_ignore_case(name, "X-DFDL-5-BIT-DFI-1661-DUI-001") {
@@ -131,10 +131,53 @@ pub(crate) fn bits_charset_spec(name: &str) -> Option<BitsCharsetSpec> {
             alphabet: USASCII7_BIT_PACKED_ALPHABET,
             bit_order: BitOrder::LeastSignificantBitFirst,
         })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-ISO-88591-8-BIT-PACKED-MSB-FIRST")
+        || eq_ascii_ignore_case(name, "X-DFDL-ISO-88591-8-BIT-PACKED-MSBF")
+        || eq_ascii_ignore_case(name, "iso-8859-1-8-bit-packed-msbf")
+    {
+        Some(BitsCharsetSpec {
+            width: 8,
+            alphabet: ISO88591_BIT_PACKED_ALPHABET,
+            bit_order: BitOrder::MostSignificantBitFirst,
+        })
+    } else if eq_ascii_ignore_case(name, "X-DFDL-ISO-88591-8-BIT-PACKED-LSB-FIRST")
+        || eq_ascii_ignore_case(name, "X-DFDL-ISO-88591-8-BIT-PACKED-LSBF")
+        || eq_ascii_ignore_case(name, "iso-8859-1-8-bit-packed-lsbf")
+    {
+        Some(BitsCharsetSpec {
+            width: 8,
+            alphabet: ISO88591_BIT_PACKED_ALPHABET,
+            bit_order: BitOrder::LeastSignificantBitFirst,
+        })
     } else {
         None
     }
 }
+
+/// Code units 0..=255 for `X-DFDL-ISO-88591-8-BIT-PACKED-*`.
+const ISO88591_BIT_PACKED_ALPHABET: &str = {
+    const BYTES: [u8; 384] = {
+        let mut out = [0u8; 384];
+        let mut i = 0usize;
+        let mut pos = 0usize;
+        while i < 128 {
+            out[pos] = i as u8;
+            pos += 1;
+            i += 1;
+        }
+        while i < 256 {
+            out[pos] = 0xC0 | ((i >> 6) as u8);
+            out[pos + 1] = 0x80 | ((i & 0x3F) as u8);
+            pos += 2;
+            i += 1;
+        }
+        out
+    };
+    match core::str::from_utf8(&BYTES) {
+        Ok(s) => s,
+        Err(_) => "",
+    }
+};
 
 /// Code units 0..=127 for `X-DFDL-US-ASCII-7-BIT-PACKED`.
 const USASCII7_BIT_PACKED_ALPHABET: &str = {

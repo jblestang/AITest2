@@ -104,19 +104,25 @@ pub struct TdmlDocument {
 }
 
 impl TdmlDocument {
-    /// Total significant bits for `type="bits"` documents (None for byte-aligned docs).
+    /// Total significant bits for document (None for byte-aligned docs without bit limits).
     pub fn significant_bit_length(&self) -> Option<usize> {
-        if self.kind != DocumentKind::Bits {
-            return None;
+        if let Some(trailing) = self.last_byte_bit_count {
+            let trailing = trailing as usize;
+            if trailing > 0 && !self.data.is_empty() {
+                return Some((self.data.len() - 1) * 8 + trailing);
+            }
         }
-        if self.data.is_empty() {
-            return Some(0);
+        if self.kind == DocumentKind::Bits {
+            if self.data.is_empty() {
+                return Some(0);
+            }
+            let trailing = self.last_byte_bit_count.unwrap_or(0) as usize;
+            if trailing == 0 {
+                return Some(self.data.len() * 8);
+            }
+            return Some((self.data.len() - 1) * 8 + trailing);
         }
-        let trailing = self.last_byte_bit_count.unwrap_or(0) as usize;
-        if trailing == 0 {
-            return Some(self.data.len() * 8);
-        }
-        Some((self.data.len() - 1) * 8 + trailing)
+        None
     }
 }
 

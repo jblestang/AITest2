@@ -286,7 +286,7 @@ impl<'a> Encoder<'a> {
                         out,
                         bit_count,
                         &seq.meta,
-                        Some(&scope_lookup),
+                        Some(&separator_lookup),
                         children,
                     )?;
                     wrote_particle = true;
@@ -708,11 +708,11 @@ impl<'a> Encoder<'a> {
                 {
                     return Ok(());
                 }
-                let mut resolved = resolve_length_props_encode(props, map, self.ctx.strings())?;
-                resolved = resolve_encoding_for_encode(&resolved, map, self.ctx.strings())?;
-                resolved = resolve_byte_order_for_encode(&resolved, map, self.ctx.strings())?;
+                let mut resolved = resolve_length_props_encode(props, &value_map, self.ctx.strings())?;
+                resolved = resolve_encoding_for_encode(&resolved, &value_map, self.ctx.strings())?;
+                resolved = resolve_byte_order_for_encode(&resolved, &value_map, self.ctx.strings())?;
                 resolved =
-                    resolve_text_standard_props_for_encode(&resolved, map, self.ctx.strings())?;
+                    resolve_text_standard_props_for_encode(&resolved, &value_map, self.ctx.strings())?;
                 validate_fill_byte_for_encode(&resolved, self.ctx.strings())?;
                 validate_explicit_decimal_before_encode(
                     *kind,
@@ -740,7 +740,7 @@ impl<'a> Encoder<'a> {
                             Some(&schema_ctx),
                             field_delim,
                             parent_props,
-                            Some(map),
+                            Some(&value_map),
                             encode_scope,
                             true,
                         );
@@ -797,7 +797,7 @@ impl<'a> Encoder<'a> {
                         Some(&schema_ctx),
                         field_delim,
                         parent_props,
-                        Some(map),
+                        Some(&value_map),
                         encode_scope,
                         true,
                     )
@@ -1416,7 +1416,7 @@ fn collect_ovc_elements_in_sequence_subtree(
                 name,
                 kind,
                 props,
-                child: _,
+                child,
                 ..
             } => {
                 if props.output_value_calc_conditional && props.output_value_calc_literal.is_none()
@@ -1438,6 +1438,9 @@ fn collect_ovc_elements_in_sequence_subtree(
                         kind: *kind,
                         props: props.clone(),
                     });
+                }
+                if let Some(c) = child {
+                    collect_ovc_elements_in_subtree(enc, *c, out)?;
                 }
             }
             IrNode::Sequence {
@@ -1584,6 +1587,27 @@ fn ovc_value_for_element_kind(kind: crate::ir::ValueKind, value: DfdlValue) -> D
     match (kind, value) {
         (ValueKind::String, DfdlValue::Int(n)) => DfdlValue::string(n.to_string()),
         (ValueKind::String, DfdlValue::Long(n)) => DfdlValue::string(n.to_string()),
+        (ValueKind::String, DfdlValue::UnsignedLong(n)) => DfdlValue::string(n.to_string()),
+        (ValueKind::String, DfdlValue::UnsignedInt(n)) => DfdlValue::string(n.to_string()),
+        (ValueKind::String, DfdlValue::Short(n)) => DfdlValue::string(n.to_string()),
+        (ValueKind::String, DfdlValue::UnsignedShort(n)) => DfdlValue::string(n.to_string()),
+        (ValueKind::String, DfdlValue::Byte(n)) => DfdlValue::string(n.to_string()),
+        (ValueKind::String, DfdlValue::UnsignedByte(n)) => DfdlValue::string(n.to_string()),
+        (ValueKind::String, DfdlValue::Float(n)) => DfdlValue::string(n.to_string()),
+        (ValueKind::String, DfdlValue::Double(n)) => DfdlValue::string(n.to_string()),
+        (ValueKind::String, DfdlValue::Boolean(b)) => DfdlValue::string(b.to_string()),
+        (ValueKind::String, DfdlValue::Integer(s)) => DfdlValue::string(s),
+        (ValueKind::String, DfdlValue::Decimal(s)) => DfdlValue::string(s),
+        (ValueKind::String, DfdlValue::DateTime(s)) => DfdlValue::string(s),
+        (ValueKind::String, DfdlValue::HexBinary(b)) => DfdlValue::string(crate::vm::runtime::scalar::encode_hex(&b)),
+        (ValueKind::Int, DfdlValue::Long(n)) => DfdlValue::Int(n as i32),
+        (ValueKind::Int, DfdlValue::UnsignedInt(n)) => DfdlValue::Int(n as i32),
+        (ValueKind::Int, DfdlValue::UnsignedLong(n)) => DfdlValue::Int(n as i32),
+        (ValueKind::Long, DfdlValue::Int(n)) => DfdlValue::Long(n as i64),
+        (ValueKind::Long, DfdlValue::UnsignedInt(n)) => DfdlValue::Long(n as i64),
+        (ValueKind::Long, DfdlValue::UnsignedLong(n)) => DfdlValue::Long(n as i64),
+        (ValueKind::UnsignedInt, DfdlValue::Int(n)) => DfdlValue::UnsignedInt(n as u32),
+        (ValueKind::UnsignedInt, DfdlValue::Long(n)) => DfdlValue::UnsignedInt(n as u32),
         (ValueKind::Float, DfdlValue::Int(n)) => DfdlValue::Float(n as f32),
         (ValueKind::Float, DfdlValue::Long(n)) => DfdlValue::Float(n as f32),
         (ValueKind::Double, DfdlValue::Int(n)) => DfdlValue::Double(n as f64),

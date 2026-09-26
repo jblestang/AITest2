@@ -193,6 +193,12 @@ impl<'a> IrBuilder<'a> {
         validate_text_string_pad_props(type_props)?;
         validate_text_string_pad_props(element_props)?;
         let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings)?;
+        if !ir.representation_defined {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error: Property representation is not defined".into(),
+            }
+            .into());
+        }
         resolve_escape_scheme(self.schema, type_props, element_props, &mut ir);
         self.attach_prefix_length(type_props, element_props, &mut ir, 0)?;
         Ok(ir)

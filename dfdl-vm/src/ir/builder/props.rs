@@ -83,6 +83,7 @@ pub(crate) fn overlay_dfdl_to_ir(
 ) -> Result<IrProps> {
     if let Some(v) = props.representation {
         base.representation = v;
+        base.representation_defined = true;
     }
     if let Some(v) = props.byte_order {
         base.byte_order = v;
@@ -599,7 +600,15 @@ pub(crate) fn overlay_dfdl_to_ir(
     if let Some(v) = props.text_standard_base {
         base.text_standard_base = v;
     }
-    if props.alignment_implicit == Some(true) {
+    if props.alignment_manual == Some(true) {
+        base.alignment_manual = true;
+    } else if props.alignment_manual == Some(false) {
+        base.alignment_manual = false;
+    }
+    if base.alignment_manual {
+        base.alignment = 1;
+        base.alignment_implicit = false;
+    } else if props.alignment_implicit == Some(true) {
         base.alignment_implicit = true;
         base.alignment = 0;
     } else if props.alignment.is_some() {
@@ -1447,6 +1456,7 @@ pub(crate) fn finalize_element_props(
         && kind != ValueKind::String
         && kind != ValueKind::HexBinary
         && kind != ValueKind::Complex
+        && !has_ivc
     {
         let kind_str = match kind {
             ValueKind::Int => "int",
@@ -1526,6 +1536,7 @@ pub(crate) fn finalize_element_props(
     }
     super::validate::validate_packed_number_rep_props(&ir, kind)?;
     super::validate::validate_text_standard_separator_semantics(&ir, strings)?;
+    super::validate::validate_input_value_calc_compile(kind, &ir, strings)?;
     if schema.is_some() {
         super::validate::validate_delimiter_props(&DfdlProps::default(), &DfdlProps::default())?;
     }
@@ -1534,6 +1545,8 @@ pub(crate) fn finalize_element_props(
 
 pub(crate) fn element_props_for_complex_content(element_props: &DfdlProps) -> DfdlProps {
     DfdlProps {
+        format_ref: element_props.format_ref.clone(),
+        representation: element_props.representation,
         separator: element_props.separator.clone(),
         separator_position: element_props.separator_position,
         separator_suppression_policy: element_props.separator_suppression_policy,

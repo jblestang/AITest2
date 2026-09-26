@@ -1971,7 +1971,7 @@ pub(crate) fn lookup_named_format_in_document(
             .filter(|(k, _)| format_local_from_storage_key(k) == local)
             .map(|(_, v)| v.clone())
             .collect();
-        if matching.len() == 1 {
+        if !matching.is_empty() {
             return matching.into_iter().next();
         }
     }

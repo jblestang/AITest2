@@ -422,6 +422,7 @@ impl<'a> XsdParser<'a> {
         props = self.parse_inline_content(props, &["restriction", "union", "annotation"])?;
         let base = self.parse_simple_base()?;
         self.expect_end_local("simpleType")?;
+        props = self.finalize_props(props);
 
         if let Some(type_name) = name {
             if props.length.is_none() {

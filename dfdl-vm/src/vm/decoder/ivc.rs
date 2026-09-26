@@ -164,7 +164,13 @@ pub(crate) fn parse_ivc_lexical_for_kind(
         ValueKind::Time => "time",
         ValueKind::Int => "int",
         ValueKind::Integer => "integer",
-        ValueKind::Long => "long",
+        ValueKind::Long => {
+            if props.unsigned_integer {
+                "unsignedLong"
+            } else {
+                "long"
+            }
+        }
         ValueKind::Short => "short",
         ValueKind::Byte => "byte",
         ValueKind::UnsignedInt => "unsignedInt",
@@ -187,9 +193,15 @@ pub(crate) fn parse_ivc_lexical_for_kind(
         None,
     )
     .map_err(|_| VmError::InvalidValue {
-        message: alloc::format!(
-            "Parse Error. Hex character must be 0-9, a-f, or A-F. Failed to parse xs:{target_name} from text: {trimmed}"
-        ),
+        message: if kind == ValueKind::HexBinary {
+            alloc::format!(
+                "Parse Error. Hex character must be 0-9, a-f, or A-F. Failed to parse xs:{target_name} from text: {trimmed}"
+            )
+        } else {
+            alloc::format!(
+                "Parse Error. Failed to parse xs:{target_name} from text: {trimmed}"
+            )
+        },
     })
     .map_err(Into::into)
 }

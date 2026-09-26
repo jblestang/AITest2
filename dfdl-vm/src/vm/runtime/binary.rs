@@ -789,6 +789,9 @@ pub(crate) fn write_binary_scalar(
         (Long, DfdlValue::Long(v)) => bytes = int_bytes(*v, size, le),
         (Float, DfdlValue::Float(v)) => bytes = int_bytes(v.to_bits() as i64, size, le),
         (Double, DfdlValue::Double(v)) => bytes = int_bytes(v.to_bits() as i64, size, le),
+        (String, DfdlValue::String(v)) => {
+            bytes = v.text.as_bytes().to_vec();
+        }
         (HexBinary, DfdlValue::HexBinary(v)) => {
             bytes = pad_hex_binary_value(v.clone(), props, Some(size));
         }

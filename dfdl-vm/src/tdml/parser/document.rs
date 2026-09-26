@@ -452,8 +452,23 @@ pub(crate) fn parse_document_part(
             } else {
                 text.into_bytes()
             };
+            let last_byte_bit_count = if let Some(enc) = encoding {
+                if let Some(spec) = bits_charset_spec(enc) {
+                    let total_bits = bits_text.chars().count() * spec.width as usize;
+                    let last_bits = (total_bits % 8) as u8;
+                    if last_bits > 0 {
+                        Some(last_bits)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let data_bit_chunks = text_document_data_bits(&bits_text, encoding).ok();
-            (data, None, None, data_bit_chunks)
+            (data, last_byte_bit_count, None, data_bit_chunks)
         }
         DocumentKind::Hex => {
             let data_bytes = parse_hex_document(&text)?;
@@ -475,6 +490,12 @@ pub(crate) fn parse_document_part(
     };
     let length_in_bits = if let Some(chunks) = &bit_chunks {
         chunks.iter().map(String::len).sum()
+    } else if let Some(last) = last_byte_bit_count {
+        if data.is_empty() {
+            0
+        } else {
+            (data.len() - 1) * 8 + last as usize
+        }
     } else {
         data.len() * 8
     };

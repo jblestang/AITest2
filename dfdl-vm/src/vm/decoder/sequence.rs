@@ -148,6 +148,15 @@ pub(crate) fn filter_delimiter_stop_sequences<'a>(
 }
 
 impl<'a> Decoder<'a> {
+    pub(crate) fn is_ivc_child(&self, child_id: u32) -> bool {
+        if let Ok(IrNode::Element { props, .. }) = self.ctx.program.node(child_id) {
+            props.input_value_calc.is_some()
+                || props.input_value_calc_expression.is_some()
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn current_delimiter_occurrence_index(&self) -> u64 {
         self.delimiter_occurrence_stack
             .borrow()
@@ -413,28 +422,39 @@ impl<'a> Decoder<'a> {
                 self.field_delimiters.borrow_mut().clear();
                 let total = children.len();
                 let saved_bit_order = *self.seq_bit_order.borrow();
+                let total_physical = children.iter().filter(|&&c| !self.is_ivc_child(c)).count();
+                let mut physical_index = 0usize;
                 for (i, &child) in children.iter().enumerate() {
-                    let has_following = i + 1 < total || has_following_sibling;
-                    let last_child_slot = i + 1 >= total;
-                    if props.separator.is_some()
-                        && props.separator_position == SeparatorPosition::Infix
-                        && i > 0
-                        && self.skip_infix_sep_after_parsed_unbounded_array(
-                            props, children, i, cursor,
-                        )?
-                    {
+                    let is_ivc = self.is_ivc_child(child);
+                    let (has_following, last_child_slot) = if is_ivc {
+                        (i + 1 < children.len() || has_following_sibling, false)
                     } else {
-                        let sep_alt = self.consume_separator(
-                            props,
-                            cursor,
-                            i,
-                            total,
-                            &mut infix_sep_newline_prefix,
-                            &child_stops,
-                            last_child_slot,
-                        )?;
-                        if let Some(alt) = sep_alt {
-                            separator_alts.push(Some(alt));
+                        (
+                            physical_index + 1 < total_physical || has_following_sibling,
+                            physical_index + 1 >= total_physical,
+                        )
+                    };
+                    if !is_ivc {
+                        if props.separator.is_some()
+                            && props.separator_position == SeparatorPosition::Infix
+                            && physical_index > 0
+                            && self.skip_infix_sep_after_parsed_unbounded_array(
+                                props, children, i, cursor,
+                            )?
+                        {
+                        } else {
+                            let sep_alt = self.consume_separator(
+                                props,
+                                cursor,
+                                physical_index,
+                                total_physical,
+                                &mut infix_sep_newline_prefix,
+                                &child_stops,
+                                last_child_slot,
+                            )?;
+                            if let Some(alt) = sep_alt {
+                                separator_alts.push(Some(alt));
+                            }
                         }
                     }
                     if let Ok(IrNode::Element {
@@ -444,11 +464,14 @@ impl<'a> Decoder<'a> {
                         if self.trailing_empty_implicit_optional_empty_slot(
                             props,
                             child_props,
-                            i,
-                            total,
+                            physical_index,
+                            total_physical,
                             cursor,
                             &child_stops,
                         )? {
+                            if !is_ivc {
+                                physical_index += 1;
+                            }
                             continue;
                         }
                     }
@@ -520,6 +543,9 @@ impl<'a> Decoder<'a> {
                                 }
                             }
                             insert_child(&mut map, child, val, self.ctx.program)?;
+                            if !is_ivc {
+                                physical_index += 1;
+                            }
                         }
                         Err(e) => {
                             if is_element_absent(&e) {

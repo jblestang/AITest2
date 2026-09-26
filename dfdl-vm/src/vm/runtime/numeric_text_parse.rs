@@ -1385,6 +1385,15 @@ pub(crate) fn read_text_scalar(
     }
 
     let enc = encoding_name(props, strings)?;
+    let start_bit_index = cursor.absolute_bit_index();
+    if bits_charset_spec(enc).is_none() && start_bit_index % 8 != 0 {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Parse Error: charset not byte aligned. Bit position: {}",
+                start_bit_index + 1
+            ),
+        });
+    }
     let mut raw = match props.length_kind {
         LengthKind::Fixed => {
             let len = props.length.ok_or(VmError::InvalidValue {
@@ -1504,6 +1513,7 @@ pub(crate) fn read_text_scalar(
             rest
         }
     };
+    let consumed_bits = cursor.absolute_bit_index().saturating_sub(start_bit_index);
 
     if matches!(kind, DateTime | Time)
         && props.calendar_pattern.is_some()
@@ -1532,7 +1542,13 @@ pub(crate) fn read_text_scalar(
             LengthKind::Fixed | LengthKind::Explicit if props.length_units == LengthUnits::Bits => {
                 props.length.unwrap_or(0) as usize
             }
-            _ => raw.len().saturating_mul(8),
+            _ => {
+                if consumed_bits > 0 {
+                    consumed_bits
+                } else {
+                    raw.len().saturating_mul(8)
+                }
+            }
         };
         decode_bits_charset_payload(&raw, n_bits, spec)?
     } else {
@@ -1966,7 +1982,9 @@ pub(crate) fn resolved_text_number_format_parts(
     Option<char>,
     crate::schema::BinaryNumberCheckPolicy,
 ) {
-    let dec_seps = if props.text_standard_decimal_separator_defined {
+    let dec_seps = if let Some(ref d) = props.resolved_text_standard_decimal_separator {
+        alloc::vec![d.clone()]
+    } else if props.text_standard_decimal_separator_defined {
         if let Ok(raw) = strings.get(props.text_standard_decimal_separator) {
             alloc::vec![raw.to_string()]
         } else {
@@ -1976,12 +1994,18 @@ pub(crate) fn resolved_text_number_format_parts(
         alloc::vec![alloc::string::String::from(".")]
     };
 
-    let grouping = props
-        .text_standard_grouping_separator
-        .and_then(|id| strings.get(id).ok())
-        .map(|g| g.to_string());
+    let grouping = if let Some(ref g) = props.resolved_text_standard_grouping_separator {
+        Some(g.clone())
+    } else {
+        props
+            .text_standard_grouping_separator
+            .and_then(|id| strings.get(id).ok())
+            .map(|g| g.to_string())
+    };
 
-    let exponent = if props.text_standard_exponent_rep_defined {
+    let exponent = if let Some(ref e) = props.resolved_text_standard_exponent_rep {
+        e.clone()
+    } else if props.text_standard_exponent_rep_defined {
         strings
             .get(props.text_standard_exponent_rep)
             .ok()

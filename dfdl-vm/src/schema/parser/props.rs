@@ -763,6 +763,9 @@ pub(crate) fn props_from_attrs_with_variables(
                     props.alignment_implicit = Some(false);
                 }
             }
+            "alignmentKind" => {
+                props.alignment_manual = Some(value == "manual");
+            }
             "alignmentUnits" => {
                 props.alignment_units = Some(match value.as_str() {
                     "bytes" => LengthUnits::Bytes,
@@ -2435,6 +2438,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.alignment_implicit.is_some() {
         base.alignment_implicit = overlay.alignment_implicit;
+    }
+    if overlay.alignment_manual.is_some() {
+        base.alignment_manual = overlay.alignment_manual;
     }
     if overlay.alignment_units.is_some() {
         base.alignment_units = overlay.alignment_units;

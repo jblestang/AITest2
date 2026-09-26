@@ -69,3 +69,21 @@ fn ovc_hidden_calculations2() {
     eprintln!("{:?}", result.outcome);
     assert!(matches!(result.outcome, TestOutcome::Pass));
 }
+
+#[test]
+fn test_ovc_w_runtime_escape_char() {
+    let tdml_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section17/calc_value_properties/outputValueCalc2.tdml",
+    );
+    let tdml = fs::read_to_string(&tdml_path).expect("tdml");
+    let suite = parse_tdml(&tdml).expect("parse");
+    let test = suite
+        .unparser_tests
+        .iter()
+        .find(|t| t.name == "ovc_w_runtime_escape_char")
+        .expect("test");
+    let result = run_unparser_test(&suite, test).expect("run");
+    eprintln!("{:?}", result.outcome);
+    assert!(matches!(result.outcome, TestOutcome::Pass));
+}
+
