@@ -586,6 +586,8 @@ impl<'a> XsdParser<'a> {
                             }
                             self.doc.format_defaults.props =
                                 merge_dfdl_props(self.doc.format_defaults.props.clone(), props);
+                            self.doc.format_defaults.props.set_variables.clear();
+                            self.doc.format_defaults.props.new_variable_instances.clear();
                         }
                         "defineFormat" => {
                             let _ = self.parse_dfdl_element(
@@ -635,6 +637,8 @@ impl<'a> XsdParser<'a> {
                             let props = self.parse_annotation(child_attrs, child_namespace)?;
                             self.doc.format_defaults.props =
                                 merge_dfdl_props(self.doc.format_defaults.props.clone(), props);
+                            self.doc.format_defaults.props.set_variables.clear();
+                            self.doc.format_defaults.props.new_variable_instances.clear();
                         }
                         _ => self.skip_element_body(&local)?,
                     }
@@ -1408,31 +1412,56 @@ impl<'a> XsdParser<'a> {
                 .iter()
                 .find(|(k, _)| local_tag(k) == "ref")
                 .map(|(_, v)| v.as_str());
-            let value = attrs
+            let mut value = attrs
                 .iter()
                 .find(|(k, _)| local_tag(k) == "value")
                 .map(|(_, v)| v.clone());
+            self.reader.skip_insignificant_ws()?;
+            if value.is_none() && !self.reader.peek_is_end("setVariable")? {
+                let body = self.reader.read_text_until_end("setVariable")?;
+                let trimmed = body.trim();
+                if !trimmed.is_empty() {
+                    value = Some(trimmed.to_string());
+                }
+            } else if !self.reader.peek_is_end("setVariable")? {
+                self.reader.skip_current_subtree()?;
+            } else {
+                self.expect_end_local("setVariable")?;
+            }
             let mut props = DfdlProps::default();
             if let (Some(var_ref), Some(value)) = (var_ref, value) {
                 let name = variable_local_name_from_ref(var_ref);
                 props.set_variables.push((name, value));
             }
-            self.reader.skip_insignificant_ws()?;
-            if !self.reader.peek_is_end("setVariable")? {
-                self.reader.skip_current_subtree()?;
-            } else {
-                self.expect_end_local("setVariable")?;
-            }
             return Ok(props);
         }
         if local == "newVariableInstance" {
+            let var_ref = attrs
+                .iter()
+                .find(|(k, _)| local_tag(k) == "ref")
+                .map(|(_, v)| v.as_str());
+            let mut default_val = attrs
+                .iter()
+                .find(|(k, _)| local_tag(k) == "defaultValue")
+                .map(|(_, v)| v.clone());
             self.reader.skip_insignificant_ws()?;
-            if !self.reader.peek_is_end("newVariableInstance")? {
+            if default_val.is_none() && !self.reader.peek_is_end("newVariableInstance")? {
+                let body = self.reader.read_text_until_end("newVariableInstance")?;
+                let trimmed = body.trim();
+                if !trimmed.is_empty() {
+                    default_val = Some(trimmed.to_string());
+                }
+            } else if !self.reader.peek_is_end("newVariableInstance")? {
                 self.reader.skip_current_subtree()?;
             } else {
                 self.expect_end_local("newVariableInstance")?;
             }
-            return Ok(DfdlProps::default());
+            let mut props = DfdlProps::default();
+            if let Some(var_ref) = var_ref {
+                let name = variable_local_name_from_ref(var_ref);
+                props.new_variable_instances.push((name, default_val));
+            }
+            return Ok(props);
         }
 
         let mut props = props_from_attrs_with_variables(
@@ -1493,6 +1522,8 @@ impl<'a> XsdParser<'a> {
                 } else {
                     self.doc.format_defaults.props = format_props;
                 }
+                self.doc.format_defaults.props.set_variables.clear();
+                self.doc.format_defaults.props.new_variable_instances.clear();
                 props.calendar_time_zone_defined = false;
             }
         }
@@ -1646,6 +1677,8 @@ impl<'a> XsdParser<'a> {
             format_props.calendar_time_zone_defined = false;
             self.doc.format_defaults.props =
                 merge_dfdl_props(self.doc.format_defaults.props.clone(), format_props);
+            self.doc.format_defaults.props.set_variables.clear();
+            self.doc.format_defaults.props.new_variable_instances.clear();
             props.calendar_time_zone_defined = false;
         }
 

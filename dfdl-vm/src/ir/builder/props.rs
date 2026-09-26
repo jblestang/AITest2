@@ -575,6 +575,12 @@ pub(crate) fn overlay_dfdl_to_ir(
         base.set_variables
             .push((strings.intern(name.clone()), strings.intern(val.clone())));
     }
+    for (name, val) in &props.new_variable_instances {
+        base.new_variable_instances.push((
+            strings.intern(name.clone()),
+            val.as_ref().map(|v| strings.intern(v.clone())),
+        ));
+    }
     if let Some(v) = props.output_value_calc {
         base.output_value_calc = Some(v);
     }
@@ -1079,6 +1085,12 @@ pub(crate) fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.escape_scheme.is_some() {
         out.escape_scheme = overlay.escape_scheme.clone();
+    }
+    if !overlay.set_variables.is_empty() {
+        out.set_variables.extend(overlay.set_variables.clone());
+    }
+    if !overlay.new_variable_instances.is_empty() {
+        out.new_variable_instances.extend(overlay.new_variable_instances.clone());
     }
     if crate::ir::ir_props_has_input_value_calc(&out)
         && out.length.is_none()

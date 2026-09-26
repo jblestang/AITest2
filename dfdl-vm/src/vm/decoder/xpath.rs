@@ -792,6 +792,14 @@ impl<'a> Decoder<'a> {
             };
             let local = name.rsplit(':').next().unwrap_or(name);
             let mut vars = self.runtime_variables.borrow_mut();
+            let keys_to_update: alloc::vec::Vec<String> = vars
+                .keys()
+                .filter(|k| k.rsplit(':').next().unwrap_or(k.as_str()) == local)
+                .cloned()
+                .collect();
+            for k in keys_to_update {
+                vars.insert(k, evaluated_val.clone());
+            }
             vars.insert(name.to_string(), evaluated_val.clone());
             vars.insert(local.to_string(), evaluated_val.clone());
             if local == "outputNewLine" {
@@ -842,9 +850,11 @@ impl<'a> Decoder<'a> {
 
             {
                 let current_vars = self.runtime_variables.borrow();
-                shadowed_vars.push((name.to_string(), current_vars.get(name).cloned()));
-                if local != name {
-                    shadowed_vars.push((local.to_string(), current_vars.get(local).cloned()));
+                for (k, v) in current_vars.iter() {
+                    let k_local = k.rsplit(':').next().unwrap_or(k.as_str());
+                    if k_local == local {
+                        shadowed_vars.push((k.clone(), Some(v.clone())));
+                    }
                 }
             }
 
@@ -904,17 +914,29 @@ impl<'a> Decoder<'a> {
                     expr_str.to_string()
                 }
             } else {
+                let overrides = &self.ctx.config.runtime_variable_overrides;
+                let defs = &self.ctx.program.variables;
                 let current_vars = self.runtime_variables.borrow();
-                current_vars
+                overrides
                     .get(name)
+                    .or_else(|| overrides.get(local))
+                    .or_else(|| defs.get(name))
+                    .or_else(|| defs.get(local))
+                    .or_else(|| current_vars.get(name))
                     .or_else(|| current_vars.get(local))
-                    .or_else(|| self.ctx.program.variables.get(name))
-                    .or_else(|| self.ctx.program.variables.get(local))
                     .cloned()
                     .unwrap_or_default()
             };
 
             let mut current_vars = self.runtime_variables.borrow_mut();
+            let keys_to_update: alloc::vec::Vec<String> = current_vars
+                .keys()
+                .filter(|k| k.rsplit(':').next().unwrap_or(k.as_str()) == local)
+                .cloned()
+                .collect();
+            for k in keys_to_update {
+                current_vars.insert(k, initial_val.clone());
+            }
             current_vars.insert(name.to_string(), initial_val.clone());
             current_vars.insert(local.to_string(), initial_val);
         }
