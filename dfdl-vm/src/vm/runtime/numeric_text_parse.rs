@@ -1565,7 +1565,7 @@ pub(crate) fn read_text_scalar(
         text
     };
     let trimmed = trim_text_value(&text, kind, props.text_trim_kind, props, strings);
-    let trimmed = if kind == crate::ir::ValueKind::String {
+    let trimmed = {
         let scheme = scan_ctx
             .and_then(|ctx| ctx.resolved_escape_scheme.as_ref())
             .or(props.escape_scheme.as_ref());
@@ -1574,8 +1574,6 @@ pub(crate) fn read_text_scalar(
         } else {
             trimmed.to_string()
         }
-    } else {
-        trimmed.to_string()
     };
     let trimmed = trimmed.as_str();
 

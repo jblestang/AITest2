@@ -377,10 +377,14 @@ pub(crate) fn validate_escape_separator_distinct(
                 let sep_expanded = crate::schema::expand_entities_str(sep);
                 let alts = crate::schema::delimiter_alternatives(&sep_expanded);
                 if let Some(esc) = scheme.escape_character.as_deref().filter(|s| !s.is_empty()) {
-                    let conflicts = alts.iter().any(|alt| alt.starts_with(esc) || alt == esc);
-                    if conflicts {
+                    if alts.iter().any(|alt| alt == esc) {
                         return Err(SchemaError::InvalidProperty {
                             message: "Schema Definition Error: The escape character cannot be the same as terminating markup for dfdl:separator or dfdl:terminator.".into(),
+                        });
+                    }
+                    if alts.iter().any(|alt| alt.starts_with(esc)) {
+                        return Err(SchemaError::InvalidProperty {
+                            message: "Schema Definition Error: dfdl:terminator and dfdl:separator properties may not begin with the dfdl:escapeCharacter property value.".into(),
                         });
                     }
                 }
