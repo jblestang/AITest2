@@ -612,14 +612,23 @@ impl<'a> XsdParser<'a> {
                                 .iter()
                                 .find(|(k, _)| local_tag(k) == "defaultValue")
                                 .map(|(_, v)| v.clone());
-                            if let (Some(name), Some(default)) = (name, default) {
-                                self.doc.variables.insert(name, default);
-                            }
+                            let mut default_val = default;
                             self.reader.skip_insignificant_ws()?;
-                            if !self.reader.peek_is_end("defineVariable")? {
+                            if default_val.is_none() && !self.reader.peek_is_end("defineVariable")? {
+                                let body = self.reader.read_text_until_end("defineVariable")?;
+                                let trimmed = body.trim();
+                                if !trimmed.is_empty() {
+                                    default_val = Some(trimmed.to_string());
+                                }
+                            } else if !self.reader.peek_is_end("defineVariable")? {
                                 self.reader.skip_current_subtree()?;
                             } else {
                                 self.expect_end_local("defineVariable")?;
+                            }
+                            if let (Some(name), Some(def)) = (name, default_val) {
+                                let local = name.rsplit(':').next().unwrap_or(name.as_str()).to_string();
+                                self.doc.variables.insert(name, def.clone());
+                                self.doc.variables.insert(local, def);
                             }
                         }
                         "annotation" => {
@@ -1374,14 +1383,23 @@ impl<'a> XsdParser<'a> {
                 .iter()
                 .find(|(k, _)| local_tag(k) == "defaultValue")
                 .map(|(_, v)| v.clone());
-            if let (Some(name), Some(default)) = (name, default) {
-                self.doc.variables.insert(name, default);
-            }
+            let mut default_val = default;
             self.reader.skip_insignificant_ws()?;
-            if !self.reader.peek_is_end("defineVariable")? {
+            if default_val.is_none() && !self.reader.peek_is_end("defineVariable")? {
+                let body = self.reader.read_text_until_end("defineVariable")?;
+                let trimmed = body.trim();
+                if !trimmed.is_empty() {
+                    default_val = Some(trimmed.to_string());
+                }
+            } else if !self.reader.peek_is_end("defineVariable")? {
                 self.reader.skip_current_subtree()?;
             } else {
                 self.expect_end_local("defineVariable")?;
+            }
+            if let (Some(name), Some(def)) = (name, default_val) {
+                let local = name.rsplit(':').next().unwrap_or(name.as_str()).to_string();
+                self.doc.variables.insert(name, def.clone());
+                self.doc.variables.insert(local, def);
             }
             return Ok(DfdlProps::default());
         }

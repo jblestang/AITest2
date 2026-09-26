@@ -92,7 +92,7 @@ fn resolve_ivc_variable_depth(
         return Err(VmError::InvalidValue {
             message: ivc_sde_message(
                 ctx.element_name,
-                alloc::format!("variable `{name}` has no value. It was not set"),
+                alloc::format!("variable {name} has no value. It was not set, and has no default value."),
             ),
         }
         .into());
