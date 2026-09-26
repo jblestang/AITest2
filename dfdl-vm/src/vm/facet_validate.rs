@@ -892,6 +892,8 @@ fn numeric_value_i64(value: &DfdlValue) -> Option<i64> {
         DfdlValue::UnsignedShort(v) => Some(*v as i64),
         DfdlValue::UnsignedInt(v) => Some(*v as i64),
         DfdlValue::UnsignedLong(v) => i64::try_from(*v).ok(),
+        DfdlValue::Integer(s) => s.parse::<i64>().ok(),
+        DfdlValue::Decimal(s) => s.parse::<f64>().ok().map(|f| f as i64),
         _ => None,
     }
 }

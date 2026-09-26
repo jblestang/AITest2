@@ -602,6 +602,7 @@ impl<'a> Decoder<'a> {
         &self,
         cond: &str,
         siblings: Option<&BTreeMap<String, SiblingState>>,
+        dot: &str,
     ) -> Result<bool> {
         let cond = cond.trim();
         let cond_unparenthesized = if cond.starts_with('(') && cond.ends_with(')') {
@@ -648,6 +649,17 @@ impl<'a> Decoder<'a> {
                     for (k, v) in s {
                         sib_snap.entry(k.clone()).or_insert_with(|| v.clone());
                     }
+                }
+                if !dot.is_empty() {
+                    let dot_val = super::particle::parse_simple_val_from_str(dot, ValueKind::String)
+                        .unwrap_or_else(|_| DfdlValue::string(dot));
+                    sib_snap.insert(
+                        ".".to_string(),
+                        SiblingState {
+                            value: dot_val,
+                            content_bytes: 0,
+                        },
+                    );
                 }
                 let ancestor_frames = self.xpath_ancestor_frames.borrow();
                 let ivc_ctx = IvcEvalCtx {
@@ -716,7 +728,7 @@ impl<'a> Decoder<'a> {
                     } else if let Some((cond, then_v, else_v)) =
                         Self::parse_if_then_else_expr(inner)
                     {
-                        if self.eval_simple_condition(cond, siblings)? {
+                        if self.eval_simple_condition(cond, siblings, "")? {
                             then_v.to_string()
                         } else {
                             else_v.to_string()
@@ -870,7 +882,7 @@ impl<'a> Decoder<'a> {
                     } else if let Some((cond, then_v, else_v)) =
                         Self::parse_if_then_else_expr(inner)
                     {
-                        if self.eval_simple_condition(cond, siblings)? {
+                        if self.eval_simple_condition(cond, siblings, "")? {
                             then_v.to_string()
                         } else {
                             else_v.to_string()
@@ -920,10 +932,27 @@ impl<'a> Decoder<'a> {
                 overrides
                     .get(name)
                     .or_else(|| overrides.get(local))
+                    .or_else(|| {
+                        overrides
+                            .iter()
+                            .find(|(k, _)| k.rsplit(':').next().unwrap_or(k.as_str()) == local)
+                            .map(|(_, v)| v)
+                    })
                     .or_else(|| defs.get(name))
                     .or_else(|| defs.get(local))
+                    .or_else(|| {
+                        defs.iter()
+                            .find(|(k, _)| k.rsplit(':').next().unwrap_or(k.as_str()) == local)
+                            .map(|(_, v)| v)
+                    })
                     .or_else(|| current_vars.get(name))
                     .or_else(|| current_vars.get(local))
+                    .or_else(|| {
+                        current_vars
+                            .iter()
+                            .find(|(k, _)| k.rsplit(':').next().unwrap_or(k.as_str()) == local)
+                            .map(|(_, v)| v)
+                    })
                     .cloned()
                     .unwrap_or_default()
             };
@@ -1004,7 +1033,7 @@ impl<'a> Decoder<'a> {
             || inner.contains(" lt ")
             || inner.contains(" gt ")
         {
-            return self.eval_simple_condition(inner, None);
+            return self.eval_simple_condition(inner, None, dot);
         }
         if inner.starts_with('$') {
             let name = inner.trim_start_matches('$').trim();
@@ -1104,7 +1133,7 @@ impl<'a> Decoder<'a> {
                 if let Some(else_idx) = rest.find(" else ") {
                     let then_val_str = rest[..else_idx].trim();
                     let else_val_str = rest[else_idx + 6..].trim();
-                    let cond_bool = self.eval_simple_condition(cond_part, siblings)?;
+                    let cond_bool = self.eval_simple_condition(cond_part, siblings, "")?;
                     let choice_str = if cond_bool {
                         then_val_str
                     } else {

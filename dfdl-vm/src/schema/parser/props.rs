@@ -999,6 +999,35 @@ fn split_top_level_ivc_op(s: &str, op: char) -> Option<alloc::vec::Vec<alloc::st
     Some(parts)
 }
 
+fn is_valid_path_string(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('(')
+        || trimmed.contains(')')
+        || trimmed.contains('\'')
+        || trimmed.contains('"')
+        || trimmed.contains('+')
+        || trimmed.contains('*')
+    {
+        return false;
+    }
+    for part in trimmed.split('/') {
+        let p = part.trim();
+        if p.is_empty() || p == "." || p == ".." {
+            continue;
+        }
+        let head = p.find('[').map(|idx| &p[..idx]).unwrap_or(p).trim();
+        if head.is_empty() {
+            return false;
+        }
+        let nc = head.rsplit(':').next().unwrap_or(head);
+        if !nc.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            return false;
+        }
+    }
+    true
+}
+
 fn parse_ivc_path_steps(
     s: &str,
 ) -> Option<(
@@ -1015,9 +1044,14 @@ fn parse_ivc_path_steps(
         (true, r)
     } else if let Some(r) = s.strip_prefix('/') {
         (false, r)
-    } else {
-        let r = s.strip_prefix("../").or_else(|| s.strip_prefix("..\\"))?;
+    } else if let Some(r) = s.strip_prefix("../").or_else(|| s.strip_prefix("..\\")) {
         (false, r)
+    } else if let Some(r) = s.strip_prefix("./") {
+        (false, r)
+    } else if s == "." || is_valid_path_string(s) {
+        (false, s)
+    } else {
+        return None;
     };
     if rest.is_empty() {
         return None;
@@ -1118,6 +1152,25 @@ fn parse_ivc_path_expr(s: &str) -> Option<crate::schema::InputValueCalcExpressio
 
 fn parse_ivc_primary(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
     let s = s.trim();
+    if s.starts_with('(') && s.ends_with(')') {
+        let mut depth = 0i32;
+        let mut full_match = true;
+        for (i, ch) in s.char_indices() {
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 && i < s.len() - 1 {
+                    full_match = false;
+                    break;
+                }
+            }
+        }
+        if full_match && depth == 0 {
+            let inner = s[1..s.len() - 1].trim();
+            return parse_ivc_add_expr(inner);
+        }
+    }
     if let Some(arg) = extract_ivc_paren_argument(s, "fn:ceiling(") {
         let inner = parse_ivc_add_expr(&arg)?;
         return Some(crate::schema::InputValueCalcExpression::Ceiling(
@@ -1240,10 +1293,20 @@ fn split_top_level_ivc_sub(s: &str) -> Option<alloc::vec::Vec<alloc::string::Str
                 current.push(ch);
                 i += 1;
             }
-            _ if depth == 0 && s[i..].starts_with(" - ") => {
-                parts.push(current.trim().to_string());
-                current.clear();
-                i += 3;
+            _ if depth == 0 && ch == '-' => {
+                let prev_non_ws = current.trim_end().chars().next_back();
+                let is_sub = match prev_non_ws {
+                    Some(c) => c.is_alphanumeric() || c == '_' || c == ')' || c == ']' || c == '.' || c == '\'' || c == '"',
+                    None => false,
+                };
+                if is_sub {
+                    parts.push(current.trim().to_string());
+                    current.clear();
+                    i += 1;
+                } else {
+                    current.push(ch);
+                    i += 1;
+                }
             }
             _ => {
                 current.push(ch);

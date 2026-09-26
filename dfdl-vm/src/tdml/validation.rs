@@ -29,7 +29,12 @@ pub fn collect_post_decode_validation_errors_with_document(
     document_text: Option<&str>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    let root_field = resolve_root_field_value(root_value, &program.root_element);
+    let root_is_seq = matches!(program.node(program.root), Ok(IrNode::Sequence { .. }));
+    let root_field = if root_is_seq {
+        root_value
+    } else {
+        resolve_root_field_value(root_value, &program.root_element)
+    };
     let _ = walk_particle(
         schema,
         program,
@@ -50,7 +55,12 @@ pub fn collect_post_decode_raw_facet_errors(
     root_value: &DfdlValue,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    let root_field = resolve_root_field_value(root_value, &program.root_element);
+    let root_is_seq = matches!(program.node(program.root), Ok(IrNode::Sequence { .. }));
+    let root_field = if root_is_seq {
+        root_value
+    } else {
+        resolve_root_field_value(root_value, &program.root_element)
+    };
     let _ = walk_particle(
         schema,
         program,
@@ -235,7 +245,7 @@ fn walk_particle(
                                         errors.push(alloc::format!(
                                             "'{lex}' of element 'ex:one' is not valid"
                                         ));
-                                    } else if props.input_value_calc.is_some() {
+                                    } else if crate::ir::ir_props_has_input_value_calc(props) {
                                         errors.push("Validation Error".to_string());
                                         errors.push(alloc::format!(
                                             "Value '{lex}' is not facet-valid with respect to minExclusive '{min}'"
@@ -880,16 +890,20 @@ fn value_lexical_any(value: &DfdlValue, kind: ValueKind) -> Option<alloc::string
     if let Some(s) = value_lexical(value, kind) {
         return Some(s.to_string());
     }
-    match (kind, value) {
-        (ValueKind::Int, DfdlValue::Int(v)) => Some(v.to_string()),
-        (ValueKind::Long, DfdlValue::Long(v)) => Some(v.to_string()),
-        (ValueKind::Short, DfdlValue::Short(v)) => Some(v.to_string()),
-        (ValueKind::Byte, DfdlValue::Byte(v)) => Some(v.to_string()),
-        (ValueKind::UnsignedInt, DfdlValue::UnsignedInt(v)) => Some(v.to_string()),
-        (ValueKind::UnsignedShort, DfdlValue::UnsignedShort(v)) => Some(v.to_string()),
-        (ValueKind::UnsignedByte, DfdlValue::UnsignedByte(v)) => Some(v.to_string()),
-        (ValueKind::Integer, DfdlValue::Integer(v)) => Some(v.clone()),
-        (ValueKind::Decimal, DfdlValue::Decimal(v)) => Some(v.clone()),
+    match value {
+        DfdlValue::Byte(v) => Some(v.to_string()),
+        DfdlValue::Short(v) => Some(v.to_string()),
+        DfdlValue::Int(v) => Some(v.to_string()),
+        DfdlValue::Long(v) => Some(v.to_string()),
+        DfdlValue::UnsignedByte(v) => Some(v.to_string()),
+        DfdlValue::UnsignedShort(v) => Some(v.to_string()),
+        DfdlValue::UnsignedInt(v) => Some(v.to_string()),
+        DfdlValue::UnsignedLong(v) => Some(v.to_string()),
+        DfdlValue::Integer(v) => Some(v.clone()),
+        DfdlValue::Decimal(v) => Some(v.clone()),
+        DfdlValue::Float(v) => Some(v.to_string()),
+        DfdlValue::Double(v) => Some(v.to_string()),
+        DfdlValue::String(s) => Some(s.text.clone()),
         _ => None,
     }
 }

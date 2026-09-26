@@ -170,8 +170,8 @@ pub fn scalar_to_string(value: &DfdlValue) -> String {
         DfdlValue::String(v) => v.text.clone(),
         DfdlValue::HexBinary(v) => hex_encode(v),
         DfdlValue::Blob(_) => String::new(),
-        DfdlValue::Null => String::new(),
-        DfdlValue::Array(_) | DfdlValue::Sequence(_) | DfdlValue::Choice { .. } => String::new(),
+        DfdlValue::Choice { value, .. } => scalar_to_string(value),
+        DfdlValue::Null | DfdlValue::Array(_) | DfdlValue::Sequence(_) => String::new(),
     }
 }
 

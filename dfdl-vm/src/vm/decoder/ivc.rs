@@ -531,13 +531,13 @@ pub(crate) fn eval_ivc_path_steps(
     if parent_root {
         if let Some(first) = steps.first() {
             let local = strings.get(first.local)?;
-            if local == ctx.root_element {
+            if crate::xml_util::local_name_str(local) == ctx.root_element {
                 steps = &steps[1..];
             }
         }
     } else if let Some(first) = steps.first() {
         let local = strings.get(first.local)?;
-        if local == ctx.root_element {
+        if crate::xml_util::local_name_str(local) == ctx.root_element {
             steps = &steps[1..];
         }
     }
