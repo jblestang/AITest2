@@ -612,6 +612,7 @@ fn run_section_gate(section_name: &str, min_pass: usize, max_fail: usize) {
     let root = assert_tdml_root().join(section_name);
     let mut files = Vec::new();
     collect_tdml_files(&root, &mut files);
+    files.sort();
     assert!(!files.is_empty(), "{section_name} TDML missing");
     let mut stats = SectionStats::default();
     for path in files {
@@ -645,7 +646,7 @@ fn run_section_gate(section_name: &str, min_pass: usize, max_fail: usize) {
 
 #[test]
 fn daffodil_section07_regression_gate() {
-    run_section_gate("section07", 169, 134);
+    run_section_gate("section07", 184, 119);
 }
 
 #[test]

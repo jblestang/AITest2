@@ -339,6 +339,24 @@ impl<'a> Decoder<'a> {
                 self.evaluate_and_set_variables(&props.set_variables, siblings)?;
                 let _var_scope =
                     self.enter_variable_scope(&props.new_variable_instances, siblings, false)?;
+                if let Some(id) = props.assert_test_pattern {
+                    let pat = self.ctx.strings().get(id)?;
+                    let text = core::str::from_utf8(&cursor.data[cursor.pos..]).unwrap_or("");
+                    if !crate::vm::facet_validate::pattern_prefix_matches(text, pat) {
+                        let msg = self.eval_facet_assert_message(props)?;
+                        let reason = if !msg.is_empty() {
+                            msg
+                        } else {
+                            alloc::format!(
+                                "Assertion failed for dfdl:assert testKind=\"pattern\" testPattern=\"{pat}\""
+                            )
+                        };
+                        return Err(VmError::InvalidValue {
+                            message: alloc::format!("Parse Error. Assertion failed: {reason}"),
+                        }
+                        .into());
+                    }
+                }
                 let mut initiator_alt = None;
                 if let Some(id) = props.initiator {
                     let pat = self.resolve_delimiter_property(

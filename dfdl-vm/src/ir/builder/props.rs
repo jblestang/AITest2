@@ -556,6 +556,7 @@ pub(crate) fn overlay_dfdl_to_ir(
             .discriminator_test
             .as_ref()
             .map(|s| strings.intern(s.clone()));
+        base.is_discriminator = props.is_discriminator;
     }
     for (name, val) in &props.set_variables {
         base.set_variables
@@ -1041,6 +1042,7 @@ pub(crate) fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     if overlay.discriminator_test.is_some() {
         out.discriminator_test = overlay.discriminator_test;
+        out.is_discriminator = overlay.is_discriminator;
     }
     if overlay.facet_assert_message.is_some() {
         out.facet_assert_message = overlay.facet_assert_message;

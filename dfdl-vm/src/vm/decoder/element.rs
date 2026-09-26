@@ -171,6 +171,24 @@ impl<'a> Decoder<'a> {
                     &self.ctx.program.tunables,
                 )?;
                 let props = self.resolve_conditional_byte_order(&props)?;
+                if let Some(id) = props.assert_test_pattern {
+                    let pat = self.ctx.strings().get(id)?;
+                    let text = core::str::from_utf8(&cursor.data[cursor.pos..]).unwrap_or("");
+                    if !crate::vm::facet_validate::pattern_prefix_matches(text, pat) {
+                        let msg = self.eval_facet_assert_message(&props)?;
+                        let reason = if !msg.is_empty() {
+                            msg
+                        } else {
+                            alloc::format!(
+                                "Assertion failed for dfdl:assert testKind=\"pattern\" testPattern=\"{pat}\""
+                            )
+                        };
+                        return Err(VmError::InvalidValue {
+                            message: alloc::format!("Parse Error. Assertion failed: {reason}"),
+                        }
+                        .into());
+                    }
+                }
                 if props.length_kind == LengthKind::Explicit
                     && props.length == Some(0)
                     && !crate::ir::ir_props_has_input_value_calc(&props)

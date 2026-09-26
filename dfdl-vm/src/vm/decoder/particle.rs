@@ -275,31 +275,6 @@ impl<'a> Decoder<'a> {
         dot: &str,
         cursor: Option<&Cursor<'_>>,
     ) -> Result<()> {
-        // dfdl:assert testKind="pattern" — check the parsed value against the
-        // assertion pattern.  This is distinct from xs:pattern restriction facets
-        // which are handled in validate_decoded_facets.
-        if let Some(id) = props.assert_test_pattern {
-            let pat = self.ctx.strings().get(id)?;
-            let text_to_check = if !dot.is_empty() {
-                dot
-            } else if let Some(c) = cursor {
-                core::str::from_utf8(&c.data[c.pos..]).unwrap_or("")
-            } else {
-                ""
-            };
-            if !crate::vm::facet_validate::pattern_prefix_matches(text_to_check, pat) {
-                let msg = self.eval_facet_assert_message(props)?;
-                let reason = if !msg.is_empty() {
-                    msg
-                } else {
-                    alloc::format!("Assertion failed for dfdl:assert testKind=\"pattern\" testPattern=\"{pat}\"")
-                };
-                return Err(VmError::InvalidValue {
-                    message: alloc::format!("Parse Error. Assertion failed: {reason}"),
-                }
-                .into());
-            }
-        }
         let Some(id) = props.discriminator_test else {
             return Ok(());
         };
@@ -331,7 +306,9 @@ impl<'a> Decoder<'a> {
             .into());
         }
         if self.eval_particle_assert_expression(expr, dot, cursor)? {
-            self.discriminator_committed_branch.set(true);
+            if props.is_discriminator {
+                self.discriminator_committed_branch.set(true);
+            }
             return Ok(());
         }
         let msg = self.eval_facet_assert_message(props)?;

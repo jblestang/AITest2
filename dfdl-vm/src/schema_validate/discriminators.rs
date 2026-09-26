@@ -30,7 +30,27 @@ pub fn validate_discriminator_xpath_prefixes(
     Ok(())
 }
 
+fn validate_test_pattern_syntax(pat: &str) -> Result<(), SchemaError> {
+    use regex_automata::meta::Regex;
+    let pat = pat.trim();
+    if pat.is_empty() {
+        return Ok(());
+    }
+    let anchored = alloc::format!(r"\A(?:{pat})");
+    if Regex::new(&anchored).is_err() {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error: The pattern contained invalid syntax `{pat}`"
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn validate_props_discriminator_flags(props: &crate::schema::DfdlProps) -> Result<(), SchemaError> {
+    if let Some(ref pat) = props.test_pattern {
+        validate_test_pattern_syntax(pat)?;
+    }
     if props.has_test_attr_and_body {
         return Err(SchemaError::InvalidProperty {
             message: "Schema Definition Error: You may not specify both test attribute and a body expression".into(),

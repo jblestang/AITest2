@@ -226,6 +226,8 @@ pub struct DfdlProps {
     pub test_pattern: Option<String>,
     /// `dfdl:discriminator` body text for choice branch selection.
     pub discriminator_test: Option<String>,
+    /// Whether this test is a `dfdl:discriminator` (which commits choice branches) vs `dfdl:assert`.
+    pub is_discriminator: bool,
     /// XPath prefix bindings in scope on this construct's `dfdl:discriminator` only.
     pub discriminator_xpath_prefixes: Option<alloc::collections::BTreeMap<String, String>>,
     /// Daffodil extension `dfdlx:objectKind` (`bytes` / `chars`).

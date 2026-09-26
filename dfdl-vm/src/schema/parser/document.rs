@@ -1515,6 +1515,11 @@ impl<'a> XsdParser<'a> {
             }
             if !effective_test.is_empty() {
                 if local == "discriminator" {
+                    props.is_discriminator = true;
+                    props.discriminator_xpath_prefixes = Some(scoped);
+                    props.discriminator_test = Some(effective_test.clone());
+                } else if local == "assert" {
+                    props.is_discriminator = false;
                     props.discriminator_xpath_prefixes = Some(scoped);
                     props.discriminator_test = Some(effective_test.clone());
                 }
