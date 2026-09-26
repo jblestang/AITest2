@@ -742,6 +742,13 @@ fn eval_delimiter_if_condition(
 /// Evaluate a runtime `{ if ... then 'a' else 'b' }` delimiter property using decoded siblings.
 /// Evaluate `dfdl:discriminator` XPath subset using look-ahead item value (`.`).
 pub fn eval_discriminator_expression(expr: &str, dot: &str) -> Option<bool> {
+    eval_discriminator_expression_with_err(expr, dot).ok().flatten()
+}
+
+pub fn eval_discriminator_expression_with_err(
+    expr: &str,
+    dot: &str,
+) -> Result<Option<bool>, alloc::string::String> {
     let inner = expr
         .trim()
         .strip_prefix('{')
@@ -749,11 +756,14 @@ pub fn eval_discriminator_expression(expr: &str, dot: &str) -> Option<bool> {
         .unwrap_or(expr)
         .trim();
     if let Some(b) = parse_discriminator_bool(inner) {
-        return Some(b);
+        return Ok(Some(b));
     }
     let lower = inner.to_ascii_lowercase();
     if lower.starts_with("if") {
-        let then_idx = lower.find(" then ")?;
+        let then_idx = match lower.find(" then ") {
+            Some(i) => i,
+            None => return Ok(None),
+        };
         let cond = inner[..then_idx]
             .trim()
             .strip_prefix("if")
@@ -763,32 +773,99 @@ pub fn eval_discriminator_expression(expr: &str, dot: &str) -> Option<bool> {
             .trim_end_matches(')')
             .trim();
         let tail = inner[then_idx + " then ".len()..].trim();
-        let else_idx = tail.to_ascii_lowercase().find(" else ")?;
+        let else_idx = match tail.to_ascii_lowercase().find(" else ") {
+            Some(i) => i,
+            None => return Ok(None),
+        };
         let then_part = tail[..else_idx].trim();
         let else_part = tail[else_idx + " else ".len()..].trim();
-        let cond_ok = eval_discriminator_dot_eq(cond, dot)?;
-        let then_b = parse_discriminator_bool(then_part)?;
-        let else_b = parse_discriminator_bool(else_part)?;
-        return Some(if cond_ok { then_b } else { else_b });
+        let cond_ok = match eval_discriminator_dot_eq_with_err(cond, dot)? {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        let then_b = match parse_discriminator_bool(then_part) {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        let else_b = match parse_discriminator_bool(else_part) {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        return Ok(Some(if cond_ok { then_b } else { else_b }));
     }
-    eval_discriminator_dot_eq(inner, dot)
+    eval_discriminator_dot_eq_with_err(inner, dot)
 }
 
-fn eval_discriminator_dot_eq(cond: &str, dot: &str) -> Option<bool> {
-    let cond = cond.trim();
-    let right_expr = if let Some((_, right)) = cond.split_once(". eq ") {
-        Some(right.trim())
-    } else if let Some((left, right)) = cond.split_once(" eq ") {
-        if left.trim() == "." {
-            Some(right.trim())
-        } else {
-            None
-        }
+fn inspect_type_cast_wrapper(s: &str) -> (bool, &str, &str) {
+    let s = s.trim();
+    if s == "." {
+        return (false, "xs:string", ".");
+    }
+    let inner = if let Some(rest) = s.strip_prefix("xs:") {
+        rest
+    } else if let Some(rest) = s.strip_prefix("fn:") {
+        rest
     } else {
-        None
+        s
+    };
+    if let Some(open) = inner.find('(') {
+        if inner.ends_with(')') {
+            let type_name = &s[..s.find('(').unwrap_or(s.len())];
+            let arg = inner[open + 1..inner.len() - 1].trim();
+            let is_num = matches!(
+                type_name,
+                "xs:int"
+                    | "xs:integer"
+                    | "xs:long"
+                    | "xs:short"
+                    | "xs:byte"
+                    | "xs:unsignedInt"
+                    | "xs:unsignedLong"
+                    | "xs:unsignedShort"
+                    | "xs:unsignedByte"
+                    | "xs:nonNegativeInteger"
+                    | "xs:decimal"
+                    | "xs:float"
+                    | "xs:double"
+                    | "int"
+                    | "integer"
+                    | "long"
+                    | "short"
+                    | "byte"
+            );
+            return (is_num, type_name, arg);
+        }
+    }
+    (false, "xs:string", s)
+}
+
+fn eval_discriminator_dot_eq_with_err(
+    cond: &str,
+    dot: &str,
+) -> Result<Option<bool>, alloc::string::String> {
+    let cond = cond.trim();
+    let (op, left, right) = if let Some((left, right)) = cond.split_once(" eq ") {
+        ("eq", left.trim(), right.trim())
+    } else if let Some((left, right)) = cond.split_once(" ne ") {
+        ("ne", left.trim(), right.trim())
+    } else if let Some((left, right)) = cond.split_once(" lt ") {
+        ("lt", left.trim(), right.trim())
+    } else if let Some((left, right)) = cond.split_once(" gt ") {
+        ("gt", left.trim(), right.trim())
+    } else if let Some((left, right)) = cond.split_once(" le ") {
+        ("le", left.trim(), right.trim())
+    } else if let Some((left, right)) = cond.split_once(" ge ") {
+        ("ge", left.trim(), right.trim())
+    } else if let Some((left, right)) = cond.split_once(" = ") {
+        ("eq", left.trim(), right.trim())
+    } else if let Some((left, right)) = cond.split_once(" != ") {
+        ("ne", left.trim(), right.trim())
+    } else {
+        return Ok(None);
     };
 
-    if let Some(right) = right_expr {
+    let (is_numeric_cast, target_type, arg) = inspect_type_cast_wrapper(left);
+    if arg == "." {
         let lit = if right.starts_with("fn:lower-case(") && right.ends_with(')') {
             let inner_arg = right["fn:lower-case(".len()..right.len() - 1].trim();
             unquote_xpath_string_literal(inner_arg).to_lowercase()
@@ -798,9 +875,46 @@ fn eval_discriminator_dot_eq(cond: &str, dot: &str) -> Option<bool> {
         } else {
             unquote_xpath_string_literal(right)
         };
-        return Some(dot == lit);
+
+        if is_numeric_cast {
+            let dot_num = match dot.parse::<i64>() {
+                Ok(n) => n,
+                Err(_) => {
+                    return Err(alloc::format!(
+                        "Schema Definition Error: Expression evaluation error: value '{dot}' cannot be converted to {target_type} in expression {cond}"
+                    ));
+                }
+            };
+            let lit_num = match lit.parse::<i64>() {
+                Ok(n) => n,
+                Err(_) => {
+                    return Ok(None);
+                }
+            };
+            let cmp_res = match op {
+                "eq" => dot_num == lit_num,
+                "ne" => dot_num != lit_num,
+                "lt" => dot_num < lit_num,
+                "gt" => dot_num > lit_num,
+                "le" => dot_num <= lit_num,
+                "ge" => dot_num >= lit_num,
+                _ => dot_num == lit_num,
+            };
+            return Ok(Some(cmp_res));
+        }
+
+        let cmp_res = match op {
+            "eq" => dot == lit,
+            "ne" => dot != lit,
+            "lt" => dot < lit.as_str(),
+            "gt" => dot > lit.as_str(),
+            "le" => dot <= lit.as_str(),
+            "ge" => dot >= lit.as_str(),
+            _ => dot == lit,
+        };
+        return Ok(Some(cmp_res));
     }
-    None
+    Ok(None)
 }
 
 fn parse_discriminator_bool(s: &str) -> Option<bool> {

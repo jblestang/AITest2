@@ -937,8 +937,10 @@ impl<'a> Decoder<'a> {
             .and_then(|s| s.strip_suffix('}'))
             .unwrap_or(expr)
             .trim();
-        if let Some(b) = crate::schema::eval_discriminator_expression(expr, dot) {
-            return Ok(b);
+        match crate::schema::eval_discriminator_expression_with_err(expr, dot) {
+            Ok(Some(b)) => return Ok(b),
+            Err(e) => return Err(VmError::InvalidValue { message: e }.into()),
+            Ok(None) => {}
         }
         if let Some(b) = self.eval_discriminator_xpath_eq(inner, dot)? {
             return Ok(b);

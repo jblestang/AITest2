@@ -18,7 +18,7 @@ pub use entities::{
     encode_delimiter_for_encoding, encode_framing_property_literal,
     encode_nl_comma_space_separator, encode_property_delimiter,
     encode_property_delimiter_for_encoding, encode_sequence_separator,
-    eval_discriminator_expression, eval_path_indexed_delimiter_expression,
+    eval_discriminator_expression, eval_discriminator_expression_with_err, eval_path_indexed_delimiter_expression,
     eval_runtime_delimiter_expression, expand_entities, expand_entities_for_encoding,
     expand_entities_str, extra_escaped_characters_from_property, is_nl_comma_space_pattern,
     is_zero_length_delimiter, match_delimiter, match_delimiter_opts,
