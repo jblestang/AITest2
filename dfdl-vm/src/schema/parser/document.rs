@@ -148,7 +148,42 @@ pub(crate) struct ParsedRestrictionFacets {
     pub(crate) invalid_fraction_digits: Option<String>,
 }
 
+pub(crate) fn resolve_simple_type_inheritance(doc: &mut SchemaDocument) {
+    let mut changed = true;
+    let mut iterations = 0;
+    while changed && iterations < 50 {
+        changed = false;
+        iterations += 1;
+        let keys: Vec<TypeName> = doc.types.keys().cloned().collect();
+        for key in keys {
+            if let Some(TypeDef::Simple { base, props, .. }) = doc.types.get(&key).cloned() {
+                let base_name = match &base {
+                    SimpleBase::Restriction {
+                        base: RestrictionBase::Named(name),
+                        ..
+                    } => Some(name.clone()),
+                    _ => None,
+                };
+                if let Some(bname) = base_name {
+                    if let Some(base_td) = doc.types.get(&bname) {
+                        let merged = merge_dfdl_props(base_td.props().clone(), props.clone());
+                        if merged != props {
+                            if let Some(td) = doc.types.get_mut(&key) {
+                                if let TypeDef::Simple { props: p, .. } = td {
+                                    *p = merged;
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn backfill_type_format_contexts(doc: &mut SchemaDocument) {
+    resolve_simple_type_inheritance(doc);
     let defaults = doc.format_defaults.props.clone();
     for td in doc.types.values_mut() {
         match td {
@@ -298,13 +333,17 @@ impl<'a> XsdParser<'a> {
         }
         for (k, v) in other.named_formats {
             let local = format_local_from_storage_key(&k);
-            let ns = match kind {
-                SchemaMergeKind::Import => included_target.as_deref(),
-                SchemaMergeKind::Include => included_target
-                    .as_deref()
-                    .or(self.doc.target_namespace.as_deref()),
+            let key = if k.contains('|') && !k.starts_with('|') {
+                k.clone()
+            } else {
+                let ns = match kind {
+                    SchemaMergeKind::Import => included_target.as_deref(),
+                    SchemaMergeKind::Include => included_target
+                        .as_deref()
+                        .or(self.doc.target_namespace.as_deref()),
+                };
+                format_storage_key(local, ns)
             };
-            let key = format_storage_key(local, ns);
             if self.doc.named_formats.contains_key(&key) {
                 if self.doc.named_formats.get(&key) == Some(&v) {
                     if key.starts_with('|') {
@@ -605,6 +644,35 @@ impl<'a> XsdParser<'a> {
                 }
             }
         }
+        for _ in 0..10 {
+            let mut changed = false;
+            let current_keys: Vec<String> = self.doc.named_formats.keys().cloned().collect();
+            for key in current_keys {
+                if let Some(props) = self.doc.named_formats.get(&key).cloned() {
+                    if let Some(ref_name) = &props.format_ref {
+                        if let Some(base) = lookup_named_format_in_document(&self.doc, ref_name) {
+                            let merged = merge_dfdl_props(base, props.clone());
+                            if merged != props {
+                                self.doc.named_formats.insert(key, merged);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(ref_name) = self.doc.format_defaults.props.format_ref.clone() {
+                if let Some(base) = lookup_named_format_in_document(&self.doc, &ref_name) {
+                    let merged = merge_dfdl_props(base, self.doc.format_defaults.props.clone());
+                    if merged != self.doc.format_defaults.props {
+                        self.doc.format_defaults.props = merged;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
         Ok(())
     }
 
@@ -625,11 +693,18 @@ impl<'a> XsdParser<'a> {
         } else {
             self.reader.skip_current_subtree()?;
         }
-        if !self.resolver.register_include(location) {
+        if local == "import" {
+            if !self.resolver.register_import(location) {
+                return Ok(());
+            }
+        } else if !self.resolver.register_include(location) {
             return Ok(());
         }
         let (content, include_dir) = self.resolver.resolve_with_include_dir(location)?;
         let mut child_resolver = self.resolver.clone();
+        if local == "import" {
+            child_resolver.clear_included_for_import();
+        }
         if let Some(dir) = include_dir {
             child_resolver = child_resolver.with_base_dir(dir);
         }
@@ -1039,8 +1114,11 @@ impl<'a> XsdParser<'a> {
                     let local = name.local_name.clone();
                     if local == "annotation" {
                         let (child_attrs, namespace) = self.reader.take_start_element()?;
-                        props =
-                            merge_dfdl_props(props, self.parse_annotation(child_attrs, namespace)?);
+                        let ann_props = self.parse_annotation(child_attrs, namespace)?;
+                        if props.has_property_collision(&ann_props) {
+                            props.has_short_and_long_ref_overlap = true;
+                        }
+                        props = merge_dfdl_props(ann_props, props);
                     } else if allowed.contains(&local.as_str()) {
                         break;
                     } else {
@@ -1176,6 +1254,8 @@ impl<'a> XsdParser<'a> {
                                         "xs:appinfo without source attribute",
                                     ],
                                 );
+                                self.skip_element_body(&local)?;
+                                continue;
                             }
                             let dfdl_props = self.parse_dfdl_element(
                                 &local,
@@ -1187,6 +1267,18 @@ impl<'a> XsdParser<'a> {
                                 && local != "defineEscapeScheme"
                                 && local != "defineVariable"
                             {
+                                if local == "discriminator" {
+                                    if props.discriminator_test.is_some() || props.has_multiple_discriminators {
+                                        props.has_multiple_discriminators = true;
+                                    }
+                                    if props.has_statement_annotation && (props.test_pattern.is_some() || props.assert_int_eq.is_some() || props.assert_message.is_some()) {
+                                        props.has_discriminator_and_assert = true;
+                                    }
+                                } else if local == "assert" {
+                                    if props.discriminator_test.is_some() {
+                                        props.has_discriminator_and_assert = true;
+                                    }
+                                }
                                 props = merge_dfdl_props(props, dfdl_props);
                             }
                         } else if source == Some(DFDL_NS) || source == Some(LEGACY_APPINFO) {
@@ -1231,9 +1323,11 @@ impl<'a> XsdParser<'a> {
     pub(crate) fn finalize_props(&mut self, mut props: DfdlProps) -> DfdlProps {
         let had_format_ref = props.format_ref.is_some();
         if let Some(ref_name) = props.format_ref.take() {
-            if let Some(base) = self.lookup_named_format(&ref_name) {
-                strip_empty_initiator_for_format_ref(&mut props);
+            if let Some(mut base) = self.lookup_named_format(&ref_name) {
+                base.format_ref = None;
                 props = merge_dfdl_props(base, props);
+            } else {
+                props.format_ref = Some(ref_name);
             }
         }
         if had_format_ref && props.terminator.is_none() {
@@ -1311,6 +1405,15 @@ impl<'a> XsdParser<'a> {
             }
             return Ok(props);
         }
+        if local == "newVariableInstance" {
+            self.reader.skip_insignificant_ws()?;
+            if !self.reader.peek_is_end("newVariableInstance")? {
+                self.reader.skip_current_subtree()?;
+            } else {
+                self.expect_end_local("newVariableInstance")?;
+            }
+            return Ok(DfdlProps::default());
+        }
 
         let mut props = props_from_attrs_with_variables(
             &attrs,
@@ -1327,8 +1430,27 @@ impl<'a> XsdParser<'a> {
                     props.assert_message_segments = Some(segments);
                 }
             }
+            if attrs.get("testKind").map(|s| s.as_str()) == Some("pattern") {
+                if let Some(pat) = attrs.get("testPattern").or_else(|| attrs.get("test")) {
+                    props.test_pattern = Some(pat.clone());
+                }
+            }
             if let Some(test) = attrs.get("test") {
                 apply_dfdl_assert_test(&mut props, test);
+            }
+        }
+
+        let format_ref_from_props = props.format_ref.clone();
+        let format_ref_name = attrs
+            .get("ref")
+            .map(|s| s.as_str())
+            .or(format_ref_from_props.as_deref());
+        if let Some(ref_name) = format_ref_name {
+            if let Some(mut base) = self.lookup_named_format(ref_name) {
+                base.format_ref = None;
+                props = merge_dfdl_props(base, props);
+            } else {
+                props.format_ref = Some(ref_name.to_string());
             }
         }
 
@@ -1336,16 +1458,6 @@ impl<'a> XsdParser<'a> {
             let enc_policy_explicit = attrs.keys().any(|k| {
                 local_tag(k) == "encodingErrorPolicy" || k.ends_with(":encodingErrorPolicy")
             });
-            let format_ref_from_props = props.format_ref.clone();
-            let format_ref_name = attrs
-                .get("ref")
-                .map(|s| s.as_str())
-                .or(format_ref_from_props.as_deref());
-            if let Some(ref_name) = format_ref_name {
-                if let Some(base) = self.lookup_named_format(ref_name) {
-                    props = merge_dfdl_props(base, props);
-                }
-            }
             if !enc_policy_explicit {
                 props.encoding_error_policy_defined = false;
             }
@@ -1363,107 +1475,66 @@ impl<'a> XsdParser<'a> {
         }
 
         self.reader.skip_insignificant_ws()?;
-        if local == "element" {
-            if self.reader.peek_is_end("element")? {
-                self.expect_end_local("element")?;
-            } else {
-                loop {
-                    self.reader.skip_insignificant_ws()?;
-                    match self.reader.peek()? {
-                        XmlEvent::EndElement { name } if name.local_name == "element" => {
-                            let _ = self.reader.next_event()?;
-                            break;
-                        }
-                        XmlEvent::EndDocument => return Err(ParseError::UnexpectedEof.into()),
-                        XmlEvent::StartElement { name, .. } => {
-                            let child_local = name.local_name.clone();
-                            let child_prefix = name.prefix.clone();
-                            let child_ns = name.namespace.clone();
-                            let child_attrs = self.reader.take_start_attributes()?;
-                            if Self::is_dfdl_element(
-                                child_prefix.as_deref(),
-                                &child_local,
-                                child_ns.as_deref(),
-                            ) && child_local == "property"
-                            {
-                                let prop_name =
-                                    child_attrs.get("name").cloned().ok_or_else(|| {
-                                        ParseError::InvalidXml {
-                                            message: "dfdl:property missing name".into(),
-                                        }
-                                    })?;
-                                let value = self.read_simple_element_text("property")?;
-                                let mut map = BTreeMap::new();
-                                map.insert(prop_name.clone(), value);
-                                props = merge_dfdl_props(props, props_from_attrs(&map)?);
-                                if local_tag(&prop_name) == "textStringPadCharacter" {
-                                    props.text_string_pad_character_property_form = true;
-                                }
-                                if local_tag(&prop_name) == "textNumberPadCharacter" {
-                                    props.text_number_pad_character_property_form = true;
-                                }
-                            } else {
-                                self.skip_element_body(&child_local)?;
-                            }
-                        }
-                        XmlEvent::Characters(_) | XmlEvent::CData(_) | XmlEvent::Whitespace(_) => {
-                            let _ = self.reader.next_event()?;
-                        }
-                        other => {
-                            return Err(ParseError::InvalidXml {
-                                message: alloc::format!(
-                                    "expected dfdl:element child, found {:?}",
-                                    event_kind(other)
-                                ),
-                            }
-                            .into());
-                        }
-                    }
-                }
-            }
-            return Ok(props);
-        }
         if local == "assert" || local == "discriminator" {
             let scoped = discriminator_xpath_prefix_scope(&attrs, element_namespace.as_ref());
-            let test = if let Some(t) = attrs.get("test") {
-                if self.reader.peek_is_end(local)? {
-                    self.expect_end_local(local)?;
-                } else {
-                    let _ = self.read_simple_element_text(local)?;
-                }
-                t.clone()
-            } else if !self.reader.peek_is_end(local)? {
-                self.read_simple_element_text(local)?
-            } else {
+            let has_test_attr = attrs.contains_key("test");
+            let has_test_pat_attr = attrs.contains_key("testPattern");
+            let test_attr_val = attrs.get("test").cloned();
+            let test_pat_val = attrs.get("testPattern").cloned();
+
+            let body_text = if self.reader.peek_is_end(local)? {
                 self.expect_end_local(local)?;
                 String::new()
+            } else {
+                let txt = self.read_simple_element_text(local)?;
+                txt.trim().to_string()
             };
-            if !test.is_empty() {
+
+            let has_body = !body_text.is_empty();
+
+            if has_test_attr && has_body {
+                props.has_test_attr_and_body = true;
+            }
+            if has_test_pat_attr && has_body {
+                props.has_test_pat_attr_and_body = true;
+            }
+            if has_test_attr && has_test_pat_attr {
+                props.has_test_and_test_pattern = true;
+            }
+
+            let effective_test = if let Some(t) = test_attr_val {
+                t
+            } else {
+                body_text
+            };
+
+            if attrs.get("testKind").map(|s| s.as_str()) == Some("pattern") {
+                if let Some(pat) = test_pat_val.or_else(|| attrs.get("test").cloned()) {
+                    props.test_pattern = Some(pat);
+                }
+            }
+            if !effective_test.is_empty() {
                 if local == "discriminator" {
-                    let trimmed = test.trim().to_string();
                     props.discriminator_xpath_prefixes = Some(scoped);
-                    props.discriminator_test = Some(trimmed);
+                    props.discriminator_test = Some(effective_test.clone());
                 }
-                apply_dfdl_assert_test(&mut props, test.trim());
-                if local == "assert" && props.assert_int_eq.is_none() {
-                    props.discriminator_test = Some(test.trim().to_string());
-                }
+                apply_dfdl_assert_test(&mut props, &effective_test);
             }
             return Ok(props);
         }
-        if local == "sequence" {
-            if props.hidden_group_ref.is_some() {
-                props.hidden_group_ref_from_appinfo_sequence = true;
-            }
-            if self.reader.peek_is_end("sequence")? {
-                self.expect_end_local("sequence")?;
-                return Ok(props);
-            }
-            let mut appinfo_sequence_had_property_child = false;
+
+        if local == "sequence" && props.hidden_group_ref.is_some() {
+            props.hidden_group_ref_from_appinfo_sequence = true;
+        }
+
+        let mut had_property_child = false;
+        if self.reader.peek_is_end(local)? {
+            self.expect_end_local(local)?;
+        } else {
             loop {
                 self.reader.skip_insignificant_ws()?;
                 match self.reader.peek()? {
-                    XmlEvent::EndElement { name } if name.local_name == "sequence" => {
+                    XmlEvent::EndElement { name } if name.local_name == local => {
                         let _ = self.reader.next_event()?;
                         break;
                     }
@@ -1479,20 +1550,31 @@ impl<'a> XsdParser<'a> {
                             child_ns.as_deref(),
                         ) && child_local == "property"
                         {
-                            appinfo_sequence_had_property_child = true;
+                            had_property_child = true;
                             let prop_name = child_attrs.get("name").cloned().ok_or_else(|| {
                                 ParseError::InvalidXml {
                                     message: "dfdl:property missing name".into(),
                                 }
                             })?;
+                            if prop_name == "ref" {
+                                return Err(crate::error::SchemaError::InvalidProperty {
+                                    message: "Schema Definition Error: 'ref' is not a valid value for dfdl:property name. The ref property must be specified as an attribute.".into(),
+                                }.into());
+                            }
                             let value = self.read_simple_element_text("property")?;
                             let mut map = BTreeMap::new();
                             map.insert(prop_name.clone(), value);
                             let child_props = props_from_attrs(&map)?;
-                            if child_props.hidden_group_ref.is_some() {
+                            if local == "sequence" && child_props.hidden_group_ref.is_some() {
                                 props.hidden_group_ref_from_appinfo_sequence = true;
                             }
                             props = merge_dfdl_props(props, child_props);
+                            if local_tag(&prop_name) == "textStringPadCharacter" {
+                                props.text_string_pad_character_property_form = true;
+                            }
+                            if local_tag(&prop_name) == "textNumberPadCharacter" {
+                                props.text_number_pad_character_property_form = true;
+                            }
                         } else {
                             self.skip_element_body(&child_local)?;
                         }
@@ -1503,7 +1585,7 @@ impl<'a> XsdParser<'a> {
                     other => {
                         return Err(ParseError::InvalidXml {
                             message: alloc::format!(
-                                "expected dfdl:sequence child, found {:?}",
+                                "expected dfdl:{local} child, found {:?}",
                                 event_kind(other)
                             ),
                         }
@@ -1511,16 +1593,20 @@ impl<'a> XsdParser<'a> {
                     }
                 }
             }
-            if appinfo_sequence_had_property_child && props.hidden_group_ref.is_some() {
-                props.hidden_group_ref_from_appinfo_sequence = true;
-            }
-            return Ok(props);
         }
-        if self.reader.peek_is_end(local)? {
-            self.expect_end_local(local)?;
-        } else {
-            self.reader.skip_current_subtree()?;
+
+        if local == "sequence" && had_property_child && props.hidden_group_ref.is_some() {
+            props.hidden_group_ref_from_appinfo_sequence = true;
         }
+
+        if local == "format" && !self.in_define_format {
+            let mut format_props = props.clone();
+            format_props.calendar_time_zone_defined = false;
+            self.doc.format_defaults.props =
+                merge_dfdl_props(self.doc.format_defaults.props.clone(), format_props);
+            props.calendar_time_zone_defined = false;
+        }
+
         Ok(props)
     }
 
@@ -1846,6 +1932,15 @@ pub(crate) fn lookup_named_format_in_document(
         let tns_key = format_storage_key(&local, doc.target_namespace.as_deref());
         if let Some(v) = doc.named_formats.get(&tns_key) {
             return Some(v.clone());
+        }
+        let matching: alloc::vec::Vec<_> = doc
+            .named_formats
+            .iter()
+            .filter(|(k, _)| format_local_from_storage_key(k) == local)
+            .map(|(_, v)| v.clone())
+            .collect();
+        if matching.len() == 1 {
+            return matching.into_iter().next();
         }
         return None;
     }

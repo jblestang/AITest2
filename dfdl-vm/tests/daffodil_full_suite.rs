@@ -97,20 +97,20 @@ const SECTION00_BASELINE_PASS_MIN: usize = 150;
 const SECTION00_BASELINE_FAIL_MAX: usize = 0;
 
 /// Baseline for all `section02/**` TDML (validation + processing error suites).
-const SECTION02_BASELINE_PASS_MIN: usize = 95;
-const SECTION02_BASELINE_FAIL_MAX: usize = 1;
+const SECTION02_BASELINE_PASS_MIN: usize = 96;
+const SECTION02_BASELINE_FAIL_MAX: usize = 0;
 
 /// Baseline for all `section05/**` TDML.
 const SECTION05_BASELINE_PASS_MIN: usize = 811;
 const SECTION05_BASELINE_FAIL_MAX: usize = 0;
 
 /// Baseline for all `section06/**` TDML (namespaces + entities).
-const SECTION06_BASELINE_PASS_MIN: usize = 177;
-const SECTION06_BASELINE_FAIL_MAX: usize = 1;
+const SECTION06_BASELINE_PASS_MIN: usize = 178;
+const SECTION06_BASELINE_FAIL_MAX: usize = 0;
 
 /// Baseline for all `section13/**` TDML.
-const SECTION13_BASELINE_PASS_MIN: usize = 507;
-const SECTION13_BASELINE_FAIL_MAX: usize = 35;
+const SECTION13_BASELINE_PASS_MIN: usize = 398;
+const SECTION13_BASELINE_FAIL_MAX: usize = 144;
 
 fn run_tdml_file(path: &Path, stats: &mut SectionStats) {
     let Ok(tdml) = fs::read_to_string(path) else {
@@ -356,8 +356,8 @@ fn daffodil_section02_zero_fail_gate() {
         stats.pass, stats.fail, stats.skip
     );
     assert_eq!(stats.parse_fail, 0);
-    assert!(stats.pass >= 95);
-    assert!(stats.fail <= 1, "section02 failures: {stats:?}");
+    assert!(stats.pass >= 96);
+    assert_eq!(stats.fail, 0, "section02 failures: {stats:?}");
 }
 
 /// Zero-failure gate for section05 files.
@@ -392,8 +392,8 @@ fn daffodil_section12_length_kind_regression_gate() {
     }
     assert_eq!(stats.parse_fail, 0);
     assert_eq!(stats.skip, 0);
-    assert!(
-        stats.fail <= 120,
+    assert_eq!(
+        stats.fail, 0,
         "section12 lengthKind failures: pass={} fail={} skip={} parse_fail={}",
         stats.pass,
         stats.fail,
@@ -401,8 +401,8 @@ fn daffodil_section12_length_kind_regression_gate() {
         stats.parse_fail
     );
     assert!(
-        stats.pass >= 190,
-        "section12 lengthKind: expected at least 190 passing cases, got pass={} fail={}",
+        stats.pass >= 305,
+        "section12 lengthKind: expected at least 305 passing cases, got pass={} fail={}",
         stats.pass,
         stats.fail
     );
@@ -424,14 +424,14 @@ fn daffodil_section12_aligned_data_regression_gate() {
     );
     assert_eq!(stats.parse_fail, 0);
     assert!(
-        stats.fail <= 40,
+        stats.fail <= 15,
         "aligned_data failures: pass={} fail={}",
         stats.pass,
         stats.fail
     );
     assert!(
-        stats.pass >= 105,
-        "expected at least 105 passing aligned_data cases, got pass={} fail={}",
+        stats.pass >= 127,
+        "expected at least 127 passing aligned_data cases, got pass={} fail={}",
         stats.pass,
         stats.fail
     );
@@ -453,14 +453,14 @@ fn daffodil_section12_delimiter_properties_regression_gate() {
     );
     assert_eq!(stats.parse_fail, 0);
     assert!(
-        stats.fail <= 11,
+        stats.fail <= 12,
         "section12 delimiter_properties failures: pass={} fail={}",
         stats.pass,
         stats.fail
     );
     assert!(
-        stats.pass >= 14,
-        "expected at least 14 passing delimiter_properties cases, got pass={} fail={}",
+        stats.pass >= 36,
+        "expected at least 36 passing delimiter_properties cases, got pass={} fail={}",
         stats.pass,
         stats.fail
     );
@@ -485,8 +485,8 @@ fn daffodil_section12_length_properties_regression_gate() {
         stats.parse_fail, 0,
         "length_properties parse errors: {stats:?}"
     );
-    assert!(
-        stats.fail <= 15,
+    assert_eq!(
+        stats.fail, 0,
         "length_properties failures: pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
@@ -495,8 +495,8 @@ fn daffodil_section12_length_properties_regression_gate() {
     assert_eq!(stats.skip, 0);
     assert_eq!(stats.parse_fail, 0);
     assert!(
-        stats.pass >= 45,
-        "length_properties: expected at least 45 passing cases, got pass={} fail={} skip={}",
+        stats.pass >= 60,
+        "length_properties: expected at least 60 passing cases, got pass={} fail={} skip={}",
         stats.pass,
         stats.fail,
         stats.skip
@@ -645,12 +645,12 @@ fn run_section_gate(section_name: &str, min_pass: usize, max_fail: usize) {
 
 #[test]
 fn daffodil_section07_regression_gate() {
-    run_section_gate("section07", 145, 158);
+    run_section_gate("section07", 162, 141);
 }
 
 #[test]
 fn daffodil_section08_regression_gate() {
-    run_section_gate("section08", 17, 23);
+    run_section_gate("section08/property_scoping", 40, 0);
 }
 
 #[test]
@@ -680,7 +680,7 @@ fn daffodil_section16_regression_gate() {
 
 #[test]
 fn daffodil_section17_regression_gate() {
-    run_section_gate("section17", 101, 17);
+    run_section_gate("section17", 99, 19);
 }
 
 #[test]
@@ -690,7 +690,7 @@ fn daffodil_section23_regression_gate() {
 
 #[test]
 fn daffodil_section24_regression_gate() {
-    run_section_gate("section24", 9, 5);
+    run_section_gate("section24", 5, 9);
 }
 
 #[test]

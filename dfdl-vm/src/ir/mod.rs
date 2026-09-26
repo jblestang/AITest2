@@ -333,6 +333,8 @@ pub struct IrProps {
     pub assert_int_eq: Option<i64>,
     /// Addend for `{ . eq dfdl:occursIndex() + N }` / `xs:int(.) eq dfdl:occursIndex()`.
     pub assert_eq_occurs_index_addend: Option<i64>,
+    /// `dfdl:assert testKind="pattern"` pre-parse assertion against the raw input data stream.
+    pub assert_test_pattern: Option<StringId>,
     /// `dfdl:discriminator` body for choice branch filtering.
     pub discriminator_test: Option<StringId>,
     pub facet_assert_message: Option<StringId>,
@@ -525,6 +527,7 @@ impl Default for IrProps {
             facet_check_constraints: false,
             assert_int_eq: None,
             assert_eq_occurs_index_addend: None,
+            assert_test_pattern: None,
             discriminator_test: None,
             facet_assert_message: None,
             facet_assert_message_segments: None,

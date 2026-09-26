@@ -30,6 +30,35 @@ pub fn validate_discriminator_xpath_prefixes(
     Ok(())
 }
 
+fn validate_props_discriminator_flags(props: &crate::schema::DfdlProps) -> Result<(), SchemaError> {
+    if props.has_test_attr_and_body {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: You may not specify both test attribute and a body expression".into(),
+        });
+    }
+    if props.has_test_pat_attr_and_body {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: You may not specify both testPattern attribute and a body expression".into(),
+        });
+    }
+    if props.has_test_and_test_pattern {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: It is a schema definition error if both a test expression and a test pattern are specified".into(),
+        });
+    }
+    if props.has_multiple_discriminators {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: A component cannot have more than one discriminator statement.".into(),
+        });
+    }
+    if props.has_discriminator_and_assert {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: A component cannot have both a discriminator statement and an assert statement.".into(),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_discriminators_in_reachable_schema(
     schema: &SchemaDocument,
     root: &str,
@@ -37,6 +66,7 @@ pub(crate) fn validate_discriminators_in_reachable_schema(
     let mut queue = VecDeque::new();
     let empty = BTreeMap::new();
     if let Some(ge) = crate::schema::get_global_element(schema, root) {
+        validate_props_discriminator_flags(&ge.props)?;
         if let Some(ref test) = ge.props.discriminator_test {
             let prefixes = ge
                 .props
@@ -47,6 +77,7 @@ pub(crate) fn validate_discriminators_in_reachable_schema(
         }
         let td_opt = schema.resolve_type(&ge.type_name);
         if let Some(td) = td_opt {
+            validate_props_discriminator_flags(td.props())?;
             if let TypeDef::Complex { content, .. } = td {
                 enqueue_complex_content_for_discriminator_walk(schema, content, &mut queue)?;
             }
@@ -55,6 +86,7 @@ pub(crate) fn validate_discriminators_in_reachable_schema(
     while let Some(particles) = queue.pop_front() {
         for p in &particles {
             if let Particle::Element(el) = p {
+                validate_props_discriminator_flags(&el.props)?;
                 if let Some(ref test) = el.props.discriminator_test {
                     let prefixes = el
                         .props
@@ -67,6 +99,7 @@ pub(crate) fn validate_discriminators_in_reachable_schema(
                     queue.push_back(alloc::vec![(**child_p).clone()]);
                 }
                 if let Some(td) = schema.resolve_type(&el.type_name) {
+                    validate_props_discriminator_flags(td.props())?;
                     if let TypeDef::Complex { content, .. } = td {
                         enqueue_complex_content_for_discriminator_walk(
                             schema, content, &mut queue,
@@ -74,8 +107,10 @@ pub(crate) fn validate_discriminators_in_reachable_schema(
                     }
                 }
             } else if let Particle::Sequence(seq) = p {
+                validate_props_discriminator_flags(&seq.props)?;
                 queue.push_back(seq.particles.clone());
             } else if let Particle::Choice(ch) = p {
+                validate_props_discriminator_flags(&ch.props)?;
                 queue.push_back(ch.branches.clone());
             }
         }

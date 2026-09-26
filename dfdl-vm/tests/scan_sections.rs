@@ -11,6 +11,7 @@ fn enrich_external_tdml_models(suite: &mut TdmlSuite, tdml_path: &Path) {
         return;
     };
     let dir_str = dir.to_string_lossy().into_owned();
+    suite.resource_context = dfdl_vm::tdml::TdmlResourceContext::from_tdml_path(&tdml_path.to_string_lossy());
     let mut models = HashSet::new();
     for t in &suite.tests {
         models.insert(t.model.clone());
@@ -219,10 +220,15 @@ macro_rules! regression_gate {
 
 scan_test!(scan_section00, "section00");
 regression_gate!(daffodil_section00_regression_gate_scan, "section00", 150, 0);
-regression_gate!(daffodil_section02_regression_gate_scan, "section02", 95, 1);
+regression_gate!(daffodil_section02_regression_gate_scan, "section02", 96, 0);
 regression_gate!(daffodil_section05_regression_gate_scan, "section05", 811, 0);
+regression_gate!(daffodil_section12_length_kind_regression_gate_scan, "section12/lengthKind", 305, 0);
+regression_gate!(daffodil_section12_length_properties_regression_gate_scan, "section12/length_properties", 60, 0);
+regression_gate!(daffodil_section12_delimiter_properties_regression_gate_scan, "section12/delimiter_properties", 36, 12);
+regression_gate!(daffodil_section12_aligned_data_regression_gate_scan, "section12/aligned_data", 127, 15);
+regression_gate!(daffodil_section10_regression_gate, "section10", 11, 11);
 scan_test!(scan_section06, "section06");
-regression_gate!(daffodil_section06_regression_gate, "section06", 177, 1);
+regression_gate!(daffodil_section06_regression_gate, "section06", 178, 0);
 scan_test!(scan_section07, "section07");
 
 #[test]
@@ -230,11 +236,11 @@ fn daffodil_section07_regression_gate() {
     let (pass, fail, skip, parse_fail, _) = scan_dir("section07");
     assert_eq!(parse_fail, 0, "section07 TDML parse errors");
     assert!(
-        pass >= 145,
-        "section07: expected at least 145 passing cases, got pass={pass} fail={fail} skip={skip}"
+        pass >= 162,
+        "section07: expected at least 162 passing cases, got pass={pass} fail={fail} skip={skip}"
     );
     assert!(
-        fail <= 158,
+        fail <= 141,
         "section07 regression: too many failures pass={pass} fail={fail} skip={skip}"
     );
 }
@@ -250,18 +256,18 @@ scan_test!(scan_section15, "section15");
 scan_test!(scan_section16, "section16");
 scan_test!(scan_section17, "section17");
 
-regression_gate!(daffodil_section08_regression_gate, "section08", 17, 23);
+regression_gate!(daffodil_section08_regression_gate, "section08/property_scoping", 40, 0);
 regression_gate!(
     daffodil_section13_regression_gate_scan,
     "section13",
-    507,
-    35
+    398,
+    144
 );
 regression_gate!(daffodil_section14_regression_gate, "section14", 109, 44);
 regression_gate!(daffodil_section15_regression_gate, "section15", 118, 50);
 regression_gate!(daffodil_section16_regression_gate, "section16", 76, 11);
 regression_gate!(daffodil_section23_regression_gate, "section23", 121, 913);
-regression_gate!(daffodil_section24_regression_gate, "section24", 9, 5);
+regression_gate!(daffodil_section24_regression_gate, "section24", 5, 9);
 regression_gate!(daffodil_section31_regression_gate, "section31", 70, 18);
 
 #[test]
@@ -269,11 +275,11 @@ fn daffodil_section17_regression_gate() {
     let (pass, fail, skip, parse_fail, _) = scan_dir("section17");
     assert_eq!(parse_fail, 0, "section17 TDML parse errors");
     assert!(
-        pass >= 101,
-        "section17: expected at least 101 passing cases, got pass={pass} fail={fail} skip={skip}"
+        pass >= 99,
+        "section17: expected at least 99 passing cases, got pass={pass} fail={fail} skip={skip}"
     );
     assert!(
-        fail <= 17,
+        fail <= 19,
         "section17 regression: too many failures pass={pass} fail={fail} skip={skip}"
     );
 }

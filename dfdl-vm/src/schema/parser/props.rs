@@ -81,7 +81,10 @@ pub(crate) fn props_from_attrs_with_variables(
                 });
                 props.length_kind_defined = true;
             }
-            "lengthPattern" => props.length_pattern = Some(value.clone()),
+            "lengthPattern" => {
+                crate::schema::entities::validate_length_pattern(&value).map_err(|e| ParseError::InvalidXml { message: e })?;
+                props.length_pattern = Some(value.clone());
+            }
             "length" => {
                 if value.trim().starts_with('{') {
                     props.length_expr_unparsed = true;
@@ -250,10 +253,18 @@ pub(crate) fn props_from_attrs_with_variables(
                 props.text_number_pad_character = Some(value.clone());
             }
             "textStandardBase" => {
-                props.text_standard_base =
-                    Some(value.parse().map_err(|_| ParseError::InvalidXml {
-                        message: alloc::format!("invalid textStandardBase `{value}`"),
-                    })?);
+                let base: u32 = value.parse().map_err(|_| ParseError::InvalidXml {
+                    message: alloc::format!("Schema Definition Error: textStandardBase invalid base `{value}`"),
+                })?;
+                if !matches!(base, 2 | 8 | 10 | 16) {
+                    return Err(ParseError::InvalidXml {
+                        message: alloc::format!(
+                            "Schema Definition Error: Property textStandardBase must be 2, 8, 10, or 16, got `{value}`"
+                        ),
+                    }
+                    .into());
+                }
+                props.text_standard_base = Some(base);
             }
             "textStringPadCharacter" => {
                 props.text_string_pad_character = Some(value.clone());
@@ -329,6 +340,12 @@ pub(crate) fn props_from_attrs_with_variables(
                     {
                         props.output_value_calc = Some(OutputValueCalc::FnConcat);
                         props.output_value_calc_segments = Some(segments);
+                    } else if let Some((steps, units, addend)) =
+                        parse_output_value_calc_value_length_path(value)
+                    {
+                        props.output_value_calc =
+                            Some(OutputValueCalc::ValueLengthInfosetPath(units, addend));
+                        props.output_value_calc_path = Some(steps);
                     } else {
                         props.output_value_calc_conditional = true;
                         props.output_value_calc_literal =
@@ -909,10 +926,6 @@ pub(crate) fn apply_dfdl_assert_test(props: &mut DfdlProps, test: &str) {
     if let Some(n) = parse_assert_int_eq_test(test) {
         props.assert_int_eq = Some(n);
         return;
-    }
-    let trimmed = test.trim();
-    if !trimmed.is_empty() && !props.facet_check_constraints {
-        props.discriminator_test = Some(trimmed.to_string());
     }
 }
 
@@ -1588,9 +1601,11 @@ pub(crate) fn parse_output_value_calc_value_length_path(
         return None;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
-    let (func_expr, addend_str) = inner.rsplit_once('+')?;
-    let addend = addend_str.trim().parse::<i64>().ok()?;
-    let func_expr = func_expr.trim();
+    let (func_expr, addend) = if let Some((f, a)) = inner.rsplit_once('+') {
+        (f.trim(), a.trim().parse::<i64>().unwrap_or(0))
+    } else {
+        (inner, 0)
+    };
     let rest = func_expr
         .strip_prefix("dfdl:valueLength(")?
         .strip_suffix(')')?;
@@ -1598,7 +1613,10 @@ pub(crate) fn parse_output_value_calc_value_length_path(
     if arg_parts.len() != 2 {
         return None;
     }
-    let path_part = arg_parts[0].trim().strip_prefix("../")?;
+    let mut path_part = arg_parts[0].trim();
+    while let Some(rest) = path_part.strip_prefix("../").or_else(|| path_part.strip_prefix("./")) {
+        path_part = rest.trim();
+    }
     let units_part = arg_parts[1].trim();
     if path_part.is_empty() {
         return None;
@@ -2384,6 +2402,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.length_pattern.is_some() {
         base.length_pattern = overlay.length_pattern;
     }
+    if overlay.test_pattern.is_some() {
+        base.test_pattern = overlay.test_pattern;
+    }
     if overlay.separator_position.is_some() {
         base.separator_position = overlay.separator_position;
     }
@@ -2441,6 +2462,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.format_ref.is_some() {
         base.format_ref = overlay.format_ref;
+    }
+    if overlay.has_short_and_long_ref_overlap {
+        base.has_short_and_long_ref_overlap = true;
     }
     if overlay.prefix_length_type.is_some() {
         base.prefix_length_type = overlay.prefix_length_type;
@@ -2519,6 +2543,15 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.has_statement_annotation {
         base.has_statement_annotation = true;
+    }
+    if overlay.has_multiple_discriminators {
+        base.has_multiple_discriminators = true;
+    }
+    if overlay.has_multiple_discriminators {
+        base.has_multiple_discriminators = true;
+    }
+    if overlay.has_discriminator_and_assert {
+        base.has_discriminator_and_assert = true;
     }
     if overlay.assert_message.is_some() {
         base.assert_message = overlay.assert_message;

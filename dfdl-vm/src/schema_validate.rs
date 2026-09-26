@@ -72,15 +72,18 @@ pub fn validate_compiled_schema(
     types::validate_element_type_qnames(schema, root)?;
     types::validate_simple_restriction_bases(schema, root)?;
     types::validate_name_and_ref(schema)?;
+    types::validate_format_refs_exist(schema, Some(root))?;
     types::validate_element_default_values(schema)?;
     delimiters::validate_escape_separator_distinct(schema, root)?;
     restrictions::validate_invalid_restrictions(schema, root, tunables)?;
     restrictions::validate_max_hex_binary_length(schema, root, tunables)?;
     restrictions::validate_unique_particle_attribution(schema)?;
     delimiters::validate_sequence_separator_encoding(schema, root)?;
+    delimiters::validate_representation_length_units(schema)?;
     discriminators::validate_discriminators_in_reachable_schema(schema, root)?;
     groups::validate_reachable_complex_type_model_groups(schema, root)?;
     groups::validate_group_definitions_no_hidden_group_ref(schema)?;
+    groups::validate_group_ref_property_overlap(schema)?;
     groups::validate_hidden_group_ref_notation(schema)?;
     if let Err(msg) = crate::unparse_validate::validate_hidden_groups_unparse(schema, root) {
         return Err(SchemaError::InvalidProperty { message: msg });

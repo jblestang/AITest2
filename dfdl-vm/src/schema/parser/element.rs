@@ -4,6 +4,14 @@ use crate::schema::{ComplexContent, ElementDecl, Particle, SequenceDecl, TypeDef
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 
+fn strip_particle_assert_props(props: &mut DfdlProps) {
+    props.test_pattern = None;
+    props.discriminator_test = None;
+    props.assert_message = None;
+    props.assert_int_eq = None;
+    props.assert_eq_occurs_index_addend = None;
+}
+
 impl<'a> XsdParser<'a> {
     pub(crate) fn parse_global_element(
         &mut self,
@@ -28,8 +36,10 @@ impl<'a> XsdParser<'a> {
     }
 
     fn schema_context_snapshot(&self) -> (crate::schema::DfdlProps, Option<String>) {
+        let mut props = self.doc.format_defaults.props.clone();
+        props.format_ref = None;
         (
-            self.doc.format_defaults.props.clone(),
+            props,
             self.doc.schema_source_label.clone(),
         )
     }
@@ -68,7 +78,11 @@ impl<'a> XsdParser<'a> {
             }
         }
         let pending = core::mem::take(&mut self.pending_props);
+        let has_form_overlap = pending.has_property_collision(&dfdl_from_attrs);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
+        if has_form_overlap {
+            props.has_short_and_long_ref_overlap = true;
+        }
         merge_occurs(&mut props, &xsd_attrs);
         if !props.max_occurs_specified {
             props.max_occurs_specified = true;
@@ -122,7 +136,8 @@ impl<'a> XsdParser<'a> {
                 });
                 return Ok(());
             }
-            let inline = self.parse_inline_type()?;
+            let mut inline = self.parse_inline_type()?;
+            strip_particle_assert_props(&mut inline.1);
             props = merge_dfdl_props(props, inline.1);
             self.expect_end_local("element")?;
             let (format_context, source_label) = self.schema_context_snapshot();
@@ -149,7 +164,8 @@ impl<'a> XsdParser<'a> {
             props = self.parse_inline_content(props, &["annotation", "simpleType"])?;
             self.reader.skip_insignificant_ws()?;
             if !self.reader.peek_is_end("element")? {
-                let inline = self.parse_inline_type()?;
+                let mut inline = self.parse_inline_type()?;
+                strip_particle_assert_props(&mut inline.1);
                 resolved_type = inline.0;
                 props = merge_dfdl_props(props, inline.1);
             }
@@ -226,7 +242,11 @@ impl<'a> XsdParser<'a> {
         };
         let default_value = xsd_attrs.get("default").cloned();
         let pending = core::mem::take(&mut self.pending_props);
-        let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
+        let has_form_overlap = pending.has_property_collision(&dfdl_from_attrs);
+        let mut props = merge_dfdl_props(pending, dfdl_from_attrs);
+        if has_form_overlap {
+            props.has_short_and_long_ref_overlap = true;
+        }
         merge_occurs(&mut props, &xsd_attrs);
         if !props.max_occurs_specified {
             props.max_occurs_specified = true;
@@ -279,7 +299,8 @@ impl<'a> XsdParser<'a> {
             }
             props =
                 self.parse_inline_content(props, &["complexType", "simpleType", "annotation"])?;
-            let inline = self.parse_inline_type()?;
+            let mut inline = self.parse_inline_type()?;
+            strip_particle_assert_props(&mut inline.1);
             self.expect_end_local("element")?;
             let mut props = self.finalize_props(merge_dfdl_props(props, inline.1));
             if let Some(ref d) = default_value {
@@ -308,7 +329,8 @@ impl<'a> XsdParser<'a> {
             props = self.parse_inline_content(props, &["annotation", "simpleType"])?;
             self.reader.skip_insignificant_ws()?;
             if !self.reader.peek_is_end("element")? {
-                let inline = self.parse_inline_type()?;
+                let mut inline = self.parse_inline_type()?;
+                strip_particle_assert_props(&mut inline.1);
                 resolved_type = inline.0;
                 props = merge_dfdl_props(props, inline.1);
             }
@@ -361,6 +383,7 @@ impl<'a> XsdParser<'a> {
         }
 
         props = self.parse_inline_content(props, &["sequence", "choice", "group", "annotation"])?;
+        strip_particle_assert_props(&mut props);
         let content = self.parse_complex_content()?;
         self.expect_end_local("complexType")?;
 

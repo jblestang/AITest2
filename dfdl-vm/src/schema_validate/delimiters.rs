@@ -2,6 +2,88 @@ use crate::error::SchemaError;
 use crate::schema::{ComplexContent, ElementDecl, GroupDecl, Particle, SchemaDocument, TypeDef};
 use alloc::collections::VecDeque;
 
+pub(crate) fn validate_representation_length_units(
+    schema: &SchemaDocument,
+) -> Result<(), SchemaError> {
+    use crate::schema::{LengthUnits, Representation};
+
+    fn effective_rep_and_lu(
+        schema: &SchemaDocument,
+        props: &crate::schema::DfdlProps,
+        type_name: Option<&crate::schema::TypeName>,
+    ) -> (Option<Representation>, Option<LengthUnits>) {
+        let eff_type = type_name.and_then(|tn| schema.effective_simple_type_props(tn));
+        let is_string = type_name.is_some_and(|tn| {
+            if crate::schema::BuiltinType::from_xsd(tn.as_str()) == Some(crate::schema::BuiltinType::String) {
+                return true;
+            }
+            if let Some(crate::schema::TypeDef::Simple { base, .. }) = schema.resolve_type(tn) {
+                return schema.builtin_for_simple_base(&base) == Some(crate::schema::BuiltinType::String);
+            }
+            false
+        });
+
+        let mut rep = props
+            .representation
+            .or_else(|| eff_type.as_ref().and_then(|p| p.representation));
+        let mut lu = props
+            .length_units
+            .or_else(|| eff_type.as_ref().and_then(|p| p.length_units));
+
+        if rep.is_none() || lu.is_none() {
+            let ref_name = props
+                .format_ref
+                .as_ref()
+                .or_else(|| eff_type.as_ref().and_then(|p| p.format_ref.as_ref()));
+            if let Some(rname) = ref_name {
+                if let Some(fmt) = crate::schema::lookup_named_format_in_document(schema, rname) {
+                    if rep.is_none() {
+                        rep = fmt.representation;
+                    }
+                    if lu.is_none() {
+                        lu = fmt.length_units;
+                    }
+                }
+            }
+        }
+
+        if rep.is_none() && is_string {
+            rep = Some(Representation::Text);
+        }
+        if rep.is_none() {
+            rep = schema.format_defaults.props.representation;
+        }
+        if lu.is_none() {
+            lu = schema.format_defaults.props.length_units;
+        }
+
+        (rep, lu)
+    }
+
+    for ge in schema.global_elements.values() {
+        if matches!(schema.resolve_type(&ge.type_name), Some(crate::schema::TypeDef::Complex { .. })) {
+            continue;
+        }
+        let (rep, lu) = effective_rep_and_lu(schema, &ge.props, Some(&ge.type_name));
+        if rep == Some(Representation::Binary) && lu == Some(LengthUnits::Characters) {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error: Property lengthUnits cannot be 'characters' when representation is 'binary'".into(),
+            });
+        }
+    }
+    for (_name, td) in &schema.types {
+        let props = td.props();
+        if props.representation == Some(Representation::Binary)
+            && props.length_units == Some(LengthUnits::Characters)
+        {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error: Property lengthUnits cannot be 'characters' when representation is 'binary'".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn effective_encoding_name(props: &crate::schema::DfdlProps) -> Option<&str> {
     props.encoding.as_deref()
 }

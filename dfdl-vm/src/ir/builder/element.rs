@@ -384,6 +384,9 @@ pub(crate) fn validate_implicit_text_length(
     _element_name: Option<&str>,
     strings: Option<&StringPool>,
 ) -> Result<()> {
+    if let Some(strs) = strings {
+        super::validate::validate_prefixed_character_encoding(kind, props, strs)?;
+    }
     if crate::ir::ir_props_has_input_value_calc(props)
         || crate::ir::ir_props_has_output_value_calc(props)
     {
@@ -487,6 +490,7 @@ pub(crate) fn validate_implicit_text_length(
         }
     }
     super::validate::validate_bit_order_byte_order(kind, props)?;
+    super::validate::validate_text_standard_base_applicable(kind, props)?;
     if props.representation == Representation::Binary && props.length_kind == LengthKind::Explicit {
         if (kind == ValueKind::Float || kind == ValueKind::Double) && props.length_expr_unparsed {
             return Err(SchemaError::InvalidProperty {

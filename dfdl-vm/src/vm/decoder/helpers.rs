@@ -423,7 +423,14 @@ pub(crate) fn wrap_root(name: &str, value: DfdlValue) -> DfdlValue {
                 ("sequence", DfdlValue::Sequence(seq)) => DfdlValue::sequence(seq.fields.clone()),
                 _ => {
                     let mut fields = BTreeMap::new();
-                    fields.insert(discriminator, *value);
+                    match *value {
+                        DfdlValue::Sequence(seq) if seq.fields.contains_key(&discriminator) => {
+                            fields = seq.fields;
+                        }
+                        v => {
+                            fields.insert(discriminator, v);
+                        }
+                    }
                     DfdlValue::sequence(fields)
                 }
             };

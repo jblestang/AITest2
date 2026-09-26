@@ -628,8 +628,7 @@ impl<'a> Decoder<'a> {
                         }
                     }
                     let mut element_stops = stop_sequences.to_vec();
-                    if props.separator.is_some()
-                        || crate::vm::runtime::has_non_empty_terminator(&props, self.ctx.strings())?
+                    if crate::vm::runtime::has_non_empty_terminator(&props, self.ctx.strings())?
                     {
                         element_stops.push(&props);
                     }
@@ -651,6 +650,12 @@ impl<'a> Decoder<'a> {
                     self.enclosing.borrow_mut().pop();
                     self.consume_terminator(&props, cursor)?;
                     consume_element_trailing_framing(cursor, &props)?;
+                    self.validate_particle_discriminator(
+                        &props,
+                        ValueKind::Complex,
+                        "",
+                        Some(cursor),
+                    )?;
                     Ok(wrap_named(
                         self.ctx.strings().get(*name)?,
                         inner,
@@ -677,7 +682,14 @@ impl<'a> Decoder<'a> {
                         *kind,
                         &props,
                     )?;
-                    self.finalize_ivc_value(value, *kind, &props)
+                    let res = self.finalize_ivc_value(value, *kind, &props)?;
+                    self.validate_particle_discriminator(
+                        &props,
+                        *kind,
+                        &dfdl_value_dispatch_string(&res),
+                        Some(cursor),
+                    )?;
+                    Ok(res)
                 } else if props.input_value_calc_path.is_some() {
                     let ivc_element = Some(crate::xml_util::local_name_str(
                         self.ctx.strings().get(*name)?,
@@ -690,7 +702,14 @@ impl<'a> Decoder<'a> {
                         &self.ctx.program.tunables,
                         ivc_element,
                     )?;
-                    self.finalize_ivc_value(value, *kind, &props)
+                    let res = self.finalize_ivc_value(value, *kind, &props)?;
+                    self.validate_particle_discriminator(
+                        &props,
+                        *kind,
+                        &dfdl_value_dispatch_string(&res),
+                        Some(cursor),
+                    )?;
+                    Ok(res)
                 } else if props.input_value_calc_segments.is_some() {
                     let sib_snap = self.xpath_siblings_snapshot();
                     let value = eval_input_value_calc_concat(
@@ -700,8 +719,15 @@ impl<'a> Decoder<'a> {
                         &self.ctx.program.tunables,
                         &self.ctx.program.root_element,
                     )?;
-                    self.finalize_ivc_value(value, *kind, &props)
-                } else if props.input_value_calc.is_some() {
+                    let res = self.finalize_ivc_value(value, *kind, &props)?;
+                    self.validate_particle_discriminator(
+                        &props,
+                        *kind,
+                        &dfdl_value_dispatch_string(&res),
+                        Some(cursor),
+                    )?;
+                    Ok(res)
+                } else if props.input_value_calc.is_some() || props.input_value_calc_literal.is_some() {
                     let ivc_element = Some(crate::xml_util::local_name_str(
                         self.ctx.strings().get(*name)?,
                     ));
@@ -715,7 +741,14 @@ impl<'a> Decoder<'a> {
                         &self.runtime_variables.borrow(),
                         ivc_element,
                     )?;
-                    self.finalize_ivc_value(value, *kind, &props)
+                    let res = self.finalize_ivc_value(value, *kind, &props)?;
+                    self.validate_particle_discriminator(
+                        &props,
+                        *kind,
+                        &dfdl_value_dispatch_string(&res),
+                        Some(cursor),
+                    )?;
+                    Ok(res)
                 } else {
                     if props.nillable
                         && crate::vm::runtime::try_consume_nillable_element_nil(

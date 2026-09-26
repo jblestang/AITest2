@@ -346,8 +346,9 @@ impl<'a> Decoder<'a> {
                         initiator_alt = Some(alt);
                     }
                 }
+                self.validate_particle_discriminator(props, crate::ir::ValueKind::String, "", Some(cursor))?;
                 if props.sequence_kind == SequenceKind::Unordered {
-                    if props.separator.is_none() {
+                    if props.separator.is_none() || self.unordered_sequence_uses_initiator_scan(children) {
                         let res = self.decode_unordered_unseparated_sequence(
                             node_id,
                             children,
@@ -674,9 +675,26 @@ impl<'a> Decoder<'a> {
         let mut map = BTreeMap::new();
         if self.unordered_sequence_uses_initiator_scan(children) {
             let mut seq_siblings = siblings.cloned().unwrap_or_default();
+            let mut first = true;
+            let mut local_stops = stop_sequences.to_vec();
+            if props.separator.is_some() {
+                local_stops.push(props);
+            }
             loop {
                 if cursor.is_empty() {
                     break;
+                }
+                if !first && props.separator.is_some() {
+                    let mut dummy_infix_prefix = Vec::new();
+                    let _ = self.consume_separator(
+                        props,
+                        cursor,
+                        1,
+                        2,
+                        &mut dummy_infix_prefix,
+                        &local_stops,
+                        false,
+                    );
                 }
                 let mut matched_any = false;
                 for &child in children {
@@ -689,15 +707,16 @@ impl<'a> Decoder<'a> {
                     if !self.initiator_present_at_cursor(cursor, child_props)? {
                         continue;
                     }
+                    first = false;
                     let value = self.decode_one_element_occurrence(
                         child,
                         cursor,
                         has_following_sibling,
-                        Some(props),
+                        None,
                         Some(&seq_siblings),
                         content_scope_bytes,
                         pattern_text_frame,
-                        stop_sequences,
+                        &local_stops,
                     )?;
                     let name_id = match self.ctx.program.node(child)? {
                         IrNode::Element { name, .. } => *name,
@@ -954,7 +973,7 @@ impl<'a> Decoder<'a> {
         children: &[u32],
         props: &IrProps,
         cursor: &mut Cursor<'_>,
-        has_following_sibling: bool,
+        _has_following_sibling: bool,
         _parent_sequence: Option<&IrProps>,
         siblings: Option<&BTreeMap<String, SiblingState>>,
         content_scope_bytes: Option<usize>,
@@ -1056,13 +1075,14 @@ impl<'a> Decoder<'a> {
                 let is_repeating = child_props.occurs_max.map(|m| m > 1).unwrap_or(false);
                 let is_first_occurrence = !map.contains_key(&el_name);
 
+                let child_has_following_sibling = idx + 1 < children.len();
                 if self.initiated_content_uses_initiator_discriminator(child_props)
                     && is_first_occurrence
                 {
                     let value = self.decode_single_element(
                         child,
                         cursor,
-                        has_following_sibling,
+                        child_has_following_sibling,
                         Some(props),
                         Some(&seq_siblings),
                         content_scope_bytes,
@@ -1096,7 +1116,7 @@ impl<'a> Decoder<'a> {
                     self.decode_single_element(
                         child,
                         cursor,
-                        has_following_sibling,
+                        child_has_following_sibling,
                         Some(props),
                         Some(&seq_siblings),
                         content_scope_bytes,
@@ -1108,7 +1128,7 @@ impl<'a> Decoder<'a> {
                     self.decode_one_element_occurrence(
                         child,
                         cursor,
-                        has_following_sibling,
+                        child_has_following_sibling,
                         Some(props),
                         Some(&seq_siblings),
                         content_scope_bytes,
@@ -1306,12 +1326,28 @@ impl<'a> Decoder<'a> {
                 stop_sequences,
                 false,
             ) {
-                Ok(_) => {
-                    return Err(VmError::InvalidValue {
-                        message: "Parse Error: element with maxOccurs 0 matched non-empty data"
-                            .into(),
+                Ok(val) => {
+                    let is_empty = cursor.pos == saved.pos || match &val {
+                        DfdlValue::String(s) => s.text.is_empty(),
+                        DfdlValue::HexBinary(b) => b.is_empty(),
+                        DfdlValue::Null => true,
+                        _ => false,
+                    };
+                    if !is_empty {
+                        return Err(VmError::InvalidValue {
+                            message: "Parse Error: element with maxOccurs 0 matched non-empty data"
+                                .into(),
+                        }
+                        .into());
                     }
-                    .into());
+                    *cursor = saved;
+                    if !self.try_consume_treat_as_absent_separator(
+                        props,
+                        parent_sequence,
+                        cursor,
+                    )? {
+                        break;
+                    }
                 }
                 Err(e) if is_element_absent(&e) || is_pattern_length_mismatch(&e) => {
                     *cursor = saved;

@@ -159,6 +159,12 @@ pub struct DfdlProps {
     pub fill_byte_raw: Option<String>,
     /// Named format reference from `dfdl:ref` (resolved during parse).
     pub format_ref: Option<String>,
+    pub has_short_and_long_ref_overlap: bool,
+    pub has_discriminator_and_assert: bool,
+    pub has_multiple_discriminators: bool,
+    pub has_test_and_test_pattern: bool,
+    pub has_test_attr_and_body: bool,
+    pub has_test_pat_attr_and_body: bool,
     /// Type name for prefixed length fields (`dfdl:prefixLengthType`).
     pub prefix_length_type: Option<TypeName>,
     pub prefix_includes_prefix_length: Option<bool>,
@@ -215,6 +221,8 @@ pub struct DfdlProps {
     pub assert_int_eq: Option<i64>,
     /// `{ xs:int(.) eq dfdl:occursIndex() (+ addend) }` element assert.
     pub assert_eq_occurs_index_addend: Option<i64>,
+    /// `dfdl:assert testKind="pattern"` regex pattern.
+    pub test_pattern: Option<String>,
     /// `dfdl:discriminator` body text for choice branch selection.
     pub discriminator_test: Option<String>,
     /// XPath prefix bindings in scope on this construct's `dfdl:discriminator` only.
@@ -258,6 +266,44 @@ pub struct DfdlProps {
     /// `dfdl:newVariableInstance` ref → optional defaultValue pairs from annotations on this construct.
     pub new_variable_instances:
         alloc::vec::Vec<(alloc::string::String, Option<alloc::string::String>)>,
+}
+
+impl DfdlProps {
+    pub fn has_format_props(&self) -> bool {
+        self.representation.is_some()
+            || self.byte_order.is_some()
+            || self.bit_order.is_some()
+            || self.length_kind.is_some()
+            || self.length.is_some()
+            || self.length_units.is_some()
+            || self.encoding.is_some()
+            || self.text_trim_kind.is_some()
+            || self.text_pad_kind.is_some()
+            || self.format_ref.is_some()
+            || self.occurs_count_kind.is_some()
+            || self.nil_kind.is_some()
+            || self.input_value_calc.is_some()
+            || self.output_value_calc.is_some()
+    }
+
+    pub fn has_property_collision(&self, other: &Self) -> bool {
+        (self.format_ref.is_some() && other.format_ref.is_some())
+            || (self.representation.is_some() && other.representation.is_some())
+            || (self.byte_order.is_some() && other.byte_order.is_some())
+            || (self.bit_order.is_some() && other.bit_order.is_some())
+            || (self.length_kind.is_some() && other.length_kind.is_some())
+            || (self.length.is_some() && other.length.is_some())
+            || (self.length_units.is_some() && other.length_units.is_some())
+            || (self.encoding.is_some() && other.encoding.is_some())
+            || (self.text_trim_kind.is_some() && other.text_trim_kind.is_some())
+            || (self.text_pad_kind.is_some() && other.text_pad_kind.is_some())
+            || (self.occurs_count_kind.is_some() && other.occurs_count_kind.is_some())
+            || (self.nil_kind.is_some() && other.nil_kind.is_some())
+            || (self.input_value_calc.is_some() && other.input_value_calc.is_some())
+            || (self.output_value_calc.is_some() && other.output_value_calc.is_some())
+            || self.has_short_and_long_ref_overlap
+            || other.has_short_and_long_ref_overlap
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -522,6 +568,15 @@ pub enum TypeDef {
         format_context: DfdlProps,
         source_label: Option<String>,
     },
+}
+
+impl TypeDef {
+    pub fn props(&self) -> &DfdlProps {
+        match self {
+            TypeDef::Simple { props, .. } => props,
+            TypeDef::Complex { props, .. } => props,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

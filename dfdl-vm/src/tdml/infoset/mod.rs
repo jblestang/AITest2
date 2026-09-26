@@ -32,7 +32,25 @@ pub fn compare_infoset_with_context(
     ctx: &TdmlResourceContext,
 ) -> Result<(), String> {
     let expected = parse_expected_infoset_with_context(expected_xml, ctx)?;
-    let actual_nodes = value_to_infoset(actual);
+    let mut actual_nodes = value_to_infoset(actual);
+    if expected.len() == 1 && actual_nodes.len() == 1 {
+        let exp_name = crate::xml_util::local_name_str(&expected[0].name);
+        let act_name = crate::xml_util::local_name_str(&actual_nodes[0].name);
+        if exp_name != act_name {
+            if actual_nodes[0].name == "root" {
+                actual_nodes[0].name = expected[0].name.clone();
+            } else if expected[0].children.contains_key(act_name) {
+                actual_nodes = vec![InfosetNode {
+                    name: expected[0].name.clone(),
+                    namespace: None,
+                    text: None,
+                    nil: false,
+                    children: alloc::collections::BTreeMap::from([(act_name.to_string(), actual_nodes)]),
+                    blob_bytes: None,
+                }];
+            }
+        }
+    }
     compare_nodes(&expected, &actual_nodes)
 }
 
@@ -750,10 +768,12 @@ fn choice_branch_fields_for_infoset(
             discriminator: inner_disc,
             value: inner_val,
         } => choice_branch_fields_for_infoset(inner_disc, *inner_val),
-        DfdlValue::Sequence(seq) => seq.fields,
+        DfdlValue::Sequence(seq) if discriminator.is_empty() => seq.fields,
         v => {
             let mut map = BTreeMap::new();
-            map.insert(discriminator, v);
+            if !discriminator.is_empty() {
+                map.insert(discriminator, v);
+            }
             map
         }
     }

@@ -7,7 +7,8 @@ mod resolver;
 mod union_validate;
 
 pub(crate) use parser::{
-    lookup_named_escape_scheme_in_document, merge_dfdl_props, resolve_type_qname_in_schema,
+    lookup_named_escape_scheme_in_document, lookup_named_format_in_document, merge_dfdl_props,
+    normalize_qname, resolve_type_qname_in_schema, unique_global_element_by_local,
 };
 
 pub use ast::*;

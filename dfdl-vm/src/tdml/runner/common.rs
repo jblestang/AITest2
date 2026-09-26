@@ -106,8 +106,10 @@ pub(crate) fn error_messages_match(expected: &[String], err: &str) -> bool {
         if OPTIONAL.contains(&fl.as_str())
             || fl.starts_with("line ")
             || fl.starts_with("column ")
+            || fl.starts_with("schema context:")
             || fl.ends_with(".xsd")
             || fl.ends_with(".xml")
+            || fl.ends_with(".tdml")
         {
             return true;
         }

@@ -30,7 +30,7 @@ pub(crate) fn validate_prefixed_character_encoding(
         })?;
     if encoding.eq_ignore_ascii_case("utf-8") {
         return Err(SchemaError::InvalidProperty {
-            message: "Schema Definition Error. Unparsing dfdl:lengthKind='prefixed' with dfdl:lengthUnits='characters' cannot be used with variable-width encoding".into(),
+            message: "Schema Definition Error. Unparsing dfdl:lengthKind='prefixed' with dfdl:lengthUnits='characters' on complex element cannot be used with variable-width encoding".into(),
         }
         .into());
     }
@@ -785,6 +785,40 @@ pub(crate) fn validate_bit_order_byte_order(kind: ValueKind, props: &IrProps) ->
     Ok(())
 }
 
+pub(crate) fn validate_text_standard_base_applicable(kind: ValueKind, props: &IrProps) -> Result<()> {
+    use crate::schema::Representation;
+    if props.representation == Representation::Text && props.text_standard_base != 10 {
+        let is_integer_kind = matches!(
+            kind,
+            ValueKind::Byte
+                | ValueKind::Short
+                | ValueKind::Int
+                | ValueKind::Long
+                | ValueKind::Integer
+                | ValueKind::UnsignedByte
+                | ValueKind::UnsignedShort
+                | ValueKind::UnsignedInt
+        );
+        if !is_integer_kind {
+            let type_str = match kind {
+                ValueKind::Float => "xs:float",
+                ValueKind::Double => "xs:double",
+                ValueKind::Decimal => "xs:decimal",
+                _ => "non-integer type",
+            };
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: Property textStandardBase (dfdl:textStandardBase=\"{}\") cannot be specified on {}",
+                    props.text_standard_base,
+                    type_str
+                ),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
 
 pub(crate) fn calendar_first_day_of_week_iso(raw: &str) -> u32 {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -1018,15 +1052,76 @@ pub(crate) fn validate_prefix_length_type(
     kind: ValueKind,
     strings: &StringPool,
 ) -> Result<()> {
-    if props.length_kind.is_some()
-        && !matches!(
-            props.length_kind,
-            Some(LengthKind::Explicit | LengthKind::Implicit | LengthKind::Prefixed)
-        )
-    {
+    if !matches!(
+        prefix_props.length_kind,
+        LengthKind::Explicit | LengthKind::Implicit | LengthKind::Prefixed
+    ) {
         return Err(SchemaError::InvalidProperty {
             message: alloc::format!(
                 "Schema Definition Error. dfdl:prefixLengthType ex:{} specifies invalid dfdl:lengthKind",
+                type_name.as_str()
+            ),
+        }
+        .into());
+    }
+    if prefix_props.length_kind == LengthKind::Explicit && prefix_props.length.is_none() {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. dfdl:prefixLengthType ex:{} specifies explicit dfdl:lengthKind expression",
+                type_name.as_str()
+            ),
+        }
+        .into());
+    }
+    if prefix_props.output_value_calc.is_some() || prefix_props.output_value_calc_conditional {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. dfdl:prefixLengthType ex:{} specifies dfdl:outputValueCalc",
+                type_name.as_str()
+            ),
+        }
+        .into());
+    }
+    if prefix_props.initiator.is_some() {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. dfdl:prefixLengthType ex:{} specifies dfdl:initiator",
+                type_name.as_str()
+            ),
+        }
+        .into());
+    }
+    if prefix_props.terminator.is_some() {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. dfdl:prefixLengthType ex:{} specifies dfdl:terminator",
+                type_name.as_str()
+            ),
+        }
+        .into());
+    }
+    if prefix_props.alignment != 1 {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. dfdl:prefixLengthType ex:{} specifies dfdl:alignment",
+                type_name.as_str()
+            ),
+        }
+        .into());
+    }
+    if prefix_props.leading_skip != 0 {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. dfdl:prefixLengthType ex:{} specifies dfdl:leadingSkip",
+                type_name.as_str()
+            ),
+        }
+        .into());
+    }
+    if prefix_props.trailing_skip != 0 {
+        return Err(SchemaError::InvalidProperty {
+            message: alloc::format!(
+                "Schema Definition Error. dfdl:prefixLengthType ex:{} specifies dfdl:trailingSkip",
                 type_name.as_str()
             ),
         }

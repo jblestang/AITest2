@@ -904,7 +904,13 @@ fn parse_non_base10_signed_string(
     if digits.is_empty() {
         return Err(unable_parse_from_text(type_name, s));
     }
-    let abs = u128::from_str_radix(digits, base).map_err(|_| unable_parse_from_text(type_name, s))?;
+    let abs = u128::from_str_radix(digits, base).map_err(|_| {
+        crate::error::VmError::InvalidValue {
+            message: alloc::format!(
+                "Parse Error. Unable to parse {type_name} from '{s}' for base-{base}: invalid characters in digit representation."
+            ),
+        }
+    })?;
     if sign < 0 {
         Ok(alloc::format!("-{abs}"))
     } else {
@@ -919,8 +925,13 @@ fn parse_u128_radix_base10(
     field_text: &str,
 ) -> Result<u128, crate::error::VmError> {
     if base != 10 {
-        return u128::from_str_radix(digits, base)
-            .map_err(|_| unable_parse_from_text(type_name, field_text));
+        return u128::from_str_radix(digits, base).map_err(|_| {
+            crate::error::VmError::InvalidValue {
+                message: alloc::format!(
+                    "Parse Error. Unable to parse {type_name} from '{field_text}' for base-{base}: invalid characters in digit representation."
+                ),
+            }
+        });
     }
     if digits.is_empty() {
         return Err(unable_parse_from_text(type_name, field_text));
@@ -1434,13 +1445,20 @@ pub(crate) fn read_text_scalar(
             let len = if pat == "." && normalize_encoding_name(enc) == Some("utf-8") {
                 read_one_utf8_char(cursor.data, cursor.pos, policy)?.1
             } else {
-                match_length_pattern(&cursor.data[cursor.pos..], pat).ok_or(
-                    VmError::InvalidValue {
-                        message: alloc::format!("pattern `{pat}` mismatch"),
-                    },
-                )?
+                match_length_pattern(&cursor.data[cursor.pos..], pat).unwrap_or(0)
             };
-            cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?
+            let bytes = cursor.read_bytes(len).ok_or(VmError::UnexpectedEof)?;
+            if policy == crate::schema::EncodingErrorPolicy::Error {
+                let enc_norm = normalize_encoding_name(enc);
+                if enc_norm.is_none() || enc_norm == Some("utf-8") || enc_norm == Some("us-ascii") {
+                    if core::str::from_utf8(&bytes).is_err() {
+                        return Err(VmError::InvalidValue {
+                            message: "encoding error policy error: malformed encoding byte sequence".into(),
+                        });
+                    }
+                }
+            }
+            bytes
         }
         LengthKind::Implicit => {
             if is_numeric_text_kind(kind) {

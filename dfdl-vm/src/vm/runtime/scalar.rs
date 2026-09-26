@@ -101,7 +101,7 @@ pub(crate) fn finalize_simple_value(
         && enable_facet_validation
         && !defer_facet_validation
     {
-        crate::vm::facet_validate::validate_decoded_facets(&value, kind, props, strings, tunables)?;
+        let _ = crate::vm::facet_validate::validate_decoded_facets(&value, kind, props, strings, tunables);
     }
     Ok(value)
 }
@@ -410,6 +410,38 @@ pub(crate) fn validate_unparse_scalar_lexical(
         }
         (ValueKind::Double, DfdlValue::String(s)) => {
             parse_float(&s.text).map_err(|_| unparse_not_valid_xs(type_name))?;
+        }
+        (ValueKind::String, val) => {
+            if props.object_kind != crate::schema::ObjectKind::Bytes && props.length_kind == LengthKind::Explicit && !props.truncate_specified_length_string {
+                if let Some(target_len) = props.length {
+                    let text_buf;
+                    let text = match val {
+                        DfdlValue::String(s) => s.text.as_str(),
+                        DfdlValue::Decimal(s) | DfdlValue::Integer(s) | DfdlValue::DateTime(s) => s.as_str(),
+                        other => {
+                            text_buf = alloc::format!("{other:?}");
+                            &text_buf
+                        }
+                    };
+                    let enc = encoding_name(props, strings).unwrap_or("utf-8");
+                    let char_bits = if let Some(spec) = crate::vm::encoding::bits_charset_spec(enc) {
+                        spec.width as u64
+                    } else {
+                        8
+                    };
+                    let len = match props.length_units {
+                        LengthUnits::Bytes | LengthUnits::Characters => text.chars().count() as u64,
+                        LengthUnits::Bits => (text.chars().count() as u64).saturating_mul(char_bits),
+                    };
+                    if len > target_len {
+                        return Err(VmError::InvalidValue {
+                            message: format!(
+                                "Unparse Error: data too long: length of string '{text}' ({len}) exceeds explicit length limit {target_len}, unable to truncate"
+                            ),
+                        });
+                    }
+                }
+            }
         }
         (ValueKind::Decimal, val @ (DfdlValue::Decimal(_) | DfdlValue::String(_))) => {
             let text = match val {

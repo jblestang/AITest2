@@ -671,9 +671,7 @@ pub(crate) fn eval_input_value_calc(
 ) -> Result<DfdlValue> {
     let calc = props
         .input_value_calc
-        .ok_or_else(|| VmError::InvalidValue {
-            message: "missing inputValueCalc".into(),
-        })?;
+        .unwrap_or(InputValueCalc::StringLiteral);
     if calc == InputValueCalc::SchemaVariable {
         let name_id = props
             .input_value_calc_literal

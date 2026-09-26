@@ -1416,7 +1416,7 @@ fn collect_ovc_elements_in_sequence_subtree(
                 name,
                 kind,
                 props,
-                child,
+                child: _,
                 ..
             } => {
                 if props.output_value_calc_conditional && props.output_value_calc_literal.is_none()
@@ -1438,9 +1438,6 @@ fn collect_ovc_elements_in_sequence_subtree(
                         kind: *kind,
                         props: props.clone(),
                     });
-                }
-                if let Some(inner) = child {
-                    collect_ovc_elements_in_subtree(enc, *inner, out)?;
                 }
             }
             IrNode::Sequence {
@@ -1552,11 +1549,13 @@ fn precompute_output_values<'a>(
                     }
                 };
             let computed = ovc_value_for_element_kind(entry.kind, computed);
-            let prev = effective.get(&entry.name_key);
+            let target_key = map_has_local_key(&effective, &entry.local)
+                .unwrap_or_else(|| entry.name_key.clone());
+            let prev = effective.get(&target_key);
             if prev == Some(&computed) {
                 continue;
             }
-            effective.insert(entry.name_key.clone(), computed);
+            effective.insert(target_key, computed);
             progress = true;
         }
         if !progress {
@@ -1567,7 +1566,7 @@ fn precompute_output_values<'a>(
         if ovc_deferred_to_encode_occurrence(&entry.props) {
             continue;
         }
-        if effective.get(&entry.name_key).is_none() {
+        if map_has_local_key(&effective, &entry.local).is_none() {
             let elem = &entry.local;
             return Err(VmError::InvalidValue {
                 message: alloc::format!(
@@ -2291,7 +2290,14 @@ fn measure_value_length(
     } else {
         node_id
     };
-    enc.encode_node(encode_id, value, &mut buf, &mut bit_count, encode_scope)?;
+    if enc.encode_node(encode_id, value, &mut buf, &mut bit_count, encode_scope).is_err() {
+        let bytes = value_byte_length(value)?;
+        return match units {
+            LengthUnits::Bits => Ok(bytes.saturating_mul(8)),
+            LengthUnits::Bytes => Ok(bytes),
+            LengthUnits::Characters => Ok(bytes),
+        };
+    }
     let value_bits = if let Ok(IrNode::Element {
         props, child: None, ..
     }) = enc.ctx.program.node(encode_id)

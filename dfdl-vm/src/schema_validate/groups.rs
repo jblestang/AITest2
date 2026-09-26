@@ -99,6 +99,75 @@ pub(crate) fn validate_group_definitions_no_hidden_group_ref(
     Ok(())
 }
 
+pub(crate) fn validate_group_ref_property_overlap(
+    schema: &SchemaDocument,
+) -> Result<(), SchemaError> {
+    fn check_particle(schema: &SchemaDocument, p: &Particle) -> Result<(), SchemaError> {
+        match p {
+            Particle::Sequence(seq) => {
+                for child in &seq.particles {
+                    check_particle(schema, child)?;
+                }
+            }
+            Particle::Choice(ch) => {
+                for child in &ch.branches {
+                    check_particle(schema, child)?;
+                }
+            }
+            Particle::GroupRef(gr) => {
+                let local = gr.name.rsplit(':').next().unwrap_or(gr.name.as_str());
+                if let Some(target) = schema.groups.get(local) {
+                    let target_props = target.props();
+                    if (gr.props.separator.is_some() && target_props.separator.is_some())
+                        || (gr.props.separator_position.is_some()
+                            && target_props.separator_position.is_some())
+                        || (gr.props.initiator.is_some() && target_props.initiator.is_some())
+                        || (gr.props.terminator.is_some() && target_props.terminator.is_some())
+                    {
+                        return Err(SchemaError::InvalidProperty {
+                            message: "Schema Definition Error: Overlap. A property cannot be specified on both a group reference and the sequence/choice definition inside the group.".into(),
+                        });
+                    }
+                }
+            }
+            Particle::Element(_) => {}
+        }
+        Ok(())
+    }
+    for td in schema.types.values() {
+        if let TypeDef::Complex { content, .. } = td {
+            match content {
+                ComplexContent::Sequence(seq) => {
+                    for child in &seq.particles {
+                        check_particle(schema, child)?;
+                    }
+                }
+                ComplexContent::Choice(ch) => {
+                    for child in &ch.branches {
+                        check_particle(schema, child)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for group in schema.groups.values() {
+        match group {
+            GroupDecl::Sequence(seq) => {
+                for child in &seq.particles {
+                    check_particle(schema, child)?;
+                }
+            }
+            GroupDecl::Choice(ch) => {
+                for child in &ch.branches {
+                    check_particle(schema, child)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_reachable_complex_type_model_groups(
     schema: &SchemaDocument,
     root: &str,

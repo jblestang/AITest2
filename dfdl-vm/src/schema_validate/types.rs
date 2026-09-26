@@ -9,6 +9,153 @@ use alloc::vec::Vec;
 
 const XSD_NS: &str = "http://www.w3.org/2001/XMLSchema";
 
+pub(crate) fn validate_format_refs_exist(
+    schema: &SchemaDocument,
+    root: Option<&str>,
+) -> Result<(), SchemaError> {
+    fn check_props(
+        schema: &SchemaDocument,
+        props: &crate::schema::DfdlProps,
+        context: Option<&str>,
+    ) -> Result<(), SchemaError> {
+        if props.has_short_and_long_ref_overlap {
+            return Err(SchemaError::InvalidProperty {
+                message: "Schema Definition Error: Both long form and short form ref attribute found".into(),
+            });
+        }
+        let mut visited = alloc::collections::BTreeSet::new();
+        let mut curr = props.format_ref.clone();
+        while let Some(ref_name) = curr {
+            if !visited.insert(ref_name.clone()) {
+                return Err(SchemaError::InvalidProperty {
+                    message: alloc::format!("Schema Definition Error: Circular format reference cycle detected for '{ref_name}'"),
+                });
+            }
+            if let Some(target) = crate::schema::lookup_named_format_in_document(schema, &ref_name) {
+                curr = target.format_ref.clone();
+            } else {
+                let msg = if let Some(ctx) = context {
+                    alloc::format!("Schema Definition Error: Format '{ref_name}' not found for element '{ctx}'")
+                } else {
+                    alloc::format!("Schema Definition Error: Format '{ref_name}' not found")
+                };
+                return Err(SchemaError::InvalidProperty { message: msg });
+            }
+        }
+        Ok(())
+    }
+
+    fn check_particle(
+        schema: &SchemaDocument,
+        particle: &Particle,
+        visited_types: &mut alloc::collections::BTreeSet<TypeName>,
+    ) -> Result<(), SchemaError> {
+        match particle {
+            Particle::Element(el) => {
+                check_props(schema, &el.props, Some(&el.name))?;
+                if let Some(child) = &el.particle {
+                    check_particle(schema, child, visited_types)?;
+                }
+                check_type(schema, &el.type_name, visited_types)?;
+            }
+            Particle::Sequence(seq) => {
+                check_props(schema, &seq.props, None)?;
+                for p in &seq.particles {
+                    check_particle(schema, p, visited_types)?;
+                }
+            }
+            Particle::Choice(ch) => {
+                check_props(schema, &ch.props, None)?;
+                for p in &ch.branches {
+                    check_particle(schema, p, visited_types)?;
+                }
+            }
+            Particle::GroupRef(gr) => {
+                check_props(schema, &gr.props, Some(&gr.name))?;
+                if let Some(gd) = schema.groups.get(&gr.name) {
+                    check_props(schema, gd.props(), Some(&gr.name))?;
+                    match gd {
+                        crate::schema::GroupDecl::Sequence(seq) => {
+                            for p in &seq.particles {
+                                check_particle(schema, p, visited_types)?;
+                            }
+                        }
+                        crate::schema::GroupDecl::Choice(ch) => {
+                            for p in &ch.branches {
+                                check_particle(schema, p, visited_types)?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_type(
+        schema: &SchemaDocument,
+        type_name: &TypeName,
+        visited_types: &mut alloc::collections::BTreeSet<TypeName>,
+    ) -> Result<(), SchemaError> {
+        if !visited_types.insert(type_name.clone()) {
+            return Ok(());
+        }
+        if let Some(td) = schema.types.get(type_name) {
+            check_props(schema, td.props(), None)?;
+            if let TypeDef::Complex { content, .. } = td {
+                match content {
+                    ComplexContent::Sequence(seq) => {
+                        check_props(schema, &seq.props, None)?;
+                        for p in &seq.particles {
+                            check_particle(schema, p, visited_types)?;
+                        }
+                    }
+                    ComplexContent::Choice(ch) => {
+                        check_props(schema, &ch.props, None)?;
+                        for p in &ch.branches {
+                            check_particle(schema, p, visited_types)?;
+                        }
+                    }
+                    ComplexContent::Empty => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_element(
+        schema: &SchemaDocument,
+        ge: &crate::schema::GlobalElement,
+        visited_types: &mut alloc::collections::BTreeSet<TypeName>,
+    ) -> Result<(), SchemaError> {
+        check_props(schema, &ge.props, Some(&ge.name))?;
+        check_type(schema, &ge.type_name, visited_types)?;
+        Ok(())
+    }
+
+    check_props(schema, &schema.format_defaults.props, None)?;
+
+    if let Some(r) = root {
+        let root_norm = crate::schema::normalize_qname(r);
+        if let Some(ge) = crate::schema::get_global_element(schema, &root_norm)
+            .or_else(|| crate::schema::unique_global_element_by_local(schema, &root_norm))
+        {
+            let mut visited_types = alloc::collections::BTreeSet::new();
+            check_element(schema, ge, &mut visited_types)?;
+        }
+    } else {
+        let mut visited_types = alloc::collections::BTreeSet::new();
+        for ge in schema.global_elements.values() {
+            check_element(schema, ge, &mut visited_types)?;
+        }
+    }
+
+    for props in schema.named_formats.values() {
+        check_props(schema, props, None)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn type_qname_uses_xsd_namespace(
     schema: &SchemaDocument,
     type_attr: &str,

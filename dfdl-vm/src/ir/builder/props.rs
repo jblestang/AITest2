@@ -446,6 +446,9 @@ pub(crate) fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|p| strings.intern(p.clone()));
     }
+    if let Some(ref pat) = props.test_pattern {
+        base.assert_test_pattern = Some(strings.intern(pat.clone()));
+    }
     if let Some(v) = props.separator_position {
         base.separator_position = v;
     }
@@ -1024,6 +1027,9 @@ pub(crate) fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.assert_eq_occurs_index_addend.is_some() {
         out.assert_eq_occurs_index_addend = overlay.assert_eq_occurs_index_addend;
     }
+    if overlay.assert_test_pattern.is_some() {
+        out.assert_test_pattern = overlay.assert_test_pattern;
+    }
     if overlay.discriminator_test.is_some() {
         out.discriminator_test = overlay.discriminator_test;
     }
@@ -1046,11 +1052,7 @@ pub(crate) fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.escape_scheme.is_some() {
         out.escape_scheme = overlay.escape_scheme.clone();
     }
-    if (out.input_value_calc.is_some()
-        || out.input_value_calc_sibling.is_some()
-        || out.input_value_calc_segments.is_some()
-        || out.input_value_calc_path.is_some()
-        || out.input_value_calc_expression.is_some())
+    if crate::ir::ir_props_has_input_value_calc(&out)
         && out.length.is_none()
         && matches!(out.length_kind, LengthKind::Explicit | LengthKind::Fixed)
     {
@@ -1285,6 +1287,7 @@ pub(crate) fn finalize_element_props(
     schema: Option<&SchemaDocument>,
     element_name: Option<&str>,
 ) -> Result<IrProps> {
+    super::validate::validate_prefixed_character_encoding(kind, &ir, strings)?;
     if kind == ValueKind::Complex
         && (ir.output_value_calc.is_some() || ir.output_value_calc_conditional)
     {
@@ -1426,11 +1429,7 @@ pub(crate) fn finalize_element_props(
             }
         }
     }
-    let has_ivc = ir.input_value_calc.is_some()
-        || ir.input_value_calc_sibling.is_some()
-        || ir.input_value_calc_segments.is_some()
-        || ir.input_value_calc_path.is_some()
-        || ir.input_value_calc_expression.is_some();
+    let has_ivc = crate::ir::ir_props_has_input_value_calc(&ir);
     if ir.length_kind == LengthKind::Explicit
         && ir.length.is_none()
         && !ir.length_expr_unparsed
@@ -1545,6 +1544,9 @@ pub(crate) fn element_props_for_complex_content(element_props: &DfdlProps) -> Df
         choice_dispatch_path: element_props.choice_dispatch_path.clone(),
         choice_dispatch_literal: element_props.choice_dispatch_literal.clone(),
         choice_dispatch_sibling_int: element_props.choice_dispatch_sibling_int.clone(),
+        encoding: element_props.encoding.clone(),
+        encoding_error_policy: element_props.encoding_error_policy,
+        initiated_content: element_props.initiated_content,
         ..DfdlProps::default()
     }
 }

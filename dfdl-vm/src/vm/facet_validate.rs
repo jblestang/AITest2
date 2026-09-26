@@ -29,6 +29,8 @@ pub fn facet_validation_error(
 /// Facets that may disambiguate choice branches during parse (not min/max/pattern).
 pub fn needs_choice_discriminator_facet_check(props: &IrProps) -> bool {
     !props.facet_enumeration.is_empty()
+        || !props.facet_pattern_groups.is_empty()
+        || props.assert_test_pattern.is_some()
 }
 
 pub fn validate_choice_discriminator_facets(
@@ -37,24 +39,42 @@ pub fn validate_choice_discriminator_facets(
     props: &IrProps,
     strings: &StringPool,
 ) -> Result<(), VmError> {
+    let unwrapped = match value {
+        DfdlValue::Choice { value, .. } => value.as_ref(),
+        other => other,
+    };
+    if !props.facet_pattern_groups.is_empty() {
+        if let DfdlValue::String(s) = unwrapped {
+            for id in &props.facet_pattern_groups {
+                let pat = strings.get(*id)?;
+                if !pattern_group_matches(s.text.as_str(), pat) {
+                    return Err(facet_validation_error(
+                        props,
+                        strings,
+                        "failed facet checks due to: pattern".to_string(),
+                    ));
+                }
+            }
+        }
+    }
     if props.facet_enumeration.is_empty() {
         return Ok(());
     }
     match kind {
         ValueKind::String => {
-            if let DfdlValue::String(s) = value {
+            if let DfdlValue::String(s) = unwrapped {
                 validate_enumeration_lexical(s.text.as_str(), props, strings)?;
             }
         }
         ValueKind::Integer => {
-            if let DfdlValue::Integer(lex) = value {
+            if let DfdlValue::Integer(lex) = unwrapped {
                 if let Ok(n) = lex.parse::<i64>() {
                     validate_enumeration_numeric(n, props, strings)?;
                 }
             }
         }
         _ => {
-            if let Some(n) = numeric_value_i64(value) {
+            if let Some(n) = numeric_value_i64(unwrapped) {
                 validate_enumeration_numeric(n, props, strings)?;
             }
         }
@@ -634,7 +654,7 @@ fn validate_string_facets(
     Ok(())
 }
 
-fn pattern_group_matches(text: &str, or_pattern: &str) -> bool {
+pub(crate) fn pattern_group_matches(text: &str, or_pattern: &str) -> bool {
     use regex_automata::meta::Regex;
     use regex_automata::{Anchored, Input};
     let bytes = text.as_bytes();
@@ -650,6 +670,26 @@ fn pattern_group_matches(text: &str, or_pattern: &str) -> bool {
         return re.is_match(input);
     }
     match_length_pattern(bytes, pat).is_some_and(|len| len == bytes.len())
+}
+
+pub(crate) fn pattern_prefix_matches(text: &str, or_pattern: &str) -> bool {
+    use regex_automata::meta::Regex;
+    use regex_automata::{Anchored, Input};
+    let bytes = text.as_bytes();
+    let pat = or_pattern.trim();
+    if pat.is_empty() {
+        return true;
+    }
+    let anchored = format!(r"\A(?:{pat})");
+    let re_res = Regex::new(&anchored);
+    if let Err(ref e) = re_res {
+        eprintln!("[REGEX ERR] pat={pat} err={e:?}");
+    }
+    if let Ok(re) = re_res {
+        let input = Input::new(bytes).anchored(Anchored::Yes);
+        return re.is_match(input);
+    }
+    match_length_pattern(bytes, pat).is_some()
 }
 
 fn validate_digit_facets(

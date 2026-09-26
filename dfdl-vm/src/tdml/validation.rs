@@ -74,15 +74,6 @@ fn walk_particle(
     raw_facet_errors: bool,
     errors: &mut Vec<String>,
 ) -> Result<(), ()> {
-    if full_xerces_style {
-        let node_kind_str = match program.node(node_id) {
-            Ok(IrNode::Element { name, kind, .. }) => format!("Element({:?}, kind={:?})", program.strings.get(*name).unwrap_or("?"), kind),
-            Ok(IrNode::Sequence { .. }) => "Sequence".to_string(),
-            Ok(IrNode::Choice { .. }) => "Choice".to_string(),
-            _ => "?".to_string(),
-        };
-        eprintln!("WALK node_id={node_id} ({node_kind_str}), value={value:?}");
-    }
     match program.node(node_id).map_err(|_| ())? {
         IrNode::Element {
             name,
@@ -125,9 +116,6 @@ fn walk_particle(
                     &program.tunables,
                     full_xerces_style,
                 );
-                if full_xerces_style {
-                    eprintln!("FACET CHECK ename={ename:?}, value={value:?}, res={res:?}");
-                }
                 if let Err(e) = res {
                     let detail = e.to_string();
                     if raw_facet_errors {
@@ -851,7 +839,11 @@ fn format_xerces_float_bound(v: f64) -> alloc::string::String {
 }
 
 fn resolve_root_field_value<'a>(root_value: &'a DfdlValue, root_element: &str) -> &'a DfdlValue {
-    if let Some(seq) = root_value.sequence_value() {
+    let mut val = root_value;
+    while let DfdlValue::Choice { value: inner, .. } = val {
+        val = inner.as_ref();
+    }
+    if let Some(seq) = val.sequence_value() {
         if let Some(inner) = seq.fields.get(root_element) {
             return inner;
         }
@@ -863,7 +855,7 @@ fn resolve_root_field_value<'a>(root_value: &'a DfdlValue, root_element: &str) -
             }
         }
     }
-    root_value
+    val
 }
 
 fn value_lexical(value: &DfdlValue, kind: ValueKind) -> Option<&str> {

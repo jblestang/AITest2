@@ -776,15 +776,29 @@ pub fn eval_discriminator_expression(expr: &str, dot: &str) -> Option<bool> {
 
 fn eval_discriminator_dot_eq(cond: &str, dot: &str) -> Option<bool> {
     let cond = cond.trim();
-    if let Some((_, right)) = cond.split_once(". eq ") {
-        let lit = unquote_xpath_string_literal(right.trim());
-        return Some(dot == lit);
-    }
-    if let Some((left, right)) = cond.split_once(" eq ") {
+    let right_expr = if let Some((_, right)) = cond.split_once(". eq ") {
+        Some(right.trim())
+    } else if let Some((left, right)) = cond.split_once(" eq ") {
         if left.trim() == "." {
-            let lit = unquote_xpath_string_literal(right.trim());
-            return Some(dot == lit);
+            Some(right.trim())
+        } else {
+            None
         }
+    } else {
+        None
+    };
+
+    if let Some(right) = right_expr {
+        let lit = if right.starts_with("fn:lower-case(") && right.ends_with(')') {
+            let inner_arg = right["fn:lower-case(".len()..right.len() - 1].trim();
+            unquote_xpath_string_literal(inner_arg).to_lowercase()
+        } else if right.starts_with("fn:upper-case(") && right.ends_with(')') {
+            let inner_arg = right["fn:upper-case(".len()..right.len() - 1].trim();
+            unquote_xpath_string_literal(inner_arg).to_uppercase()
+        } else {
+            unquote_xpath_string_literal(right)
+        };
+        return Some(dot == lit);
     }
     None
 }
@@ -1371,12 +1385,14 @@ pub fn delimiter_alternatives(pattern: &str) -> alloc::vec::Vec<alloc::string::S
     if pattern.contains("||") {
         let mut out = alloc::vec::Vec::new();
         for part in pattern.split("||") {
-            out.extend(split_whitespace_delimiter_alternatives(part.trim()));
+            let trimmed = part.trim();
+            if !trimmed.is_empty() {
+                out.extend(split_whitespace_delimiter_alternatives(trimmed));
+            }
         }
-        if out.is_empty() {
-            return alloc::vec![pattern.to_string()];
+        if !out.is_empty() {
+            return out;
         }
-        return out;
     }
     if should_split_whitespace_alternatives(pattern) {
         return split_whitespace_delimiter_alternatives(pattern);
@@ -2230,6 +2246,12 @@ fn validate_length_pattern_syntax(pat: &str) -> Option<String> {
         if bytes[i] != b'{' {
             i += 1;
             continue;
+        }
+        if i >= 2 && bytes[i - 2] == b'\\' && (bytes[i - 1] == b'p' || bytes[i - 1] == b'P') {
+            if let Some(end) = bytes[i..].iter().position(|&b| b == b'}') {
+                i += end + 1;
+                continue;
+            }
         }
         let start = i;
         i += 1;

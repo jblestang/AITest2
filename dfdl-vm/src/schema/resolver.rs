@@ -12,6 +12,8 @@ pub struct SchemaResolver {
     base_dirs: Vec<String>,
     /// Canonical include keys already merged (prevents infinite `xs:include` recursion).
     included: BTreeSet<String>,
+    /// Active schema locations currently being imported (prevents import cycle recursion).
+    active_imports: BTreeSet<String>,
     /// Shared across cloned resolvers so nested includes do not reuse `__inline_*` type names.
     inline_type_counter: Rc<Cell<usize>>,
 }
@@ -71,6 +73,7 @@ impl SchemaResolver {
             bundled,
             base_dirs: Vec::new(),
             included: BTreeSet::new(),
+            active_imports: BTreeSet::new(),
             inline_type_counter: Rc::new(Cell::new(0)),
         }
     }
@@ -144,6 +147,16 @@ impl SchemaResolver {
     pub fn register_include(&mut self, location: &str) -> bool {
         let key = self.include_dedup_key(location);
         self.included.insert(key)
+    }
+
+    /// Register an import; returns `false` if this location is currently in the active import chain.
+    pub fn register_import(&mut self, location: &str) -> bool {
+        let key = self.include_dedup_key(location);
+        self.active_imports.insert(key)
+    }
+
+    pub fn clear_included_for_import(&mut self) {
+        self.included.clear();
     }
 
     pub fn with_base_dir(mut self, dir: impl Into<String>) -> Self {

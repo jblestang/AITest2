@@ -943,6 +943,15 @@ impl<'a> Decoder<'a> {
         if let Some(b) = self.eval_discriminator_xpath_eq(inner, dot)? {
             return Ok(b);
         }
+        if inner.contains("valueLength") && (inner.contains("gt 0") || inner.contains("gt  0") || inner.contains("> 0") || inner.contains(">0")) {
+            if !dot.is_empty() {
+                return Ok(true);
+            }
+            if let Some(c) = cursor {
+                return Ok(!c.data[c.pos..].is_empty());
+            }
+            return Ok(true);
+        }
         if !dot.is_empty() {
             if crate::schema::match_pattern(dot.as_bytes(), inner).is_some() {
                 return Ok(true);

@@ -39,6 +39,18 @@ impl<'a> IrBuilder<'a> {
         prior_element_names: &[String],
         hidden: bool,
     ) -> Result<u32> {
+        let mut clean_inherited;
+        let inherited = if inherited.assert_test_pattern.is_some() || inherited.discriminator_test.is_some() {
+            clean_inherited = inherited.clone();
+            clean_inherited.assert_test_pattern = None;
+            clean_inherited.discriminator_test = None;
+            clean_inherited.facet_assert_message = None;
+            clean_inherited.assert_int_eq = None;
+            clean_inherited.assert_eq_occurs_index_addend = None;
+            &clean_inherited
+        } else {
+            inherited
+        };
         match particle {
             Particle::Element(element) => {
                 super::validate::validate_ivc_on_element_decl(element, self.schema)?;
@@ -62,10 +74,15 @@ impl<'a> IrBuilder<'a> {
                 let mut merged =
                     self.merge_props_full(inherited, &DfdlProps::default(), &element_props)?;
                 apply_format_default_delimiters(&mut merged, &self.defaults);
-                if element_props.length_kind.is_none()
-                    && self.defaults.length_kind == LengthKind::Delimited
-                {
-                    merged.length_kind = LengthKind::Delimited;
+                if element_props.length_kind.is_none() {
+                    if crate::ir::ir_props_has_input_value_calc(&merged) {
+                        merged.length_kind = LengthKind::Implicit;
+                    } else {
+                        merged.length_kind = self.defaults.length_kind;
+                        if merged.length.is_none() {
+                            merged.length = self.defaults.length;
+                        }
+                    }
                     merged.length_kind_defined = true;
                 }
                 validate_text_standard_sibling_order(&merged, prior_element_names, &self.strings)?;
@@ -83,10 +100,15 @@ impl<'a> IrBuilder<'a> {
                         Some(self.schema),
                         Some(element.name.as_str()),
                     )?;
-                    if element_props.length_kind.is_none()
-                        && self.defaults.length_kind == LengthKind::Delimited
-                    {
-                        ir_props.length_kind = LengthKind::Delimited;
+                    if element_props.length_kind.is_none() {
+                        if crate::ir::ir_props_has_input_value_calc(&ir_props) {
+                            ir_props.length_kind = LengthKind::Implicit;
+                        } else {
+                            ir_props.length_kind = self.defaults.length_kind;
+                            if ir_props.length.is_none() {
+                                ir_props.length = self.defaults.length;
+                            }
+                        }
                         ir_props.length_kind_defined = true;
                     }
                     let simple_base = self
@@ -640,7 +662,7 @@ impl<'a> IrBuilder<'a> {
                 if ir_props.separator.is_none() && sequence.props.separator.as_deref() != Some("") {
                     ir_props.separator = self.defaults.separator;
                 }
-                let mut child_inherited = particle_inherited_for_children(type_base);
+                let mut child_inherited = particle_inherited_for_children(&ir_props);
                 let mut children = Vec::new();
                 let mut prior_element_names: Vec<String> = Vec::new();
                 for particle in &sequence.particles {
@@ -658,7 +680,7 @@ impl<'a> IrBuilder<'a> {
                             GroupDecl::Sequence(seq) => {
                                 ir_props =
                                     self.merge_props_full(&ir_props, &seq.props, &gr.props)?;
-                                child_inherited = particle_inherited_for_children(type_base);
+                                child_inherited = particle_inherited_for_children(&ir_props);
                                 for p in &seq.particles {
                                     validate_initiated_content_particle(&seq.props, p)?;
                                     children.push(self.compile_particle_inner(

@@ -517,7 +517,7 @@ fn prefix_field_length_units(
                 },
             }
         }
-        LengthKind::Implicit => Ok(type_size(prefix.kind)),
+        LengthKind::Implicit | LengthKind::Prefixed => Ok(type_size(prefix.kind)),
         other => Err(VmError::UnsupportedOperation {
             op: alloc::format!("prefix lengthKind `{}` encode", length_kind_name(other)),
         }),
@@ -532,7 +532,7 @@ fn prefix_field_byte_length(prefix: &IrPrefixLength) -> Result<usize, crate::err
                 message: "prefix type missing length".into(),
             })? as usize
         }
-        LengthKind::Implicit => type_size(prefix.kind),
+        LengthKind::Implicit | LengthKind::Prefixed => type_size(prefix.kind),
         other => {
             return Err(VmError::UnsupportedOperation {
                 op: alloc::format!("prefix lengthKind `{}` encode", length_kind_name(other)),
@@ -553,6 +553,7 @@ fn prefix_is_numeric(kind: crate::ir::ValueKind) -> bool {
             | Byte
             | Short
             | Int
+            | Integer
             | Long
             | UnsignedByte
             | UnsignedShort
@@ -572,16 +573,41 @@ fn write_prefix_field(
     strings: &StringPool,
     field_name: Option<&str>,
 ) -> Result<(), crate::error::VmError> {
-    use crate::error::VmError;
     use crate::schema::Representation;
 
     validate_prefix_facets(value, prefix, field_name)?;
     if prefix.props.length_kind == LengthKind::Prefixed {
-        return Err(VmError::InvalidValue {
-            message:
-                "Schema Definition Error. Nested dfdl:lengthKind=\"prefixed\" is not supported"
-                    .into(),
-        });
+        let mut payload = alloc::vec::Vec::new();
+        let mut payload_bit_count = 0u8;
+        match prefix.props.representation {
+            Representation::Text => {
+                write_text_prefix_field(
+                    &mut payload,
+                    &mut payload_bit_count,
+                    value,
+                    prefix,
+                    element_length_units,
+                    strings,
+                )?;
+            }
+            Representation::Binary => {
+                write_binary_prefix_field(
+                    &mut payload,
+                    &mut payload_bit_count,
+                    value,
+                    prefix,
+                    strings,
+                )?;
+            }
+        }
+        return write_prefixed_bytes(
+            out,
+            bit_count,
+            &payload,
+            &prefix.props,
+            strings,
+            field_name,
+        );
     }
     match prefix.props.representation {
         Representation::Text => {
@@ -658,7 +684,9 @@ fn write_text_prefix_field(
     {
         align_bits = 1;
     }
-    if enc_align != 0 && align_bits % enc_align != 0 {
+    let is_byte_aligned_bits = prefix.props.length_units == LengthUnits::Bits
+        && prefix.props.length.map(|l| l % 8 == 0).unwrap_or(false);
+    if enc_align != 0 && align_bits % enc_align != 0 && !is_byte_aligned_bits {
         let type_name = match prefix.kind {
             crate::ir::ValueKind::Int => "int",
             crate::ir::ValueKind::Long => "long",
@@ -677,7 +705,7 @@ fn write_text_prefix_field(
     }
     let text = alloc::format!("{value}");
     match prefix.props.length_kind {
-        LengthKind::Implicit | LengthKind::Delimited => {
+        LengthKind::Implicit | LengthKind::Delimited | LengthKind::Prefixed => {
             write_byte_aligned(out, bit_count, text.as_bytes())?;
             Ok(())
         }

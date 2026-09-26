@@ -275,6 +275,31 @@ impl<'a> Decoder<'a> {
         dot: &str,
         cursor: Option<&Cursor<'_>>,
     ) -> Result<()> {
+        // dfdl:assert testKind="pattern" — check the parsed value against the
+        // assertion pattern.  This is distinct from xs:pattern restriction facets
+        // which are handled in validate_decoded_facets.
+        if let Some(id) = props.assert_test_pattern {
+            let pat = self.ctx.strings().get(id)?;
+            let text_to_check = if !dot.is_empty() {
+                dot
+            } else if let Some(c) = cursor {
+                core::str::from_utf8(&c.data[c.pos..]).unwrap_or("")
+            } else {
+                ""
+            };
+            if !crate::vm::facet_validate::pattern_prefix_matches(text_to_check, pat) {
+                let msg = self.eval_facet_assert_message(props)?;
+                let reason = if !msg.is_empty() {
+                    msg
+                } else {
+                    alloc::format!("Assertion failed for dfdl:assert testKind=\"pattern\" testPattern=\"{pat}\"")
+                };
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("Parse Error. Assertion failed: {reason}"),
+                }
+                .into());
+            }
+        }
         let Some(id) = props.discriminator_test else {
             return Ok(());
         };
@@ -709,7 +734,11 @@ impl<'a> Decoder<'a> {
                         && cursor.absolute_bit_index() == saved.absolute_bit_index()
                         && !cursor.is_frame_consumed()
                     {
-                        if matches!(v, DfdlValue::Null) {
+                        let is_absent_empty = matches!(v, DfdlValue::Null)
+                            || (v.as_str().is_some_and(str::is_empty)
+                                && props.empty_element_parse_policy
+                                    == EmptyElementParsePolicy::TreatAsAbsent);
+                        if is_absent_empty {
                             if props.empty_element_parse_policy
                                 == EmptyElementParsePolicy::TreatAsAbsent
                             {
