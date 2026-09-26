@@ -1271,14 +1271,15 @@ impl<'a> XsdParser<'a> {
                                     if props.has_discriminator || props.has_multiple_discriminators {
                                         props.has_multiple_discriminators = true;
                                     }
-                                    props.has_discriminator = true;
-                                    if props.has_statement_annotation && props.discriminator_test.is_some() && !props.is_discriminator {
+                                    if props.has_assert {
                                         props.has_discriminator_and_assert = true;
                                     }
+                                    props.has_discriminator = true;
                                 } else if local == "assert" {
                                     if props.has_discriminator {
                                         props.has_discriminator_and_assert = true;
                                     }
+                                    props.has_assert = true;
                                 }
                                 props = merge_dfdl_props(props, dfdl_props);
                             }
@@ -1518,6 +1519,9 @@ impl<'a> XsdParser<'a> {
                 if props.has_discriminator || props.has_multiple_discriminators {
                     props.has_multiple_discriminators = true;
                 }
+                if props.has_assert {
+                    props.has_discriminator_and_assert = true;
+                }
                 props.has_discriminator = true;
                 props.is_discriminator = true;
                 if !effective_test.is_empty() {
@@ -1529,6 +1533,7 @@ impl<'a> XsdParser<'a> {
                 if props.has_discriminator {
                     props.has_discriminator_and_assert = true;
                 }
+                props.has_assert = true;
                 props.is_discriminator = false;
                 if !effective_test.is_empty() {
                     props.discriminator_xpath_prefixes = Some(scoped);
