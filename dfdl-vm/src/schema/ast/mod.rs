@@ -161,6 +161,7 @@ pub struct DfdlProps {
     /// Named format reference from `dfdl:ref` (resolved during parse).
     pub format_ref: Option<String>,
     pub has_short_and_long_ref_overlap: bool,
+    pub has_discriminator: bool,
     pub has_discriminator_and_assert: bool,
     pub has_multiple_discriminators: bool,
     pub has_test_and_test_pattern: bool,

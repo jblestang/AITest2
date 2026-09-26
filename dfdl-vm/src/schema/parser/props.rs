@@ -2553,9 +2553,6 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.has_multiple_discriminators {
         base.has_multiple_discriminators = true;
     }
-    if overlay.has_multiple_discriminators {
-        base.has_multiple_discriminators = true;
-    }
     if overlay.has_discriminator_and_assert {
         base.has_discriminator_and_assert = true;
     }

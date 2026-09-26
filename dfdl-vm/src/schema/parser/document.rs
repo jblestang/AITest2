@@ -1268,14 +1268,15 @@ impl<'a> XsdParser<'a> {
                                 && local != "defineVariable"
                             {
                                 if local == "discriminator" {
-                                    if (props.discriminator_test.is_some() && props.is_discriminator) || props.has_multiple_discriminators {
+                                    if props.has_discriminator || props.has_multiple_discriminators {
                                         props.has_multiple_discriminators = true;
                                     }
+                                    props.has_discriminator = true;
                                     if props.has_statement_annotation && props.discriminator_test.is_some() && !props.is_discriminator {
                                         props.has_discriminator_and_assert = true;
                                     }
                                 } else if local == "assert" {
-                                    if props.discriminator_test.is_some() && props.is_discriminator {
+                                    if props.has_discriminator {
                                         props.has_discriminator_and_assert = true;
                                     }
                                 }
@@ -1513,17 +1514,27 @@ impl<'a> XsdParser<'a> {
                     props.test_pattern = Some(pat);
                 }
             }
-            if !effective_test.is_empty() {
-                if local == "discriminator" {
-                    props.is_discriminator = true;
-                    props.discriminator_xpath_prefixes = Some(scoped);
-                    props.discriminator_test = Some(effective_test.clone());
-                } else if local == "assert" {
-                    props.is_discriminator = false;
-                    props.discriminator_xpath_prefixes = Some(scoped);
-                    props.discriminator_test = Some(effective_test.clone());
+            if local == "discriminator" {
+                if props.has_discriminator || props.has_multiple_discriminators {
+                    props.has_multiple_discriminators = true;
                 }
-                apply_dfdl_assert_test(&mut props, &effective_test);
+                props.has_discriminator = true;
+                props.is_discriminator = true;
+                if !effective_test.is_empty() {
+                    props.discriminator_xpath_prefixes = Some(scoped);
+                    props.discriminator_test = Some(effective_test.clone());
+                    apply_dfdl_assert_test(&mut props, &effective_test);
+                }
+            } else if local == "assert" {
+                if props.has_discriminator {
+                    props.has_discriminator_and_assert = true;
+                }
+                props.is_discriminator = false;
+                if !effective_test.is_empty() {
+                    props.discriminator_xpath_prefixes = Some(scoped);
+                    props.discriminator_test = Some(effective_test.clone());
+                    apply_dfdl_assert_test(&mut props, &effective_test);
+                }
             }
             return Ok(props);
         }
