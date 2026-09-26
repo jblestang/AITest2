@@ -558,6 +558,15 @@ pub(crate) fn overlay_dfdl_to_ir(
             .map(|s| strings.intern(s.clone()));
         base.is_discriminator = props.is_discriminator;
     }
+    if props.assert_message.is_some() {
+        base.facet_assert_message = props
+            .assert_message
+            .as_ref()
+            .map(|s| strings.intern(s.clone()));
+    }
+    if let Some(segments) = &props.assert_message_segments {
+        base.facet_assert_message_segments = Some(intern_input_value_calc_segments(segments, strings));
+    }
     for (name, val) in &props.set_variables {
         base.set_variables
             .push((strings.intern(name.clone()), strings.intern(val.clone())));
@@ -1562,6 +1571,14 @@ pub(crate) fn element_props_for_complex_content(element_props: &DfdlProps) -> Df
         encoding: element_props.encoding.clone(),
         encoding_error_policy: element_props.encoding_error_policy,
         initiated_content: element_props.initiated_content,
+        assert_message: element_props.assert_message.clone(),
+        assert_message_segments: element_props.assert_message_segments.clone(),
+        test_pattern: element_props.test_pattern.clone(),
+        discriminator_test: element_props.discriminator_test.clone(),
+        discriminator_xpath_prefixes: element_props.discriminator_xpath_prefixes.clone(),
+        is_discriminator: element_props.is_discriminator,
+        has_assert: element_props.has_assert,
+        has_discriminator: element_props.has_discriminator,
         ..DfdlProps::default()
     }
 }

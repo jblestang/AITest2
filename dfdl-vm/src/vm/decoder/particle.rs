@@ -318,8 +318,15 @@ impl<'a> Decoder<'a> {
             }
             .into());
         }
+        let val_suffix = if !dot.is_empty() {
+            alloc::format!(" Parsed value was: {dot}")
+        } else {
+            alloc::string::String::new()
+        };
         Err(VmError::InvalidValue {
-            message: alloc::format!("Assertion Failed {expr}"),
+            message: alloc::format!(
+                "Parse Error. Assertion failed: Assertion failed for expression {expr}.{val_suffix}"
+            ),
         }
         .into())
     }

@@ -179,9 +179,7 @@ impl<'a> Decoder<'a> {
                         let reason = if !msg.is_empty() {
                             msg
                         } else {
-                            alloc::format!(
-                                "Assertion failed for dfdl:assert testKind=\"pattern\" testPattern=\"{pat}\""
-                            )
+                            alloc::format!("Assertion failed for pattern '{pat}'")
                         };
                         return Err(VmError::InvalidValue {
                             message: alloc::format!("Parse Error. Assertion failed: {reason}"),
