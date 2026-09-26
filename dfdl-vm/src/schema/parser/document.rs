@@ -1268,14 +1268,14 @@ impl<'a> XsdParser<'a> {
                                 && local != "defineVariable"
                             {
                                 if local == "discriminator" {
-                                    if props.discriminator_test.is_some() || props.has_multiple_discriminators {
+                                    if (props.discriminator_test.is_some() && props.is_discriminator) || props.has_multiple_discriminators {
                                         props.has_multiple_discriminators = true;
                                     }
-                                    if props.has_statement_annotation && (props.test_pattern.is_some() || props.assert_int_eq.is_some() || props.assert_message.is_some()) {
+                                    if props.has_statement_annotation && props.discriminator_test.is_some() && !props.is_discriminator {
                                         props.has_discriminator_and_assert = true;
                                     }
                                 } else if local == "assert" {
-                                    if props.discriminator_test.is_some() {
+                                    if props.discriminator_test.is_some() && props.is_discriminator {
                                         props.has_discriminator_and_assert = true;
                                     }
                                 }
