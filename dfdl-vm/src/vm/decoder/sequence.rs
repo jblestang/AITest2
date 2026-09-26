@@ -150,8 +150,7 @@ pub(crate) fn filter_delimiter_stop_sequences<'a>(
 impl<'a> Decoder<'a> {
     pub(crate) fn is_ivc_child(&self, child_id: u32) -> bool {
         if let Ok(IrNode::Element { props, .. }) = self.ctx.program.node(child_id) {
-            props.input_value_calc.is_some()
-                || props.input_value_calc_expression.is_some()
+            crate::ir::ir_props_has_input_value_calc(props)
         } else {
             false
         }

@@ -1040,11 +1040,13 @@ fn parse_ivc_path_steps(
     )>,
 )> {
     let s = s.trim();
+    let mut leading_dots = false;
     let (parent_root, rest) = if let Some(r) = s.strip_prefix("parent::") {
         (true, r)
     } else if let Some(r) = s.strip_prefix('/') {
         (false, r)
     } else if let Some(r) = s.strip_prefix("../").or_else(|| s.strip_prefix("..\\")) {
+        leading_dots = true;
         (false, r)
     } else if let Some(r) = s.strip_prefix("./") {
         (false, r)
@@ -1053,10 +1055,13 @@ fn parse_ivc_path_steps(
     } else {
         return None;
     };
-    if rest.is_empty() {
+    if rest.is_empty() && !leading_dots {
         return None;
     }
     let mut steps = alloc::vec::Vec::new();
+    if leading_dots {
+        steps.push(parse_infoset_path_step(".."));
+    }
     for step in rest.split('/').filter(|p| !p.is_empty()) {
         steps.push(parse_infoset_path_step(step));
     }

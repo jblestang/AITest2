@@ -15,7 +15,7 @@ pub(crate) fn choice_branch_element_props(program: &IrProgram, node: u32) -> Opt
         IrNode::Sequence {
             props, children, ..
         } => {
-            if props.discriminator_test.is_some() {
+            if props.discriminator_test.is_some() && props.is_discriminator {
                 Some(props)
             } else if let Some(&first) = children.first() {
                 choice_branch_element_props(program, first)
@@ -126,7 +126,7 @@ pub(crate) fn choice_dispatch_key_string(
             return Ok(Some(dfdl_value_dispatch_string(value)));
         }
         if let Some(steps) = props.choice_dispatch_path.as_ref() {
-            let value = eval_infoset_path_steps(steps, siblings, strings, tunables, None)?;
+            let value = eval_infoset_path_steps(steps, siblings, None, strings, tunables, None)?;
             return Ok(Some(dfdl_value_dispatch_string(&value)));
         }
     }
@@ -192,12 +192,7 @@ pub(crate) fn validate_choice_branches_non_optional_runtime(
 }
 
 pub(crate) fn ir_element_has_input_value_calc(props: &IrProps) -> bool {
-    props.input_value_calc.is_some()
-        || props.input_value_calc_literal.is_some()
-        || props.input_value_calc_sibling.is_some()
-        || props.input_value_calc_segments.is_some()
-        || props.input_value_calc_path.is_some()
-        || props.input_value_calc_expression.is_some()
+    crate::ir::ir_props_has_input_value_calc(props)
 }
 
 pub(crate) fn choice_branch_has_input_value_calc(

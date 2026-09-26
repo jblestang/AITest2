@@ -547,7 +547,7 @@ pub(crate) fn eval_ivc_path_steps(
         }
         .into());
     }
-    eval_infoset_path_steps(steps, ctx.siblings, strings, tunables, ctx.element_name)
+    eval_infoset_path_steps(steps, ctx.siblings, ctx.ancestor_frames, strings, tunables, ctx.element_name)
 }
 
 pub(crate) fn eval_input_value_calc_path(
@@ -563,7 +563,7 @@ pub(crate) fn eval_input_value_calc_path(
         .ok_or_else(|| VmError::InvalidValue {
             message: "missing inputValueCalc path".into(),
         })?;
-    let value = eval_infoset_path_steps(steps, siblings, strings, tunables, element_name)?;
+    let value = eval_infoset_path_steps(steps, siblings, None, strings, tunables, element_name)?;
     let text = dfdl_value_to_string(&value);
     Ok(DfdlValue::String(StringValue::new(text)))
 }
@@ -574,7 +574,7 @@ pub(crate) fn eval_occurs_count_expression(
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
 ) -> Result<u64> {
-    let value = eval_infoset_path_steps(steps, siblings, strings, tunables, None)?;
+    let value = eval_infoset_path_steps(steps, siblings, None, strings, tunables, None)?;
     if let Some(n) = value.as_i64() {
         if n >= 0 {
             return Ok(n as u64);

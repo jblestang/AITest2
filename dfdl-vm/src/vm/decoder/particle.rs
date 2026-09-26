@@ -29,7 +29,7 @@ pub(crate) fn choice_branch_element_props(program: &IrProgram, node: u32) -> Opt
         IrNode::Sequence {
             props, children, ..
         } => {
-            if props.discriminator_test.is_some() {
+            if props.discriminator_test.is_some() && props.is_discriminator {
                 Some(props)
             } else if let Some(&first) = children.first() {
                 choice_branch_element_props(program, first)
@@ -231,6 +231,9 @@ impl<'a> Decoder<'a> {
         let Some(props) = choice_branch_element_props(self.ctx.program, branch_node) else {
             return true;
         };
+        if !props.is_discriminator {
+            return true;
+        }
         let Some(id) = props.discriminator_test else {
             return true;
         };

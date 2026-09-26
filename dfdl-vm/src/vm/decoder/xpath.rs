@@ -103,10 +103,22 @@ pub(crate) fn navigate_to_child<'a>(
 pub(crate) fn eval_infoset_path_steps(
     steps: &[crate::ir::IrInputPathStep],
     siblings: Option<&BTreeMap<String, SiblingState>>,
+    ancestor_frames: Option<&[BTreeMap<String, SiblingState>]>,
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
     element_name: Option<&str>,
 ) -> Result<DfdlValue> {
+    let mut up = 0usize;
+    while up < steps.len() {
+        if let Ok(s) = strings.get(steps[up].local) {
+            if s == ".." {
+                up += 1;
+                continue;
+            }
+        }
+        break;
+    }
+    let steps = &steps[up..];
     if steps.is_empty() {
         return Err(VmError::InvalidValue {
             message: "empty infoset path".into(),
@@ -115,26 +127,46 @@ pub(crate) fn eval_infoset_path_steps(
     }
     let first = &steps[0];
     let first_local = strings.get(first.local)?;
-    let mut value = siblings
-        .and_then(|m| sibling_state_by_local(m, first_local))
-        .map(|s| &s.value)
-        .ok_or_else(|| {
-            let msg = if first.prefix.is_some() {
-                alloc::format!(
-                    "Schema Definition Error: expression evaluation error: {first_local} does not exist"
-                )
-            } else if steps.len() == 1 {
-                ivc_sde_message(
-                    element_name,
-                    alloc::format!("No element corresponding to step {first_local} found."),
-                )
-            } else {
-                alloc::format!(
-                    "Schema Definition Error: expression evaluation error: {first_local} does not exist"
-                )
-            };
-            VmError::InvalidValue { message: msg }
-        })?;
+    let mut state_found: Option<DfdlValue> = None;
+    if up > 0 {
+        if let Some(frames) = ancestor_frames {
+            if let Some(idx) = frames.len().checked_sub(up) {
+                if let Some(s) = sibling_state_by_local(&frames[idx], first_local) {
+                    state_found = Some(s.value.clone());
+                }
+            }
+            if state_found.is_none() {
+                for frame in frames.iter().rev() {
+                    if let Some(s) = sibling_state_by_local(frame, first_local) {
+                        state_found = Some(s.value.clone());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if state_found.is_none() {
+        state_found = siblings
+            .and_then(|m| sibling_state_by_local(m, first_local))
+            .map(|s| s.value.clone());
+    }
+    let mut current_val = state_found.ok_or_else(|| {
+        let msg = if first.prefix.is_some() {
+            alloc::format!(
+                "Schema Definition Error: expression evaluation error: {first_local} does not exist"
+            )
+        } else if steps.len() == 1 {
+            ivc_sde_message(
+                element_name,
+                alloc::format!("No element corresponding to step {first_local} found."),
+            )
+        } else {
+            alloc::format!(
+                "Schema Definition Error: expression evaluation error: {first_local} does not exist"
+            )
+        };
+        VmError::InvalidValue { message: msg }
+    })?;
     for step in steps.iter().skip(1) {
         let local = strings.get(step.local)?;
         check_path_step(
@@ -142,9 +174,9 @@ pub(crate) fn eval_infoset_path_steps(
             local,
             tunables.unqualified_path_step_policy,
         )?;
-        value = navigate_to_child(value, local, step.index, element_name)?;
+        current_val = navigate_to_child(&current_val, local, step.index, element_name)?.clone();
     }
-    Ok(value.clone())
+    Ok(current_val)
 }
 
 pub fn dfdl_value_dispatch_string(value: &DfdlValue) -> alloc::string::String {
@@ -163,6 +195,13 @@ pub fn dfdl_value_dispatch_string(value: &DfdlValue) -> alloc::string::String {
         DfdlValue::UnsignedByte(n) => n.to_string(),
         DfdlValue::Boolean(b) => b.to_string(),
         DfdlValue::Choice { value, .. } => dfdl_value_dispatch_string(value),
+        DfdlValue::Sequence(seq) if seq.fields.len() == 1 => {
+            if let Some((_, inner)) = seq.fields.iter().next() {
+                dfdl_value_dispatch_string(inner)
+            } else {
+                alloc::string::String::new()
+            }
+        }
         _ => alloc::string::String::new(),
     }
 }
@@ -393,6 +432,14 @@ impl<'a> Decoder<'a> {
                             .iter()
                             .find(|(k, _)| crate::xml_util::local_name_str(k) == target)
                             .map(|(_, v)| v.clone())
+                    })
+                    .or_else(|| {
+                        for frame in self.xpath_ancestor_frames.borrow().iter().rev() {
+                            if let Some((_, v)) = frame.iter().find(|(k, _)| crate::xml_util::local_name_str(k) == target) {
+                                return Some(v.clone());
+                            }
+                        }
+                        None
                     })
                     .ok_or_else(|| VmError::InvalidValue {
                         message: alloc::format!(
@@ -638,7 +685,7 @@ impl<'a> Decoder<'a> {
             return Ok(true);
         };
         let eval_operand = |op_str: &str| -> Result<i64> {
-            let op_str = op_str.trim();
+            let op_str = Self::strip_type_cast_wrapper(op_str.trim());
             let expr_str = alloc::format!("{{{op_str}}}");
             if let Some(schema_expr) = crate::schema::parse_input_value_calc_expression(&expr_str) {
                 let mut pool = self.ctx.strings().clone();
@@ -1089,6 +1136,14 @@ impl<'a> Decoder<'a> {
                             .iter()
                             .find(|(k, _)| crate::xml_util::local_name_str(k) == target)
                             .map(|(_, v)| v.clone())
+                    })
+                    .or_else(|| {
+                        for frame in self.xpath_ancestor_frames.borrow().iter().rev() {
+                            if let Some((_, v)) = frame.iter().find(|(k, _)| crate::xml_util::local_name_str(k) == target) {
+                                return Some(v.clone());
+                            }
+                        }
+                        None
                     })
                     .ok_or_else(|| VmError::InvalidValue {
                         message: alloc::format!(

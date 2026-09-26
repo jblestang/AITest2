@@ -174,12 +174,16 @@ pub fn validate_assert_int_eq(value: &DfdlValue, props: &IrProps) -> Result<(), 
     };
     let Some(actual) = numeric_value_i64(value) else {
         return Err(VmError::InvalidValue {
-            message: "Assertion failed".into(),
+            message: alloc::format!(
+                "Parse Error. Assertion failed: Assertion failed for expression {{ xs:int(.) eq {expected} }}."
+            ),
         });
     };
     if actual != expected {
         return Err(VmError::InvalidValue {
-            message: "Assertion failed".into(),
+            message: alloc::format!(
+                "Parse Error. Assertion failed: Assertion failed for expression {{ xs:int(.) eq {expected} }}. Parsed value was: {actual}"
+            ),
         });
     }
     Ok(())
