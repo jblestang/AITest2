@@ -1135,9 +1135,10 @@ impl<'a> Decoder<'a> {
         numeric_value_from_dfdl(&sib.value)
     }
 
-    pub(crate) fn eval_facet_assert_message(
+    pub(crate) fn eval_facet_assert_message_with_dot(
         &self,
         props: &IrProps,
+        dot: &str,
     ) -> Result<alloc::string::String> {
         use crate::ir::IrInputValueCalcSegment;
         if let Some(segments) = &props.facet_assert_message_segments {
@@ -1195,14 +1196,37 @@ impl<'a> Decoder<'a> {
         }
         if let Some(msg_id) = props.facet_assert_message {
             if let Ok(msg) = self.ctx.strings().get(msg_id) {
-                if msg.starts_with('{') && msg.contains("fn:concat") {
-                    let siblings = self.xpath_siblings_snapshot();
-                    let siblings = Some(&siblings);
-                    if let Some(lit_start) = msg.find('"') {
-                        if let Some(lit_end) = msg[lit_start + 1..].find('"') {
-                            let prefix = &msg[lit_start + 1..lit_start + 1 + lit_end];
-                            if let Ok(val) = sibling_string_value(siblings, "messageID") {
-                                return Ok(alloc::format!("{prefix}{val}"));
+                let msg_trim = msg.trim();
+                if msg_trim.starts_with('{') && msg_trim.ends_with('}') {
+                    let inner = msg_trim[1..msg_trim.len() - 1].trim();
+                    if inner.starts_with("fn:concat") || inner.starts_with("concat") {
+                        if let Some(open) = inner.find('(') {
+                            if let Some(close) = inner.rfind(')') {
+                                let args_str = &inner[open + 1..close];
+                                let siblings = self.xpath_siblings_snapshot();
+                                let siblings = Some(&siblings);
+                                let mut out = alloc::string::String::new();
+                                for arg in args_str.split(',') {
+                                    let arg = arg.trim();
+                                    if (arg.starts_with('\'') && arg.ends_with('\''))
+                                        || (arg.starts_with('"') && arg.ends_with('"'))
+                                    {
+                                        out.push_str(&arg[1..arg.len() - 1]);
+                                    } else if arg.contains("xs:int") || arg == "." {
+                                        if let Ok(num) = dot.trim().parse::<i64>() {
+                                            out.push_str(&num.to_string());
+                                        } else {
+                                            return Ok(alloc::format!(
+                                                "Assertion message expression evaluation failed: Cannot convert '{dot}' to xs:int"
+                                            ));
+                                        }
+                                    } else if let Ok(val) = sibling_string_value(siblings, arg) {
+                                        out.push_str(&val);
+                                    } else {
+                                        out.push_str(arg);
+                                    }
+                                }
+                                return Ok(out);
                             }
                         }
                     }
@@ -1211,5 +1235,12 @@ impl<'a> Decoder<'a> {
             }
         }
         Ok(alloc::string::String::new())
+    }
+
+    pub(crate) fn eval_facet_assert_message(
+        &self,
+        props: &IrProps,
+    ) -> Result<alloc::string::String> {
+        self.eval_facet_assert_message_with_dot(props, "")
     }
 }

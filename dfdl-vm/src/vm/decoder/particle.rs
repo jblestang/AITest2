@@ -311,7 +311,7 @@ impl<'a> Decoder<'a> {
             }
             return Ok(());
         }
-        let msg = self.eval_facet_assert_message(props)?;
+        let msg = self.eval_facet_assert_message_with_dot(props, dot)?;
         if !msg.is_empty() {
             return Err(VmError::InvalidValue {
                 message: alloc::format!("Parse Error. Assertion failed: {msg}"),
