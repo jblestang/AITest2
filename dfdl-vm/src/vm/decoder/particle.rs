@@ -311,6 +311,9 @@ impl<'a> Decoder<'a> {
             }
             return Ok(());
         }
+        if props.assert_recoverable_error {
+            return Ok(());
+        }
         let msg = self.eval_facet_assert_message_with_dot(props, dot)?;
         if !msg.is_empty() {
             return Err(VmError::InvalidValue {

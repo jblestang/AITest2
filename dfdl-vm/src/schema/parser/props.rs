@@ -2574,6 +2574,10 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.discriminator_test.is_some() {
         base.discriminator_test = overlay.discriminator_test;
         base.is_discriminator = overlay.is_discriminator;
+        base.assert_recoverable_error = overlay.assert_recoverable_error;
+    }
+    if overlay.assert_recoverable_error {
+        base.assert_recoverable_error = true;
     }
     if overlay.discriminator_xpath_prefixes.is_some() {
         base.discriminator_xpath_prefixes = overlay.discriminator_xpath_prefixes;

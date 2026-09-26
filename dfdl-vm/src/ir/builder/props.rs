@@ -557,6 +557,10 @@ pub(crate) fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|s| strings.intern(s.clone()));
         base.is_discriminator = props.is_discriminator;
+        base.assert_recoverable_error = props.assert_recoverable_error;
+    }
+    if props.assert_recoverable_error {
+        base.assert_recoverable_error = true;
     }
     if props.assert_message.is_some() {
         base.facet_assert_message = props
@@ -1052,6 +1056,10 @@ pub(crate) fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.discriminator_test.is_some() {
         out.discriminator_test = overlay.discriminator_test;
         out.is_discriminator = overlay.is_discriminator;
+        out.assert_recoverable_error = overlay.assert_recoverable_error;
+    }
+    if overlay.assert_recoverable_error {
+        out.assert_recoverable_error = true;
     }
     if overlay.facet_assert_message.is_some() {
         out.facet_assert_message = overlay.facet_assert_message;
@@ -1577,6 +1585,7 @@ pub(crate) fn element_props_for_complex_content(element_props: &DfdlProps) -> Df
         discriminator_test: element_props.discriminator_test.clone(),
         discriminator_xpath_prefixes: element_props.discriminator_xpath_prefixes.clone(),
         is_discriminator: element_props.is_discriminator,
+        assert_recoverable_error: element_props.assert_recoverable_error,
         has_assert: element_props.has_assert,
         has_discriminator: element_props.has_discriminator,
         ..DfdlProps::default()

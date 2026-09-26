@@ -107,6 +107,16 @@ fn walk_particle(
                     element_value = inner_v;
                 }
             }
+            if props.assert_recoverable_error {
+                let custom_msg = props
+                    .facet_assert_message
+                    .and_then(|id| program.strings.get(id).ok().map(|s| s.to_string()));
+                if let Some(msg) = custom_msg {
+                    errors.push(msg);
+                } else {
+                    errors.push("Assertion failed (recoverable error)".to_string());
+                }
+            }
             if needs_facet_validation(props) {
                 let res = validate_decoded_facets_tdml(
                     element_value,

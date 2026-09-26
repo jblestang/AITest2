@@ -1426,6 +1426,9 @@ impl<'a> XsdParser<'a> {
         self.normalize_escape_scheme_ref(&mut props);
         if local == "assert" || local == "discriminator" {
             props.has_statement_annotation = true;
+            if attrs.get("failureType").map(|s| s.as_str()) == Some("recoverableError") {
+                props.assert_recoverable_error = true;
+            }
             if let Some(msg) = attrs.get("message") {
                 props.assert_message = Some(msg.clone());
                 if let Some(segments) = parse_input_value_calc_concat(msg) {

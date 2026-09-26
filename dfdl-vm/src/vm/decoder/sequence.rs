@@ -343,16 +343,18 @@ impl<'a> Decoder<'a> {
                     let pat = self.ctx.strings().get(id)?;
                     let text = core::str::from_utf8(&cursor.data[cursor.pos..]).unwrap_or("");
                     if !crate::vm::facet_validate::pattern_prefix_matches(text, pat) {
-                        let msg = self.eval_facet_assert_message(props)?;
-                        let reason = if !msg.is_empty() {
-                            msg
-                        } else {
-                            alloc::format!("Assertion failed for pattern '{pat}'")
-                        };
-                        return Err(VmError::InvalidValue {
-                            message: alloc::format!("Parse Error. Assertion failed: {reason}"),
+                        if !props.assert_recoverable_error {
+                            let msg = self.eval_facet_assert_message(props)?;
+                            let reason = if !msg.is_empty() {
+                                msg
+                            } else {
+                                alloc::format!("Assertion failed for pattern '{pat}'")
+                            };
+                            return Err(VmError::InvalidValue {
+                                message: alloc::format!("Parse Error. Assertion failed: {reason}"),
+                            }
+                            .into());
                         }
-                        .into());
                     }
                 }
                 let mut initiator_alt = None;

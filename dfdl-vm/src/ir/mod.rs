@@ -340,6 +340,8 @@ pub struct IrProps {
     pub discriminator_test: Option<StringId>,
     /// Whether this test is a `dfdl:discriminator` (commits choice branch) vs `dfdl:assert`.
     pub is_discriminator: bool,
+    /// `dfdl:assert failureType="recoverableError"`.
+    pub assert_recoverable_error: bool,
     pub facet_assert_message: Option<StringId>,
     pub facet_assert_message_segments: Option<Vec<IrInputValueCalcSegment>>,
     /// Prepend Daffodil `Assertion failed: ` to custom assert messages (derived simple types).
@@ -534,6 +536,7 @@ impl Default for IrProps {
             assert_test_pattern: None,
             discriminator_test: None,
             is_discriminator: false,
+            assert_recoverable_error: false,
             facet_assert_message: None,
             facet_assert_message_segments: None,
             facet_assert_daffodil_prefix: false,
