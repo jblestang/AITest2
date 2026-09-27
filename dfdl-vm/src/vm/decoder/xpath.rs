@@ -877,12 +877,18 @@ impl<'a> Decoder<'a> {
                                 }
                                 _ => alloc::format!("{e}"),
                             };
-                            let msg_clean = msg.strip_prefix("vm error: ").unwrap_or(&msg);
+                            let mut inner_msg = msg.strip_prefix("vm error: ").unwrap_or(&msg).trim();
+                            if let Some(rest) = inner_msg.strip_prefix("Parse Error.").or_else(|| inner_msg.strip_prefix("Parse Error:")) {
+                                inner_msg = rest.trim();
+                            }
+                            if let Some(rest) = inner_msg.strip_prefix("Schema Definition Error:").or_else(|| inner_msg.strip_prefix("Schema Definition Error.")) {
+                                inner_msg = rest.trim();
+                            }
                             VmError::InvalidValue {
                                 message: if is_constant {
-                                    alloc::format!("Schema Definition Error: {msg_clean}")
+                                    alloc::format!("Schema Definition Error: {inner_msg}")
                                 } else {
-                                    alloc::format!("Parse Error: {msg_clean}")
+                                    alloc::format!("Parse Error: {inner_msg}")
                                 },
                             }
                         })?;

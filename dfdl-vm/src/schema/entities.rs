@@ -886,7 +886,7 @@ fn eval_discriminator_dot_eq_with_err(
                         ));
                     } else {
                         return Err(alloc::format!(
-                            "Parse Error. Cannot convert '{dot}' to {target_type}"
+                            "Parse Error. Cannot convert string '{dot}' to {target_type}"
                         ));
                     }
                 }

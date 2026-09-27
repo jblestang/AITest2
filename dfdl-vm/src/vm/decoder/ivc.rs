@@ -203,7 +203,7 @@ pub(crate) fn parse_ivc_lexical_for_kind(
             )
         } else {
             alloc::format!(
-                "Parse Error. Cannot convert '{trimmed}' to xs:{target_name}"
+                "Parse Error. Cannot convert string '{trimmed}' to xs:{target_name}"
             )
         },
     })
