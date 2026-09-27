@@ -869,7 +869,7 @@ impl<'a> Decoder<'a> {
                 while self.unordered_backtrack_may_take_another(child_props, current_count) {
                     let iter_saved = cursor.clone();
                     let iter_map = map.clone();
-                    match self.decode_one_element_occurrence(
+                    let res = self.decode_one_element_occurrence(
                         child,
                         cursor,
                         has_following,
@@ -878,7 +878,8 @@ impl<'a> Decoder<'a> {
                         content_scope_bytes,
                         pattern_text_frame,
                         stop_sequences,
-                    ) {
+                    );
+                    match res {
                         Ok(v) if self.backtrack_decoded_facets_ok(&v, *kind, child_props) => {
                             insert_child(map, child, v, self.ctx.program)?;
                             current_count += 1;
@@ -886,6 +887,9 @@ impl<'a> Decoder<'a> {
                             if cursor.pos == iter_saved.pos {
                                 break;
                             }
+                        }
+                        Err(e) if self.discriminator_committed_branch.get() => {
+                            return Err(e);
                         }
                         _ => {
                             *cursor = iter_saved;

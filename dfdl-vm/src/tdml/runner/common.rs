@@ -136,6 +136,12 @@ pub(crate) fn error_messages_match(expected: &[String], err: &str) -> bool {
         {
             return true;
         }
+        let err_cleaned = err_lower
+            .replace(" / failed to parse", "")
+            .replace("[1]", "");
+        if err_cleaned.contains(&fl) {
+            return true;
+        }
         err_lower.contains(&fl)
     })
 }

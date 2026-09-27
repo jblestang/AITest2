@@ -89,3 +89,23 @@ fn run_variables_case(name: &str) {
 fn test_var_instance_09() {
     run_variables_case("varInstance_09");
 }
+
+fn run_discriminator_case(name: &str) {
+    let path = Path::new(ROOT).join("discriminators/discriminator.tdml");
+    let text = fs::read_to_string(&path).expect("read");
+    let mut suite = parse_tdml(&text).expect("parse");
+    suite.resource_context = dfdl_vm::tdml::TdmlResourceContext::from_tdml_path(&path.to_string_lossy());
+    let t = suite.tests.iter().find(|t| t.name == name).expect("case");
+    let r = dfdl_vm::tdml::run_parser_test(&suite, t).expect("run");
+    assert_eq!(r.outcome, dfdl_vm::tdml::TestOutcome::Pass, "{:?}", r.outcome);
+}
+
+#[test]
+fn test_choice_branch_discrim_fail() {
+    run_discriminator_case("choiceBranchDiscrimFail");
+}
+
+#[test]
+fn test_discrim_expression_04() {
+    run_discriminator_case("discrimExpression_04");
+}

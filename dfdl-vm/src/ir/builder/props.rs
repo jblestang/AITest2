@@ -557,12 +557,14 @@ pub(crate) fn overlay_dfdl_to_ir(
             .as_ref()
             .map(|s| strings.intern(s.clone()));
     }
+    if props.is_discriminator {
+        base.is_discriminator = true;
+    }
     if props.discriminator_test.is_some() {
         base.discriminator_test = props
             .discriminator_test
             .as_ref()
             .map(|s| strings.intern(s.clone()));
-        base.is_discriminator = props.is_discriminator;
         base.assert_recoverable_error = props.assert_recoverable_error;
     }
     if props.assert_recoverable_error {
@@ -1071,9 +1073,11 @@ pub(crate) fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     if overlay.assert_test_pattern.is_some() {
         out.assert_test_pattern = overlay.assert_test_pattern;
     }
+    if overlay.is_discriminator {
+        out.is_discriminator = true;
+    }
     if overlay.discriminator_test.is_some() {
         out.discriminator_test = overlay.discriminator_test;
-        out.is_discriminator = overlay.is_discriminator;
         out.assert_recoverable_error = overlay.assert_recoverable_error;
     }
     if overlay.assert_recoverable_error {

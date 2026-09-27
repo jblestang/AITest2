@@ -227,36 +227,48 @@ pub(crate) fn parse_simple_val_from_str(text: &str, kind: ValueKind) -> core::re
 
 impl<'a> Decoder<'a> {
 
-    pub(crate) fn choice_branch_discriminator_matches(
+    pub(crate) fn choice_branch_discriminator_matches_with_reason(
         &self,
         branch_node: u32,
         dot: &str,
         cursor: &Cursor<'_>,
-    ) -> bool {
+    ) -> core::result::Result<(), alloc::string::String> {
         let Some(props) = choice_branch_element_props(self.ctx.program, branch_node) else {
-            return true;
+            return Ok(());
         };
         if !props.is_discriminator {
-            return true;
+            return Ok(());
         }
         if let Some(id) = props.assert_test_pattern {
             if let Ok(pat) = self.ctx.strings().get(id) {
                 let text = core::str::from_utf8(&cursor.data[cursor.pos..]).unwrap_or("");
-                return crate::vm::facet_validate::pattern_prefix_matches(text, pat);
+                let m = crate::vm::facet_validate::pattern_prefix_matches(text, pat);
+                if m {
+                    self.discriminator_committed_branch.set(true);
+                    return Ok(());
+                } else {
+                    let custom_msg = self.eval_facet_assert_message(props).unwrap_or_default();
+                    let msg = if !custom_msg.is_empty() {
+                        custom_msg
+                    } else {
+                        alloc::format!("discriminator failed for pattern '{pat}'")
+                    };
+                    return Err(msg);
+                }
             }
         }
         let Some(id) = props.discriminator_test else {
-            return true;
+            return Ok(());
         };
         let Ok(expr) = self.ctx.strings().get(id) else {
-            return false;
+            return Err("discriminator test invalid".into());
         };
         if expr.contains("checkConstraints") {
             let Some((branch_props, kind)) = choice_branch_first_element(self.ctx.program, branch_node) else {
-                return true;
+                return Ok(());
             };
             if let Ok(val) = parse_simple_val_from_str(dot, kind) {
-                return crate::vm::facet_validate::validate_decoded_facets(
+                let m = crate::vm::facet_validate::validate_decoded_facets(
                     &val,
                     kind,
                     branch_props,
@@ -264,10 +276,27 @@ impl<'a> Decoder<'a> {
                     &self.ctx.program.tunables,
                 )
                 .is_ok();
+                if m {
+                    self.discriminator_committed_branch.set(true);
+                    return Ok(());
+                } else {
+                    return Err(alloc::format!("discriminator failed for expression {{{expr}}}"));
+                }
             }
         }
         if let Some(b) = crate::schema::eval_discriminator_expression(expr, dot) {
-            return b;
+            if b {
+                self.discriminator_committed_branch.set(true);
+                return Ok(());
+            } else {
+                let custom_msg = self.eval_facet_assert_message(props).unwrap_or_default();
+                let msg = if !custom_msg.is_empty() {
+                    custom_msg
+                } else {
+                    alloc::format!("discriminator failed for expression {{{expr}}}")
+                };
+                return Err(msg);
+            }
         }
         if let Ok(Some(b)) = self.eval_discriminator_xpath_eq(
             expr.trim()
@@ -277,9 +306,29 @@ impl<'a> Decoder<'a> {
                 .trim(),
             dot,
         ) {
-            return b;
+            if b {
+                self.discriminator_committed_branch.set(true);
+                return Ok(());
+            } else {
+                let custom_msg = self.eval_facet_assert_message(props).unwrap_or_default();
+                let msg = if !custom_msg.is_empty() {
+                    custom_msg
+                } else {
+                    alloc::format!("discriminator failed for expression {{{expr}}}")
+                };
+                return Err(msg);
+            }
         }
-        true
+        Ok(())
+    }
+
+    pub(crate) fn choice_branch_discriminator_matches(
+        &self,
+        branch_node: u32,
+        dot: &str,
+        cursor: &Cursor<'_>,
+    ) -> bool {
+        self.choice_branch_discriminator_matches_with_reason(branch_node, dot, cursor).is_ok()
     }
 
     pub(crate) fn validate_particle_discriminator(
@@ -853,6 +902,17 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 Err(e) => {
+                    if self.discriminator_committed_branch.get() {
+                        if let Some(path) = populate_path.as_deref() {
+                            return Err(populate_failed_error(
+                                path,
+                                items.len() as u64 + 1,
+                                &e.to_string(),
+                            )
+                            .into());
+                        }
+                        return Err(e);
+                    }
                     if implicit_empty_probe && (items.len() as u64) < min {
                         return Err(e);
                     }

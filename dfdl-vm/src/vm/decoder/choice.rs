@@ -592,7 +592,13 @@ impl<'a> Decoder<'a> {
                     continue;
                 }
                 self.discriminator_committed_branch.set(true);
-            } else if !self.choice_branch_discriminator_matches(branch.node, dot, cursor) {
+            } else if let Err(reason) = self.choice_branch_discriminator_matches_with_reason(branch.node, dot, cursor) {
+                let err = crate::error::Error::from(VmError::InvalidValue { message: reason });
+                branch_errors.push(format_choice_branch_error(
+                    branch,
+                    self.ctx.strings(),
+                    &err,
+                ));
                 continue;
             }
 

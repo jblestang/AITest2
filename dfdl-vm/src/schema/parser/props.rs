@@ -2682,9 +2682,11 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.assert_eq_occurs_index_addend.is_some() {
         base.assert_eq_occurs_index_addend = overlay.assert_eq_occurs_index_addend;
     }
+    if overlay.is_discriminator {
+        base.is_discriminator = true;
+    }
     if overlay.discriminator_test.is_some() {
         base.discriminator_test = overlay.discriminator_test;
-        base.is_discriminator = overlay.is_discriminator;
         base.assert_recoverable_error = overlay.assert_recoverable_error;
     }
     if overlay.assert_recoverable_error {
