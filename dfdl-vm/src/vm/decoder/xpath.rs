@@ -686,6 +686,36 @@ impl<'a> Decoder<'a> {
         };
         let eval_operand = |op_str: &str| -> Result<i64> {
             let op_str = Self::strip_type_cast_wrapper(op_str.trim());
+            if op_str == "." && !dot.is_empty() {
+                let trimmed = dot.trim();
+                return trimmed.parse::<i64>().map_err(|_| {
+                    VmError::InvalidValue {
+                        message: alloc::format!(
+                            "Parse Error. Unable to parse xs:int from text: {trimmed}"
+                        ),
+                    }
+                    .into()
+                });
+            }
+            let op_unparenthesized = if op_str.starts_with('(') && op_str.ends_with(')') {
+                op_str[1..op_str.len() - 1].trim()
+            } else {
+                op_str
+            };
+            if let Some(rest) = op_unparenthesized.strip_prefix("dfdl:occursIndex()") {
+                let rest = rest.trim();
+                let addend = if let Some(r) = rest.strip_prefix('+') {
+                    r.trim().parse::<i64>().unwrap_or(0)
+                } else if let Some(r) = rest.strip_prefix('-') {
+                    -r.trim().parse::<i64>().unwrap_or(0)
+                } else {
+                    0
+                };
+                if let Ok(dot_num) = dot.trim().parse::<i64>() {
+                    return Ok(dot_num);
+                }
+                return Ok(1 + addend);
+            }
             let expr_str = alloc::format!("{{{op_str}}}");
             if let Some(schema_expr) = crate::schema::parse_input_value_calc_expression(&expr_str) {
                 let mut pool = self.ctx.strings().clone();
@@ -1056,13 +1086,14 @@ impl<'a> Decoder<'a> {
         dot: &str,
         cursor: Option<&Cursor>,
     ) -> Result<bool> {
-        let inner = expr
-            .trim()
-            .strip_prefix('{')
-            .and_then(|s| s.strip_suffix('}'))
-            .unwrap_or(expr)
-            .trim();
-        match crate::schema::eval_discriminator_expression_with_err(expr, dot) {
+        let mut inner = expr.trim();
+        while (inner.starts_with('{') && inner.ends_with('}'))
+            || (inner.starts_with('\'') && inner.ends_with('\''))
+            || (inner.starts_with('"') && inner.ends_with('"'))
+        {
+            inner = inner[1..inner.len() - 1].trim();
+        }
+        match crate::schema::eval_discriminator_expression_with_err(inner, dot) {
             Ok(Some(b)) => return Ok(b),
             Err(e) => return Err(VmError::InvalidValue { message: e }.into()),
             Ok(None) => {}
