@@ -136,7 +136,11 @@ impl<'a> Decoder<'a> {
                         content_bytes: 0,
                     },
                 );
-                self.evaluate_and_set_variables(&props.set_variables, Some(&sib_snap))?;
+                self.evaluate_and_set_variables(
+                    &props.set_variables,
+                    &props.new_variable_instances,
+                    Some(&sib_snap),
+                )?;
             }
         }
         Ok(res)
@@ -693,6 +697,7 @@ impl<'a> Decoder<'a> {
                             root_element: self.ctx.program.root_element.as_str(),
                             define_variables: &self.ctx.program.variables,
                             runtime_variables: &self.runtime_variables.borrow(),
+                            read_variables: Some(&self.read_variables),
                             element_name: ivc_element,
                         },
                         self.ctx.strings(),

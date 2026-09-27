@@ -335,7 +335,11 @@ impl<'a> Decoder<'a> {
                 let _xpath_ancestor_guard = XpathAncestorGuard(self);
                 self.seed_xpath_siblings(siblings);
                 *self.seq_bit_order.borrow_mut() = None;
-                self.evaluate_and_set_variables(&props.set_variables, siblings)?;
+                self.evaluate_and_set_variables(
+                    &props.set_variables,
+                    &props.new_variable_instances,
+                    siblings,
+                )?;
                 let _var_scope =
                     self.enter_variable_scope(&props.new_variable_instances, siblings, false)?;
                 if let Some(id) = props.assert_test_pattern {

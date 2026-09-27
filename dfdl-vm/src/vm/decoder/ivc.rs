@@ -16,6 +16,7 @@ pub(crate) struct IvcEvalCtx<'a> {
     pub root_element: &'a str,
     pub define_variables: &'a BTreeMap<alloc::string::String, alloc::string::String>,
     pub runtime_variables: &'a BTreeMap<alloc::string::String, alloc::string::String>,
+    pub read_variables: Option<&'a core::cell::RefCell<alloc::collections::BTreeSet<alloc::string::String>>>,
     pub element_name: Option<&'a str>,
 }
 
@@ -74,6 +75,11 @@ fn resolve_ivc_variable_depth(
         .into());
     }
     let local = name.rsplit(':').next().unwrap_or(name);
+    if let Some(read_vars) = ctx.read_variables {
+        let mut rv = read_vars.borrow_mut();
+        rv.insert(name.to_string());
+        rv.insert(local.to_string());
+    }
     let raw_text = if let Some(text) = ctx.runtime_variables.get(name) {
         text.clone()
     } else if let Some(text) = ctx.runtime_variables.get(local) {
@@ -657,6 +663,7 @@ pub(crate) fn eval_input_value_calc_concat(
                         root_element,
                         define_variables: &BTreeMap::new(),
                         runtime_variables: &BTreeMap::new(),
+                        read_variables: None,
                         element_name: None,
                     },
                     strings,

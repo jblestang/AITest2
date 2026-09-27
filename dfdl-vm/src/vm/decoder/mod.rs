@@ -18,7 +18,7 @@ use crate::error::Result;
 use crate::ir::{IrProgram, IrProps};
 use crate::schema::BitOrder;
 use crate::value::{DfdlValue, FieldDelimiterMeta};
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
@@ -50,6 +50,8 @@ pub struct Decoder<'a> {
     parent_infix_consumed_by_occurrence_loop: Cell<bool>,
     /// Runtime DFDL variable values (`defineVariable` + `setVariable`).
     runtime_variables: RefCell<BTreeMap<String, String>>,
+    /// Set of DFDL variables that have been read/referenced in the current scope.
+    read_variables: RefCell<BTreeSet<String>>,
     /// XPath sibling context for the active sequence decode (includes hidden elements).
     xpath_siblings: RefCell<BTreeMap<String, SiblingState>>,
     /// Outer sequence sibling maps for `../` / `../../` assert and xpath evaluation.
@@ -76,6 +78,7 @@ impl<'a> Decoder<'a> {
             postfix_bounded_parent_sep_consumed: Cell::new(false),
             parent_infix_consumed_by_occurrence_loop: Cell::new(false),
             runtime_variables: RefCell::new(BTreeMap::new()),
+            read_variables: RefCell::new(BTreeSet::new()),
             xpath_siblings: RefCell::new(BTreeMap::new()),
             xpath_ancestor_frames: RefCell::new(Vec::new()),
             discriminator_committed_branch: Cell::new(false),

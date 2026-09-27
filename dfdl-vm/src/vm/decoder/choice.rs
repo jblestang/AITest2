@@ -545,7 +545,11 @@ impl<'a> Decoder<'a> {
         validate_choice_branch_element_name_upa_runtime(self.ctx.program, branches)?;
         validate_choice_branches_non_optional_runtime(self.ctx.program, branches)?;
 
-        self.evaluate_and_set_variables(&props.set_variables, siblings)?;
+        self.evaluate_and_set_variables(
+            &props.set_variables,
+            &props.new_variable_instances,
+            siblings,
+        )?;
         let _var_scope =
             self.enter_variable_scope(&props.new_variable_instances, siblings, false)?;
 

@@ -266,6 +266,7 @@ pub(crate) fn resolve_length_props_for_test(
 pub(crate) struct VariableScopeGuard<'a> {
     pub(crate) decoder: &'a Decoder<'a>,
     pub(crate) shadowed_vars: Vec<(String, Option<String>)>,
+    pub(crate) shadowed_read_vars: Vec<(String, bool)>,
 }
 
 impl Drop for VariableScopeGuard<'_> {
@@ -276,6 +277,14 @@ impl Drop for VariableScopeGuard<'_> {
                 current.insert(name, val);
             } else {
                 current.remove(&name);
+            }
+        }
+        let mut current_read = self.decoder.read_variables.borrow_mut();
+        for (name, was_read) in self.shadowed_read_vars.drain(..) {
+            if was_read {
+                current_read.insert(name);
+            } else {
+                current_read.remove(&name);
             }
         }
     }
@@ -569,6 +578,7 @@ impl<'a> Decoder<'a> {
             root_element: self.ctx.program.root_element.as_str(),
             define_variables: &self.ctx.program.variables,
             runtime_variables: &self.runtime_variables.borrow(),
+            read_variables: Some(&self.read_variables),
             element_name: None,
         };
         let value = eval_input_value_calc_expression(
@@ -745,6 +755,7 @@ impl<'a> Decoder<'a> {
                     root_element: self.ctx.program.root_element.as_str(),
                     define_variables: &self.ctx.program.variables,
                     runtime_variables: &self.runtime_variables.borrow(),
+                    read_variables: Some(&self.read_variables),
                     element_name: None,
                 };
                 let v = eval_input_value_calc_expression(
@@ -816,8 +827,28 @@ impl<'a> Decoder<'a> {
     pub(crate) fn evaluate_and_set_variables(
         &self,
         set_variables: &[(StringId, StringId)],
+        new_variable_instances: &[(StringId, Option<StringId>)],
         siblings: Option<&BTreeMap<String, SiblingState>>,
     ) -> Result<()> {
+        for &(name_id, def_id) in new_variable_instances {
+            if def_id.is_some() {
+                let name = self.ctx.strings().get(name_id)?;
+                let local = name.rsplit(':').next().unwrap_or(name);
+                for &(set_name_id, _) in set_variables {
+                    let set_name = self.ctx.strings().get(set_name_id)?;
+                    let set_local = set_name.rsplit(':').next().unwrap_or(set_name);
+                    if set_local == local {
+                        return Err(VmError::InvalidValue {
+                            message: alloc::format!(
+                                "Schema Definition Error: newVariableInstance default value cannot be used in combination with setVariable due to unparse direction race condition forward referencing expression"
+                            ),
+                        }
+                        .into());
+                    }
+                }
+            }
+        }
+
         let mut seen = alloc::collections::BTreeSet::new();
         for &(name_id, _) in set_variables {
             let name = self.ctx.strings().get(name_id)?;
@@ -826,6 +857,15 @@ impl<'a> Decoder<'a> {
                 return Err(VmError::InvalidValue {
                     message: alloc::format!(
                         "Schema Definition Error: Variables setVariable ref='{name}' must be distinct in the same location."
+                    ),
+                }
+                .into());
+            }
+            let read_vars = self.read_variables.borrow();
+            if read_vars.contains(name) || read_vars.contains(local) {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Schema Definition Error: Cannot set variable '{name}' after it has been read"
                     ),
                 }
                 .into());
@@ -871,6 +911,7 @@ impl<'a> Decoder<'a> {
                             root_element: self.ctx.program.root_element.as_str(),
                             define_variables: &self.ctx.program.variables,
                             runtime_variables: &self.runtime_variables.borrow(),
+                            read_variables: Some(&self.read_variables),
                             element_name: None,
                         };
                         let is_constant =
@@ -960,6 +1001,7 @@ impl<'a> Decoder<'a> {
             return Ok(VariableScopeGuard {
                 decoder: self,
                 shadowed_vars: Vec::new(),
+                shadowed_read_vars: Vec::new(),
             });
         }
         if is_element {
@@ -969,6 +1011,7 @@ impl<'a> Decoder<'a> {
         }
 
         let mut shadowed_vars = Vec::new();
+        let mut shadowed_read_vars = Vec::new();
         let mut seen = alloc::vec::Vec::new();
         for &(name_id, def_id) in new_variable_instances {
             let name = self.ctx.strings().get(name_id)?;
@@ -1031,6 +1074,7 @@ impl<'a> Decoder<'a> {
                             root_element: self.ctx.program.root_element.as_str(),
                             define_variables: &self.ctx.program.variables,
                             runtime_variables: &self.runtime_variables.borrow(),
+                            read_variables: Some(&self.read_variables),
                             element_name: None,
                         };
                         let v = eval_input_value_calc_expression(
@@ -1091,11 +1135,16 @@ impl<'a> Decoder<'a> {
             }
             current_vars.insert(name.to_string(), initial_val.clone());
             current_vars.insert(local.to_string(), initial_val);
+
+            let was_read = self.read_variables.borrow().contains(local);
+            shadowed_read_vars.push((local.to_string(), was_read));
+            self.read_variables.borrow_mut().remove(local);
         }
 
         Ok(VariableScopeGuard {
             decoder: self,
             shadowed_vars,
+            shadowed_read_vars,
         })
     }
 
@@ -1365,6 +1414,7 @@ impl<'a> Decoder<'a> {
                                 root_element: "",
                                 define_variables: &BTreeMap::new(),
                                 runtime_variables: &self.runtime_variables.borrow(),
+                                read_variables: Some(&self.read_variables),
                                 element_name: None,
                             },
                             strings,
