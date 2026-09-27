@@ -818,6 +818,19 @@ impl<'a> Decoder<'a> {
         set_variables: &[(StringId, StringId)],
         siblings: Option<&BTreeMap<String, SiblingState>>,
     ) -> Result<()> {
+        let mut seen = alloc::collections::BTreeSet::new();
+        for &(name_id, _) in set_variables {
+            let name = self.ctx.strings().get(name_id)?;
+            let local = name.rsplit(':').next().unwrap_or(name);
+            if !seen.insert(local) {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Schema Definition Error: Variables setVariable ref='{name}' must be distinct in the same location."
+                    ),
+                }
+                .into());
+            }
+        }
         for &(name_id, val_id) in set_variables {
             let name = self.ctx.strings().get(name_id)?;
             let val = self.ctx.strings().get(val_id)?;
@@ -1351,7 +1364,7 @@ impl<'a> Decoder<'a> {
                                 ancestor_frames: None,
                                 root_element: "",
                                 define_variables: &BTreeMap::new(),
-                                runtime_variables: &BTreeMap::new(),
+                                runtime_variables: &self.runtime_variables.borrow(),
                                 element_name: None,
                             },
                             strings,
