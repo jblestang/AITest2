@@ -1559,12 +1559,17 @@ impl<'a> XsdParser<'a> {
             let effective_test = if let Some(t) = test_attr_val {
                 t
             } else {
-                body_text
+                body_text.clone()
             };
 
             if attrs.get("testKind").map(|s| s.as_str()) == Some("pattern") {
                 if let Some(pat) = test_pat_val.or_else(|| attrs.get("test").cloned()) {
+                    if pat.trim().is_empty() {
+                        props.has_empty_test_pattern = true;
+                    }
                     props.test_pattern = Some(pat);
+                } else if body_text.trim().is_empty() {
+                    props.has_empty_test_pattern = true;
                 }
             }
             if local == "discriminator" {

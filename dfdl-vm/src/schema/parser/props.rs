@@ -2667,6 +2667,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.has_discriminator_and_assert {
         base.has_discriminator_and_assert = true;
     }
+    if overlay.has_empty_test_pattern {
+        base.has_empty_test_pattern = true;
+    }
     if overlay.object_kind.is_some() {
         base.object_kind = overlay.object_kind;
     }

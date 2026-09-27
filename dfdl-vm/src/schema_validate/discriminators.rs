@@ -76,6 +76,11 @@ fn validate_props_discriminator_flags(props: &crate::schema::DfdlProps) -> Resul
             message: "Schema Definition Error: A component cannot have both a discriminator statement and an assert statement.".into(),
         });
     }
+    if props.has_empty_test_pattern {
+        return Err(SchemaError::InvalidProperty {
+            message: "Schema Definition Error: The attribute testPattern must not be empty for testKind='pattern'".into(),
+        });
+    }
     Ok(())
 }
 

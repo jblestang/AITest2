@@ -168,6 +168,7 @@ pub struct DfdlProps {
     pub has_test_and_test_pattern: bool,
     pub has_test_attr_and_body: bool,
     pub has_test_pat_attr_and_body: bool,
+    pub has_empty_test_pattern: bool,
     /// Type name for prefixed length fields (`dfdl:prefixLengthType`).
     pub prefix_length_type: Option<TypeName>,
     pub prefix_includes_prefix_length: Option<bool>,
