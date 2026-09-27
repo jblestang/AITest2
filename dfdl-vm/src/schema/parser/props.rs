@@ -1401,9 +1401,11 @@ fn parse_concat_arg_segment(
         return parse_concat_args_flat(nested_args);
     }
     if let Some(name) = part.strip_prefix("../") {
-        return Some(alloc::vec![InputValueCalcSegment::Sibling(
-            local_name_from_qname(name).to_string(),
-        )]);
+        if !name.contains('/') && !name.contains("..") {
+            return Some(alloc::vec![InputValueCalcSegment::Sibling(
+                local_name_from_qname(name).to_string(),
+            )]);
+        }
     }
     if part.starts_with('/') || part.starts_with("parent::") || part.starts_with("../") {
         if let Some((_parent_root, steps)) = parse_ivc_path_steps(part) {
@@ -2649,6 +2651,21 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.discriminator_xpath_prefixes.is_some() {
         base.discriminator_xpath_prefixes = overlay.discriminator_xpath_prefixes;
+    }
+    if overlay.has_test_attr_and_body {
+        base.has_test_attr_and_body = true;
+    }
+    if overlay.has_test_pat_attr_and_body {
+        base.has_test_pat_attr_and_body = true;
+    }
+    if overlay.has_test_and_test_pattern {
+        base.has_test_and_test_pattern = true;
+    }
+    if overlay.has_multiple_discriminators {
+        base.has_multiple_discriminators = true;
+    }
+    if overlay.has_discriminator_and_assert {
+        base.has_discriminator_and_assert = true;
     }
     if overlay.object_kind.is_some() {
         base.object_kind = overlay.object_kind;
