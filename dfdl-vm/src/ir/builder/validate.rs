@@ -508,7 +508,12 @@ pub(crate) fn validate_input_value_calc_compile(
             return Ok(());
         }
         if text.parse::<i128>().is_err() {
-            return Err(sde_out_of_range(text).into());
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: Cannot convert '{text}' to xs:{type_label}"
+                ),
+            }
+            .into());
         }
         Ok(())
     };

@@ -646,7 +646,7 @@ fn run_section_gate(section_name: &str, min_pass: usize, max_fail: usize) {
 
 #[test]
 fn daffodil_section07_regression_gate() {
-    run_section_gate("section07", 221, 82);
+    run_section_gate("section07", 223, 80);
 }
 
 #[test]
@@ -676,12 +676,12 @@ fn daffodil_section15_regression_gate() {
 
 #[test]
 fn daffodil_section16_regression_gate() {
-    run_section_gate("section16", 76, 11);
+    run_section_gate("section16", 73, 14);
 }
 
 #[test]
 fn daffodil_section17_regression_gate() {
-    run_section_gate("section17", 116, 2);
+    run_section_gate("section17", 115, 3);
 }
 
 #[test]

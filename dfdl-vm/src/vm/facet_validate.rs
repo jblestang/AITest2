@@ -172,7 +172,35 @@ pub fn validate_assert_int_eq(value: &DfdlValue, props: &IrProps) -> Result<(), 
     let Some(expected) = props.assert_int_eq else {
         return Ok(());
     };
+    if matches!(value, DfdlValue::Sequence(_)) {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!(
+                "Schema Definition Error: Expression evaluation error: xs:int(.) eq {expected} cannot be converted to xs:int"
+            ),
+        });
+    }
     let Some(actual) = numeric_value_i64(value) else {
+        let text = match value {
+            DfdlValue::String(s) => s.text.as_str(),
+            DfdlValue::Sequence(seq) => {
+                if let Some((_, inner)) = seq.fields.iter().next() {
+                    match inner {
+                        DfdlValue::String(s) => s.text.as_str(),
+                        _ => "",
+                    }
+                } else {
+                    ""
+                }
+            }
+            _ => "",
+        };
+        if !text.trim().is_empty() {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Parse Error. Cannot convert '{text}' to xs:int"
+                ),
+            });
+        }
         return Err(VmError::InvalidValue {
             message: alloc::format!(
                 "Parse Error. Assertion failed: Assertion failed for expression {{ xs:int(.) eq {expected} }}."

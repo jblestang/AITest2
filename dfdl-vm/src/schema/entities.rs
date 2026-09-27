@@ -880,9 +880,15 @@ fn eval_discriminator_dot_eq_with_err(
             let dot_num = match dot.parse::<i64>() {
                 Ok(n) => n,
                 Err(_) => {
-                    return Err(alloc::format!(
-                        "Schema Definition Error: Expression evaluation error: value '{dot}' cannot be converted to {target_type} in expression {cond}"
-                    ));
+                    if dot.is_empty() {
+                        return Err(alloc::format!(
+                            "Schema Definition Error: Expression evaluation error: {cond} cannot be converted to {target_type}"
+                        ));
+                    } else {
+                        return Err(alloc::format!(
+                            "Parse Error. Cannot convert '{dot}' to {target_type}"
+                        ));
+                    }
                 }
             };
             let lit_num = match lit.parse::<i64>() {

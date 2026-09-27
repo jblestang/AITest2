@@ -197,9 +197,13 @@ pub(crate) fn parse_ivc_lexical_for_kind(
             alloc::format!(
                 "Parse Error. Hex character must be 0-9, a-f, or A-F. Failed to parse xs:{target_name} from text: {trimmed}"
             )
-        } else {
+        } else if matches!(kind, ValueKind::DateTime | ValueKind::Time) {
             alloc::format!(
                 "Parse Error. Failed to parse xs:{target_name} from text: {trimmed}"
+            )
+        } else {
+            alloc::format!(
+                "Parse Error. Cannot convert '{trimmed}' to xs:{target_name}"
             )
         },
     })
