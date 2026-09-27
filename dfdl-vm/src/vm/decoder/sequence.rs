@@ -1522,22 +1522,6 @@ impl<'a> Decoder<'a> {
             if cursor.consume_delimiter(pat, props.ignore_case, enc) {
                 return Ok(());
             }
-            if item_props.is_some_and(|ip| {
-                ip.length_kind == LengthKind::Delimited || ip.length_kind == LengthKind::Implicit
-            }) {
-                return Ok(());
-            }
-            if !cursor.is_empty()
-                && crate::schema::match_delimiter_opts_for_encoding(
-                    &cursor.data[cursor.pos..],
-                    pat,
-                    props.ignore_case,
-                    enc,
-                )
-                .is_none()
-            {
-                return Ok(());
-            }
             let found_display = if cursor.is_empty() {
                 "End of file".into()
             } else {

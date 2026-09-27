@@ -864,6 +864,10 @@ fn eval_discriminator_dot_eq_with_err(
         return Ok(None);
     };
 
+    if left.starts_with('$') || right.starts_with('$') {
+        return Ok(None);
+    }
+
     let (is_numeric_cast, target_type, arg) = inspect_type_cast_wrapper(left);
     if arg == "." {
         let lit = if right.starts_with("fn:lower-case(") && right.ends_with(')') {

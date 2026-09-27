@@ -1,4 +1,4 @@
-use dfdl_vm::tdml::{parse_tdml, run_parser_test, TestOutcome};
+use dfdl_vm::tdml::{parse_tdml, run_parser_test, TdmlResourceContext, TestOutcome};
 use std::fs;
 use std::path::Path;
 
@@ -16,7 +16,8 @@ fn run_named_parser_case(name: &str) {
         "../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section07/escapeScheme/escapeScheme.tdml",
     );
     let text = fs::read_to_string(&path).expect("read");
-    let suite = parse_tdml(&text).expect("parse");
+    let mut suite = parse_tdml(&text).expect("parse");
+    suite.resource_context = TdmlResourceContext::from_tdml_path(&path.to_string_lossy());
     let t = suite.tests.iter().find(|t| t.name == name).expect("case");
     let r = run_parser_test(&suite, t).expect("run");
     assert_eq!(r.outcome, TestOutcome::Pass, "{:?}", r.outcome);
@@ -36,6 +37,11 @@ fn escape_expressions_07_and_08() {
 #[test]
 fn escape_scheme_with_comment() {
     run_named_parser_case("escapeScheme_with_comment");
+}
+
+#[test]
+fn test_esc_blk_multiple_eec() {
+    run_named_parser_case("escBlkMultipleEEC");
 }
 
 #[test]

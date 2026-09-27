@@ -354,8 +354,10 @@ impl<'a> Decoder<'a> {
 
         if path_clean.contains('*')
             || path_clean.contains('(')
+            || path_clean.starts_with('$')
             || lit_clean.contains('*')
             || lit_clean.contains('(')
+            || lit_clean.starts_with('$')
         {
             return Ok(None);
         }
@@ -693,6 +695,43 @@ impl<'a> Decoder<'a> {
                 &cond_unparenthesized[idx + 4..],
             )
         } else {
+            let expr_str = if cond_unparenthesized.starts_with('{') {
+                cond_unparenthesized.to_string()
+            } else {
+                alloc::format!("{{{cond_unparenthesized}}}")
+            };
+            if let Some(schema_expr) = crate::schema::parse_input_value_calc_expression(&expr_str) {
+                let mut pool = self.ctx.strings().clone();
+                let ir_expr = crate::ir::builder::intern_input_value_calc_expression(&schema_expr, &mut pool);
+                let mut sib_snap = self.xpath_siblings_snapshot();
+                if let Some(s) = siblings {
+                    for (k, v) in s {
+                        sib_snap.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+                let ancestor_frames = self.xpath_ancestor_frames.borrow();
+                let ivc_ctx = IvcEvalCtx {
+                    siblings: Some(&sib_snap),
+                    ancestor_frames: Some(ancestor_frames.as_slice()),
+                    root_element: self.ctx.program.root_element.as_str(),
+                    define_variables: &self.ctx.program.variables,
+                    runtime_variables: &self.runtime_variables.borrow(),
+                    read_variables: Some(&self.read_variables),
+                    variable_directions: Some(&self.ctx.program.variable_directions),
+                    element_name: None,
+                };
+                if let Ok(v) = eval_input_value_calc_expression(
+                    &ir_expr,
+                    ivc_ctx,
+                    &pool,
+                    &self.ctx.program.tunables,
+                    ValueKind::Boolean,
+                    &IrProps::default(),
+                ) {
+                    let s = dfdl_value_to_string(&v);
+                    return Ok(s == "true" || s == "1");
+                }
+            }
             return Ok(true);
         };
         let eval_operand = |op_str: &str| -> Result<i64> {
@@ -1494,7 +1533,7 @@ impl<'a> Decoder<'a> {
                                                 "Assertion message expression evaluation failed: Cannot convert '{dot}' to xs:int"
                                             ));
                                         }
-                                    } else if let Ok(val) = sibling_string_value(siblings, arg) {
+                                    } else if let Ok(val) = sibling_string_value(siblings, arg.strip_prefix("./").unwrap_or(arg)) {
                                         out.push_str(&val);
                                     } else {
                                         out.push_str(arg);

@@ -28,6 +28,38 @@ fn nested_choice_discriminator_tdml_parses() {
     parse_rel("discriminators/nestedChoiceDiscriminator.tdml");
 }
 
+fn run_nested_choice_case(name: &str) {
+    let path = Path::new(ROOT).join("discriminators/nestedChoiceDiscriminator.tdml");
+    let text = fs::read_to_string(&path).expect("read");
+    let mut suite = parse_tdml(&text).expect("parse");
+    suite.resource_context = dfdl_vm::tdml::TdmlResourceContext::from_tdml_path(&path.to_string_lossy());
+    let t = suite.tests.iter().find(|t| t.name == name).expect("case");
+    let r = dfdl_vm::tdml::run_parser_test(&suite, t).expect("run");
+    assert_eq!(r.outcome, dfdl_vm::tdml::TestOutcome::Pass, "{:?}", r.outcome);
+}
+
+#[test]
+fn test_nested_choice_3() {
+    let path = Path::new(ROOT).join("discriminators/nestedChoiceDiscriminator.tdml");
+    let text = fs::read_to_string(&path).expect("read");
+    let mut suite = parse_tdml(&text).expect("parse");
+    suite.resource_context = dfdl_vm::tdml::TdmlResourceContext::from_tdml_path(&path.to_string_lossy());
+    let t = suite.tests.iter().find(|t| t.name == "nestedChoice3").expect("case");
+    let r = dfdl_vm::tdml::run_parser_test(&suite, t).expect("run");
+    println!("RESULT 3: {r:#?}");
+    assert_eq!(r.outcome, dfdl_vm::tdml::TestOutcome::Pass, "{:?}", r.outcome);
+}
+
+#[test]
+fn test_nested_choice_3b() {
+    run_nested_choice_case("nestedChoice3b");
+}
+
+#[test]
+fn test_nested_choice_4() {
+    run_nested_choice_case("nestedChoice4");
+}
+
 #[test]
 fn escape_scheme_unparse_tdml_parses() {
     parse_rel("escapeScheme/escapeSchemeUnparse.tdml");
@@ -41,4 +73,19 @@ fn set_var_with_value_length_tdml_parses() {
 #[test]
 fn variables_tdml_parses() {
     parse_rel("variables/variables.tdml");
+}
+
+fn run_variables_case(name: &str) {
+    let path = Path::new(ROOT).join("variables/variables.tdml");
+    let text = fs::read_to_string(&path).expect("read");
+    let mut suite = parse_tdml(&text).expect("parse");
+    suite.resource_context = dfdl_vm::tdml::TdmlResourceContext::from_tdml_path(&path.to_string_lossy());
+    let t = suite.tests.iter().find(|t| t.name == name).expect("case");
+    let r = dfdl_vm::tdml::run_parser_test(&suite, t).expect("run");
+    assert_eq!(r.outcome, dfdl_vm::tdml::TestOutcome::Pass, "{:?}", r.outcome);
+}
+
+#[test]
+fn test_var_instance_09() {
+    run_variables_case("varInstance_09");
 }

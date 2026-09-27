@@ -33,6 +33,35 @@ pub fn unescape_field_text(input: &str, scheme: &EscapeSchemeDef) -> Result<Stri
     }
 }
 
+fn find_unescaped_block_end(data: &[u8], from: usize, end: &[u8], ee: &[u8]) -> Option<usize> {
+    if end.is_empty() {
+        return None;
+    }
+    let mut j = from;
+    while j < data.len() {
+        if !ee.is_empty()
+            && j + ee.len() + end.len() <= data.len()
+            && &data[j..j + ee.len()] == ee
+            && &data[j + ee.len()..j + ee.len() + end.len()] == end
+        {
+            j += ee.len() + end.len();
+            continue;
+        }
+        if j + end.len() <= data.len() && &data[j..j + end.len()] == end {
+            if ee == end && j + end.len() < data.len() {
+                let next_b = data[j + end.len()];
+                if next_b.is_ascii_alphanumeric() || next_b == b'_' || next_b == b' ' {
+                    j += end.len();
+                    continue;
+                }
+            }
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
+}
+
 fn unescape_block(input: &str, scheme: &EscapeSchemeDef) -> Result<String, VmError> {
     let start = scheme.escape_block_start.as_deref().unwrap_or("");
     let end = scheme.escape_block_end.as_deref().unwrap_or("");
@@ -40,52 +69,64 @@ fn unescape_block(input: &str, scheme: &EscapeSchemeDef) -> Result<String, VmErr
         return Ok(input.to_string());
     }
     let ee = scheme.escape_escape_character.as_deref().unwrap_or("");
-    let has_escaped_end = !ee.is_empty()
-        && input.starts_with(start)
-        && input.ends_with(end)
-        && input[..input.len() - end.len()].ends_with(ee);
-    let inner = if input.starts_with(start)
-        && input.ends_with(end)
-        && input.len() >= start.len() + end.len()
-        && !has_escaped_end
-    {
-        &input[start.len()..input.len() - end.len()]
-    } else if input.starts_with(start) {
-        &input[start.len()..]
-    } else {
-        input
-    };
-    if scheme
-        .escape_escape_character
-        .as_deref()
-        .is_some_and(|s| !s.is_empty())
-    {
-        let esc = scheme.escape_escape_character.clone();
-        let mut extras = scheme.extra_escaped_characters.clone();
-        if let Some(ref end) = scheme.escape_block_end {
-            for c in end.chars() {
-                if !extras.contains(&c) {
-                    extras.push(c);
+    if input.starts_with(start) {
+        let bytes = input.as_bytes();
+        let end_idx = find_unescaped_block_end(bytes, start.len(), end.as_bytes(), ee.as_bytes())
+            .ok_or_else(|| VmError::InvalidValue {
+                message: "Parse Error: unclosed escape block".into(),
+            })?;
+        let inner = &input[start.len()..end_idx];
+        if !ee.is_empty() {
+            let ee_bytes = ee.as_bytes();
+            let start_bytes = start.as_bytes();
+            let end_bytes = end.as_bytes();
+            let inner_bytes = inner.as_bytes();
+            let mut out = alloc::vec::Vec::new();
+            let mut i = 0usize;
+            while i < inner_bytes.len() {
+                if i + ee_bytes.len() <= inner_bytes.len()
+                    && &inner_bytes[i..i + ee_bytes.len()] == ee_bytes
+                {
+                    let next = i + ee_bytes.len();
+                    if next + end_bytes.len() <= inner_bytes.len()
+                        && &inner_bytes[next..next + end_bytes.len()] == end_bytes
+                    {
+                        if end == alloc::format!("{ee}{ee}") {
+                            out.extend_from_slice(ee_bytes);
+                        } else {
+                            out.extend_from_slice(end_bytes);
+                        }
+                        i = next + end_bytes.len();
+                        continue;
+                    }
+                    if next + start_bytes.len() <= inner_bytes.len()
+                        && &inner_bytes[next..next + start_bytes.len()] == start_bytes
+                    {
+                        out.extend_from_slice(start_bytes);
+                        i = next + start_bytes.len();
+                        continue;
+                    }
+                    if next + ee_bytes.len() <= inner_bytes.len()
+                        && &inner_bytes[next..next + ee_bytes.len()] == ee_bytes
+                    {
+                        out.extend_from_slice(ee_bytes);
+                        i = next + ee_bytes.len();
+                        continue;
+                    }
+                    if let Some(n) = extra_escaped_char_len(inner_bytes, next, &scheme.extra_escaped_characters) {
+                        out.extend_from_slice(&inner_bytes[next..next + n]);
+                        i = next + n;
+                        continue;
+                    }
                 }
+                out.push(inner_bytes[i]);
+                i += 1;
             }
+            return Ok(String::from_utf8_lossy(&out).into_owned());
         }
-        if let Some(ref start) = scheme.escape_block_start {
-            for c in start.chars() {
-                if !extras.contains(&c) {
-                    extras.push(c);
-                }
-            }
-        }
-        let inner_scheme = EscapeSchemeDef {
-            escape_kind: EscapeKind::EscapeCharacter,
-            escape_character: esc,
-            escape_escape_character: Some(String::new()),
-            extra_escaped_characters: extras,
-            ..Default::default()
-        };
-        return Ok(unescape_character(inner, &inner_scheme));
+        return Ok(inner.to_string());
     }
-    Ok(inner.to_string())
+    Ok(input.to_string())
 }
 
 /// Next byte index when scanning delimited data with an escape scheme (Section 7).
@@ -97,12 +138,15 @@ pub(crate) fn advance_escape_scan_index(data: &[u8], i: usize, scheme: &EscapeSc
         EscapeKind::EscapeBlock => {
             let start = scheme.escape_block_start.as_deref().unwrap_or("");
             let end = scheme.escape_block_end.as_deref().unwrap_or("");
+            let ee = scheme.escape_escape_character.as_deref().unwrap_or("");
             if !start.is_empty()
                 && data.len() >= i + start.len()
                 && &data[i..i + start.len()] == start.as_bytes()
             {
-                if let Some(rel) = find_subslice(data, i + start.len(), end.as_bytes()) {
-                    return rel + end.len();
+                if let Some(end_pos) =
+                    find_unescaped_block_end(data, i + start.len(), end.as_bytes(), ee.as_bytes())
+                {
+                    return end_pos + end.len();
                 }
             }
             i + 1

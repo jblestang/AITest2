@@ -448,11 +448,9 @@ impl<'a> XsdParser<'a> {
         namespace: Option<&str>,
     ) -> bool {
         const DFDL_LEGACY: &str = "http://www.ogf.org/dfdl/dfdl-1.0/";
-        if matches!(namespace, Some(DFDL_NS) | Some(DFDL_LEGACY)) {
+        const DAF_NS: &str = "urn:ogf:dfdl:2013:imp:daffodil.apache.org:2018:ext";
+        if matches!(namespace, Some(DFDL_NS) | Some(DFDL_LEGACY) | Some(DAF_NS)) {
             return true;
-        }
-        if namespace.is_some_and(|ns| !ns.is_empty()) {
-            return false;
         }
         match prefix {
             Some("dfdl") | Some("dfdlx") | Some("daf") => true,
@@ -1737,9 +1735,9 @@ impl<'a> XsdParser<'a> {
                                     message: "dfdl:property missing name".into(),
                                 }
                             })?;
-                            if prop_name == "ref" {
+                            if prop_name == "ref" || prop_name == "escapeSchemeRef" {
                                 return Err(crate::error::SchemaError::InvalidProperty {
-                                    message: "Schema Definition Error: 'ref' is not a valid value for dfdl:property name. The ref property must be specified as an attribute.".into(),
+                                    message: alloc::format!("Schema Definition Error: '{prop_name}' is not a valid value for dfdl:property name. The {prop_name} property must be specified as an attribute."),
                                 }.into());
                             }
                             if attrs.keys().any(|k| local_tag(k) == local_tag(&prop_name)) {

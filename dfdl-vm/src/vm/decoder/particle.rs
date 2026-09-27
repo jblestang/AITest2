@@ -279,7 +279,7 @@ impl<'a> Decoder<'a> {
         ) {
             return b;
         }
-        false
+        true
     }
 
     pub(crate) fn validate_particle_discriminator(
@@ -330,8 +330,13 @@ impl<'a> Decoder<'a> {
         }
         let msg = self.eval_facet_assert_message_with_dot(props, dot)?;
         if !msg.is_empty() {
+            let formatted_msg = if props.is_discriminator {
+                msg
+            } else {
+                alloc::format!("Parse Error. Assertion failed: {msg}")
+            };
             return Err(VmError::InvalidValue {
-                message: alloc::format!("Parse Error. Assertion failed: {msg}"),
+                message: formatted_msg,
             }
             .into());
         }

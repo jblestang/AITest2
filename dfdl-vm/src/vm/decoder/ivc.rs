@@ -273,7 +273,7 @@ pub(crate) fn eval_input_value_calc_expression(
                         ctx,
                         strings,
                         tunables,
-                        target_kind,
+                        ValueKind::Double,
                         target_props,
                     )?;
                 }
@@ -286,7 +286,7 @@ pub(crate) fn eval_input_value_calc_expression(
                     ctx,
                     strings,
                     tunables,
-                    target_kind,
+                    ValueKind::Integer,
                     target_props,
                 )?);
             }
@@ -307,7 +307,7 @@ pub(crate) fn eval_input_value_calc_expression(
                     ctx,
                     strings,
                     tunables,
-                    target_kind,
+                    ValueKind::Double,
                     target_props,
                 )?;
                 let b = eval_input_value_calc_to_f64(
@@ -315,7 +315,7 @@ pub(crate) fn eval_input_value_calc_expression(
                     ctx,
                     strings,
                     tunables,
-                    target_kind,
+                    ValueKind::Double,
                     target_props,
                 )?;
                 return ivc_f64_to_value(a - b, target_kind);
@@ -325,7 +325,7 @@ pub(crate) fn eval_input_value_calc_expression(
                 ctx,
                 strings,
                 tunables,
-                target_kind,
+                ValueKind::Integer,
                 target_props,
             )?;
             let b = eval_input_value_calc_to_i64(
@@ -333,7 +333,7 @@ pub(crate) fn eval_input_value_calc_expression(
                 ctx,
                 strings,
                 tunables,
-                target_kind,
+                ValueKind::Integer,
                 target_props,
             )?;
             Ok(DfdlValue::Integer((a - b).to_string()))
@@ -347,7 +347,7 @@ pub(crate) fn eval_input_value_calc_expression(
                         ctx,
                         strings,
                         tunables,
-                        target_kind,
+                        ValueKind::Double,
                         target_props,
                     )?;
                 }
@@ -360,7 +360,7 @@ pub(crate) fn eval_input_value_calc_expression(
                     ctx,
                     strings,
                     tunables,
-                    target_kind,
+                    ValueKind::Integer,
                     target_props,
                 )?);
             }
@@ -373,7 +373,7 @@ pub(crate) fn eval_input_value_calc_expression(
                     ctx,
                     strings,
                     tunables,
-                    target_kind,
+                    ValueKind::Double,
                     target_props,
                 )?;
                 let b = eval_input_value_calc_to_f64(
@@ -381,7 +381,7 @@ pub(crate) fn eval_input_value_calc_expression(
                     ctx,
                     strings,
                     tunables,
-                    target_kind,
+                    ValueKind::Double,
                     target_props,
                 )?;
                 if b == 0.0 {
@@ -397,7 +397,7 @@ pub(crate) fn eval_input_value_calc_expression(
                 ctx,
                 strings,
                 tunables,
-                target_kind,
+                ValueKind::Integer,
                 target_props,
             )?;
             let b = eval_input_value_calc_to_i64(
@@ -405,7 +405,7 @@ pub(crate) fn eval_input_value_calc_expression(
                 ctx,
                 strings,
                 tunables,
-                target_kind,
+                ValueKind::Integer,
                 target_props,
             )?;
             if b == 0 {
@@ -509,13 +509,19 @@ pub(crate) fn eval_input_value_calc_to_i64(
 ) -> Result<i64> {
     let value =
         eval_input_value_calc_expression(expr, ctx, strings, tunables, target_kind, target_props)?;
-    value.as_i64().ok_or_else(|| {
-        VmError::InvalidValue {
-            message: "Schema Definition Error: expression evaluation error: non-numeric value"
-                .to_string(),
+    if let Some(n) = value.as_i64() {
+        return Ok(n);
+    }
+    if let DfdlValue::String(s) = &value {
+        if let Ok(n) = s.text.trim().parse::<i64>() {
+            return Ok(n);
         }
-        .into()
-    })
+    }
+    Err(VmError::InvalidValue {
+        message: "Schema Definition Error: expression evaluation error: non-numeric value"
+            .to_string(),
+    }
+    .into())
 }
 
 pub(crate) fn eval_input_value_calc_to_f64(

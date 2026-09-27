@@ -843,8 +843,8 @@ impl<'a> Decoder<'a> {
                         None => None,
                     };
                     let scan_ctx = parent_sequence.map(|parent| {
-                        let nested_under_repeating_particle = self.occurrence_decode_depth.get()
-                            > 1
+                        let is_repeating = props.occurs_max.is_none() || props.occurs_max.is_some_and(|m| m > 1);
+                        let nested_under_repeating_particle = (self.occurrence_decode_depth.get() > 0 || is_repeating)
                             && parent.separator.is_some()
                             && parent.separator_position == SeparatorPosition::Infix;
                         crate::vm::runtime::SequenceChildScanContext {

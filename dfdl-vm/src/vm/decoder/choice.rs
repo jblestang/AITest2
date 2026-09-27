@@ -583,19 +583,19 @@ impl<'a> Decoder<'a> {
         let mut branch_errors = Vec::new();
 
         for branch in branches {
+            let mut branch_cursor = cursor.clone();
+            let saved_discriminator_state = self.discriminator_committed_branch.get();
+            self.discriminator_committed_branch.set(false);
+
             if let Some(ref d_key) = dispatch_key {
                 if !choice_branch_discriminator_matches_name(self.ctx.program, branch, d_key) {
                     continue;
                 }
+                self.discriminator_committed_branch.set(true);
             } else if !self.choice_branch_discriminator_matches(branch.node, dot, cursor) {
                 continue;
             }
 
-            let mut branch_cursor = cursor.clone();
-            let saved_discriminator_state = self.discriminator_committed_branch.get();
-            let has_discrim = choice_branch_element_props(self.ctx.program, branch.node)
-                .is_some_and(|p| p.is_discriminator);
-            self.discriminator_committed_branch.set(has_discrim);
             let saved_vars = self.runtime_variables.borrow().clone();
             let saved_reads = self.read_variables.borrow().clone();
 
@@ -611,8 +611,7 @@ impl<'a> Decoder<'a> {
             );
 
             let branch_committed = self.discriminator_committed_branch.get();
-            self.discriminator_committed_branch
-                .set(saved_discriminator_state || branch_committed);
+            self.discriminator_committed_branch.set(saved_discriminator_state);
 
             match res {
                 Ok(val) => {
@@ -633,6 +632,8 @@ impl<'a> Decoder<'a> {
                         }
                     }
                     *cursor = branch_cursor;
+                    self.discriminator_committed_branch
+                        .set(saved_discriminator_state || branch_committed);
                     let disc_name = choice_branch_discriminator_for_infoset(
                         branch,
                         branches,
@@ -666,8 +667,14 @@ impl<'a> Decoder<'a> {
         if let Some(frame) = choice_explicit_frame_bytes(props, cursor, self.ctx.strings())? {
             cursor.pos = choice_start.saturating_add(frame);
         }
-        if using_dispatch && !branch_errors.is_empty() {
-            branch_errors.insert(0, "Choice dispatch branch failed".into());
+        if let Some(ref d_key) = dispatch_key {
+            if branch_errors.is_empty() {
+                branch_errors.push(alloc::format!(
+                    "Choice dispatch key ({d_key}) failed to match any of the branch keys"
+                ));
+            } else {
+                branch_errors.insert(0, "Choice dispatch branch failed".into());
+            }
         }
         Err(VmError::InvalidChoice { branch_errors }.into())
     }

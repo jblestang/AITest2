@@ -542,6 +542,9 @@ pub(crate) fn overlay_dfdl_to_ir(
     if let Some(steps) = &props.occurs_count_fn_path {
         base.occurs_count_fn_path = Some(intern_input_path_steps(steps, strings));
     }
+    if let Some(expr) = &props.occurs_count_expr {
+        base.occurs_count_expr = Some(strings.intern(expr.clone()));
+    }
     if props.choice_dispatch_literal.is_some() {
         base.choice_dispatch_literal = props
             .choice_dispatch_literal
@@ -775,6 +778,12 @@ pub(crate) fn merge_ir_props(base: &IrProps, overlay: &IrProps) -> IrProps {
     }
     out.empty_element_parse_policy = overlay.empty_element_parse_policy;
     out.occurs_count_kind = overlay.occurs_count_kind;
+    if overlay.occurs_count_fn_path.is_some() {
+        out.occurs_count_fn_path = overlay.occurs_count_fn_path.clone();
+    }
+    if overlay.occurs_count_expr.is_some() {
+        out.occurs_count_expr = overlay.occurs_count_expr;
+    }
     out.ignore_case = overlay.ignore_case;
     if overlay.text_trim_kind != TextTrimKind::None {
         out.text_trim_kind = overlay.text_trim_kind;
