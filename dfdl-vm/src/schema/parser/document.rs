@@ -207,6 +207,17 @@ pub(crate) fn backfill_type_format_contexts(doc: &mut SchemaDocument) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AnnotationTarget {
+    #[default]
+    Schema,
+    Element,
+    Sequence,
+    Choice,
+    Group,
+    SimpleType,
+}
+
 pub(crate) struct XsdParser<'a> {
     pub(crate) reader: XmlReader<'a>,
     pub(crate) doc: SchemaDocument,
@@ -216,6 +227,7 @@ pub(crate) struct XsdParser<'a> {
     pub(crate) suppress_schema_definition_warnings: Option<String>,
     pub(crate) warning_scope: Option<String>,
     pub(crate) annotation_prefix_overrides: alloc::vec::Vec<BTreeMap<String, String>>,
+    pub(crate) annotation_target: AnnotationTarget,
 }
 
 impl<'a> XsdParser<'a> {
@@ -229,6 +241,7 @@ impl<'a> XsdParser<'a> {
             suppress_schema_definition_warnings: None,
             warning_scope: None,
             annotation_prefix_overrides: alloc::vec::Vec::new(),
+            annotation_target: AnnotationTarget::Schema,
         }
     }
 
@@ -1244,7 +1257,7 @@ impl<'a> XsdParser<'a> {
         }
 
         let mut props = DfdlProps::default();
-        if source == Some(DFDL_NS) || source == Some(LEGACY_APPINFO) || source.is_none() {
+        if source == Some(DFDL_NS) || source == Some(LEGACY_APPINFO) || source == Some(OFFICIAL_APPINFO) || source.is_none() {
             loop {
                 self.reader.skip_insignificant_ws()?;
                 match self.reader.peek()? {
@@ -1259,6 +1272,11 @@ impl<'a> XsdParser<'a> {
                         let ns = name.namespace.clone();
                         let (child_attrs, child_namespace) = self.reader.take_start_element()?;
                         if Self::is_dfdl_element(prefix.as_deref(), &local, ns.as_deref()) {
+                            if local == "property" {
+                                props.invalid_annotation_element = true;
+                                self.skip_element_body(&local)?;
+                                continue;
+                            }
                             if source.is_none() {
                                 self.push_schema_warning(
                                     "appinfoNoSource",
@@ -1296,7 +1314,7 @@ impl<'a> XsdParser<'a> {
                                 }
                                 props = merge_dfdl_props(props, dfdl_props);
                             }
-                        } else if source == Some(DFDL_NS) || source == Some(LEGACY_APPINFO) {
+                        } else if source == Some(DFDL_NS) || source == Some(LEGACY_APPINFO) || source == Some(OFFICIAL_APPINFO) {
                             let qname = match prefix.as_deref() {
                                 Some(p) => alloc::format!("{p}:{local}"),
                                 None => local.clone(),
@@ -1370,6 +1388,40 @@ impl<'a> XsdParser<'a> {
                 }
                 .into());
             }
+        }
+        let mut target_err = None;
+        match local {
+            "element" if self.annotation_target != AnnotationTarget::Element => {
+                target_err = Some(alloc::format!(
+                    "DFDL annotation type dfdl:element is invalid. Expected dfdl:sequence or dfdl:choice."
+                ));
+            }
+            "sequence" if self.annotation_target != AnnotationTarget::Sequence => {
+                target_err = Some(alloc::format!(
+                    "DFDL annotation type dfdl:sequence is invalid for element. Expected dfdl:element."
+                ));
+            }
+            "choice" if self.annotation_target != AnnotationTarget::Choice => {
+                target_err = Some(alloc::format!(
+                    "DFDL annotation type dfdl:choice is invalid for element. Expected dfdl:element."
+                ));
+            }
+            "group" if self.annotation_target != AnnotationTarget::Group => {
+                target_err = Some(alloc::format!(
+                    "DFDL annotation type dfdl:group is invalid for element. Expected dfdl:element."
+                ));
+            }
+            "simpleType" if self.annotation_target != AnnotationTarget::SimpleType => {
+                target_err = Some(alloc::format!(
+                    "DFDL annotation type dfdl:simpleType is invalid for element. Expected dfdl:element."
+                ));
+            }
+            "format" if self.annotation_target != AnnotationTarget::Schema => {
+                target_err = Some(alloc::format!(
+                    "DFDL annotation type dfdl:format is invalid for element. Expected dfdl:element."
+                ));
+            }
+            _ => {}
         }
         if local == "defineFormat" {
             return self.parse_define_format(attrs);
@@ -1687,6 +1739,9 @@ impl<'a> XsdParser<'a> {
             self.doc.format_defaults.props.set_variables.clear();
             self.doc.format_defaults.props.new_variable_instances.clear();
             props.calendar_time_zone_defined = false;
+        }
+        if let Some(err) = target_err {
+            props.invalid_annotation_target = Some(err);
         }
 
         Ok(props)

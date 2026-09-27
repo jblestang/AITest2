@@ -20,7 +20,7 @@ pub(crate) fn validate_format_refs_exist(
     ) -> Result<(), SchemaError> {
         if props.has_short_and_long_ref_overlap {
             return Err(SchemaError::InvalidProperty {
-                message: "Schema Definition Error: Both long form and short form ref attribute found".into(),
+                message: "Schema Definition Error: Property specified in multiple forms (short form, long form, or element form); both long form and short form ref attribute found".into(),
             });
         }
         let mut visited = alloc::collections::BTreeSet::new();

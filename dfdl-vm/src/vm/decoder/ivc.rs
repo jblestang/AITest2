@@ -32,7 +32,13 @@ pub(crate) fn length_in_units(byte_len: usize, units: LengthUnits) -> Result<usi
 
 pub(crate) fn value_byte_length(value: &DfdlValue) -> Result<usize> {
     match value {
-        DfdlValue::String(s) => Ok(s.text.len()),
+        DfdlValue::String(s) => {
+            if let Some(ref bytes) = s.meta.source_bytes {
+                Ok(bytes.len())
+            } else {
+                Ok(s.text.len())
+            }
+        }
         DfdlValue::Decimal(s) | DfdlValue::DateTime(s) | DfdlValue::Integer(s) => Ok(s.len()),
         DfdlValue::HexBinary(v) => Ok(v.len()),
         DfdlValue::Byte(_) | DfdlValue::UnsignedByte(_) | DfdlValue::Boolean(_) => Ok(1),
@@ -460,8 +466,7 @@ pub(crate) fn eval_input_value_calc_expression(
                 .map(DfdlValue::Int)
                 .map_err(|_| VmError::InvalidValue {
                     message: alloc::format!("valueLength result `{len}` out of range for int"),
-                })
-                .map_err(Into::into)
+                }.into())
         }
     }
 }

@@ -188,16 +188,41 @@ impl<'a> IrBuilder<'a> {
         type_props: &DfdlProps,
         element_props: &DfdlProps,
     ) -> Result<IrProps> {
+        self.merge_props_full_with_name(base, type_props, element_props, None)
+    }
+
+    pub(crate) fn merge_props_full_with_name(
+        &mut self,
+        base: &IrProps,
+        type_props: &DfdlProps,
+        element_props: &DfdlProps,
+        element_name: Option<&str>,
+    ) -> Result<IrProps> {
         validate_delimiter_props(type_props, &DfdlProps::default())?;
         validate_delimiter_props(element_props, element_props)?;
         validate_text_string_pad_props(type_props)?;
         validate_text_string_pad_props(element_props)?;
+        let name_suffix = element_name.map(|n| alloc::format!(" on element `{n}`")).unwrap_or_default();
+        if type_props.invalid_annotation_element || element_props.invalid_annotation_element {
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: dfdl:property annotation element cannot be a direct child of appinfo{name_suffix}"),
+            }
+            .into());
+        }
+        if let Some(msg) = type_props.invalid_annotation_target.as_ref().or(element_props.invalid_annotation_target.as_ref()) {
+            let elem_part = element_name.map(|n| alloc::format!(" `{n}`")).unwrap_or_default();
+            let formatted_msg = msg.replace("for element.", &alloc::format!("for element{elem_part}."));
+            return Err(SchemaError::InvalidProperty {
+                message: alloc::format!("Schema Definition Error: {formatted_msg}"),
+            }
+            .into());
+        }
         if type_props.has_duplicate_variable_value_spec
             || element_props.has_duplicate_variable_value_spec
         {
             return Err(SchemaError::InvalidProperty {
                 message:
-                    "Schema Definition Error: value of variable was supplied both as attribute and element value"
+                    "Schema Definition Error: Cannot have both a value attribute and an element value (value of variable was supplied both as attribute and element value)"
                         .to_string(),
             }
             .into());

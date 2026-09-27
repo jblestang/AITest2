@@ -24,7 +24,7 @@ impl<'a> IrBuilder<'a> {
             let kind = value_kind_from_builtin(builtin);
             let defaults = self.defaults.clone();
             let mut merged =
-                self.merge_props_full(&defaults, &DfdlProps::default(), &root_element.props)?;
+                self.merge_props_full_with_name(&defaults, &DfdlProps::default(), &root_element.props, Some(root_name))?;
             apply_type_name_ir_flags(&root_element.type_name, &mut merged);
             let mut props = finalize_element_props(
                 kind,
@@ -68,7 +68,7 @@ impl<'a> IrBuilder<'a> {
                     .unwrap_or_default();
                 validate_dfdl_prop_overlap(&root_element.props, &type_props)?;
                 let mut merged =
-                    self.merge_props_full(&defaults, &type_props, &root_element.props)?;
+                    self.merge_props_full_with_name(&defaults, &type_props, &root_element.props, Some(root_name))?;
                 apply_type_name_ir_flags(&root_element.type_name, &mut merged);
                 validate_length_facets_for_type(self.schema, base, kind, &merged, None)?;
                 let mut ir_props = finalize_element_props(
@@ -116,7 +116,7 @@ impl<'a> IrBuilder<'a> {
                 )?;
                 let defaults = self.defaults.clone();
                 let mut ir_props =
-                    self.merge_props_full(&defaults, &DfdlProps::default(), &root_element.props)?;
+                    self.merge_props_full_with_name(&defaults, &DfdlProps::default(), &root_element.props, Some(root_name))?;
                 if root_element.props.length_kind.is_none() && self.defaults.length_kind_defined {
                     ir_props.length_kind = self.defaults.length_kind;
                 }

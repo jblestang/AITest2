@@ -49,6 +49,18 @@ impl<'a> XsdParser<'a> {
         attrs: BTreeMap<String, String>,
         namespace: xml_no_std::namespace::Namespace,
     ) -> Result<()> {
+        let prev_target = self.annotation_target;
+        self.annotation_target = super::document::AnnotationTarget::Element;
+        let res = self.parse_global_element_inner_body(attrs, namespace);
+        self.annotation_target = prev_target;
+        res
+    }
+
+    fn parse_global_element_inner_body(
+        &mut self,
+        attrs: BTreeMap<String, String>,
+        namespace: xml_no_std::namespace::Namespace,
+    ) -> Result<()> {
         let type_prefix_map = self.element_type_prefix_map(&namespace);
         let (xsd_attrs, dfdl_from_attrs) = split_dfdl_attrs_with_variables(
             "element",
@@ -202,6 +214,18 @@ impl<'a> XsdParser<'a> {
     }
 
     fn parse_element_decl_inner(
+        &mut self,
+        attrs: BTreeMap<String, String>,
+        namespace: xml_no_std::namespace::Namespace,
+    ) -> Result<ElementDecl> {
+        let prev_target = self.annotation_target;
+        self.annotation_target = super::document::AnnotationTarget::Element;
+        let res = self.parse_element_decl_inner_body(attrs, namespace);
+        self.annotation_target = prev_target;
+        res
+    }
+
+    fn parse_element_decl_inner_body(
         &mut self,
         attrs: BTreeMap<String, String>,
         namespace: xml_no_std::namespace::Namespace,
@@ -404,6 +428,18 @@ impl<'a> XsdParser<'a> {
     }
 
     pub(crate) fn parse_simple_type(
+        &mut self,
+        inline_name: Option<String>,
+        attrs: BTreeMap<String, String>,
+    ) -> Result<()> {
+        let prev_target = self.annotation_target;
+        self.annotation_target = super::document::AnnotationTarget::SimpleType;
+        let res = self.parse_simple_type_body(inline_name, attrs);
+        self.annotation_target = prev_target;
+        res
+    }
+
+    fn parse_simple_type_body(
         &mut self,
         inline_name: Option<String>,
         attrs: BTreeMap<String, String>,

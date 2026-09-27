@@ -678,6 +678,15 @@ impl<'a> IrBuilder<'a> {
                                 })?;
                         match group {
                             GroupDecl::Sequence(seq) => {
+                                if seq.particles.is_empty() {
+                                    children.push(self.compile_particle_inner(
+                                        particle,
+                                        &child_inherited,
+                                        &prior_element_names,
+                                        hidden,
+                                    )?);
+                                    continue;
+                                }
                                 ir_props =
                                     self.merge_props_full(&ir_props, &seq.props, &gr.props)?;
                                 child_inherited = particle_inherited_for_children(&ir_props);

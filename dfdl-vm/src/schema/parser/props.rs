@@ -132,7 +132,15 @@ pub(crate) fn props_from_attrs_with_variables(
                     }
                 });
             }
-            "encoding" => props.encoding = Some(value.clone()),
+            "encoding" => {
+                if value.trim().is_empty() {
+                    return Err(crate::error::SchemaError::InvalidProperty {
+                        message: "Schema Definition Error: Property encoding value cannot be an empty string".into(),
+                    }
+                    .into());
+                }
+                props.encoding = Some(value.clone());
+            }
             "encodingErrorPolicy" => {
                 props.encoding_error_policy_defined = true;
                 props.encoding_error_policy = Some(match value.as_str() {
@@ -1182,6 +1190,20 @@ fn parse_ivc_primary(s: &str) -> Option<crate::schema::InputValueCalcExpression>
             alloc::boxed::Box::new(inner),
         ));
     }
+    if let Some(arg) = extract_ivc_paren_argument(s, "dfdl:valueLength(").or_else(|| extract_ivc_paren_argument(s, "dfdl:contentLength(")) {
+        let arg_parts = split_top_level_commas(arg.trim());
+        if arg_parts.len() == 2 {
+            let raw_path = arg_parts[0].trim();
+            if raw_path != ".." && raw_path != "." {
+                let path = raw_path.strip_prefix("../").unwrap_or(raw_path);
+                let units = length_units_from_calc_args(arg_parts[1].trim());
+                return Some(crate::schema::InputValueCalcExpression::ValueLength {
+                    sibling: local_name_from_qname(path).to_string(),
+                    units,
+                });
+            }
+        }
+    }
     for (prefix, kind) in [
         ("xs:byte(", crate::schema::IvcXsCast::Byte),
         ("xsd:byte(", crate::schema::IvcXsCast::Byte),
@@ -1428,7 +1450,7 @@ fn parse_concat_arg_segment(
         if sub_args.len() != 3 {
             return None;
         }
-        let sib = sub_args[0].strip_prefix("../")?;
+        let sib = sub_args[0].strip_prefix("../").unwrap_or(&sub_args[0]);
         let start: usize = sub_args[1].parse().ok()?;
         let length: usize = sub_args[2].parse().ok()?;
         return Some(alloc::vec![InputValueCalcSegment::Substring {
@@ -1443,12 +1465,15 @@ fn parse_concat_arg_segment(
         if arg_parts.len() != 2 {
             return None;
         }
-        let path = arg_parts[0].trim().strip_prefix("../")?;
-        let units = length_units_from_calc_args(arg_parts[1].trim());
-        return Some(alloc::vec![InputValueCalcSegment::ValueLength {
-            sibling: local_name_from_qname(path).to_string(),
-            units,
-        }]);
+        let raw_path = arg_parts[0].trim();
+        if raw_path != ".." && raw_path != "." {
+            let path = raw_path.strip_prefix("../").unwrap_or(raw_path);
+            let units = length_units_from_calc_args(arg_parts[1].trim());
+            return Some(alloc::vec![InputValueCalcSegment::ValueLength {
+                sibling: local_name_from_qname(path).to_string(),
+                units,
+            }]);
+        }
     }
     None
 }
@@ -1812,7 +1837,7 @@ pub(crate) fn parse_input_value_calc(
         }
         ("dfdl:valueLength", "..") => Some((InputValueCalc::ValueLengthSelf(units), None, None)),
         ("dfdl:contentLength", sib) => {
-            let name = sib.strip_prefix("../")?;
+            let name = sib.strip_prefix("../").unwrap_or(sib);
             Some((
                 InputValueCalc::ContentLengthSibling(units),
                 Some(local_name_from_qname(name).to_string()),
@@ -1820,7 +1845,7 @@ pub(crate) fn parse_input_value_calc(
             ))
         }
         ("dfdl:valueLength", sib) => {
-            let name = sib.strip_prefix("../")?;
+            let name = sib.strip_prefix("../").unwrap_or(sib);
             Some((
                 InputValueCalc::ValueLengthSibling(units),
                 Some(local_name_from_qname(name).to_string()),
@@ -1828,7 +1853,7 @@ pub(crate) fn parse_input_value_calc(
             ))
         }
         ("xs:boolean", sib) => {
-            let name = sib.strip_prefix("../")?;
+            let name = sib.strip_prefix("../").unwrap_or(sib);
             Some((
                 InputValueCalc::BooleanFromSibling,
                 Some(local_name_from_qname(name).to_string()),
@@ -2034,7 +2059,7 @@ pub(crate) fn parse_output_value_calc(
             Some((OutputValueCalc::ValueLengthSelf(units, addend), None, None))
         }
         ("dfdl:contentLength", sib) => {
-            let name = sib.strip_prefix("../")?;
+            let name = sib.strip_prefix("../").unwrap_or(sib);
             Some((
                 OutputValueCalc::ContentLengthSibling(units, addend),
                 Some(local_name_from_qname(name).to_string()),
@@ -2042,7 +2067,7 @@ pub(crate) fn parse_output_value_calc(
             ))
         }
         ("dfdl:valueLength", sib) => {
-            let name = sib.strip_prefix("../")?;
+            let name = sib.strip_prefix("../").unwrap_or(sib);
             Some((
                 OutputValueCalc::ValueLengthSibling(units, addend),
                 Some(local_name_from_qname(name).to_string()),
@@ -2050,7 +2075,7 @@ pub(crate) fn parse_output_value_calc(
             ))
         }
         ("fn:string-length", sib) => {
-            let name = sib.strip_prefix("../")?;
+            let name = sib.strip_prefix("../").unwrap_or(sib);
             Some((
                 OutputValueCalc::StringLengthSibling,
                 Some(local_name_from_qname(name).to_string()),
@@ -2062,7 +2087,7 @@ pub(crate) fn parse_output_value_calc(
             if sub_args.len() != 3 {
                 return None;
             }
-            let name = sub_args[0].strip_prefix("../")?;
+            let name = sub_args[0].strip_prefix("../").unwrap_or(&sub_args[0]);
             let start: usize = sub_args[1].parse().ok()?;
             let length: usize = sub_args[2].parse().ok()?;
             Some((
@@ -2545,6 +2570,12 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     }
     if overlay.has_short_and_long_ref_overlap {
         base.has_short_and_long_ref_overlap = true;
+    }
+    if overlay.invalid_annotation_element {
+        base.invalid_annotation_element = true;
+    }
+    if overlay.invalid_annotation_target.is_some() {
+        base.invalid_annotation_target = overlay.invalid_annotation_target.clone();
     }
     if overlay.prefix_length_type.is_some() {
         base.prefix_length_type = overlay.prefix_length_type;

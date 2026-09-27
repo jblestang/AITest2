@@ -275,6 +275,8 @@ pub struct DfdlProps {
     /// `dfdl:newVariableInstance` ref → optional defaultValue pairs from annotations on this construct.
     pub new_variable_instances:
         alloc::vec::Vec<(alloc::string::String, Option<alloc::string::String>)>,
+    pub invalid_annotation_element: bool,
+    pub invalid_annotation_target: Option<alloc::string::String>,
 }
 
 impl DfdlProps {

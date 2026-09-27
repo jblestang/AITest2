@@ -70,6 +70,8 @@ impl<'a> XsdParser<'a> {
                 element: "group".into(),
                 attribute: "ref".into(),
             })?;
+        let prev_target = self.annotation_target;
+        self.annotation_target = super::document::AnnotationTarget::Group;
         let pending = core::mem::take(&mut self.pending_props);
         let mut props = self.finalize_props(merge_dfdl_props(pending, dfdl_from_attrs));
         self.reader.skip_insignificant_ws()?;
@@ -79,6 +81,7 @@ impl<'a> XsdParser<'a> {
         } else {
             self.expect_end_local("group")?;
         }
+        self.annotation_target = prev_target;
         Ok(GroupRefDecl {
             name: normalize_qname(&ref_name),
             props,
@@ -86,6 +89,17 @@ impl<'a> XsdParser<'a> {
     }
 
     pub(crate) fn parse_sequence(
+        &mut self,
+        attrs: BTreeMap<String, String>,
+    ) -> Result<SequenceDecl> {
+        let prev_target = self.annotation_target;
+        self.annotation_target = super::document::AnnotationTarget::Sequence;
+        let res = self.parse_sequence_body(attrs);
+        self.annotation_target = prev_target;
+        res
+    }
+
+    fn parse_sequence_body(
         &mut self,
         attrs: BTreeMap<String, String>,
     ) -> Result<SequenceDecl> {
@@ -183,6 +197,14 @@ impl<'a> XsdParser<'a> {
     }
 
     pub(crate) fn parse_choice(&mut self, attrs: BTreeMap<String, String>) -> Result<ChoiceDecl> {
+        let prev_target = self.annotation_target;
+        self.annotation_target = super::document::AnnotationTarget::Choice;
+        let res = self.parse_choice_body(attrs);
+        self.annotation_target = prev_target;
+        res
+    }
+
+    fn parse_choice_body(&mut self, attrs: BTreeMap<String, String>) -> Result<ChoiceDecl> {
         use xml_no_std::reader::XmlEvent;
         let (_xsd, dfdl_from_attrs) = split_dfdl_attrs("choice", &attrs, None)?;
         if xsd_attr(&attrs, "minOccurs").is_some() {
