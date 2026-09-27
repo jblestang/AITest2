@@ -1136,9 +1136,21 @@ impl<'a> Decoder<'a> {
             current_vars.insert(name.to_string(), initial_val.clone());
             current_vars.insert(local.to_string(), initial_val);
 
-            let was_read = self.read_variables.borrow().contains(local);
-            shadowed_read_vars.push((local.to_string(), was_read));
-            self.read_variables.borrow_mut().remove(local);
+            let keys_to_remove: alloc::vec::Vec<String> = self
+                .read_variables
+                .borrow()
+                .iter()
+                .filter(|k| {
+                    k.as_str() == name
+                        || k.as_str() == local
+                        || k.rsplit(':').next().unwrap_or(k.as_str()) == local
+                })
+                .cloned()
+                .collect();
+            for k in keys_to_remove {
+                shadowed_read_vars.push((k.clone(), true));
+                self.read_variables.borrow_mut().remove(&k);
+            }
         }
 
         Ok(VariableScopeGuard {
@@ -1338,15 +1350,23 @@ impl<'a> Decoder<'a> {
                 }
             }
         }
-        if let Ok(val) = self.eval_xpath_path_dfdl_value(inner) {
-            if let Some(n) = val.as_i64() {
-                if n >= 0 {
-                    return Ok(n as u64);
+        match self.eval_xpath_path_dfdl_value(inner) {
+            Ok(val) => {
+                if let Some(n) = val.as_i64() {
+                    if n >= 0 {
+                        return Ok(n as u64);
+                    }
+                }
+                Ok(count_dfdl_value_nodes(&val))
+            }
+            Err(e) => {
+                if inner.contains('/') || inner.starts_with('$') || inner.starts_with("../") {
+                    Err(e)
+                } else {
+                    Ok(0)
                 }
             }
-            return Ok(count_dfdl_value_nodes(&val));
         }
-        Ok(0)
     }
 
     pub(crate) fn xpath_sibling_path_truthy(&self, path: &str) -> bool {

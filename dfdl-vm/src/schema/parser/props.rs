@@ -1261,6 +1261,9 @@ fn parse_ivc_primary(s: &str) -> Option<crate::schema::InputValueCalcExpression>
             }
         });
     }
+    if s.parse::<f64>().is_ok() {
+        return Some(crate::schema::InputValueCalcExpression::LiteralLexical(s.to_string()));
+    }
     if s.len() >= 2
         && ((s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')))
     {

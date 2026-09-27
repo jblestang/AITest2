@@ -69,7 +69,7 @@ fn resolve_ivc_variable_depth(
         return Err(VmError::InvalidValue {
             message: ivc_sde_message(
                 ctx.element_name,
-                alloc::format!("circular variable reference for `{name}`"),
+                alloc::format!("Variable `{name}` is part of a circular definition."),
             ),
         }
         .into());

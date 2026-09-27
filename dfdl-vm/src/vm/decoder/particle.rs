@@ -227,12 +227,23 @@ pub(crate) fn parse_simple_val_from_str(text: &str, kind: ValueKind) -> core::re
 
 impl<'a> Decoder<'a> {
 
-    pub(crate) fn choice_branch_discriminator_matches(&self, branch_node: u32, dot: &str) -> bool {
+    pub(crate) fn choice_branch_discriminator_matches(
+        &self,
+        branch_node: u32,
+        dot: &str,
+        cursor: &Cursor<'_>,
+    ) -> bool {
         let Some(props) = choice_branch_element_props(self.ctx.program, branch_node) else {
             return true;
         };
         if !props.is_discriminator {
             return true;
+        }
+        if let Some(id) = props.assert_test_pattern {
+            if let Ok(pat) = self.ctx.strings().get(id) {
+                let text = core::str::from_utf8(&cursor.data[cursor.pos..]).unwrap_or("");
+                return crate::vm::facet_validate::pattern_prefix_matches(text, pat);
+            }
         }
         let Some(id) = props.discriminator_test else {
             return true;

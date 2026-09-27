@@ -623,6 +623,10 @@ impl<'a> XsdParser<'a> {
                                 .iter()
                                 .find(|(k, _)| local_tag(k) == "name")
                                 .map(|(_, v)| v.clone());
+                            let var_type = child_attrs
+                                .iter()
+                                .find(|(k, _)| local_tag(k) == "type")
+                                .map(|(_, v)| v.clone());
                             let default = child_attrs
                                 .iter()
                                 .find(|(k, _)| local_tag(k) == "defaultValue")
@@ -639,6 +643,9 @@ impl<'a> XsdParser<'a> {
                                 self.reader.skip_current_subtree()?;
                             } else {
                                 self.expect_end_local("defineVariable")?;
+                            }
+                            if let (Some(ref t), Some(ref def)) = (var_type.as_ref(), default_val.as_ref()) {
+                                validate_variable_default_value(t, def)?;
                             }
                             if let (Some(name), Some(def)) = (name, default_val) {
                                 let local = name.rsplit(':').next().unwrap_or(name.as_str()).to_string();
@@ -1435,6 +1442,10 @@ impl<'a> XsdParser<'a> {
                 .iter()
                 .find(|(k, _)| local_tag(k) == "name")
                 .map(|(_, v)| v.clone());
+            let var_type = attrs
+                .iter()
+                .find(|(k, _)| local_tag(k) == "type")
+                .map(|(_, v)| v.clone());
             let default = attrs
                 .iter()
                 .find(|(k, _)| local_tag(k) == "defaultValue")
@@ -1451,6 +1462,9 @@ impl<'a> XsdParser<'a> {
                 self.reader.skip_current_subtree()?;
             } else {
                 self.expect_end_local("defineVariable")?;
+            }
+            if let (Some(ref t), Some(ref def)) = (var_type.as_ref(), default_val.as_ref()) {
+                validate_variable_default_value(t, def)?;
             }
             if let (Some(name), Some(def)) = (name, default_val) {
                 let local = name.rsplit(':').next().unwrap_or(name.as_str()).to_string();
@@ -1484,6 +1498,15 @@ impl<'a> XsdParser<'a> {
             }
             if let (Some(var_ref), Some(value)) = (var_ref, value) {
                 let name = variable_local_name_from_ref(var_ref);
+                if let Some(def) = self.doc.variables.get(var_ref).or_else(|| self.doc.variables.get(&name)) {
+                    let trimmed_def = def.trim();
+                    if trimmed_def.starts_with('{') && trimmed_def.ends_with('}') {
+                        let warn = alloc::format!("Schema Definition Warning: variableSet: Cannot set variable '{var_ref}' after reading the default value. State was: VariableRead");
+                        if !self.doc.schema_warnings.contains(&warn) {
+                            self.doc.schema_warnings.push(warn);
+                        }
+                    }
+                }
                 props.set_variables.push((name, value));
             }
             return Ok(props);
@@ -2522,4 +2545,58 @@ pub(crate) fn parse_numeric_facet_bound(v: &str) -> Option<i64> {
     } else {
         None
     }
+}
+
+pub(crate) fn validate_variable_default_value(type_str: &str, def: &str) -> Result<()> {
+    let trimmed = def.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Ok(());
+    }
+    let local_type = type_str.rsplit(':').next().unwrap_or(type_str);
+    match local_type {
+        "float" | "double" => {
+            if trimmed != "INF" && trimmed != "-INF" && trimmed != "+INF" && trimmed != "NaN" {
+                if trimmed.parse::<f64>().is_err() {
+                    return Err(crate::error::SchemaError::InvalidProperty {
+                        message: alloc::format!(
+                            "Schema Definition Error: Unable to convert logical value '{def}' to {type_str} for defaultValue."
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+        "int" | "long" | "short" | "byte" | "integer" | "nonNegativeInteger" => {
+            if trimmed.parse::<i64>().is_err() {
+                return Err(crate::error::SchemaError::InvalidProperty {
+                    message: alloc::format!(
+                        "Schema Definition Error: Unable to convert logical value '{def}' to {type_str} for defaultValue."
+                    ),
+                }
+                .into());
+            }
+        }
+        "unsignedInt" | "unsignedLong" | "unsignedShort" | "unsignedByte" => {
+            if trimmed.parse::<u64>().is_err() {
+                return Err(crate::error::SchemaError::InvalidProperty {
+                    message: alloc::format!(
+                        "Schema Definition Error: Unable to convert logical value '{def}' to {type_str} for defaultValue."
+                    ),
+                }
+                .into());
+            }
+        }
+        "boolean" => {
+            if !matches!(trimmed, "true" | "false" | "1" | "0") {
+                return Err(crate::error::SchemaError::InvalidProperty {
+                    message: alloc::format!(
+                        "Schema Definition Error: Unable to convert logical value '{def}' to {type_str} for defaultValue."
+                    ),
+                }
+                .into());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }

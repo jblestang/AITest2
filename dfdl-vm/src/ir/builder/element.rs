@@ -411,6 +411,7 @@ pub(crate) fn validate_implicit_text_length(
     crate::length_validate::validate_binary_decimal_virtual_point_schema(kind, props)?;
     if props.representation == Representation::Text
         && props.length_kind == LengthKind::Implicit
+        && props.input_value_calc.is_none()
         && kind != ValueKind::Complex
         && props.length.is_none()
         && props.facet_length.is_none()
@@ -434,6 +435,7 @@ pub(crate) fn validate_implicit_text_length(
     }
     if props.representation == Representation::Binary
         && props.length_kind == LengthKind::Implicit
+        && props.input_value_calc.is_none()
         && (kind == ValueKind::Integer || kind == ValueKind::Decimal || props.non_negative_integer)
         && props.length.is_none()
         && props.facet_length.is_none()

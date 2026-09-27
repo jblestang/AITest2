@@ -545,13 +545,13 @@ impl<'a> Decoder<'a> {
         validate_choice_branch_element_name_upa_runtime(self.ctx.program, branches)?;
         validate_choice_branches_non_optional_runtime(self.ctx.program, branches)?;
 
+        let _var_scope =
+            self.enter_variable_scope(&props.new_variable_instances, siblings, false)?;
         self.evaluate_and_set_variables(
             &props.set_variables,
             &props.new_variable_instances,
             siblings,
         )?;
-        let _var_scope =
-            self.enter_variable_scope(&props.new_variable_instances, siblings, false)?;
 
         let mut child_stops = stop_sequences.to_vec();
         if props.separator.is_some()
@@ -587,13 +587,15 @@ impl<'a> Decoder<'a> {
                 if !choice_branch_discriminator_matches_name(self.ctx.program, branch, d_key) {
                     continue;
                 }
-            } else if !self.choice_branch_discriminator_matches(branch.node, dot) {
+            } else if !self.choice_branch_discriminator_matches(branch.node, dot, cursor) {
                 continue;
             }
 
             let mut branch_cursor = cursor.clone();
             let saved_discriminator_state = self.discriminator_committed_branch.get();
             self.discriminator_committed_branch.set(false);
+            let saved_vars = self.runtime_variables.borrow().clone();
+            let saved_reads = self.read_variables.borrow().clone();
 
             let res = self.decode_node(
                 branch.node,
@@ -617,6 +619,8 @@ impl<'a> Decoder<'a> {
                             if branch_committed {
                                 return Err(e);
                             }
+                            *self.runtime_variables.borrow_mut() = saved_vars;
+                            *self.read_variables.borrow_mut() = saved_reads;
                             branch_errors.push(format_choice_branch_error(
                                 branch,
                                 self.ctx.strings(),
@@ -642,6 +646,8 @@ impl<'a> Decoder<'a> {
                     if branch_committed || is_schema_definition_error(&e) {
                         return Err(e);
                     }
+                    *self.runtime_variables.borrow_mut() = saved_vars;
+                    *self.read_variables.borrow_mut() = saved_reads;
                     branch_errors.push(format_choice_branch_error(branch, self.ctx.strings(), &e));
                     cursor.pos = choice_start;
                 }
