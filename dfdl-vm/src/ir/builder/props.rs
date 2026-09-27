@@ -81,6 +81,9 @@ pub(crate) fn overlay_dfdl_to_ir(
     props: &DfdlProps,
     strings: &mut StringPool,
 ) -> Result<IrProps> {
+    if let Some(v) = props.parse_unparse_policy {
+        base.parse_unparse_policy = v;
+    }
     if let Some(v) = props.representation {
         base.representation = v;
         base.representation_defined = true;

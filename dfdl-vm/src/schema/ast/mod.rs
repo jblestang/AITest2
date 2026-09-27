@@ -631,6 +631,8 @@ pub struct SchemaDocument {
     pub named_escape_schemes: BTreeMap<String, EscapeSchemeDef>,
     /// `dfdl:defineVariable` name → default lexical value.
     pub variables: BTreeMap<String, String>,
+    /// `dfdl:defineVariable` name → parse/unparse policy direction.
+    pub variable_directions: BTreeMap<String, ParseUnparsePolicy>,
     pub types: BTreeMap<TypeName, TypeDef>,
     pub global_elements: BTreeMap<String, GlobalElement>,
     pub global_element_errors: BTreeMap<String, crate::error::Error>,

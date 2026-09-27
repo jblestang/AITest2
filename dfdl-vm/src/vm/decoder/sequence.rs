@@ -562,6 +562,15 @@ impl<'a> Decoder<'a> {
                                     insert_child(&mut map, child, val, self.ctx.program)?;
                                     break;
                                 }
+                            } else if let DfdlValue::Sequence(ref seq_val) = val {
+                                for (k, v) in &seq_val.fields {
+                                    let state = SiblingState {
+                                        value: v.clone(),
+                                        content_bytes: 0,
+                                    };
+                                    insert_seq_sibling(&mut seq_siblings, k.clone(), state.clone());
+                                    self.insert_xpath_sibling(k.clone(), state);
+                                }
                             }
                             insert_child(&mut map, child, val, self.ctx.program)?;
                             if !is_ivc {

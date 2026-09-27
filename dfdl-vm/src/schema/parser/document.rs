@@ -455,7 +455,7 @@ impl<'a> XsdParser<'a> {
             return false;
         }
         match prefix {
-            Some("dfdl") | Some("dfdlx") => true,
+            Some("dfdl") | Some("dfdlx") | Some("daf") => true,
             None if is_dfdl_local(local) => true,
             _ => false,
         }
@@ -644,13 +644,26 @@ impl<'a> XsdParser<'a> {
                             } else {
                                 self.expect_end_local("defineVariable")?;
                             }
+                            let dir = child_attrs
+                                .iter()
+                                .find(|(k, _)| local_tag(k) == "direction")
+                                .map(|(_, v)| match v.as_str() {
+                                    "parseOnly" | "parse" => ParseUnparsePolicy::ParseOnly,
+                                    "unparseOnly" | "unparse" => ParseUnparsePolicy::UnparseOnly,
+                                    _ => ParseUnparsePolicy::Both,
+                                })
+                                .unwrap_or(ParseUnparsePolicy::Both);
                             if let (Some(ref t), Some(ref def)) = (var_type.as_ref(), default_val.as_ref()) {
                                 validate_variable_default_value(t, def)?;
                             }
-                            if let (Some(name), Some(def)) = (name, default_val) {
+                            if let Some(name) = name {
                                 let local = name.rsplit(':').next().unwrap_or(name.as_str()).to_string();
-                                self.doc.variables.insert(name, def.clone());
-                                self.doc.variables.insert(local, def);
+                                if let Some(def) = default_val {
+                                    self.doc.variables.insert(name.clone(), def.clone());
+                                    self.doc.variables.insert(local.clone(), def);
+                                }
+                                self.doc.variable_directions.insert(name, dir);
+                                self.doc.variable_directions.insert(local, dir);
                             }
                         }
                         "annotation" => {
@@ -1463,13 +1476,26 @@ impl<'a> XsdParser<'a> {
             } else {
                 self.expect_end_local("defineVariable")?;
             }
+            let dir = attrs
+                .iter()
+                .find(|(k, _)| local_tag(k) == "direction")
+                .map(|(_, v)| match v.as_str() {
+                    "parseOnly" | "parse" => ParseUnparsePolicy::ParseOnly,
+                    "unparseOnly" | "unparse" => ParseUnparsePolicy::UnparseOnly,
+                    _ => ParseUnparsePolicy::Both,
+                })
+                .unwrap_or(ParseUnparsePolicy::Both);
             if let (Some(ref t), Some(ref def)) = (var_type.as_ref(), default_val.as_ref()) {
                 validate_variable_default_value(t, def)?;
             }
-            if let (Some(name), Some(def)) = (name, default_val) {
+            if let Some(name) = name {
                 let local = name.rsplit(':').next().unwrap_or(name.as_str()).to_string();
-                self.doc.variables.insert(name, def.clone());
-                self.doc.variables.insert(local, def);
+                if let Some(def) = default_val {
+                    self.doc.variables.insert(name.clone(), def.clone());
+                    self.doc.variables.insert(local.clone(), def);
+                }
+                self.doc.variable_directions.insert(name, dir);
+                self.doc.variable_directions.insert(local, dir);
             }
             return Ok(DfdlProps::default());
         }
@@ -1716,14 +1742,24 @@ impl<'a> XsdParser<'a> {
                                     message: "Schema Definition Error: 'ref' is not a valid value for dfdl:property name. The ref property must be specified as an attribute.".into(),
                                 }.into());
                             }
+                            if attrs.keys().any(|k| local_tag(k) == local_tag(&prop_name)) {
+                                props.has_short_and_long_ref_overlap = true;
+                            }
                             let value = self.read_simple_element_text("property")?;
                             let mut map = BTreeMap::new();
+                            if child_prefix.as_deref() == Some("daf") && !prop_name.starts_with("daf:") {
+                                map.insert(alloc::format!("daf:{prop_name}"), value.clone());
+                            }
                             map.insert(prop_name.clone(), value);
                             let child_props = props_from_attrs(&map)?;
                             if local == "sequence" && child_props.hidden_group_ref.is_some() {
                                 props.hidden_group_ref_from_appinfo_sequence = true;
                             }
                             props = merge_dfdl_props(props, child_props);
+                            if child_prefix.as_deref() == Some("daf") || prop_name.starts_with("daf:") {
+                                let warn = alloc::format!("Schema Definition Warning: daf:{prop_name} is deprecated. Use dfdlx:{prop_name} instead.");
+                                self.push_schema_warning("dafDeprecated", &[&warn]);
+                            }
                             if local_tag(&prop_name) == "textStringPadCharacter" {
                                 props.text_string_pad_character_property_form = true;
                             }
@@ -2223,12 +2259,10 @@ pub(crate) fn split_dfdl_attrs_with_variables(
     let mut dfdl_map = BTreeMap::new();
     for (k, v) in attrs {
         let local = local_tag(k);
-        if k.starts_with("daf:") {
-            continue;
-        }
         let allow_unprefixed_dfdl = element_local != "element";
         if k.starts_with("dfdl:")
             || k.starts_with("dfdlx:")
+            || k.starts_with("daf:")
             || k.contains("dfdl-1.0/extensions}")
             || (allow_unprefixed_dfdl
                 && is_dfdl_property(local)
@@ -2547,9 +2581,60 @@ pub(crate) fn parse_numeric_facet_bound(v: &str) -> Option<i64> {
     }
 }
 
+fn contains_infoset_path_step(expr: &str) -> bool {
+    let tokens: alloc::vec::Vec<&str> = expr.split_whitespace().collect();
+    for token in tokens {
+        let t = token.trim_matches(|c| c == '(' || c == ')' || c == '{' || c == '}');
+        if t.contains(':') || (!t.is_empty() && t.chars().next().unwrap().is_alphabetic()) {
+            if t.starts_with('$') {
+                continue;
+            }
+            if t.starts_with("xs:")
+                || t.starts_with("xsd:")
+                || t.starts_with("fn:")
+                || t.starts_with("dfdl:")
+                || t.starts_with("dfdlx:")
+                || t.starts_with("daf:")
+            {
+                continue;
+            }
+            if matches!(
+                t,
+                "true"
+                    | "false"
+                    | "eq"
+                    | "ne"
+                    | "lt"
+                    | "gt"
+                    | "le"
+                    | "ge"
+                    | "and"
+                    | "or"
+                    | "not"
+                    | "if"
+                    | "then"
+                    | "else"
+            ) {
+                continue;
+            }
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn validate_variable_default_value(type_str: &str, def: &str) -> Result<()> {
     let trimmed = def.trim();
     if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        let expr = trimmed[1..trimmed.len() - 1].trim();
+        if contains_infoset_path_step(expr) {
+            return Err(crate::error::SchemaError::InvalidProperty {
+                message: alloc::format!(
+                    "Schema Definition Error: defaultValue expression '{def}' cannot reference infoset elements"
+                ),
+            }
+            .into());
+        }
         return Ok(());
     }
     let local_type = type_str.rsplit(':').next().unwrap_or(type_str);

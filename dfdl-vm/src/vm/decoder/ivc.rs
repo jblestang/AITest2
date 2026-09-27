@@ -17,6 +17,7 @@ pub(crate) struct IvcEvalCtx<'a> {
     pub define_variables: &'a BTreeMap<alloc::string::String, alloc::string::String>,
     pub runtime_variables: &'a BTreeMap<alloc::string::String, alloc::string::String>,
     pub read_variables: Option<&'a core::cell::RefCell<alloc::collections::BTreeSet<alloc::string::String>>>,
+    pub variable_directions: Option<&'a BTreeMap<alloc::string::String, crate::schema::ParseUnparsePolicy>>,
     pub element_name: Option<&'a str>,
 }
 
@@ -75,6 +76,19 @@ fn resolve_ivc_variable_depth(
         .into());
     }
     let local = name.rsplit(':').next().unwrap_or(name);
+    if let Some(dirs) = ctx.variable_directions {
+        if let Some(&dir) = dirs.get(name).or_else(|| dirs.get(local)) {
+            if dir == crate::schema::ParseUnparsePolicy::UnparseOnly {
+                return Err(VmError::InvalidValue {
+                    message: ivc_sde_message(
+                        ctx.element_name,
+                        alloc::format!("Attempting to read variable {name} marked as unparseOnly during parsing"),
+                    ),
+                }
+                .into());
+            }
+        }
+    }
     if let Some(read_vars) = ctx.read_variables {
         let mut rv = read_vars.borrow_mut();
         rv.insert(name.to_string());
@@ -618,10 +632,9 @@ pub(crate) fn count_dfdl_value_nodes(value: &DfdlValue) -> u64 {
 
 pub(crate) fn eval_input_value_calc_concat(
     props: &IrProps,
-    siblings: Option<&BTreeMap<alloc::string::String, SiblingState>>,
+    ctx: IvcEvalCtx<'_>,
     strings: &crate::ir::StringPool,
     tunables: &crate::length_validate::DaffodilTunables,
-    root_element: &str,
 ) -> Result<DfdlValue> {
     use crate::ir::IrInputValueCalcSegment;
     let segments =
@@ -636,7 +649,7 @@ pub(crate) fn eval_input_value_calc_concat(
         match seg {
             IrInputValueCalcSegment::Sibling(id) => {
                 let name = strings.get(*id)?;
-                out.push_str(&sibling_string_value(siblings, name)?);
+                out.push_str(&sibling_string_value(ctx.siblings, name)?);
             }
             IrInputValueCalcSegment::Literal(id) => {
                 out.push_str(strings.get(*id)?);
@@ -647,7 +660,7 @@ pub(crate) fn eval_input_value_calc_concat(
                 length,
             } => {
                 let name = strings.get(*sibling)?;
-                let text = sibling_string_value(siblings, name)?;
+                let text = sibling_string_value(ctx.siblings, name)?;
                 let start = (*start as usize).saturating_sub(1);
                 for ch in text.chars().skip(start).take(*length as usize) {
                     out.push(ch);
@@ -657,15 +670,7 @@ pub(crate) fn eval_input_value_calc_concat(
                 let value = eval_ivc_path_steps(
                     false,
                     steps,
-                    IvcEvalCtx {
-                        siblings,
-                        ancestor_frames: None,
-                        root_element,
-                        define_variables: &BTreeMap::new(),
-                        runtime_variables: &BTreeMap::new(),
-                        read_variables: None,
-                        element_name: None,
-                    },
+                    ctx,
                     strings,
                     tunables,
                 )?;
@@ -673,7 +678,7 @@ pub(crate) fn eval_input_value_calc_concat(
             }
             IrInputValueCalcSegment::ValueLength { sibling, units } => {
                 let sib_name = strings.get(*sibling)?;
-                let sib = siblings.and_then(|m| m.get(sib_name)).ok_or_else(|| {
+                let sib = ctx.siblings.and_then(|m| m.get(sib_name)).ok_or_else(|| {
                     VmError::InvalidValue {
                         message: alloc::format!("sibling `{sib_name}` not found for valueLength"),
                     }

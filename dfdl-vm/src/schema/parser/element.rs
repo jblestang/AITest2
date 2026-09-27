@@ -238,6 +238,13 @@ impl<'a> XsdParser<'a> {
             Some(&self.doc.variables),
             self.doc.schema_source_label.as_deref(),
         )?;
+        for (k, _) in &attrs {
+            if k.starts_with("daf:") {
+                let local = local_tag(k);
+                let warn = alloc::format!("Schema Definition Warning: {k} is deprecated. Use dfdlx:{local} instead.");
+                self.push_schema_warning("dafDeprecated", &[&warn]);
+            }
+        }
         record_local_element_xsd_diagnostics(&xsd_attrs, &mut self.doc.schema_diagnostics);
         let is_ref = xsd_attrs.contains_key("ref");
         let has_element_name_attr = xsd_attrs.contains_key("name");
@@ -309,6 +316,9 @@ impl<'a> XsdParser<'a> {
                 self.doc.global_elements.insert(key, stub.clone());
                 stub
             };
+            if global.props.has_property_collision(&props) {
+                props.has_short_and_long_ref_overlap = true;
+            }
             props = merge_dfdl_props(global.props.clone(), props);
             global.type_name.clone()
         } else {

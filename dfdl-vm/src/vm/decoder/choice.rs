@@ -593,7 +593,9 @@ impl<'a> Decoder<'a> {
 
             let mut branch_cursor = cursor.clone();
             let saved_discriminator_state = self.discriminator_committed_branch.get();
-            self.discriminator_committed_branch.set(false);
+            let has_discrim = choice_branch_element_props(self.ctx.program, branch.node)
+                .is_some_and(|p| p.is_discriminator);
+            self.discriminator_committed_branch.set(has_discrim);
             let saved_vars = self.runtime_variables.borrow().clone();
             let saved_reads = self.read_variables.borrow().clone();
 
@@ -643,8 +645,15 @@ impl<'a> Decoder<'a> {
                     });
                 }
                 Err(e) => {
-                    if branch_committed || is_schema_definition_error(&e) {
+                    if is_schema_definition_error(&e) {
                         return Err(e);
+                    }
+                    if branch_committed {
+                        let msg = e.to_string();
+                        let clean_msg = msg.strip_prefix("vm error: ").unwrap_or(&msg);
+                        return Err(VmError::InvalidValue {
+                            message: alloc::format!("Parse Error: All choice alternatives failed. Discriminated branch failed: {clean_msg}"),
+                        }.into());
                     }
                     *self.runtime_variables.borrow_mut() = saved_vars;
                     *self.read_variables.borrow_mut() = saved_reads;

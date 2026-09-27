@@ -172,6 +172,7 @@ impl<'a> IrBuilder<'a> {
             strings: self.strings,
             tunables: self.tunables,
             variables: self.schema.variables.clone(),
+            variable_directions: self.schema.variable_directions.clone(),
         };
         Ok(program)
     }

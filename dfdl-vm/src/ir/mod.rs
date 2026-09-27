@@ -22,6 +22,7 @@ pub struct IrProgram {
     pub tunables: crate::length_validate::DaffodilTunables,
     /// `dfdl:defineVariable` defaults (runtime `setVariable` may override during parse).
     pub variables: alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>,
+    pub variable_directions: alloc::collections::BTreeMap<alloc::string::String, crate::schema::ParseUnparsePolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -382,11 +383,13 @@ pub struct IrProps {
     pub set_variables: alloc::vec::Vec<(StringId, StringId)>,
     /// `dfdl:newVariableInstance` pairs applied when this node is entered.
     pub new_variable_instances: alloc::vec::Vec<(StringId, Option<StringId>)>,
+    pub parse_unparse_policy: crate::schema::ParseUnparsePolicy,
 }
 
 impl Default for IrProps {
     fn default() -> Self {
         Self {
+            parse_unparse_policy: crate::schema::ParseUnparsePolicy::Both,
             representation: Representation::Binary,
             representation_defined: false,
             byte_order: ByteOrder::BigEndian,

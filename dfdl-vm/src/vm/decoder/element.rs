@@ -165,6 +165,15 @@ impl<'a> Decoder<'a> {
                 props,
                 child,
             } => {
+                if props.parse_unparse_policy == crate::schema::ParseUnparsePolicy::UnparseOnly {
+                    let el_name = self.ctx.strings().get(*name)?;
+                    return Err(VmError::InvalidValue {
+                        message: alloc::format!(
+                            "Schema Definition Error: dfdlx:parseUnparsePolicy is 'unparseOnly' and element `{el_name}` cannot be parsed"
+                        ),
+                    }
+                    .into());
+                }
                 let _var_scope =
                     self.enter_variable_scope(&props.new_variable_instances, siblings, true)?;
                 let props = resolve_length_props(
@@ -698,6 +707,7 @@ impl<'a> Decoder<'a> {
                             define_variables: &self.ctx.program.variables,
                             runtime_variables: &self.runtime_variables.borrow(),
                             read_variables: Some(&self.read_variables),
+                            variable_directions: Some(&self.ctx.program.variable_directions),
                             element_name: ivc_element,
                         },
                         self.ctx.strings(),
@@ -734,13 +744,25 @@ impl<'a> Decoder<'a> {
                     )?;
                     Ok(res)
                 } else if props.input_value_calc_segments.is_some() {
+                    let ivc_element = Some(crate::xml_util::local_name_str(
+                        self.ctx.strings().get(*name)?,
+                    ));
                     let sib_snap = self.xpath_siblings_snapshot();
+                    let ancestor_frames = self.xpath_ancestor_frames.borrow();
                     let value = eval_input_value_calc_concat(
                         &props,
-                        Some(&sib_snap),
+                        IvcEvalCtx {
+                            siblings: Some(&sib_snap),
+                            ancestor_frames: Some(ancestor_frames.as_slice()),
+                            root_element: self.ctx.program.root_element.as_str(),
+                            define_variables: &self.ctx.program.variables,
+                            runtime_variables: &self.runtime_variables.borrow(),
+                            read_variables: Some(&self.read_variables),
+                            variable_directions: Some(&self.ctx.program.variable_directions),
+                            element_name: ivc_element,
+                        },
                         self.ctx.strings(),
                         &self.ctx.program.tunables,
-                        &self.ctx.program.root_element,
                     )?;
                     let res = self.finalize_ivc_value(value, *kind, &props)?;
                     self.validate_particle_discriminator(

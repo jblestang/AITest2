@@ -579,6 +579,7 @@ impl<'a> Decoder<'a> {
             define_variables: &self.ctx.program.variables,
             runtime_variables: &self.runtime_variables.borrow(),
             read_variables: Some(&self.read_variables),
+            variable_directions: Some(&self.ctx.program.variable_directions),
             element_name: None,
         };
         let value = eval_input_value_calc_expression(
@@ -756,6 +757,7 @@ impl<'a> Decoder<'a> {
                     define_variables: &self.ctx.program.variables,
                     runtime_variables: &self.runtime_variables.borrow(),
                     read_variables: Some(&self.read_variables),
+                    variable_directions: Some(&self.ctx.program.variable_directions),
                     element_name: None,
                 };
                 let v = eval_input_value_calc_expression(
@@ -873,6 +875,12 @@ impl<'a> Decoder<'a> {
         }
         for &(name_id, val_id) in set_variables {
             let name = self.ctx.strings().get(name_id)?;
+            let local = name.rsplit(':').next().unwrap_or(name);
+            if let Some(&dir) = self.ctx.program.variable_directions.get(name).or_else(|| self.ctx.program.variable_directions.get(local)) {
+                if dir == crate::schema::ParseUnparsePolicy::UnparseOnly {
+                    continue;
+                }
+            }
             let val = self.ctx.strings().get(val_id)?;
             let evaluated_val = {
                 let v_str = val.trim();
@@ -912,6 +920,7 @@ impl<'a> Decoder<'a> {
                             define_variables: &self.ctx.program.variables,
                             runtime_variables: &self.runtime_variables.borrow(),
                             read_variables: Some(&self.read_variables),
+                            variable_directions: Some(&self.ctx.program.variable_directions),
                             element_name: None,
                         };
                         let is_constant =
@@ -1016,6 +1025,11 @@ impl<'a> Decoder<'a> {
         for &(name_id, def_id) in new_variable_instances {
             let name = self.ctx.strings().get(name_id)?;
             let local = name.rsplit(':').next().unwrap_or(name);
+            if let Some(&dir) = self.ctx.program.variable_directions.get(name).or_else(|| self.ctx.program.variable_directions.get(local)) {
+                if dir == crate::schema::ParseUnparsePolicy::UnparseOnly {
+                    continue;
+                }
+            }
             if seen.contains(&local) {
                 return Err(VmError::InvalidValue {
                     message: alloc::format!(
@@ -1075,6 +1089,7 @@ impl<'a> Decoder<'a> {
                             define_variables: &self.ctx.program.variables,
                             runtime_variables: &self.runtime_variables.borrow(),
                             read_variables: Some(&self.read_variables),
+                            variable_directions: Some(&self.ctx.program.variable_directions),
                             element_name: None,
                         };
                         let v = eval_input_value_calc_expression(
@@ -1435,6 +1450,7 @@ impl<'a> Decoder<'a> {
                                 define_variables: &BTreeMap::new(),
                                 runtime_variables: &self.runtime_variables.borrow(),
                                 read_variables: Some(&self.read_variables),
+                                variable_directions: Some(&self.ctx.program.variable_directions),
                                 element_name: None,
                             },
                             strings,

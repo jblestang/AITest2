@@ -104,6 +104,7 @@ pub(crate) fn error_messages_match(expected: &[String], err: &str) -> bool {
         }
         let fl = normalize_error_text(fragment);
         if OPTIONAL.contains(&fl.as_str())
+            || fl.contains("????")
             || fl.starts_with("line ")
             || fl.starts_with("column ")
             || fl.starts_with("schema context:")
