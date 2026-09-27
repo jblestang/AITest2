@@ -1416,19 +1416,20 @@ impl<'a> XsdParser<'a> {
                 .iter()
                 .find(|(k, _)| local_tag(k) == "value")
                 .map(|(_, v)| v.clone());
+            let mut props = DfdlProps::default();
             self.reader.skip_insignificant_ws()?;
-            if value.is_none() && !self.reader.peek_is_end("setVariable")? {
+            if !self.reader.peek_is_end("setVariable")? {
                 let body = self.reader.read_text_until_end("setVariable")?;
                 let trimmed = body.trim();
                 if !trimmed.is_empty() {
+                    if value.is_some() {
+                        props.has_duplicate_variable_value_spec = true;
+                    }
                     value = Some(trimmed.to_string());
                 }
-            } else if !self.reader.peek_is_end("setVariable")? {
-                self.reader.skip_current_subtree()?;
             } else {
                 self.expect_end_local("setVariable")?;
             }
-            let mut props = DfdlProps::default();
             if let (Some(var_ref), Some(value)) = (var_ref, value) {
                 let name = variable_local_name_from_ref(var_ref);
                 props.set_variables.push((name, value));
@@ -1444,19 +1445,20 @@ impl<'a> XsdParser<'a> {
                 .iter()
                 .find(|(k, _)| local_tag(k) == "defaultValue")
                 .map(|(_, v)| v.clone());
+            let mut props = DfdlProps::default();
             self.reader.skip_insignificant_ws()?;
-            if default_val.is_none() && !self.reader.peek_is_end("newVariableInstance")? {
+            if !self.reader.peek_is_end("newVariableInstance")? {
                 let body = self.reader.read_text_until_end("newVariableInstance")?;
                 let trimmed = body.trim();
                 if !trimmed.is_empty() {
+                    if default_val.is_some() {
+                        props.has_duplicate_variable_value_spec = true;
+                    }
                     default_val = Some(trimmed.to_string());
                 }
-            } else if !self.reader.peek_is_end("newVariableInstance")? {
-                self.reader.skip_current_subtree()?;
             } else {
                 self.expect_end_local("newVariableInstance")?;
             }
-            let mut props = DfdlProps::default();
             if let Some(var_ref) = var_ref {
                 let name = variable_local_name_from_ref(var_ref);
                 props.new_variable_instances.push((name, default_val));

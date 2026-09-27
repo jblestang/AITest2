@@ -192,6 +192,16 @@ impl<'a> IrBuilder<'a> {
         validate_delimiter_props(element_props, element_props)?;
         validate_text_string_pad_props(type_props)?;
         validate_text_string_pad_props(element_props)?;
+        if type_props.has_duplicate_variable_value_spec
+            || element_props.has_duplicate_variable_value_spec
+        {
+            return Err(SchemaError::InvalidProperty {
+                message:
+                    "Schema Definition Error: value of variable was supplied both as attribute and element value"
+                        .to_string(),
+            }
+            .into());
+        }
         let mut ir = merge_dfdl_props(base, type_props, element_props, &mut self.strings)?;
         if !ir.representation_defined {
             return Err(SchemaError::InvalidProperty {

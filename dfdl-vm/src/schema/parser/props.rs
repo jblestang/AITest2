@@ -2710,6 +2710,9 @@ pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlP
     if overlay.suppress_schema_definition_warnings.is_some() {
         base.suppress_schema_definition_warnings = overlay.suppress_schema_definition_warnings;
     }
+    if overlay.has_duplicate_variable_value_spec {
+        base.has_duplicate_variable_value_spec = true;
+    }
     if !overlay.set_variables.is_empty() {
         base.set_variables.extend(overlay.set_variables);
     }

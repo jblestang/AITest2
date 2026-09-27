@@ -1305,6 +1305,10 @@ pub(crate) fn particle_inherited_for_children(inherited: &IrProps) -> IrProps {
     out.initiator = None;
     out.terminator = None;
     out.separator = None;
+    out.new_variable_instances.clear();
+    out.set_variables.clear();
+    out.discriminator_test = None;
+    out.is_discriminator = false;
     out
 }
 
