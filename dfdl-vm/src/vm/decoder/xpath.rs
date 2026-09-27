@@ -734,6 +734,33 @@ impl<'a> Decoder<'a> {
                     }
                     .into()
                 })
+            } else if let Some(parsed_steps) = crate::schema::parse_input_value_calc_relative_path(&expr_str) {
+                let mut pool = self.ctx.strings().clone();
+                let ir_steps = crate::ir::builder::intern_input_path_steps(&parsed_steps, &mut pool);
+                let mut sib_snap = self.xpath_siblings_snapshot();
+                if let Some(s) = siblings {
+                    for (k, v) in s {
+                        sib_snap.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+                let ancestor_frames = self.xpath_ancestor_frames.borrow();
+                let v = eval_infoset_path_steps(
+                    &ir_steps,
+                    Some(&sib_snap),
+                    Some(ancestor_frames.as_slice()),
+                    &pool,
+                    &self.ctx.program.tunables,
+                    None,
+                )?;
+                let text = dfdl_value_to_string(&v);
+                text.parse::<i64>().map_err(|_| {
+                    VmError::InvalidValue {
+                        message: alloc::format!(
+                            "Parse Error. Unable to parse xs:int from text: {text}"
+                        ),
+                    }
+                    .into()
+                })
             } else {
                 op_str.parse::<i64>().map_err(|_| {
                     VmError::InvalidValue {

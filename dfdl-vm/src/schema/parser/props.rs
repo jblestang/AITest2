@@ -1646,11 +1646,15 @@ pub(crate) fn parse_input_value_calc_relative_path(
         return None;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
-    let rest = inner.strip_prefix("../")?;
-    if rest.is_empty() {
+    let mut steps = alloc::vec::Vec::new();
+    let mut rest = inner;
+    while let Some(r) = rest.strip_prefix("../") {
+        steps.push(parse_infoset_path_step(".."));
+        rest = r;
+    }
+    if steps.is_empty() || rest.is_empty() {
         return None;
     }
-    let mut steps = alloc::vec::Vec::new();
     for step in rest.split('/').filter(|s| !s.is_empty()) {
         steps.push(parse_infoset_path_step(step));
     }

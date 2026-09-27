@@ -14,7 +14,7 @@ use crate::schema::{
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-pub use props::intern_input_value_calc_expression;
+pub(crate) use props::{intern_input_path_steps, intern_input_value_calc_expression};
 use props::{merge_dfdl_props, overlay_dfdl_to_ir, resolve_escape_scheme};
 use validate::{
     validate_delimiter_props, validate_format_has_no_input_value_calc, validate_prefix_length_type,

@@ -768,7 +768,15 @@ fn choice_branch_fields_for_infoset(
             discriminator: inner_disc,
             value: inner_val,
         } => choice_branch_fields_for_infoset(inner_disc, *inner_val),
-        DfdlValue::Sequence(seq) if discriminator.is_empty() => seq.fields,
+        DfdlValue::Sequence(seq) => {
+            if discriminator.is_empty() || seq.fields.contains_key(&discriminator) {
+                seq.fields
+            } else {
+                let mut map = BTreeMap::new();
+                map.insert(discriminator, DfdlValue::Sequence(seq));
+                map
+            }
+        }
         v => {
             let mut map = BTreeMap::new();
             if !discriminator.is_empty() {

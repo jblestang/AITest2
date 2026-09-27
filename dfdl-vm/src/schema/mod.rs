@@ -44,7 +44,7 @@ pub use facets::{
     apply_effective_facets_to_ir, validate_facet_literals, validate_length_facets_for_type,
     EffectiveFacets,
 };
-pub(crate) use parser::parse_input_value_calc_expression;
+pub(crate) use parser::{parse_input_value_calc_expression, parse_input_value_calc_relative_path};
 pub use parser::{
     format_local_from_storage_key, format_storage_key, get_global_element,
     get_global_element_error, parse_schema, parse_schema_with_options, parse_schema_with_resolver,
