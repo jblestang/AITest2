@@ -1147,7 +1147,6 @@ impl<'a> Decoder<'a> {
                     }
                     if is_first_occurrence && self.discriminator_committed_branch.get() {
                         committed_child = Some(child);
-                        self.discriminator_committed_branch.set(false);
                     }
                     break;
                 }
@@ -1203,7 +1202,6 @@ impl<'a> Decoder<'a> {
                 }
                 if is_first_occurrence && self.discriminator_committed_branch.get() {
                     committed_child = Some(child);
-                    self.discriminator_committed_branch.set(false);
                 }
                 break;
             }
