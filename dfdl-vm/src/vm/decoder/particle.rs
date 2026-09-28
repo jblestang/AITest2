@@ -244,7 +244,7 @@ impl<'a> Decoder<'a> {
                 let text = core::str::from_utf8(&cursor.data[cursor.pos..]).unwrap_or("");
                 let m = crate::vm::facet_validate::pattern_prefix_matches(text, pat);
                 if m {
-                    self.discriminator_committed_branch.set(true);
+                    self.commit_nearest_undiscriminated_pou();
                     return Ok(());
                 } else {
                     let custom_msg = self.eval_facet_assert_message(props).unwrap_or_default();
@@ -277,7 +277,7 @@ impl<'a> Decoder<'a> {
                 )
                 .is_ok();
                 if m {
-                    self.discriminator_committed_branch.set(true);
+                    self.commit_nearest_undiscriminated_pou();
                     return Ok(());
                 } else {
                     return Err(alloc::format!("discriminator failed for expression {{{expr}}}"));
@@ -286,7 +286,7 @@ impl<'a> Decoder<'a> {
         }
         if let Some(b) = crate::schema::eval_discriminator_expression(expr, dot) {
             if b {
-                self.discriminator_committed_branch.set(true);
+                self.commit_nearest_undiscriminated_pou();
                 return Ok(());
             } else {
                 let custom_msg = self.eval_facet_assert_message(props).unwrap_or_default();
@@ -307,7 +307,7 @@ impl<'a> Decoder<'a> {
             dot,
         ) {
             if b {
-                self.discriminator_committed_branch.set(true);
+                self.commit_nearest_undiscriminated_pou();
                 return Ok(());
             } else {
                 let custom_msg = self.eval_facet_assert_message(props).unwrap_or_default();
@@ -353,7 +353,7 @@ impl<'a> Decoder<'a> {
                 )
                 .is_ok()
                 {
-                    self.discriminator_committed_branch.set(true);
+                    self.commit_nearest_undiscriminated_pou();
                     return Ok(());
                 }
             }
@@ -368,9 +368,63 @@ impl<'a> Decoder<'a> {
             }
             .into());
         }
-        if self.eval_particle_assert_expression(expr, dot, cursor)? {
-            if props.is_discriminator {
-                self.discriminator_committed_branch.set(true);
+        let eval_res = self.eval_particle_assert_expression(expr, dot, cursor);
+        let passes = match eval_res {
+            Ok(b) => b,
+            Err(e) if props.is_discriminator => {
+                let msg = e.to_string();
+                if msg.contains("No element corresponding to step")
+                    || msg.contains("does not exist")
+                    || msg.contains("non-existent element")
+                    || msg.contains("has no value")
+                {
+                    false
+                } else {
+                    let mut clean_msg = msg.strip_prefix("vm error: ").unwrap_or(&msg).trim();
+                    clean_msg = clean_msg.strip_prefix("Schema Definition Error: ").unwrap_or(clean_msg).trim();
+                    clean_msg = clean_msg.strip_suffix('.').unwrap_or(clean_msg).trim();
+                    let elem_name = self.enclosing_names.borrow().last().cloned().unwrap_or_default();
+                    let rsde_msg = if !msg.contains("Runtime Schema Definition Error") {
+                        if !elem_name.is_empty() {
+                            alloc::format!("Runtime Schema Definition Error: Expression Evaluation Error: {clean_msg}. Element `{elem_name}`.")
+                        } else {
+                            alloc::format!("Runtime Schema Definition Error: Expression Evaluation Error: {clean_msg}")
+                        }
+                    } else {
+                        msg
+                    };
+                    return Err(VmError::InvalidValue { message: rsde_msg }.into());
+                }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                let is_missing_element = msg.contains("No element corresponding to step")
+                    || msg.contains("does not exist")
+                    || msg.contains("non-existent element")
+                    || msg.contains("has no value");
+                if !is_missing_element && (msg.contains("Parse Error") || msg.contains("Cannot convert") || msg.contains("Assertion failed")) {
+                    false
+                } else {
+                    let mut clean_msg = msg.strip_prefix("vm error: ").unwrap_or(&msg).trim();
+                    clean_msg = clean_msg.strip_prefix("Schema Definition Error: ").unwrap_or(clean_msg).trim();
+                    clean_msg = clean_msg.strip_suffix('.').unwrap_or(clean_msg).trim();
+                    let elem_name = self.enclosing_names.borrow().last().cloned().unwrap_or_default();
+                    let rsde_msg = if !msg.contains("Runtime Schema Definition Error") {
+                        if !elem_name.is_empty() {
+                            alloc::format!("Runtime Schema Definition Error: Expression Evaluation Error: {clean_msg}. Element `{elem_name}`.")
+                        } else {
+                            alloc::format!("Runtime Schema Definition Error: Expression Evaluation Error: {clean_msg}")
+                        }
+                    } else {
+                        msg
+                    };
+                    return Err(VmError::InvalidValue { message: rsde_msg }.into());
+                }
+            }
+        };
+        if passes {
+            if props.is_discriminator || props.discriminator_test.is_some() {
+                self.commit_nearest_undiscriminated_pou();
             }
             return Ok(());
         }
@@ -432,13 +486,23 @@ impl<'a> Decoder<'a> {
         let mut min = props.occurs_min;
         let mut max = props.occurs_max.unwrap_or(u64::MAX);
         let mut occurs_from_expression = false;
-        if props.occurs_count_kind == OccursCountKind::Expression {
+        if props.occurs_count_kind == OccursCountKind::Expression
+            && (props.occurs_max != Some(1)
+                || props.occurs_count_expr.is_some()
+                || props.occurs_count_fn_path.is_some())
+        {
+            let mut err_msg = None;
             if let Some(expr_id) = props.occurs_count_expr {
                 let expr = self.ctx.strings().get(expr_id)?;
-                if let Ok(n) = self.eval_occurs_count_xpath_expr(expr, siblings) {
-                    min = n;
-                    max = n;
-                    occurs_from_expression = true;
+                match self.eval_occurs_count_xpath_expr(expr, siblings) {
+                    Ok(n) => {
+                        min = n;
+                        max = n;
+                        occurs_from_expression = true;
+                    }
+                    Err(e) => {
+                        err_msg = Some(e.to_string());
+                    }
                 }
             }
             if !occurs_from_expression {
@@ -449,17 +513,43 @@ impl<'a> Decoder<'a> {
                             sib_snap.entry(k.clone()).or_insert_with(|| v.clone());
                         }
                     }
-                    if let Ok(n) = eval_occurs_count_expression(
+                    match eval_occurs_count_expression(
                         steps,
                         Some(&sib_snap),
                         self.ctx.strings(),
                         &self.ctx.program.tunables,
                     ) {
-                        min = n;
-                        max = n;
-                        occurs_from_expression = true;
+                        Ok(n) => {
+                            min = n;
+                            max = n;
+                            occurs_from_expression = true;
+                        }
+                        Err(e) => {
+                            if err_msg.is_none() {
+                                err_msg = Some(e.to_string());
+                            }
+                        }
                     }
                 }
+            }
+            if !occurs_from_expression && (props.occurs_count_expr.is_some() || props.occurs_count_fn_path.is_some()) {
+                let elem_name = element_prefixed_name(self.ctx.program, node_id).unwrap_or_default();
+                let parent_name = self.enclosing_names.borrow().first().cloned().unwrap_or_default();
+                let context_str = if !parent_name.is_empty() && parent_name != elem_name {
+                    alloc::format!("Element `{elem_name}` in `{parent_name}`.")
+                } else {
+                    alloc::format!("Element `{elem_name}`.")
+                };
+                let detail = err_msg.unwrap_or_else(|| "Failed to evaluate occursCount expression".to_string());
+                let mut clean_detail = detail.strip_prefix("vm error: ").unwrap_or(&detail).trim();
+                clean_detail = clean_detail.strip_prefix("Schema Definition Error: ").unwrap_or(clean_detail).trim();
+                clean_detail = clean_detail.strip_suffix('.').unwrap_or(clean_detail).trim();
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Runtime Schema Definition Error: Expression Evaluation Error: {clean_detail}. {context_str}"
+                    ),
+                }
+                .into());
             }
         }
         if props.length_kind == LengthKind::Explicit && props.length == Some(0) {
@@ -773,7 +863,8 @@ impl<'a> Decoder<'a> {
                 &self.parent_infix_consumed_by_occurrence_loop,
                 prev_infix_defer,
             );
-            match self.decode_single_element(
+            self.push_choice_pou(PouKind::Occurrence, false);
+            let single_res = self.decode_single_element(
                 node_id,
                 cursor,
                 require_delimiter,
@@ -783,7 +874,11 @@ impl<'a> Decoder<'a> {
                 pattern_text_frame,
                 delimiter_stops.as_slice(),
                 parent_infix_consumed_by_occurrence_loop,
-            ) {
+            );
+            let occurrence_pou_committed = self.is_current_choice_pou_committed();
+            self.pop_choice_pou();
+
+            match single_res {
                 Ok(v) => {
                     if max == u64::MAX
                         && cursor.absolute_bit_index() == saved.absolute_bit_index()
@@ -902,14 +997,16 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 Err(e) => {
-                    if self.discriminator_committed_branch.get() {
+                    if occurrence_pou_committed {
                         if let Some(path) = populate_path.as_deref() {
-                            return Err(populate_failed_error(
+                            let res: Result<DfdlValue> = Err(populate_failed_error(
                                 path,
                                 items.len() as u64 + 1,
                                 &e.to_string(),
                             )
                             .into());
+                            eprintln!("ARRAY_RETURNING_POPULATE_ERR: {res:?}");
+                            return res;
                         }
                         return Err(e);
                     }
@@ -1049,7 +1146,7 @@ impl<'a> Decoder<'a> {
                         self.push_decoded_array_item(&mut items, default, props)?;
                         break;
                     }
-                    if populate_errors {
+                    if populate_errors || self.is_current_choice_pou_committed() {
                         if let Some(path) = populate_path.as_deref() {
                             let index = items.len() as u64 + 1;
                             return Err(populate_failed_error(path, index, &e.to_string()).into());

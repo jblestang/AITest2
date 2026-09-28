@@ -5,9 +5,70 @@ use crate::error::{Result, VmError};
 use crate::ir::{IrProps, StringId, ValueKind};
 use crate::value::DfdlValue;
 use crate::vm::decoder::SiblingState;
+use crate::expression::{
+    context::EvalContext,
+    error::ExpressionError,
+    path::{Path, PathOrigin, StepTest},
+};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+
+pub(crate) struct DecodeEvalContext<'a> {
+    pub decoder: &'a Decoder<'a>,
+    pub local_siblings: Option<&'a BTreeMap<String, SiblingState>>,
+    pub element_name: Option<&'a str>,
+}
+
+impl<'a> EvalContext for DecodeEvalContext<'a> {
+    fn resolve_path(&self, path: &Path) -> crate::expression::error::Result<DfdlValue> {
+        if let (PathOrigin::Relative, Some(first)) = (&path.origin, path.steps.first()) {
+            if let StepTest::Name { local, .. } = &first.test {
+                if let Some(sibs) = self.local_siblings {
+                    if let Some(state) = sibling_state_by_local(sibs, local) {
+                        return Ok(state.value.clone());
+                    }
+                }
+            }
+        }
+        let path_str = path.to_string();
+        self.decoder.eval_xpath_path_dfdl_value(&path_str).map_err(|e| {
+            ExpressionError::PathNotFound(alloc::format!("{e}"))
+        })
+    }
+
+    fn get_variable(&self, _prefix: Option<&str>, local: &str) -> crate::expression::error::Result<DfdlValue> {
+        let key = crate::xml_util::local_name_str(local);
+        let runtime_vars = self.decoder.runtime_variables.borrow();
+        for (name, val_str) in runtime_vars.iter() {
+            if crate::xml_util::local_name_str(name) == key {
+                if let Ok(n) = val_str.parse::<i32>() {
+                    return Ok(DfdlValue::Int(n));
+                }
+                if let Ok(f) = val_str.parse::<f64>() {
+                    return Ok(DfdlValue::Double(f));
+                }
+                if val_str == "true" || val_str == "false" {
+                    return Ok(DfdlValue::Boolean(val_str == "true"));
+                }
+                return Ok(DfdlValue::String(crate::value::StringValue::new(val_str.clone())));
+            }
+        }
+        Err(ExpressionError::UndefinedVariable(local.into()))
+    }
+
+    fn occurs_index(&self) -> crate::expression::error::Result<usize> {
+        Ok(1)
+    }
+
+    fn value_length(&self, _path: Option<&Path>) -> crate::expression::error::Result<usize> {
+        Ok(0)
+    }
+
+    fn content_length(&self, _path: Option<&Path>) -> crate::expression::error::Result<usize> {
+        Ok(0)
+    }
+}
 
 pub fn ivc_sde_message(
     element_name: Option<&str>,
@@ -23,9 +84,10 @@ pub(crate) fn sibling_state_by_local<'a>(
     siblings: &'a BTreeMap<String, SiblingState>,
     local: &str,
 ) -> Option<&'a SiblingState> {
+    let target = crate::xml_util::local_name_str(local);
     siblings
         .iter()
-        .find(|(k, _)| crate::xml_util::local_name_str(k) == local)
+        .find(|(k, _)| crate::xml_util::local_name_str(k) == target)
         .map(|(_, v)| v)
 }
 
@@ -63,6 +125,12 @@ pub(crate) fn navigate_to_child<'a>(
     index: Option<u32>,
     element_name: Option<&str>,
 ) -> Result<&'a DfdlValue> {
+    if local.starts_with('$') {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("Schema Definition Error: Variables cannot be used in path expressions: {local}"),
+        }
+        .into());
+    }
     match value {
         DfdlValue::Sequence(seq) => {
             let child = sequence_field_by_local(&seq.fields, local).ok_or_else(|| {
@@ -108,6 +176,7 @@ pub(crate) fn eval_infoset_path_steps(
     tunables: &crate::length_validate::DaffodilTunables,
     element_name: Option<&str>,
 ) -> Result<DfdlValue> {
+
     let mut up = 0usize;
     while up < steps.len() {
         if let Ok(s) = strings.get(steps[up].local) {
@@ -127,6 +196,12 @@ pub(crate) fn eval_infoset_path_steps(
     }
     let first = &steps[0];
     let first_local = strings.get(first.local)?;
+    if first_local.starts_with('$') {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("Schema Definition Error: Variables cannot be used in path expressions: {first_local}"),
+        }
+        .into());
+    }
     let mut state_found: Option<DfdlValue> = None;
     if up > 0 {
         if let Some(frames) = ancestor_frames {
@@ -429,8 +504,18 @@ impl<'a> Decoder<'a> {
     ) -> Result<Option<alloc::string::String>> {
         let map = self.sibling_map_for_discriminator_up(up);
         let mut value: Option<DfdlValue> = None;
-        for (i, step) in path.split('/').filter(|s| !s.is_empty()).enumerate() {
+        for (i, step) in path
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".")
+            .enumerate()
+        {
             let (local, index) = parse_discriminator_path_step(step)?;
+            if local.starts_with('$') {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("Schema Definition Error: Variables cannot be used in path expressions: {local}"),
+                }
+                .into());
+            }
             if i == 0 {
                 let target = crate::xml_util::local_name_str(local);
                 let state = map
@@ -567,7 +652,7 @@ impl<'a> Decoder<'a> {
                 return Ok(text);
             }
         }
-        let Some(schema_expr) = crate::schema::parse_input_value_calc_expression(raw) else {
+        let Ok(Some(schema_expr)) = crate::schema::parse_input_value_calc_expression(raw) else {
             return Ok(trimmed[1..trimmed.len() - 1].trim().to_string());
         };
         let mut pool = self.ctx.strings().clone();
@@ -647,15 +732,25 @@ impl<'a> Decoder<'a> {
     }
 
     pub(crate) fn parse_if_then_else_expr(s: &str) -> Option<(&str, &str, &str)> {
-        let s = s.trim();
-        let rest = s.strip_prefix("if")?.trim();
-        let then_idx = rest.find("then")?;
-        let cond = rest[..then_idx].trim();
-        let rest_then = rest[then_idx + 4..].trim();
-        let else_idx = rest_then.find("else")?;
-        let then_val = rest_then[..else_idx].trim();
-        let else_val = rest_then[else_idx + 4..].trim();
-        Some((cond, then_val, else_val))
+        let ast = crate::expression::parse_expression(s).ok()?;
+        if matches!(ast, crate::expression::ast::Expr::IfThenElse { .. }) {
+            let s = s.trim();
+            let s_inner = if s.starts_with('{') && s.ends_with('}') {
+                s[1..s.len() - 1].trim()
+            } else {
+                s
+            };
+            let rest = s_inner.strip_prefix("if")?.trim();
+            let then_idx = rest.find("then")?;
+            let cond = rest[..then_idx].trim();
+            let rest_then = rest[then_idx + 4..].trim();
+            let else_idx = rest_then.find("else")?;
+            let then_val = rest_then[..else_idx].trim();
+            let else_val = rest_then[else_idx + 4..].trim();
+            Some((cond, then_val, else_val))
+        } else {
+            None
+        }
     }
 
     pub(crate) fn eval_simple_condition(
@@ -664,205 +759,56 @@ impl<'a> Decoder<'a> {
         siblings: Option<&BTreeMap<String, SiblingState>>,
         dot: &str,
     ) -> Result<bool> {
-        let cond = cond.trim();
-        let cond_unparenthesized = if cond.starts_with('(') && cond.ends_with(')') {
-            cond[1..cond.len() - 1].trim()
+        let cond_trim = cond.trim();
+        let expr_str = if cond_trim.starts_with('{') {
+            cond_trim.to_string()
         } else {
-            cond
+            alloc::format!("{{{cond_trim}}}")
         };
-        let (lhs_str, op, rhs_str) = if let Some(idx) = cond_unparenthesized.find(" lt ") {
-            (
-                &cond_unparenthesized[..idx],
-                "lt",
-                &cond_unparenthesized[idx + 4..],
-            )
-        } else if let Some(idx) = cond_unparenthesized.find(" gt ") {
-            (
-                &cond_unparenthesized[..idx],
-                "gt",
-                &cond_unparenthesized[idx + 4..],
-            )
-        } else if let Some(idx) = cond_unparenthesized.find(" eq ") {
-            (
-                &cond_unparenthesized[..idx],
-                "eq",
-                &cond_unparenthesized[idx + 4..],
-            )
-        } else if let Some(idx) = cond_unparenthesized.find(" ne ") {
-            (
-                &cond_unparenthesized[..idx],
-                "ne",
-                &cond_unparenthesized[idx + 4..],
-            )
-        } else {
-            let expr_str = if cond_unparenthesized.starts_with('{') {
-                cond_unparenthesized.to_string()
-            } else {
-                alloc::format!("{{{cond_unparenthesized}}}")
+        if let Ok(Some(schema_expr)) = crate::schema::parse_input_value_calc_expression(&expr_str) {
+            let mut pool = self.ctx.strings().clone();
+            let ir_expr = crate::ir::builder::intern_input_value_calc_expression(&schema_expr, &mut pool);
+            let mut sib_snap = self.xpath_siblings_snapshot();
+            if let Some(s) = siblings {
+                for (k, v) in s {
+                    sib_snap.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+            if !dot.is_empty() {
+                let dot_val = super::particle::parse_simple_val_from_str(dot, ValueKind::String)
+                    .unwrap_or_else(|_| DfdlValue::string(dot));
+                sib_snap.insert(
+                    ".".to_string(),
+                    SiblingState {
+                        value: dot_val,
+                        content_bytes: 0,
+                    },
+                );
+            }
+            let ancestor_frames = self.xpath_ancestor_frames.borrow();
+            let ivc_ctx = IvcEvalCtx {
+                siblings: Some(&sib_snap),
+                ancestor_frames: Some(ancestor_frames.as_slice()),
+                root_element: self.ctx.program.root_element.as_str(),
+                define_variables: &self.ctx.program.variables,
+                runtime_variables: &self.runtime_variables.borrow(),
+                read_variables: Some(&self.read_variables),
+                variable_directions: Some(&self.ctx.program.variable_directions),
+                element_name: None,
             };
-            if let Some(schema_expr) = crate::schema::parse_input_value_calc_expression(&expr_str) {
-                let mut pool = self.ctx.strings().clone();
-                let ir_expr = crate::ir::builder::intern_input_value_calc_expression(&schema_expr, &mut pool);
-                let mut sib_snap = self.xpath_siblings_snapshot();
-                if let Some(s) = siblings {
-                    for (k, v) in s {
-                        sib_snap.entry(k.clone()).or_insert_with(|| v.clone());
-                    }
-                }
-                let ancestor_frames = self.xpath_ancestor_frames.borrow();
-                let ivc_ctx = IvcEvalCtx {
-                    siblings: Some(&sib_snap),
-                    ancestor_frames: Some(ancestor_frames.as_slice()),
-                    root_element: self.ctx.program.root_element.as_str(),
-                    define_variables: &self.ctx.program.variables,
-                    runtime_variables: &self.runtime_variables.borrow(),
-                    read_variables: Some(&self.read_variables),
-                    variable_directions: Some(&self.ctx.program.variable_directions),
-                    element_name: None,
-                };
-                if let Ok(v) = eval_input_value_calc_expression(
-                    &ir_expr,
-                    ivc_ctx,
-                    &pool,
-                    &self.ctx.program.tunables,
-                    ValueKind::Boolean,
-                    &IrProps::default(),
-                ) {
-                    let s = dfdl_value_to_string(&v);
-                    return Ok(s == "true" || s == "1");
-                }
+            if let Ok(v) = eval_input_value_calc_expression(
+                &ir_expr,
+                ivc_ctx,
+                &pool,
+                &self.ctx.program.tunables,
+                ValueKind::Boolean,
+                &IrProps::default(),
+            ) {
+                let s = dfdl_value_to_string(&v);
+                return Ok(s == "true" || s == "1");
             }
-            return Ok(true);
-        };
-        let eval_operand = |op_str: &str| -> Result<i64> {
-            let op_str = Self::strip_type_cast_wrapper(op_str.trim());
-            if op_str == "." && !dot.is_empty() {
-                let trimmed = dot.trim();
-                return trimmed.parse::<i64>().map_err(|_| {
-                    VmError::InvalidValue {
-                        message: alloc::format!(
-                            "Parse Error. Unable to parse xs:int from text: {trimmed}"
-                        ),
-                    }
-                    .into()
-                });
-            }
-            let op_unparenthesized = if op_str.starts_with('(') && op_str.ends_with(')') {
-                op_str[1..op_str.len() - 1].trim()
-            } else {
-                op_str
-            };
-            if let Some(rest) = op_unparenthesized.strip_prefix("dfdl:occursIndex()") {
-                let rest = rest.trim();
-                let addend = if let Some(r) = rest.strip_prefix('+') {
-                    r.trim().parse::<i64>().unwrap_or(0)
-                } else if let Some(r) = rest.strip_prefix('-') {
-                    -r.trim().parse::<i64>().unwrap_or(0)
-                } else {
-                    0
-                };
-                if let Ok(dot_num) = dot.trim().parse::<i64>() {
-                    return Ok(dot_num);
-                }
-                return Ok(1 + addend);
-            }
-            let expr_str = alloc::format!("{{{op_str}}}");
-            if let Some(schema_expr) = crate::schema::parse_input_value_calc_expression(&expr_str) {
-                let mut pool = self.ctx.strings().clone();
-                let ir_expr =
-                    crate::ir::builder::intern_input_value_calc_expression(&schema_expr, &mut pool);
-                let mut sib_snap = self.xpath_siblings_snapshot();
-                if let Some(s) = siblings {
-                    for (k, v) in s {
-                        sib_snap.entry(k.clone()).or_insert_with(|| v.clone());
-                    }
-                }
-                if !dot.is_empty() {
-                    let dot_val = super::particle::parse_simple_val_from_str(dot, ValueKind::String)
-                        .unwrap_or_else(|_| DfdlValue::string(dot));
-                    sib_snap.insert(
-                        ".".to_string(),
-                        SiblingState {
-                            value: dot_val,
-                            content_bytes: 0,
-                        },
-                    );
-                }
-                let ancestor_frames = self.xpath_ancestor_frames.borrow();
-                let ivc_ctx = IvcEvalCtx {
-                    siblings: Some(&sib_snap),
-                    ancestor_frames: Some(ancestor_frames.as_slice()),
-                    root_element: self.ctx.program.root_element.as_str(),
-                    define_variables: &self.ctx.program.variables,
-                    runtime_variables: &self.runtime_variables.borrow(),
-                    read_variables: Some(&self.read_variables),
-                    variable_directions: Some(&self.ctx.program.variable_directions),
-                    element_name: None,
-                };
-                let v = eval_input_value_calc_expression(
-                    &ir_expr,
-                    ivc_ctx,
-                    &pool,
-                    &self.ctx.program.tunables,
-                    ValueKind::Long,
-                    &IrProps::default(),
-                )?;
-                let text = dfdl_value_to_string(&v);
-                text.parse::<i64>().map_err(|_| {
-                    VmError::InvalidValue {
-                        message: alloc::format!(
-                            "Parse Error. Unable to parse xs:int from text: {text}"
-                        ),
-                    }
-                    .into()
-                })
-            } else if let Some(parsed_steps) = crate::schema::parse_input_value_calc_relative_path(&expr_str) {
-                let mut pool = self.ctx.strings().clone();
-                let ir_steps = crate::ir::builder::intern_input_path_steps(&parsed_steps, &mut pool);
-                let mut sib_snap = self.xpath_siblings_snapshot();
-                if let Some(s) = siblings {
-                    for (k, v) in s {
-                        sib_snap.entry(k.clone()).or_insert_with(|| v.clone());
-                    }
-                }
-                let ancestor_frames = self.xpath_ancestor_frames.borrow();
-                let v = eval_infoset_path_steps(
-                    &ir_steps,
-                    Some(&sib_snap),
-                    Some(ancestor_frames.as_slice()),
-                    &pool,
-                    &self.ctx.program.tunables,
-                    None,
-                )?;
-                let text = dfdl_value_to_string(&v);
-                text.parse::<i64>().map_err(|_| {
-                    VmError::InvalidValue {
-                        message: alloc::format!(
-                            "Parse Error. Unable to parse xs:int from text: {text}"
-                        ),
-                    }
-                    .into()
-                })
-            } else {
-                op_str.parse::<i64>().map_err(|_| {
-                    VmError::InvalidValue {
-                        message: alloc::format!(
-                            "Parse Error. Unable to parse xs:int from text: {op_str}"
-                        ),
-                    }
-                    .into()
-                })
-            }
-        };
-        let lhs = eval_operand(lhs_str)?;
-        let rhs = eval_operand(rhs_str)?;
-        match op {
-            "lt" => Ok(lhs < rhs),
-            "gt" => Ok(lhs > rhs),
-            "eq" => Ok(lhs == rhs),
-            "ne" => Ok(lhs != rhs),
-            _ => Ok(false),
         }
+        Ok(true)
     }
 
     pub(crate) fn evaluate_and_set_variables(
@@ -937,7 +883,7 @@ impl<'a> Decoder<'a> {
                         } else {
                             else_v.to_string()
                         }
-                    } else if let Some(schema_expr) =
+                    } else if let Ok(Some(schema_expr)) =
                         crate::schema::parse_input_value_calc_expression(v_str)
                     {
                         let mut pool = self.ctx.strings().clone();
@@ -1106,7 +1052,7 @@ impl<'a> Decoder<'a> {
                         } else {
                             else_v.to_string()
                         }
-                    } else if let Some(schema_expr) =
+                    } else if let Ok(Some(schema_expr)) =
                         crate::schema::parse_input_value_calc_expression(v_trim)
                     {
                         let mut pool = self.ctx.strings().clone();
@@ -1235,6 +1181,31 @@ impl<'a> Decoder<'a> {
         if let Some(b) = self.eval_discriminator_xpath_eq(inner, dot)? {
             return Ok(b);
         }
+        let is_enclosing_parent_vl = if inner.contains("valueLength") {
+            if let Some(pos) = inner.find("valueLength(") {
+                let arg = inner[pos + 12..].trim_start();
+                arg.starts_with("..") && !arg.starts_with("../")
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if is_enclosing_parent_vl {
+            let elem_name = self.enclosing_names.borrow().last().cloned().unwrap_or_default();
+            let parent_name = self.enclosing_names.borrow().first().cloned().unwrap_or_default();
+            let context_str = if !parent_name.is_empty() && parent_name != elem_name {
+                alloc::format!("Element `{elem_name}` in `{parent_name}`.")
+            } else {
+                alloc::format!("Element `{elem_name}`.")
+            };
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Runtime Schema Definition Error: Expression Evaluation Error: Value Length cannot be computed for enclosing parent element. {context_str}"
+                ),
+            }
+            .into());
+        }
         if inner.contains("valueLength") && (inner.contains("gt 0") || inner.contains("gt  0") || inner.contains("> 0") || inner.contains(">0")) {
             if !dot.is_empty() {
                 return Ok(true);
@@ -1314,8 +1285,18 @@ impl<'a> Decoder<'a> {
         }
         let map = self.sibling_map_for_discriminator_up(up);
         let mut value: Option<DfdlValue> = None;
-        for (i, step) in rest.split('/').filter(|s| !s.is_empty()).enumerate() {
+        for (i, step) in rest
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".")
+            .enumerate()
+        {
             let (local, index) = parse_discriminator_path_step(step)?;
+            if local.starts_with('$') {
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!("Schema Definition Error: Variables cannot be used in path expressions: {local}"),
+                }
+                .into());
+            }
             let target = crate::xml_util::local_name_str(local);
             if i == 0 {
                 let state = map
@@ -1373,35 +1354,22 @@ impl<'a> Decoder<'a> {
             .and_then(|s| s.strip_suffix('}'))
             .unwrap_or(expr)
             .trim();
-        if inner.starts_with("if") {
-            if let Some(then_idx) = inner.find(" then ") {
-                let cond_part = inner[2..then_idx].trim();
-                let rest = inner[then_idx + 6..].trim();
-                if let Some(else_idx) = rest.find(" else ") {
-                    let then_val_str = rest[..else_idx].trim();
-                    let else_val_str = rest[else_idx + 6..].trim();
-                    let cond_bool = self.eval_simple_condition(cond_part, siblings, "")?;
-                    let choice_str = if cond_bool {
-                        then_val_str
-                    } else {
-                        else_val_str
-                    };
-                    let val: u64 = choice_str.parse().unwrap_or(0);
-                    return Ok(val);
-                }
-            }
-        }
         if let Ok(n) = inner.parse::<u64>() {
             return Ok(n);
         }
-        if let Some(fn_inner) = inner.strip_prefix("fn:count(").and_then(|s| s.strip_suffix(')')) {
-            let path = fn_inner.trim();
-            if let Ok(val) = self.eval_xpath_path_dfdl_value(path) {
-                match val {
-                    DfdlValue::Array(items) => return Ok(items.len() as u64),
-                    DfdlValue::Null => return Ok(0),
-                    _ => return Ok(1),
+        if let Ok(ast) = crate::expression::parse_expression(inner) {
+            let ctx = DecodeEvalContext {
+                decoder: self,
+                local_siblings: siblings,
+                element_name: None,
+            };
+            if let Ok(val) = crate::expression::eval(&ast, &ctx) {
+                if let Some(n) = val.as_i64() {
+                    if n >= 0 {
+                        return Ok(n as u64);
+                    }
                 }
+                return Ok(count_dfdl_value_nodes(&val));
             }
         }
         match self.eval_xpath_path_dfdl_value(inner) {
@@ -1429,6 +1397,18 @@ impl<'a> Decoder<'a> {
 
     pub(crate) fn xpath_path_int_value(&self, path: &str) -> Result<i64> {
         let trimmed = path.trim();
+        if let Ok(ast) = crate::expression::parse_expression(trimmed) {
+            let ctx = DecodeEvalContext {
+                decoder: self,
+                local_siblings: None,
+                element_name: None,
+            };
+            if let Ok(val) = crate::expression::eval(&ast, &ctx) {
+                if let Ok(n) = numeric_value_from_dfdl(&val) {
+                    return Ok(n);
+                }
+            }
+        }
         let mut rest = trimmed;
         let mut up = 0usize;
         while rest.starts_with("../") {

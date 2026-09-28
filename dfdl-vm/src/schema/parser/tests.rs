@@ -592,6 +592,7 @@ mod tests {
         assert!(parse_input_value_calc_expression(
             "{ xs:float(xs:int(../ex:e2) div xs:int(../ex:e3)) }"
         )
+        .unwrap()
         .is_some());
     }
 }

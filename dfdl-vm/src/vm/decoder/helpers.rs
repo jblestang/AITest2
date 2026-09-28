@@ -23,6 +23,11 @@ pub(crate) fn is_schema_definition_error(err: &Error) -> bool {
     )
 }
 
+pub(crate) fn is_discriminator_failure(err: &Error) -> bool {
+    let msg = err.to_string();
+    msg.contains("Discriminator failed") || msg.contains("discriminator failed")
+}
+
 /// Optional single-occurrence elements may treat initiator failures as absent; repeating or
 /// `occursCountKind="parsed"` arrays must surface the error (e.g. e1a initiated-content choice).
 pub(crate) fn optional_element_may_absorb_initiator_failure(props: &IrProps) -> bool {

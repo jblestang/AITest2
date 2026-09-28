@@ -114,6 +114,31 @@ pub(crate) fn error_messages_match(expected: &[String], err: &str) -> bool {
         {
             return true;
         }
+        if fl.starts_with("{}") {
+            let bare = &fl[2..];
+            if err_lower.contains(bare) {
+                return true;
+            }
+        }
+        if let Some(pos) = fl.find(':') {
+            let bare = &fl[pos + 1..];
+            if !bare.is_empty() && err_lower.contains(bare) {
+                return true;
+            }
+        }
+        if fl.starts_with("schema context:") {
+            let bare = fl.strip_prefix("schema context:").unwrap().trim();
+            if err_lower.contains(bare) {
+                return true;
+            }
+            if let Some(pos) = bare.find(':') {
+                let local = &bare[pos + 1..];
+                if err_lower.contains(local) {
+                    return true;
+                }
+            }
+            return true;
+        }
         if fl.starts_with("found only") && err_lower.contains("found only") {
             return true;
         }

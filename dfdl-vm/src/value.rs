@@ -125,9 +125,13 @@ impl DfdlValue {
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             DfdlValue::Long(v) => Some(*v),
+            DfdlValue::UnsignedLong(v) => i64::try_from(*v).ok(),
             DfdlValue::Int(v) => Some(*v as i64),
+            DfdlValue::UnsignedInt(v) => Some(*v as i64),
             DfdlValue::Short(v) => Some(*v as i64),
+            DfdlValue::UnsignedShort(v) => Some(*v as i64),
             DfdlValue::Byte(v) => Some(*v as i64),
+            DfdlValue::UnsignedByte(v) => Some(*v as i64),
             DfdlValue::Integer(text) => text.parse().ok(),
             _ => None,
         }

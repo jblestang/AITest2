@@ -53,6 +53,7 @@ extern crate std;
 
 pub mod api;
 pub mod error;
+pub mod expression;
 pub mod ir;
 pub mod length_validate;
 mod parse_unparse_policy;

@@ -71,7 +71,10 @@ impl<'a> Decoder<'a> {
                 continue;
             };
             let key = self.ctx.strings().get(*name)?.to_string();
-            let count = match map.get(&key) {
+            let target_local = crate::xml_util::local_name_str(&key);
+            let count = match map.get(&key).or_else(|| {
+                map.iter().find(|(k, _)| crate::xml_util::local_name_str(k) == target_local).map(|(_, v)| v)
+            }) {
                 Some(DfdlValue::Array(items)) => items.len(),
                 Some(DfdlValue::Null) if props.nillable => 1,
                 Some(DfdlValue::Null) => 0,
@@ -174,6 +177,15 @@ impl<'a> Decoder<'a> {
                     }
                     .into());
                 }
+                let elem_name = self.ctx.strings().get(*name)?.to_string();
+                self.enclosing_names.borrow_mut().push(elem_name);
+                struct EnclosingNameGuard<'a>(&'a RefCell<Vec<String>>);
+                impl Drop for EnclosingNameGuard<'_> {
+                    fn drop(&mut self) {
+                        self.0.borrow_mut().pop();
+                    }
+                }
+                let _elem_name_guard = EnclosingNameGuard(&self.enclosing_names);
                 let _var_scope =
                     self.enter_variable_scope(&props.new_variable_instances, siblings, true)?;
                 let props = resolve_length_props(
@@ -862,7 +874,7 @@ impl<'a> Decoder<'a> {
                             resolved_escape_scheme: resolved_escape.clone(),
                         }
                     });
-                    let value = read_simple(
+                    let value_res = read_simple(
                         cursor,
                         *kind,
                         &props,
@@ -878,7 +890,20 @@ impl<'a> Decoder<'a> {
                         self.ctx.config.defer_facet_validation,
                         scan_ctx.as_ref(),
                     )
-                    .map_err(crate::error::Error::from)?;
+                    .map_err(crate::error::Error::from);
+                    let value = match value_res {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let msg = e.to_string();
+                            if !msg.contains("Schema context:") && !msg.contains("Schema Definition Error") {
+                                let schema_ctx = element_prefixed_name(self.ctx.program, node_id).unwrap_or_else(|_| field_name.clone());
+                                return Err(VmError::InvalidValue {
+                                    message: alloc::format!("{msg}\nSchema context: {schema_ctx}"),
+                                }.into());
+                            }
+                            return Err(e);
+                        }
+                    };
                     self.note_sequence_field_bit_order(&props);
                     if delim_meta.initiator_alt.is_some() || delim_meta.terminator_alt.is_some() {
                         self.field_delimiters

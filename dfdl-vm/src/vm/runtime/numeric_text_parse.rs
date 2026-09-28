@@ -1945,7 +1945,7 @@ pub(crate) fn read_text_scalar(
     if props.representation == Representation::Text
         && matches!(props.length_kind, LengthKind::Explicit | LengthKind::Fixed)
     {
-        consume_text_field_terminator_after_fixed_length(cursor, props, strings)?;
+        consume_text_field_terminator_after_fixed_length(cursor, props, strings, scan_ctx)?;
     }
         if std::env::var("DEBUG_LION").is_ok() {
         std::eprintln!(

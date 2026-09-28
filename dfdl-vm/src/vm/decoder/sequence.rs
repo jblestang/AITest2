@@ -1128,7 +1128,7 @@ impl<'a> Decoder<'a> {
                 else {
                     continue;
                 };
-                if !self.initiator_present_at_cursor(cursor, child_props)? {
+                if !self.node_initiator_present_at_cursor(cursor, child)? {
                     continue;
                 }
                 let el_name = self.ctx.strings().get(*name)?.to_string();
@@ -1170,7 +1170,7 @@ impl<'a> Decoder<'a> {
 
                 let saved_occ = cursor.clone();
                 let single_elem =
-                    !is_repeating || self.initiator_present_at_cursor(cursor, child_props)?;
+                    !is_repeating || self.node_initiator_present_at_cursor(cursor, child)?;
                 let value_res = if single_elem {
                     self.decode_single_element(
                         child,

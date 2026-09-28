@@ -1,6 +1,10 @@
 use super::qname::*;
 use crate::error::{ParseError, Result};
+use crate::expression::{
+    parse_expression, BinaryOpKind, Expr, FuncKind, PathOrigin, SimpleType, StepTest, UnaryOpKind,
+};
 use crate::schema::ast::*;
+use crate::value::DfdlValue;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 
@@ -395,13 +399,16 @@ pub(crate) fn props_from_attrs_with_variables(
                 }
             }
             "inputValueCalc" => {
-                if let Some(expr) = parse_input_value_calc_expression(value) {
+                if let Some(expr) = parse_input_value_calc_expression(value)? {
                     props.input_value_calc_expression = Some(expr);
-                } else if let Some(segments) = parse_input_value_calc_concat(value) {
+                }
+                if let Some(segments) = parse_input_value_calc_concat(value) {
                     props.input_value_calc_segments = Some(segments);
-                } else if let Some(steps) = parse_input_value_calc_relative_path(value) {
+                }
+                if let Some(steps) = parse_input_value_calc_relative_path(value) {
                     props.input_value_calc_path = Some(steps);
-                } else if let Some((calc, lit)) =
+                }
+                if let Some((calc, lit)) =
                     variables.and_then(|vars| parse_variable_input_value_calc(value, vars))
                 {
                     props.input_value_calc = Some(calc);
@@ -909,21 +916,44 @@ fn record_invalid_calendar_time_zone(
     diagnostics.push(msg);
 }
 
+fn is_self_node_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Path(p) => {
+            p.origin == PathOrigin::Relative
+                && p.steps.len() == 1
+                && matches!(p.steps[0].test, StepTest::SelfNode)
+        }
+        Expr::Cast { expr, .. } => is_self_node_expr(expr),
+        _ => false,
+    }
+}
+
+fn occurs_index_addend_from_expr(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::FunctionCall { func: FuncKind::Other(ref name), .. }
+            if name == "dfdl:occursIndex" || name == "occursIndex" => Some(0),
+        Expr::BinaryOp { op: BinaryOpKind::Add, left, right } => {
+            if let Expr::FunctionCall { func: FuncKind::Other(ref name), .. } = &**left {
+                if name == "dfdl:occursIndex" || name == "occursIndex" {
+                    if let Expr::Literal(ref val) = **right {
+                        return literal_to_i64(val);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn parse_assert_eq_occurs_index_addend(test: &str) -> Option<i64> {
-    let compact: alloc::string::String = test.chars().filter(|c| !c.is_whitespace()).collect();
-    let body = compact
-        .strip_prefix('{')
-        .and_then(|s| s.strip_suffix('}'))
-        .unwrap_or(compact.as_str());
-    if !body.contains("dfdl:occursIndex()") {
-        return None;
-    }
-    if body.contains("xs:int(.)eqdfdl:occursIndex()") || body.contains(".eqdfdl:occursIndex()") {
-        return Some(0);
-    }
-    if let Some(rest) = body.strip_prefix(".eq(dfdl:occursIndex()+") {
-        let n = rest.strip_suffix(')')?;
-        return n.parse().ok();
+    let expr = parse_expression(test).ok()?;
+    if let Expr::BinaryOp { op: BinaryOpKind::Eq, left, right } = expr {
+        if is_self_node_expr(&left) {
+            return occurs_index_addend_from_expr(&right);
+        } else if is_self_node_expr(&right) {
+            return occurs_index_addend_from_expr(&left);
+        }
     }
     None
 }
@@ -944,13 +974,15 @@ pub(crate) fn apply_dfdl_assert_test(props: &mut DfdlProps, test: &str) {
 }
 
 pub(crate) fn parse_assert_int_eq_test(test: &str) -> Option<i64> {
-    let compact: alloc::string::String = test.chars().filter(|c| !c.is_whitespace()).collect();
-    let body = compact
-        .strip_prefix('{')
-        .and_then(|s| s.strip_suffix('}'))
-        .unwrap_or(compact.as_str());
-    let rest = body.strip_prefix("xs:int(.)eq")?;
-    rest.parse::<i64>().ok()
+    let expr = parse_expression(test).ok()?;
+    if let Expr::BinaryOp { op: BinaryOpKind::Eq, left, right } = expr {
+        if is_self_node_expr(&left) {
+            if let Expr::Literal(ref val) = *right {
+                return literal_to_i64(val);
+            }
+        }
+    }
+    None
 }
 
 fn parse_xs_string_literal_arg(arg: &str) -> Option<String> {
@@ -1039,378 +1071,174 @@ fn is_valid_path_string(s: &str) -> bool {
     true
 }
 
-fn parse_ivc_path_steps(
-    s: &str,
-) -> Option<(
-    bool,
-    alloc::vec::Vec<(
-        Option<alloc::string::String>,
-        alloc::string::String,
-        Option<u32>,
-        bool,
-    )>,
-)> {
-    let s = s.trim();
-    let mut leading_dots = false;
-    let (parent_root, rest) = if let Some(r) = s.strip_prefix("parent::") {
-        (true, r)
-    } else if let Some(r) = s.strip_prefix('/') {
-        (false, r)
-    } else if let Some(r) = s.strip_prefix("../").or_else(|| s.strip_prefix("..\\")) {
-        leading_dots = true;
-        (false, r)
-    } else if let Some(r) = s.strip_prefix("./") {
-        (false, r)
-    } else if s == "." || is_valid_path_string(s) {
-        (false, s)
-    } else {
-        return None;
-    };
-    if rest.is_empty() && !leading_dots {
-        return None;
-    }
-    let mut steps = alloc::vec::Vec::new();
-    if leading_dots {
-        steps.push(parse_infoset_path_step(".."));
-    }
-    for step in rest.split('/').filter(|p| !p.is_empty()) {
-        steps.push(parse_infoset_path_step(step));
-    }
-    Some((parent_root, steps))
-}
 
-enum IvcIntegerLexical {
-    I64(i64),
-    Wide(alloc::string::String),
-}
 
-fn parse_ivc_integer_lexical(s: &str) -> Option<IvcIntegerLexical> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let rest = if let Some(r) = s.strip_prefix('+').or_else(|| s.strip_prefix('-')) {
-        r
-    } else {
-        s
-    };
-    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    if let Ok(v) = s.parse::<i64>() {
-        return Some(IvcIntegerLexical::I64(v));
-    }
-    Some(IvcIntegerLexical::Wide(s.to_string()))
-}
-
-fn split_top_level_ivc_div(s: &str) -> Option<alloc::vec::Vec<alloc::string::String>> {
-    let s = s.trim();
-    let mut parts = alloc::vec::Vec::new();
-    let mut current = alloc::string::String::new();
-    let mut depth = 0i32;
-    let bytes = s.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let ch = bytes[i] as char;
-        match ch {
-            '(' | '[' | '{' => {
-                depth += 1;
-                current.push(ch);
-                i += 1;
-            }
-            ')' | ']' | '}' => {
-                depth -= 1;
-                current.push(ch);
-                i += 1;
-            }
-            _ if depth == 0 && s[i..].starts_with(" div ") => {
-                parts.push(current.trim().to_string());
-                current.clear();
-                i += 5;
-            }
-            _ => {
-                current.push(ch);
-                i += 1;
-            }
-        }
-    }
-    if !current.trim().is_empty() {
-        parts.push(current.trim().to_string());
-    }
-    if parts.len() <= 1 {
-        return None;
-    }
-    Some(parts)
-}
-
-fn extract_ivc_paren_argument(s: &str, open_prefix: &str) -> Option<alloc::string::String> {
-    let rest = s.strip_prefix(open_prefix)?;
-    let mut depth = 1i32;
-    for (i, ch) in rest.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(rest[..i].trim().to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn parse_ivc_path_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
-    let (parent_root, steps) = parse_ivc_path_steps(s)?;
-    Some(crate::schema::InputValueCalcExpression::Path { parent_root, steps })
-}
-
-fn parse_ivc_primary(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
-    let s = s.trim();
-    if s.starts_with('(') && s.ends_with(')') {
-        let mut depth = 0i32;
-        let mut full_match = true;
-        for (i, ch) in s.char_indices() {
-            if ch == '(' {
-                depth += 1;
-            } else if ch == ')' {
-                depth -= 1;
-                if depth == 0 && i < s.len() - 1 {
-                    full_match = false;
-                    break;
-                }
-            }
-        }
-        if full_match && depth == 0 {
-            let inner = s[1..s.len() - 1].trim();
-            return parse_ivc_add_expr(inner);
-        }
-    }
-    if let Some(arg) = extract_ivc_paren_argument(s, "fn:ceiling(") {
-        let inner = parse_ivc_add_expr(&arg)?;
-        return Some(crate::schema::InputValueCalcExpression::Ceiling(
-            alloc::boxed::Box::new(inner),
-        ));
-    }
-    if let Some(arg) = extract_ivc_paren_argument(s, "dfdl:valueLength(").or_else(|| extract_ivc_paren_argument(s, "dfdl:contentLength(")) {
-        let arg_parts = split_top_level_commas(arg.trim());
-        if arg_parts.len() == 2 {
-            let raw_path = arg_parts[0].trim();
-            if raw_path != ".." && raw_path != "." {
-                let path = raw_path.strip_prefix("../").unwrap_or(raw_path);
-                let units = length_units_from_calc_args(arg_parts[1].trim());
-                return Some(crate::schema::InputValueCalcExpression::ValueLength {
-                    sibling: local_name_from_qname(path).to_string(),
-                    units,
-                });
-            }
-        }
-    }
-    for (prefix, kind) in [
-        ("xs:byte(", crate::schema::IvcXsCast::Byte),
-        ("xsd:byte(", crate::schema::IvcXsCast::Byte),
-        ("xs:short(", crate::schema::IvcXsCast::Short),
-        ("xsd:short(", crate::schema::IvcXsCast::Short),
-        ("xs:int(", crate::schema::IvcXsCast::Int),
-        ("xsd:int(", crate::schema::IvcXsCast::Int),
-        ("xs:long(", crate::schema::IvcXsCast::Long),
-        ("xsd:long(", crate::schema::IvcXsCast::Long),
-        ("xs:unsignedByte(", crate::schema::IvcXsCast::UnsignedByte),
-        ("xsd:unsignedByte(", crate::schema::IvcXsCast::UnsignedByte),
-        ("xs:unsignedShort(", crate::schema::IvcXsCast::UnsignedShort),
-        (
-            "xsd:unsignedShort(",
-            crate::schema::IvcXsCast::UnsignedShort,
-        ),
-        ("xs:unsignedInt(", crate::schema::IvcXsCast::UnsignedInt),
-        ("xsd:unsignedInt(", crate::schema::IvcXsCast::UnsignedInt),
-        ("xs:unsignedLong(", crate::schema::IvcXsCast::UnsignedLong),
-        ("xsd:unsignedLong(", crate::schema::IvcXsCast::UnsignedLong),
-        ("xs:float(", crate::schema::IvcXsCast::Float),
-        ("xsd:float(", crate::schema::IvcXsCast::Float),
-        ("xs:double(", crate::schema::IvcXsCast::Double),
-        ("xsd:double(", crate::schema::IvcXsCast::Double),
-        ("xs:string(", crate::schema::IvcXsCast::String),
-        ("xsd:string(", crate::schema::IvcXsCast::String),
-        ("xs:hexBinary(", crate::schema::IvcXsCast::HexBinary),
-        ("xsd:hexBinary(", crate::schema::IvcXsCast::HexBinary),
-    ] {
-        if let Some(arg) = extract_ivc_paren_argument(s, prefix) {
-            let inner = parse_ivc_add_expr(&arg)?;
-            return Some(crate::schema::InputValueCalcExpression::Cast {
-                kind,
-                inner: alloc::boxed::Box::new(inner),
-            });
-        }
-    }
-    if let Some(rest) = s.strip_prefix('-') {
-        if let Some(lit) = parse_ivc_integer_lexical(rest) {
-            return Some(match lit {
-                IvcIntegerLexical::I64(v) => crate::schema::InputValueCalcExpression::Literal(-v),
-                IvcIntegerLexical::Wide(text) => {
-                    let mut neg = alloc::string::String::from("-");
-                    neg.push_str(text.trim_start_matches('+'));
-                    crate::schema::InputValueCalcExpression::LiteralLexical(neg)
-                }
-            });
-        }
-    }
-    if let Some(lit) = parse_ivc_integer_lexical(s) {
-        return Some(match lit {
-            IvcIntegerLexical::I64(v) => crate::schema::InputValueCalcExpression::Literal(v),
-            IvcIntegerLexical::Wide(text) => {
-                crate::schema::InputValueCalcExpression::LiteralLexical(text)
-            }
-        });
-    }
-    if s.parse::<f64>().is_ok() {
-        return Some(crate::schema::InputValueCalcExpression::LiteralLexical(s.to_string()));
-    }
-    if s.len() >= 2
-        && ((s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')))
-    {
-        let inner = &s[1..s.len() - 1];
-        let unescaped = inner.replace("''", "'").replace("\"\"", "\"");
-        return Some(crate::schema::InputValueCalcExpression::LiteralLexical(
-            unescaped,
-        ));
-    }
-    if let Some(name) = s.strip_prefix('$').map(str::trim) {
-        if !name.is_empty() && !name.contains(' ') {
-            return Some(crate::schema::InputValueCalcExpression::Variable(
-                name.to_string(),
-            ));
-        }
-    }
-    parse_ivc_path_expr(s)
-}
-
-fn parse_ivc_unary_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
-    parse_ivc_primary(s)
-}
-
-fn parse_ivc_div_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
-    let s = s.trim();
-    if let Some(parts) = split_top_level_ivc_div(s) {
-        let mut left = parse_ivc_unary_expr(&parts[0])?;
-        for part in parts.iter().skip(1) {
-            let right = parse_ivc_unary_expr(part)?;
-            left = crate::schema::InputValueCalcExpression::Div(
-                alloc::boxed::Box::new(left),
-                alloc::boxed::Box::new(right),
-            );
-        }
-        return Some(left);
-    }
-    parse_ivc_unary_expr(s)
-}
-
-fn split_top_level_ivc_sub(s: &str) -> Option<alloc::vec::Vec<alloc::string::String>> {
-    let s = s.trim();
-    let mut parts = alloc::vec::Vec::new();
-    let mut current = alloc::string::String::new();
-    let mut depth = 0i32;
-    let bytes = s.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let ch = bytes[i] as char;
-        match ch {
-            '(' | '[' | '{' => {
-                depth += 1;
-                current.push(ch);
-                i += 1;
-            }
-            ')' | ']' | '}' => {
-                depth -= 1;
-                current.push(ch);
-                i += 1;
-            }
-            _ if depth == 0 && ch == '-' => {
-                let prev_non_ws = current.trim_end().chars().next_back();
-                let is_sub = match prev_non_ws {
-                    Some(c) => c.is_alphanumeric() || c == '_' || c == ')' || c == ']' || c == '.' || c == '\'' || c == '"',
-                    None => false,
-                };
-                if is_sub {
-                    parts.push(current.trim().to_string());
-                    current.clear();
-                    i += 1;
+fn pest_ast_to_ivc_expr(expr: &Expr) -> Option<crate::schema::InputValueCalcExpression> {
+    use crate::schema::InputValueCalcExpression as IvcExpr;
+    match expr {
+        Expr::Literal(ref val) => match val {
+            DfdlValue::Int(n) => Some(IvcExpr::Literal(*n as i64)),
+            DfdlValue::Long(n) => Some(IvcExpr::Literal(*n)),
+            DfdlValue::Integer(s) => {
+                if let Ok(n) = s.parse::<i64>() {
+                    Some(IvcExpr::Literal(n))
                 } else {
-                    current.push(ch);
-                    i += 1;
+                    Some(IvcExpr::LiteralLexical(s.clone()))
                 }
             }
-            _ => {
-                current.push(ch);
-                i += 1;
+            DfdlValue::Float(f) => Some(IvcExpr::LiteralLexical(f.to_string())),
+            DfdlValue::Double(f) => Some(IvcExpr::LiteralLexical(f.to_string())),
+            DfdlValue::String(s) => Some(IvcExpr::LiteralLexical(s.text.clone())),
+            _ => None,
+        },
+        Expr::Variable { local, .. } => Some(IvcExpr::Variable(local.clone())),
+        Expr::Path(path) => {
+            let parent_root = matches!(path.origin, PathOrigin::Parent(_));
+            let mut steps = alloc::vec::Vec::new();
+            if let PathOrigin::Parent(up) = path.origin {
+                for _ in 0..up {
+                    steps.push((None, "..".into(), None, false));
+                }
+            }
+            for step in &path.steps {
+                let (prefix, local) = match &step.test {
+                    StepTest::Name { prefix, local } => (prefix.clone(), local.clone()),
+                    StepTest::Attribute(attr) => (None, alloc::format!("@{attr}")),
+                    StepTest::Wildcard => (None, "*".into()),
+                    StepTest::SelfNode => (None, ".".into()),
+                };
+                let index = step.predicate.as_ref().and_then(|p| match **p {
+                    Expr::Literal(ref val) => literal_to_i64(val).filter(|&n| n > 0).map(|n| n as u32),
+                    _ => None,
+                });
+                steps.push((prefix, local, index, false));
+            }
+            Some(IvcExpr::Path { parent_root, steps })
+        }
+        Expr::BinaryOp { op, left, right } => {
+            let l = pest_ast_to_ivc_expr(left)?;
+            let r = pest_ast_to_ivc_expr(right)?;
+            match op {
+                BinaryOpKind::Add => Some(IvcExpr::Add(alloc::vec![l, r])),
+                BinaryOpKind::Sub => Some(IvcExpr::Sub(alloc::vec![l, r])),
+                BinaryOpKind::Mul => Some(IvcExpr::Mul(alloc::vec![l, r])),
+                BinaryOpKind::Div => {
+                    Some(IvcExpr::Div(alloc::boxed::Box::new(l), alloc::boxed::Box::new(r)))
+                }
+                _ => None,
             }
         }
-    }
-    if !current.trim().is_empty() {
-        parts.push(current.trim().to_string());
-    }
-    if parts.len() <= 1 {
-        return None;
-    }
-    Some(parts)
-}
-
-fn parse_ivc_mul_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
-    let s = s.trim();
-    if let Some(parts) = split_top_level_ivc_op(s, '*') {
-        let mut terms = alloc::vec::Vec::new();
-        for part in parts {
-            terms.push(parse_ivc_div_expr(&part)?);
+        Expr::UnaryOp { op: UnaryOpKind::Minus, expr } => {
+            let inner = pest_ast_to_ivc_expr(expr)?;
+            match inner {
+                IvcExpr::Literal(n) => Some(IvcExpr::Literal(-n)),
+                IvcExpr::LiteralLexical(s) => {
+                    let mut neg = String::from("-");
+                    neg.push_str(s.trim_start_matches('+'));
+                    Some(IvcExpr::LiteralLexical(neg))
+                }
+                other => Some(IvcExpr::Sub(alloc::vec![IvcExpr::Literal(0), other])),
+            }
         }
-        return Some(crate::schema::InputValueCalcExpression::Mul(terms));
-    }
-    parse_ivc_div_expr(s)
-}
-
-fn parse_ivc_sub_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
-    let s = s.trim();
-    if let Some(parts) = split_top_level_ivc_sub(s) {
-        let mut left = parse_ivc_mul_expr(&parts[0])?;
-        for part in parts.iter().skip(1) {
-            let right = parse_ivc_mul_expr(part)?;
-            left = crate::schema::InputValueCalcExpression::Sub(alloc::vec![left, right,]);
+        Expr::Cast { target_type, expr } => {
+            use crate::schema::IvcXsCast;
+            let inner = pest_ast_to_ivc_expr(expr)?;
+            if *target_type == SimpleType::String {
+                return Some(IvcExpr::StringOf(alloc::boxed::Box::new(inner)));
+            }
+            let kind = match target_type {
+                SimpleType::Byte => IvcXsCast::Byte,
+                SimpleType::Short => IvcXsCast::Short,
+                SimpleType::Int | SimpleType::Integer => IvcXsCast::Int,
+                SimpleType::Long => IvcXsCast::Long,
+                SimpleType::UnsignedByte => IvcXsCast::UnsignedByte,
+                SimpleType::UnsignedShort => IvcXsCast::UnsignedShort,
+                SimpleType::UnsignedInt => IvcXsCast::UnsignedInt,
+                SimpleType::UnsignedLong => IvcXsCast::UnsignedLong,
+                SimpleType::Float => IvcXsCast::Float,
+                SimpleType::Double => IvcXsCast::Double,
+                _ => return None,
+            };
+            Some(IvcExpr::Cast { kind, inner: alloc::boxed::Box::new(inner) })
         }
-        return Some(left);
-    }
-    parse_ivc_mul_expr(s)
-}
-
-fn parse_ivc_add_expr(s: &str) -> Option<crate::schema::InputValueCalcExpression> {
-    let s = s.trim();
-    if let Some(parts) = split_top_level_ivc_op(s, '+') {
-        let mut terms = alloc::vec::Vec::new();
-        for part in parts {
-            terms.push(parse_ivc_sub_expr(&part)?);
+        Expr::FunctionCall { func: FuncKind::Other(ref name), args } if (name == "xs:string" || name == "xsd:string") && args.len() == 1 => {
+            let inner = pest_ast_to_ivc_expr(&args[0])?;
+            Some(IvcExpr::StringOf(alloc::boxed::Box::new(inner)))
         }
-        return Some(crate::schema::InputValueCalcExpression::Add(terms));
+        Expr::FunctionCall { func: FuncKind::Other(ref name), args } if (name == "fn:ceiling" || name == "ceiling") && args.len() == 1 => {
+            let inner = pest_ast_to_ivc_expr(&args[0])?;
+            Some(IvcExpr::Ceiling(alloc::boxed::Box::new(inner)))
+        }
+        Expr::FunctionCall { func: FuncKind::DfdlValueLength | FuncKind::DfdlContentLength, args } if args.len() == 2 => {
+            let raw_path = match &args[0] {
+                Expr::Path(path) => {
+                    let last = path.steps.last()?;
+                    match &last.test {
+                        StepTest::Name { local, .. } => local_name_from_qname(local).to_string(),
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            };
+            let units = match &args[1] {
+                Expr::Literal(DfdlValue::String(u)) => length_units_from_calc_args(&u.text),
+                _ => LengthUnits::Bytes,
+            };
+            Some(IvcExpr::ValueLength { sibling: raw_path, units })
+        }
+        _ => None,
     }
-    parse_ivc_sub_expr(s)
 }
 
 pub(crate) fn parse_input_value_calc_expression(
     value: &str,
-) -> Option<crate::schema::InputValueCalcExpression> {
+) -> Result<Option<crate::schema::InputValueCalcExpression>> {
     let trimmed = value.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
+        return Ok(None);
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
-    if let Some(rest) = inner
-        .strip_prefix("xs:string(")
-        .and_then(|r| r.strip_suffix(')'))
-    {
-        let path = parse_ivc_add_expr(rest.trim())?;
-        return Some(crate::schema::InputValueCalcExpression::StringOf(
-            alloc::boxed::Box::new(path),
-        ));
+    match parse_expression(inner) {
+        Ok(expr) => Ok(pest_ast_to_ivc_expr(&expr)),
+        Err(err) => Err(ParseError::InvalidXml {
+            message: alloc::format!(
+                "Schema Definition Error: Unable to parse expression. Variables cannot be used in path expressions: {err}"
+            ),
+        }
+        .into()),
     }
-    parse_ivc_add_expr(inner)
+}
+
+fn ast_path_to_steps(
+    path: &crate::expression::Path,
+) -> alloc::vec::Vec<(
+    Option<alloc::string::String>,
+    alloc::string::String,
+    Option<u32>,
+    bool,
+)> {
+    let mut steps = alloc::vec::Vec::new();
+    if let PathOrigin::Parent(up) = path.origin {
+        for _ in 0..up {
+            steps.push((None, "..".into(), None, false));
+        }
+    }
+    for step in &path.steps {
+        let (prefix, local) = match &step.test {
+            StepTest::Name { prefix, local } => (prefix.clone(), local.clone()),
+            StepTest::Attribute(attr) => (None, alloc::format!("@{attr}")),
+            StepTest::Wildcard => (None, "*".into()),
+            StepTest::SelfNode => (None, ".".into()),
+        };
+        let index = step.predicate.as_ref().and_then(|p| match **p {
+            Expr::Literal(ref val) => {
+                literal_to_i64(val).filter(|&n| n > 0).map(|n| n as u32)
+            }
+            _ => None,
+        });
+        steps.push((prefix, local, index, false));
+    }
+    steps
 }
 
 fn parse_concat_arg_segment(
@@ -1436,8 +1264,11 @@ fn parse_concat_arg_segment(
         }
     }
     if part.starts_with('/') || part.starts_with("parent::") || part.starts_with("../") {
-        if let Some((_parent_root, steps)) = parse_ivc_path_steps(part) {
-            return Some(alloc::vec![InputValueCalcSegment::InfosetPath(steps)]);
+        if let Ok(Expr::Path(path)) = parse_expression(part) {
+            let steps = ast_path_to_steps(&path);
+            if !steps.is_empty() {
+                return Some(alloc::vec![InputValueCalcSegment::InfosetPath(steps)]);
+            }
         }
     }
     if part.len() >= 2
@@ -1525,6 +1356,28 @@ pub(crate) fn parse_parse_unparse_policy(value: &str) -> Result<ParseUnparsePoli
     })
 }
 
+fn literal_to_i64(val: &DfdlValue) -> Option<i64> {
+    match val {
+        DfdlValue::Int(n) => Some(*n as i64),
+        DfdlValue::Long(n) => Some(*n),
+        DfdlValue::Integer(s) => s.parse().ok(),
+        DfdlValue::UnsignedInt(n) => Some(*n as i64),
+        DfdlValue::UnsignedLong(n) => (*n).try_into().ok(),
+        DfdlValue::Short(n) => Some(*n as i64),
+        DfdlValue::Byte(n) => Some(*n as i64),
+        _ => None,
+    }
+}
+
+fn eval_i64_expr(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Literal(ref val) => literal_to_i64(val),
+        Expr::UnaryOp { op: UnaryOpKind::Minus, expr } => eval_i64_expr(expr).map(|v| -v),
+        Expr::UnaryOp { op: UnaryOpKind::Plus, expr } => eval_i64_expr(expr),
+        _ => None,
+    }
+}
+
 pub(crate) fn parse_fn_count_path(
     inner: &str,
 ) -> Option<
@@ -1535,20 +1388,36 @@ pub(crate) fn parse_fn_count_path(
         bool,
     )>,
 > {
-    let inner = inner.trim();
-    let path = inner.strip_prefix("fn:count(")?.strip_suffix(')')?.trim();
-    let mut rest = path;
-    while rest.starts_with("../") {
-        rest = &rest[3..];
+    let expr = parse_expression(inner).ok()?;
+    if let Expr::FunctionCall { func: FuncKind::FnCount, mut args } = expr {
+        if args.len() == 1 {
+            if let Expr::Path(path) = args.remove(0) {
+                let mut steps = alloc::vec::Vec::new();
+                if let PathOrigin::Parent(up) = path.origin {
+                    for _ in 0..up {
+                        steps.push((None, "..".into(), None, false));
+                    }
+                }
+                for step in path.steps {
+                    let (prefix, local) = match step.test {
+                        StepTest::Name { prefix, local } => (prefix, local),
+                        StepTest::Attribute(attr) => (None, alloc::format!("@{attr}")),
+                        StepTest::Wildcard => (None, "*".into()),
+                        StepTest::SelfNode => (None, ".".into()),
+                    };
+                    let index = step.predicate.and_then(|p| match *p {
+                        Expr::Literal(ref val) => {
+                            literal_to_i64(val).filter(|&n| n > 0).map(|n| n as u32)
+                        }
+                        _ => None,
+                    });
+                    steps.push((prefix, local, index, false));
+                }
+                return Some(steps);
+            }
+        }
     }
-    if rest.is_empty() {
-        return None;
-    }
-    let mut steps = alloc::vec::Vec::new();
-    for step in rest.split('/').filter(|s| !s.is_empty()) {
-        steps.push(parse_infoset_path_step(step));
-    }
-    Some(steps)
+    None
 }
 
 type InfosetPathStepParsed = (
@@ -1640,26 +1509,122 @@ fn parse_byte_order_literal(order: &str) -> Option<ByteOrder> {
     }
 }
 
-pub(crate) fn parse_byte_order_if_expr(value: &str) -> Option<(String, ByteOrder, ByteOrder)> {
-    let trimmed = value.trim();
-    let inner = trimmed
-        .strip_prefix('{')
-        .and_then(|s| s.strip_suffix('}'))
-        .map(str::trim)?;
-    let rest = inner.strip_prefix("if")?.trim();
-    let rest = rest.strip_prefix('(')?.trim();
-    let then_idx = rest.find(") then ")?;
-    let cond = rest[..then_idx].trim().to_string();
-    let rest = rest[then_idx + 7..].trim();
-    let else_idx = rest.find(" else ")?;
-    let then_lit = rest[..else_idx].trim();
-    let else_lit = rest[else_idx + 6..].trim();
-    let t = parse_byte_order_literal(then_lit)?;
-    let f = parse_byte_order_literal(else_lit)?;
-    if cond.is_empty() {
-        return None;
+fn expr_to_string(expr: &Expr) -> String {
+    match expr {
+        Expr::Literal(v) => match v {
+            DfdlValue::String(s) => alloc::format!("'{}'", s.text),
+            DfdlValue::Int(n) => n.to_string(),
+            DfdlValue::Long(n) => n.to_string(),
+            DfdlValue::Double(f) => f.to_string(),
+            DfdlValue::Boolean(b) => b.to_string(),
+            _ => alloc::format!("{v:?}"),
+        },
+        Expr::Path(path) => {
+            let mut s = String::new();
+            if let PathOrigin::Parent(up) = path.origin {
+                for _ in 0..up {
+                    s.push_str("../");
+                }
+            } else if path.origin == PathOrigin::Root {
+                s.push('/');
+            }
+            for (i, step) in path.steps.iter().enumerate() {
+                if i > 0 && !s.ends_with('/') {
+                    s.push('/');
+                }
+                match &step.test {
+                    StepTest::Name { prefix: Some(p), local } => {
+                        s.push_str(p);
+                        s.push(':');
+                        s.push_str(local);
+                    }
+                    StepTest::Name { prefix: None, local } => s.push_str(local),
+                    StepTest::Attribute(attr) => {
+                        s.push('@');
+                        s.push_str(attr);
+                    }
+                    StepTest::Wildcard => s.push('*'),
+                    StepTest::SelfNode => s.push('.'),
+                }
+                if let Some(ref pred) = step.predicate {
+                    s.push('[');
+                    s.push_str(&expr_to_string(pred));
+                    s.push(']');
+                }
+            }
+            s
+        }
+        Expr::BinaryOp { op, left, right } => {
+            let op_str = match op {
+                BinaryOpKind::Eq => "eq",
+                BinaryOpKind::Ne => "ne",
+                BinaryOpKind::Lt => "lt",
+                BinaryOpKind::Le => "le",
+                BinaryOpKind::Gt => "gt",
+                BinaryOpKind::Ge => "ge",
+                BinaryOpKind::Add => "+",
+                BinaryOpKind::Sub => "-",
+                BinaryOpKind::Mul => "*",
+                BinaryOpKind::Div => "div",
+                BinaryOpKind::Mod => "mod",
+                BinaryOpKind::And => "and",
+                BinaryOpKind::Or => "or",
+            };
+            alloc::format!("{} {} {}", expr_to_string(left), op_str, expr_to_string(right))
+        }
+        Expr::UnaryOp { op, expr } => match op {
+            UnaryOpKind::Minus => alloc::format!("-{}", expr_to_string(expr)),
+            UnaryOpKind::Plus => alloc::format!("+{}", expr_to_string(expr)),
+            UnaryOpKind::Not => alloc::format!("not({})", expr_to_string(expr)),
+        },
+        Expr::FunctionCall { func, args } => {
+            let arg_strs: alloc::vec::Vec<String> = args.iter().map(expr_to_string).collect();
+            let func_name = match func {
+                FuncKind::FnCount => "fn:count",
+                FuncKind::FnConcat => "fn:concat",
+                FuncKind::FnSubstring => "fn:substring",
+                FuncKind::FnExists => "fn:exists",
+                FuncKind::FnEmpty => "fn:empty",
+                FuncKind::FnNot => "fn:not",
+                FuncKind::FnNillable => "fn:nillable",
+                FuncKind::DfdlOccursIndex => "dfdl:occursIndex",
+                FuncKind::DfdlValueLength => "dfdl:valueLength",
+                FuncKind::DfdlContentLength => "dfdl:contentLength",
+                FuncKind::Other(o) => o.as_str(),
+            };
+            alloc::format!("{}({})", func_name, arg_strs.join(", "))
+        }
+        Expr::Variable { prefix: Some(p), local } => alloc::format!("${p}:{local}"),
+        Expr::Variable { prefix: None, local } => alloc::format!("${local}"),
+        Expr::IfThenElse { cond, then_branch, else_branch } => {
+            alloc::format!("if ({}) then {} else {}", expr_to_string(cond), expr_to_string(then_branch), expr_to_string(else_branch))
+        }
+        Expr::Cast { target_type, expr } => {
+            alloc::format!("xs:{:?}({})", target_type, expr_to_string(expr))
+        }
     }
-    Some((cond, t, f))
+}
+
+fn expr_to_byte_order(expr: &Expr) -> Option<ByteOrder> {
+    match expr {
+        Expr::Literal(DfdlValue::String(s)) => parse_byte_order_literal(&s.text),
+        Expr::Literal(DfdlValue::Integer(s)) => parse_byte_order_literal(s),
+        _ => None,
+    }
+}
+
+pub(crate) fn parse_byte_order_if_expr(value: &str) -> Option<(String, ByteOrder, ByteOrder)> {
+    let expr = parse_expression(value).ok()?;
+    if let Expr::IfThenElse { cond, then_branch, else_branch } = expr {
+        let t = expr_to_byte_order(&then_branch)?;
+        let f = expr_to_byte_order(&else_branch)?;
+        let cond_str = expr_to_string(&cond);
+        if cond_str.is_empty() {
+            return None;
+        }
+        return Some((cond_str, t, f));
+    }
+    None
 }
 
 pub(crate) fn parse_input_value_calc_relative_path(
@@ -1672,24 +1637,34 @@ pub(crate) fn parse_input_value_calc_relative_path(
         bool,
     )>,
 > {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
+    let expr = parse_expression(value).ok()?;
+    if let Expr::Path(path) = expr {
+        if let PathOrigin::Parent(up) = path.origin {
+            if up > 0 {
+                let mut steps = alloc::vec::Vec::new();
+                for _ in 0..up {
+                    steps.push((None, "..".into(), None, false));
+                }
+                for step in path.steps {
+                    let (prefix, local) = match step.test {
+                        StepTest::Name { prefix, local } => (prefix, local),
+                        StepTest::Attribute(attr) => (None, alloc::format!("@{attr}")),
+                        StepTest::Wildcard => (None, "*".into()),
+                        StepTest::SelfNode => (None, ".".into()),
+                    };
+                    let index = step.predicate.and_then(|p| match *p {
+                        Expr::Literal(ref val) => {
+                            literal_to_i64(val).filter(|&n| n > 0).map(|n| n as u32)
+                        }
+                        _ => None,
+                    });
+                    steps.push((prefix, local, index, false));
+                }
+                return Some(steps);
+            }
+        }
     }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    let mut steps = alloc::vec::Vec::new();
-    let mut rest = inner;
-    while let Some(r) = rest.strip_prefix("../") {
-        steps.push(parse_infoset_path_step(".."));
-        rest = r;
-    }
-    if steps.is_empty() || rest.is_empty() {
-        return None;
-    }
-    for step in rest.split('/').filter(|s| !s.is_empty()) {
-        steps.push(parse_infoset_path_step(step));
-    }
-    Some(steps)
+    None
 }
 
 pub(crate) fn parse_output_value_calc_value_length_path(
@@ -1704,37 +1679,36 @@ pub(crate) fn parse_output_value_calc_value_length_path(
     LengthUnits,
     i64,
 )> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
-    }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    let (func_expr, addend) = if let Some((f, a)) = inner.rsplit_once('+') {
-        (f.trim(), a.trim().parse::<i64>().unwrap_or(0))
-    } else {
-        (inner, 0)
+    let expr = parse_expression(value).ok()?;
+    let (func_expr, addend) = match &expr {
+        Expr::BinaryOp { op: BinaryOpKind::Add, left, right } => {
+            let addend = eval_i64_expr(right)?;
+            (left.as_ref(), addend)
+        }
+        _ => (&expr, 0),
     };
-    let rest = func_expr
-        .strip_prefix("dfdl:valueLength(")?
-        .strip_suffix(')')?;
-    let arg_parts = split_top_level_commas(rest.trim());
-    if arg_parts.len() != 2 {
-        return None;
+    if let Expr::FunctionCall { func, args } = func_expr {
+        let is_val_len = match func {
+            FuncKind::DfdlValueLength => true,
+            FuncKind::Other(s) => s == "dfdl:valueLength",
+            _ => false,
+        };
+        if is_val_len && args.len() == 2 {
+            if let Expr::Path(path) = &args[0] {
+                let steps: alloc::vec::Vec<_> = ast_path_to_steps(path)
+                    .into_iter()
+                    .filter(|s| s.1 != ".." && s.1 != ".")
+                    .collect();
+                if steps.is_empty() {
+                    return None;
+                }
+                let units_str = expr_to_string(&args[1]);
+                let units = length_units_from_calc_args(&units_str);
+                return Some((steps, units, addend));
+            }
+        }
     }
-    let mut path_part = arg_parts[0].trim();
-    while let Some(rest) = path_part.strip_prefix("../").or_else(|| path_part.strip_prefix("./")) {
-        path_part = rest.trim();
-    }
-    let units_part = arg_parts[1].trim();
-    if path_part.is_empty() {
-        return None;
-    }
-    let mut steps = alloc::vec::Vec::new();
-    for step in path_part.split('/').filter(|s| !s.is_empty()) {
-        steps.push(parse_infoset_path_step(step));
-    }
-    let units = length_units_from_calc_args(units_part.trim());
-    Some((steps, units, addend))
+    None
 }
 
 pub(crate) fn parse_output_value_calc_infoset_path(
@@ -1748,31 +1722,26 @@ pub(crate) fn parse_output_value_calc_infoset_path(
     )>,
     i64,
 )> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
-    }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    let (path_expr, addend) = match inner.rsplit_once('+') {
-        Some((left, right)) => {
-            let right = right.trim();
-            if let Ok(n) = right.parse::<i64>() {
-                (left.trim(), n)
-            } else {
-                (inner, 0)
+    let expr = parse_expression(value).ok()?;
+    let (path_expr, addend) = match &expr {
+        Expr::BinaryOp { op: BinaryOpKind::Add, left, right } => {
+            let addend = eval_i64_expr(right)?;
+            (left.as_ref(), addend)
+        }
+        _ => (&expr, 0),
+    };
+    if let Expr::Path(path) = path_expr {
+        if matches!(path.origin, PathOrigin::Parent(_)) {
+            let steps: alloc::vec::Vec<_> = ast_path_to_steps(path)
+                .into_iter()
+                .filter(|s| s.1 != ".." && s.1 != ".")
+                .collect();
+            if !steps.is_empty() {
+                return Some((steps, addend));
             }
         }
-        None => (inner, 0),
-    };
-    let rest = path_expr.strip_prefix("../")?;
-    if rest.is_empty() {
-        return None;
     }
-    let mut steps = alloc::vec::Vec::new();
-    for step in rest.split('/').filter(|s| !s.is_empty()) {
-        steps.push(parse_infoset_path_step(step));
-    }
-    Some((steps, addend))
+    None
 }
 
 fn length_units_from_calc_args(args: &str) -> LengthUnits {
@@ -1789,99 +1758,92 @@ fn length_units_from_calc_args(args: &str) -> LengthUnits {
 pub(crate) fn parse_input_value_calc(
     value: &str,
 ) -> Option<(InputValueCalc, Option<String>, Option<String>)> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
-    }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    if inner.starts_with("xs:hexBinary(") && inner.ends_with(')') {
-        let arg = inner["xs:hexBinary(".len()..inner.len() - 1].trim();
-        if let Some(sib) = arg.strip_prefix("../") {
-            return Some((
-                InputValueCalc::HexBinaryFromSibling,
-                Some(local_name_from_qname(sib).to_string()),
-                None,
-            ));
+    let expr = parse_expression(value).ok()?;
+    match &expr {
+        Expr::Cast { target_type, expr: inner } => {
+            if matches!(target_type, SimpleType::String) {
+                if let Expr::Literal(DfdlValue::String(s)) = inner.as_ref() {
+                    return Some((InputValueCalc::StringLiteral, None, Some(s.text.clone())));
+                }
+            }
         }
+        Expr::FunctionCall { func, args } => {
+            let name = match func {
+                FuncKind::Other(s) => s.as_str(),
+                FuncKind::DfdlContentLength => "dfdl:contentLength",
+                FuncKind::DfdlValueLength => "dfdl:valueLength",
+                _ => "",
+            };
+            if name == "xs:hexBinary" || name == "xsd:hexBinary" {
+                if let Some(Expr::Path(path)) = args.first() {
+                    if let Some(step) = path.steps.last() {
+                        if let StepTest::Name { local, .. } = &step.test {
+                            let local_str = local_name_from_qname(local).to_string();
+                            return Some((InputValueCalc::HexBinaryFromSibling, Some(local_str), None));
+                        }
+                    }
+                }
+            }
+            if args.len() == 1 {
+                let units = length_units_from_calc_args(&expr_to_string(&args[0]));
+                let target_str = expr_to_string(&args[0]);
+                if name == "dfdl:contentLength" {
+                    if target_str == ".." {
+                        return Some((InputValueCalc::ContentLengthSelf(units), None, None));
+                    } else {
+                        let name = target_str.strip_prefix("../").unwrap_or(&target_str);
+                        return Some((
+                            InputValueCalc::ContentLengthSibling(units),
+                            Some(local_name_from_qname(name).to_string()),
+                            None,
+                        ));
+                    }
+                } else if name == "dfdl:valueLength" {
+                    if target_str == ".." {
+                        return Some((InputValueCalc::ValueLengthSelf(units), None, None));
+                    } else {
+                        let name = target_str.strip_prefix("../").unwrap_or(&target_str);
+                        return Some((
+                            InputValueCalc::ValueLengthSibling(units),
+                            Some(local_name_from_qname(name).to_string()),
+                            None,
+                        ));
+                    }
+                } else if name == "xs:boolean" || name == "xsd:boolean" {
+                    let name = target_str.strip_prefix("../").unwrap_or(&target_str);
+                    return Some((
+                        InputValueCalc::BooleanFromSibling,
+                        Some(local_name_from_qname(name).to_string()),
+                        None,
+                    ));
+                }
+            }
+        }
+        Expr::Literal(val) => {
+            if let Some(n) = literal_to_i64(val) {
+                return Some((InputValueCalc::Constant(n), None, None));
+            }
+            if let DfdlValue::String(s) = val {
+                return Some((InputValueCalc::StringLiteral, None, Some(s.text.clone())));
+            }
+        }
+        _ => {}
     }
-    if inner.starts_with("xs:string(") && inner.ends_with(')') {
-        let arg = &inner["xs:string(".len()..inner.len() - 1];
-        let lit = parse_xs_string_literal_arg(arg)?;
-        return Some((InputValueCalc::StringLiteral, None, Some(lit)));
-    }
-    if let Some(lit) = parse_xs_string_literal_arg(inner) {
-        return Some((InputValueCalc::StringLiteral, None, Some(lit)));
-    }
-    if let Some(v) = parse_constant_length_expr(trimmed) {
+    if let Some(v) = parse_constant_length_expr(value) {
         return Some((InputValueCalc::Constant(v as i64), None, None));
     }
-    if let Ok(v) = inner.parse::<i64>() {
-        return Some((InputValueCalc::Constant(v), None, None));
-    }
-    if matches!(
-        parse_ivc_integer_lexical(inner),
-        Some(IvcIntegerLexical::Wide(_))
-    ) {
-        return Some((
-            InputValueCalc::ConstantLexical,
-            None,
-            Some(inner.trim().to_string()),
-        ));
-    }
-    let (func, rest) = inner.split_once('(')?;
-    let args = rest.strip_suffix(')')?;
-    let units = length_units_from_calc_args(args);
-    let target = args
-        .split(',')
-        .next()?
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'');
-    match (func, target) {
-        ("dfdl:contentLength", "..") => {
-            Some((InputValueCalc::ContentLengthSelf(units), None, None))
-        }
-        ("dfdl:valueLength", "..") => Some((InputValueCalc::ValueLengthSelf(units), None, None)),
-        ("dfdl:contentLength", sib) => {
-            let name = sib.strip_prefix("../").unwrap_or(sib);
-            Some((
-                InputValueCalc::ContentLengthSibling(units),
-                Some(local_name_from_qname(name).to_string()),
-                None,
-            ))
-        }
-        ("dfdl:valueLength", sib) => {
-            let name = sib.strip_prefix("../").unwrap_or(sib);
-            Some((
-                InputValueCalc::ValueLengthSibling(units),
-                Some(local_name_from_qname(name).to_string()),
-                None,
-            ))
-        }
-        ("xs:boolean", sib) => {
-            let name = sib.strip_prefix("../").unwrap_or(sib);
-            Some((
-                InputValueCalc::BooleanFromSibling,
-                Some(local_name_from_qname(name).to_string()),
-                None,
-            ))
-        }
-        _ => None,
-    }
+    None
 }
 
 pub(crate) fn parse_variable_input_value_calc(
     value: &str,
     vars: &BTreeMap<String, String>,
 ) -> Option<(InputValueCalc, Option<String>)> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
-    }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    let name = inner.strip_prefix('$')?.trim();
-    if vars.contains_key(name) {
-        return Some((InputValueCalc::SchemaVariable, Some(name.to_string())));
+    let expr = parse_expression(value).ok()?;
+    if let Expr::Variable { ref local, .. } = expr {
+        if vars.contains_key(local) {
+            return Some((InputValueCalc::SchemaVariable, Some(local.clone())));
+        }
     }
     None
 }
@@ -1890,13 +1852,11 @@ pub(crate) fn parse_variable_length_expr(
     value: &str,
     vars: &BTreeMap<String, String>,
 ) -> Option<u64> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
+    let expr = parse_expression(value).ok()?;
+    if let Expr::Variable { ref local, .. } = expr {
+        return vars.get(local)?.parse().ok();
     }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    let name = inner.strip_prefix('$')?.trim();
-    vars.get(name)?.parse().ok()
+    None
 }
 
 pub(crate) fn parse_repeat_indicator_output_value_calc(value: &str) -> bool {
@@ -1925,19 +1885,24 @@ pub(crate) fn looks_like_xpath_output_value_calc(value: &str) -> bool {
 }
 
 pub(crate) fn parse_output_new_line_encode_sibling(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    let inner = if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        trimmed[1..trimmed.len() - 1].trim()
-    } else {
-        trimmed
-    };
-    let prefix = "dfdl:encodeDFDLEntities(";
-    if !inner.starts_with(prefix) || !inner.ends_with(')') {
-        return None;
+    let expr = parse_expression(value).ok()?;
+    if let Expr::FunctionCall { func, args } = &expr {
+        let name_str = match func {
+            FuncKind::Other(s) => s.as_str(),
+            _ => "",
+        };
+        if name_str == "dfdl:encodeDFDLEntities" && args.len() == 1 {
+            if let Expr::Path(path) = &args[0] {
+                if matches!(path.origin, PathOrigin::Parent(_)) && !path.steps.is_empty() {
+                    let last_step = path.steps.last()?;
+                    if let StepTest::Name { local, .. } = &last_step.test {
+                        return Some(local_name_from_qname(local).to_string());
+                    }
+                }
+            }
+        }
     }
-    let path = inner[prefix.len()..inner.len() - 1].trim();
-    let path = path.strip_prefix("../")?;
-    Some(local_name_from_qname(path).to_string())
+    None
 }
 
 fn parse_decode_dfdl_entities_call(arg: &str) -> Option<String> {
@@ -1951,32 +1916,47 @@ fn parse_decode_dfdl_entities_call(arg: &str) -> Option<String> {
     Some(crate::schema::expand_entities_str(&lit))
 }
 
+fn has_fn_error_call(expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall { func, args } => {
+            if let FuncKind::Other(ref s) = func {
+                if s == "fn:error" {
+                    return true;
+                }
+            }
+            args.iter().any(has_fn_error_call)
+        }
+        Expr::UnaryOp { expr, .. } => has_fn_error_call(expr),
+        Expr::BinaryOp { left, right, .. } => has_fn_error_call(left) || has_fn_error_call(right),
+        Expr::IfThenElse { cond, then_branch, else_branch } => {
+            has_fn_error_call(cond) || has_fn_error_call(then_branch) || has_fn_error_call(else_branch)
+        }
+        Expr::Cast { expr, .. } => has_fn_error_call(expr),
+        _ => false,
+    }
+}
+
 pub(crate) fn parse_output_value_calc_fn_error(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
+    let expr = parse_expression(value).ok()?;
+    if has_fn_error_call(&expr) {
+        Some(value.trim().trim_start_matches('{').trim_end_matches('}').trim().to_string())
+    } else {
+        None
     }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    if inner == "fn:error()" {
-        return Some(inner.to_string());
-    }
-    if inner.starts_with("fn:error(") && inner.ends_with(')') {
-        return Some(inner.to_string());
-    }
-    if inner.starts_with("fn:round-half-to-even(") && inner.contains("fn:error(") {
-        return Some(inner.to_string());
-    }
-    None
 }
 
 pub(crate) fn parse_output_value_calc_xs_date_inner(value: &str) -> Option<alloc::string::String> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
+    let expr = parse_expression(value).ok()?;
+    if let Expr::FunctionCall { func, args } = &expr {
+        let name_str = match func {
+            FuncKind::Other(s) => s.as_str(),
+            _ => "",
+        };
+        if name_str == "xs:date" && args.len() == 1 {
+            return Some(expr_to_string(&args[0]));
+        }
     }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    let rest = inner.strip_prefix("xs:date(")?.strip_suffix(')')?;
-    Some(rest.trim().to_string())
+    None
 }
 
 pub(crate) fn output_value_calc_strip_multiply(value: &str) -> (alloc::string::String, i64) {
@@ -1995,6 +1975,152 @@ pub(crate) fn output_value_calc_strip_multiply(value: &str) -> (alloc::string::S
     (value.to_string(), 1)
 }
 
+fn parse_ovc_from_ast(
+    expr: &Expr,
+) -> Option<(OutputValueCalc, Option<String>, Option<String>)> {
+    match expr {
+        Expr::Literal(DfdlValue::String(s)) => {
+            Some((OutputValueCalc::Constant(0), None, Some(s.text.clone())))
+        }
+        Expr::Literal(DfdlValue::Int(n)) => Some((OutputValueCalc::Constant(*n as i64), None, None)),
+        Expr::Literal(DfdlValue::Long(n)) => Some((OutputValueCalc::Constant(*n), None, None)),
+        Expr::Literal(DfdlValue::Double(f)) => {
+            Some((OutputValueCalc::Constant(0), None, Some(f.to_string())))
+        }
+        Expr::Literal(DfdlValue::Integer(s)) => {
+            if let Ok(v) = s.parse::<i64>() {
+                Some((OutputValueCalc::Constant(v), None, None))
+            } else {
+                Some((OutputValueCalc::Constant(0), None, Some(s.clone())))
+            }
+        }
+        Expr::Cast { expr, .. } => parse_ovc_from_ast(expr),
+        Expr::BinaryOp { op: BinaryOpKind::Add, left, right } => {
+            if let Expr::Literal(ref val) = **right {
+                let addend = literal_to_i64(val).unwrap_or(0);
+                if let Some((calc, sib, lit)) = parse_ovc_from_ast(left) {
+                    let updated_calc = match calc {
+                        OutputValueCalc::ContentLengthSelf(units, _) => OutputValueCalc::ContentLengthSelf(units, addend),
+                        OutputValueCalc::ValueLengthSelf(units, _) => OutputValueCalc::ValueLengthSelf(units, addend),
+                        OutputValueCalc::ContentLengthSibling(units, _) => OutputValueCalc::ContentLengthSibling(units, addend),
+                        OutputValueCalc::ValueLengthSibling(units, _) => OutputValueCalc::ValueLengthSibling(units, addend),
+                        other => other,
+                    };
+                    return Some((updated_calc, sib, lit));
+                }
+            }
+            None
+        }
+        Expr::FunctionCall { func, args } => {
+            match func {
+                FuncKind::DfdlContentLength | FuncKind::DfdlValueLength => {
+                    if args.is_empty() {
+                        return None;
+                    }
+                    let units = if args.len() >= 2 {
+                        if let Expr::Literal(DfdlValue::String(ref s)) = args[1] {
+                            length_units_from_calc_args(&s.text)
+                        } else {
+                            LengthUnits::Bytes
+                        }
+                    } else {
+                        LengthUnits::Bytes
+                    };
+                    if let Expr::Path(ref path) = args[0] {
+                        if path.origin == PathOrigin::Parent(1) && path.steps.is_empty() {
+                            let calc = if *func == FuncKind::DfdlContentLength {
+                                OutputValueCalc::ContentLengthSelf(units, 0)
+                            } else {
+                                OutputValueCalc::ValueLengthSelf(units, 0)
+                            };
+                            return Some((calc, None, None));
+                        }
+                        if let PathOrigin::Parent(up) = path.origin {
+                            if up >= 1 && !path.steps.is_empty() {
+                                if let StepTest::Name { ref local, .. } = path.steps[0].test {
+                                    let calc = if *func == FuncKind::DfdlContentLength {
+                                        OutputValueCalc::ContentLengthSibling(units, 0)
+                                    } else {
+                                        OutputValueCalc::ValueLengthSibling(units, 0)
+                                    };
+                                    return Some((calc, Some(local_name_from_qname(local).to_string()), None));
+                                }
+                            }
+                        }
+                    }
+                    None
+                }
+                FuncKind::FnSubstring => {
+                    if args.len() == 3 {
+                        let sib_name = match &args[0] {
+                            Expr::Path(p) if !p.steps.is_empty() => match &p.steps[0].test {
+                                StepTest::Name { local, .. } => local_name_from_qname(local).to_string(),
+                                _ => return None,
+                            },
+                            _ => return None,
+                        };
+                        let start = eval_constant_uint_expr(&args[1])? as usize;
+                        let length = eval_constant_uint_expr(&args[2])? as usize;
+                        return Some((OutputValueCalc::Substring { start, length }, Some(sib_name), None));
+                    }
+                    None
+                }
+                FuncKind::Other(ref name) => {
+                    if (name == "fn:string-length" || name == "string-length") && args.len() == 1 {
+                        if let Expr::Path(p) = &args[0] {
+                            if !p.steps.is_empty() {
+                                if let StepTest::Name { local, .. } = &p.steps[0].test {
+                                    return Some((OutputValueCalc::StringLengthSibling, Some(local_name_from_qname(local).to_string()), None));
+                                }
+                            }
+                        }
+                    }
+                    if name == "dfdl:decodeDFDLEntities" && args.len() == 1 {
+                        if let Expr::Literal(DfdlValue::String(ref s)) = args[0] {
+                            let decoded = crate::schema::expand_entities_str(&s.text);
+                            return Some((OutputValueCalc::Constant(0), None, Some(decoded)));
+                        }
+                    }
+                    if (name == "xs:hexBinary" || name == "dfdl:hexBinary") && args.len() == 1 {
+                        if let Expr::Literal(DfdlValue::String(ref s)) = args[0] {
+                            return Some((OutputValueCalc::HexBinaryFromLexical, None, Some(s.text.clone())));
+                        }
+                        if let Some(n) = eval_i64_expr(&args[0]) {
+                            return Some((OutputValueCalc::HexBinaryFromInteger(n), None, None));
+                        }
+                        if let Expr::Path(ref p) = args[0] {
+                            if p.origin == PathOrigin::Parent(1) && !p.steps.is_empty() {
+                                if let StepTest::Name { ref local, .. } = p.steps[0].test {
+                                    return Some((OutputValueCalc::HexBinaryFromByteSibling, Some(local_name_from_qname(local).to_string()), None));
+                                }
+                            }
+                        }
+                        if let Expr::Cast { target_type: SimpleType::Byte, expr: ref inner_expr } = args[0] {
+                            if let Expr::Path(ref p) = **inner_expr {
+                                if p.origin == PathOrigin::Parent(1) && !p.steps.is_empty() {
+                                    if let StepTest::Name { ref local, .. } = p.steps[0].test {
+                                        return Some((OutputValueCalc::HexBinaryFromByteSibling, Some(local_name_from_qname(local).to_string()), None));
+                                    }
+                                }
+                            }
+                        }
+                        if let Expr::Cast { target_type: SimpleType::Short, expr: ref inner_expr } = args[0] {
+                            if let Expr::Literal(ref val) = **inner_expr {
+                                if let Some(n) = literal_to_i64(val) {
+                                    return Some((OutputValueCalc::HexBinaryFromShort(n as i16), None, None));
+                                }
+                            }
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn parse_output_value_calc(
     value: &str,
 ) -> Option<(OutputValueCalc, Option<String>, Option<String>)> {
@@ -2003,151 +2129,40 @@ pub(crate) fn parse_output_value_calc(
         return None;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
-    if let Some(lit) = parse_xs_string_literal_arg(inner) {
-        return Some((OutputValueCalc::Constant(0), None, Some(lit)));
-    }
-    if inner.starts_with("xs:string(") && inner.ends_with(')') {
-        let arg = inner["xs:string(".len()..inner.len() - 1].trim();
-        if let Some(lit) = parse_xs_string_literal_arg(arg) {
-            return Some((OutputValueCalc::Constant(0), None, Some(lit)));
-        }
-        if let Some(decoded) = parse_decode_dfdl_entities_call(arg) {
-            return Some((OutputValueCalc::Constant(0), None, Some(decoded)));
-        }
-        if let Some(nested) = parse_output_value_calc(&alloc::format!("{{{arg}}}")) {
-            return Some(nested);
-        }
-    }
-    if inner.starts_with("xs:float(") && inner.ends_with(')') {
-        let arg = inner["xs:float(".len()..inner.len() - 1].trim();
-        if let Some(nested) = parse_output_value_calc(&alloc::format!("{{{arg}}}")) {
-            return Some(nested);
-        }
-    }
-    if inner.starts_with("xs:int(") && inner.ends_with(')') {
-        let arg = inner["xs:int(".len()..inner.len() - 1].trim();
-        if let Some(nested) = parse_output_value_calc(&alloc::format!("{{{arg}}}")) {
-            return Some(nested);
-        }
-    }
-    if let Some(hex) = parse_output_value_calc_hex(inner) {
-        return Some(hex);
-    }
-    if (inner.contains('.') || inner.contains('e') || inner.contains('E'))
-        && inner.parse::<f64>().is_ok()
-    {
-        return Some((OutputValueCalc::Constant(0), None, Some(inner.to_string())));
-    }
-    if let Ok(v) = inner.parse::<i64>() {
-        return Some((OutputValueCalc::Constant(v), None, None));
-    }
-    let (func_part, addend) = if let Some((left, right)) = inner.rsplit_once('+') {
-        (left.trim(), right.trim().parse::<i64>().unwrap_or(0))
-    } else {
-        (inner, 0)
-    };
-    let (func, rest) = func_part.split_once('(')?;
-    let args = rest.strip_suffix(')')?;
-    let units = length_units_from_calc_args(args);
-    let target = args
-        .split(',')
-        .next()?
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'');
-    match (func, target) {
-        ("dfdl:contentLength", "..") => Some((
-            OutputValueCalc::ContentLengthSelf(units, addend),
-            None,
-            None,
-        )),
-        ("dfdl:valueLength", "..") => {
-            Some((OutputValueCalc::ValueLengthSelf(units, addend), None, None))
-        }
-        ("dfdl:contentLength", sib) => {
-            let name = sib.strip_prefix("../").unwrap_or(sib);
-            Some((
-                OutputValueCalc::ContentLengthSibling(units, addend),
-                Some(local_name_from_qname(name).to_string()),
-                None,
-            ))
-        }
-        ("dfdl:valueLength", sib) => {
-            let name = sib.strip_prefix("../").unwrap_or(sib);
-            Some((
-                OutputValueCalc::ValueLengthSibling(units, addend),
-                Some(local_name_from_qname(name).to_string()),
-                None,
-            ))
-        }
-        ("fn:string-length", sib) => {
-            let name = sib.strip_prefix("../").unwrap_or(sib);
-            Some((
-                OutputValueCalc::StringLengthSibling,
-                Some(local_name_from_qname(name).to_string()),
-                None,
-            ))
-        }
-        ("fn:substring", _sib) => {
-            let sub_args = split_top_level_commas(args);
-            if sub_args.len() != 3 {
-                return None;
+    let expr = parse_expression(inner).ok()?;
+    parse_ovc_from_ast(&expr)
+}
+
+fn find_string_length_gt_limit(expr: &Expr) -> Option<u64> {
+    match expr {
+        Expr::BinaryOp { op, left, right } if matches!(op, BinaryOpKind::Gt | BinaryOpKind::Ge) => {
+            if let Expr::FunctionCall { func: FuncKind::Other(ref name), args } = &**left {
+                if (name == "fn:string-length" || name == "string-length")
+                    && args.len() == 1
+                    && matches!(&args[0], Expr::Path(p) if p.steps.iter().any(|s| matches!(s.test, StepTest::SelfNode)))
+                {
+                    if let Expr::Literal(ref val) = **right {
+                        return literal_to_i64(val).and_then(|n| n.try_into().ok());
+                    }
+                }
             }
-            let name = sub_args[0].strip_prefix("../").unwrap_or(&sub_args[0]);
-            let start: usize = sub_args[1].parse().ok()?;
-            let length: usize = sub_args[2].parse().ok()?;
-            Some((
-                OutputValueCalc::Substring { start, length },
-                Some(local_name_from_qname(name).to_string()),
-                None,
-            ))
+            find_string_length_gt_limit(left).or_else(|| find_string_length_gt_limit(right))
+        }
+        Expr::IfThenElse { cond, then_branch, else_branch } => {
+            find_string_length_gt_limit(cond)
+                .or_else(|| find_string_length_gt_limit(then_branch))
+                .or_else(|| find_string_length_gt_limit(else_branch))
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            find_string_length_gt_limit(left).or_else(|| find_string_length_gt_limit(right))
         }
         _ => None,
     }
 }
 
-fn parse_output_value_calc_hex(
-    inner: &str,
-) -> Option<(OutputValueCalc, Option<String>, Option<String>)> {
-    if inner.starts_with("xs:hexBinary(") && inner.ends_with(')') {
-        let arg = inner["xs:hexBinary(".len()..inner.len() - 1].trim();
-        let lit = parse_xs_string_literal_arg(arg)?;
-        return Some((OutputValueCalc::HexBinaryFromLexical, None, Some(lit)));
-    }
-    if inner.starts_with("dfdl:hexBinary(") && inner.ends_with(')') {
-        let arg = inner["dfdl:hexBinary(".len()..inner.len() - 1].trim();
-        if let Ok(n) = arg.parse::<i64>() {
-            return Some((OutputValueCalc::HexBinaryFromInteger(n), None, None));
-        }
-        if let Some(lit) = parse_xs_string_literal_arg(arg) {
-            return Some((OutputValueCalc::HexBinaryFromLexical, None, Some(lit)));
-        }
-        if arg.starts_with("xs:short(") && arg.ends_with(')') {
-            let num = arg["xs:short(".len()..arg.len() - 1].trim();
-            let v: i16 = num.parse().ok()?;
-            return Some((OutputValueCalc::HexBinaryFromShort(v), None, None));
-        }
-        if arg.starts_with("xs:byte(") && arg.contains("../") {
-            let inner_arg = arg["xs:byte(".len()..arg.len() - 1].trim();
-            let sib = inner_arg.strip_prefix("../")?;
-            return Some((
-                OutputValueCalc::HexBinaryFromByteSibling,
-                Some(local_name_from_qname(sib).to_string()),
-                None,
-            ));
-        }
-    }
-    None
-}
-
 pub(crate) fn parse_self_string_length_max_expr(value: &str) -> Option<u64> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
-    }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    if inner.contains("fn:string-length(.)") && inner.contains("gt 5") {
-        return Some(5);
+    if let Ok(expr) = parse_expression(value) {
+        return find_string_length_gt_limit(&expr);
     }
     None
 }
@@ -2159,116 +2174,139 @@ pub(crate) fn apply_choice_dispatch_key_parse(props: &mut DfdlProps, value: &str
     props.choice_dispatch_literal = None;
     props.choice_dispatch_sibling_int = None;
     if let Some(steps) = parse_input_value_calc_relative_path(value) {
-        props.choice_dispatch_path = Some(steps);
-        return;
-    }
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return;
-    }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    if let Some(rest) = inner.strip_prefix("./") {
-        if !rest.is_empty() {
-            if rest.contains('/') {
-                let mut steps = alloc::vec::Vec::new();
-                for step in rest.split('/').filter(|s| !s.is_empty()) {
-                    steps.push(parse_infoset_path_step(step));
-                }
-                props.choice_dispatch_path = Some(steps);
-            } else {
-                props.choice_dispatch_sibling = Some(local_name_from_qname(rest).to_string());
-            }
-        }
-        return;
-    }
-    if inner.starts_with("xs:string(") && inner.ends_with(')') {
-        let arg = inner["xs:string(".len()..inner.len() - 1].trim();
-        if let Some(name) = arg
-            .strip_prefix("xs:int(")
-            .and_then(|r| r.strip_suffix(')'))
-            .map(|s| s.trim())
-        {
-            props.choice_dispatch_sibling_int = Some(local_name_from_qname(name).to_string());
+        if steps.len() > 1 {
+            props.choice_dispatch_path = Some(steps);
             return;
         }
-        if let Some(rest) = arg.strip_prefix("./") {
-            props.choice_dispatch_sibling = Some(local_name_from_qname(rest).to_string());
-            return;
+    }
+    let expr = match parse_expression(value) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    match &expr {
+        Expr::Path(path) => {
+            inspect_choice_dispatch_path(props, path);
         }
-        if let Some(rest) = arg.strip_prefix("../") {
-            props.choice_dispatch_sibling = Some(local_name_from_qname(rest).to_string());
-            return;
+        Expr::FunctionCall { func: FuncKind::Other(ref name), args } if (name == "xs:string" || name == "xsd:string") && args.len() == 1 => {
+            inspect_choice_dispatch_inner_expr(props, &args[0]);
         }
-        if let Some(lit) = parse_xs_string_literal_arg(arg) {
-            props.choice_dispatch_literal = Some(lit);
+        Expr::Cast { target_type: SimpleType::String, expr: inner } => {
+            inspect_choice_dispatch_inner_expr(props, inner);
+        }
+        _ => {}
+    }
+}
+
+fn inspect_choice_dispatch_path(props: &mut DfdlProps, p: &crate::expression::Path) {
+    let elem_steps: alloc::vec::Vec<_> = p
+        .steps
+        .iter()
+        .filter(|s| match &s.test {
+            StepTest::SelfNode => false,
+            StepTest::Name { local, .. } => local != "..",
+            _ => true,
+        })
+        .collect();
+    if elem_steps.len() > 1 {
+        props.choice_dispatch_path = Some(ast_path_to_steps(p));
+    } else if let Some(step) = elem_steps.last() {
+        if let StepTest::Name { local, .. } = &step.test {
+            props.choice_dispatch_sibling = Some(local_name_from_qname(local).to_string());
         }
     }
 }
 
-fn parse_sibling_length_adjustment(path_tail: &str) -> Option<(String, i64)> {
-    let tail = path_tail.trim();
-    for op in ['+', '-'] {
-        if let Some((name_part, delta_part)) = tail.split_once(op) {
-            let name = local_name_from_qname(name_part.trim()).to_string();
-            let delta: i64 = delta_part.trim().parse().ok()?;
-            let adjust = if op == '-' { -delta } else { delta };
-            return Some((name, adjust));
+fn inspect_choice_dispatch_inner_expr(props: &mut DfdlProps, inner: &Expr) {
+    match inner {
+        Expr::FunctionCall { func: FuncKind::Other(ref name), args } if (name == "xs:int" || name == "xsd:int") && args.len() == 1 => {
+            if let Expr::Path(p) = &args[0] {
+                if let Some(step) = p.steps.last() {
+                    if let StepTest::Name { local, .. } = &step.test {
+                        props.choice_dispatch_sibling_int = Some(local_name_from_qname(local).to_string());
+                    }
+                }
+            }
         }
+        Expr::Cast { target_type: SimpleType::Int | SimpleType::Integer, expr: inner_expr } => {
+            if let Expr::Path(p) = inner_expr.as_ref() {
+                if let Some(step) = p.steps.last() {
+                    if let StepTest::Name { local, .. } = &step.test {
+                        props.choice_dispatch_sibling_int = Some(local_name_from_qname(local).to_string());
+                    }
+                }
+            }
+        }
+        Expr::Path(p) => {
+            inspect_choice_dispatch_path(props, p);
+        }
+        Expr::Literal(DfdlValue::String(s)) => {
+            props.choice_dispatch_literal = Some(s.text.clone());
+        }
+        _ => {}
     }
-    Some((local_name_from_qname(tail).to_string(), 0))
+}
+
+fn parse_sibling_length_from_ast(expr: &Expr) -> Option<(String, bool, i64)> {
+    match expr {
+        Expr::Path(path) => {
+            if let PathOrigin::Parent(1) = path.origin {
+                if path.steps.len() == 1 {
+                    if let StepTest::Name { local, .. } = &path.steps[0].test {
+                        return Some((local_name_from_qname(local).to_string(), false, 0));
+                    }
+                }
+            }
+            None
+        }
+        Expr::Cast { target_type, expr } => {
+            let is_long_or_int = matches!(target_type, SimpleType::Long | SimpleType::Int | SimpleType::Integer);
+            let (name, _, adjust) = parse_sibling_length_from_ast(expr)?;
+            Some((name, is_long_or_int, adjust))
+        }
+        Expr::BinaryOp { op, left, right } => {
+            let (name, is_long, base_adjust) = parse_sibling_length_from_ast(left)?;
+            if let Expr::Literal(ref val) = **right {
+                let delta = literal_to_i64(val)?;
+                let adjust = match op {
+                    BinaryOpKind::Add => base_adjust.checked_add(delta)?,
+                    BinaryOpKind::Sub => base_adjust.checked_sub(delta)?,
+                    _ => return None,
+                };
+                return Some((name, is_long, adjust));
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn parse_sibling_length_expr(value: &str) -> Option<(String, bool, i64)> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
-    }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    if let Some(path) = inner.strip_prefix("../") {
-        let (name, adjust) = parse_sibling_length_adjustment(path)?;
-        return Some((name, false, adjust));
-    }
-    if let Some(idx) = inner.find("../") {
-        let tail = inner[idx + 3..].trim().trim_end_matches(')').trim();
-        if !tail.is_empty() {
-            let cast_long = inner.contains("xs:long(") || inner.contains("xs:integer(");
-            let (name, adjust) = parse_sibling_length_adjustment(tail)?;
-            return Some((name, cast_long, adjust));
+    let expr = parse_expression(value).ok()?;
+    parse_sibling_length_from_ast(&expr)
+}
+
+fn eval_constant_uint_expr(expr: &Expr) -> Option<u64> {
+    match expr {
+        Expr::Literal(val) => literal_to_i64(val).filter(|&n| n >= 0).map(|n| n as u64),
+        Expr::BinaryOp { op, left, right } => {
+            let l = eval_constant_uint_expr(left)?;
+            let r = eval_constant_uint_expr(right)?;
+            match op {
+                BinaryOpKind::Add => l.checked_add(r),
+                BinaryOpKind::Sub => l.checked_sub(r),
+                BinaryOpKind::Mul => l.checked_mul(r),
+                BinaryOpKind::Div if r != 0 => Some(l / r),
+                _ => None,
+            }
         }
+        _ => None,
     }
-    None
 }
 
 /// Parses constant DFDL length expressions such as `{ 6 }`, `{1}`, or `{ 1 + 1 }`.
 pub(crate) fn parse_constant_length_expr(value: &str) -> Option<u64> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
-    }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    if inner.is_empty()
-        || inner.contains("..")
-        || inner.contains(':')
-        || inner.contains('(')
-        || inner.contains('/')
-    {
-        return None;
-    }
-    if let Ok(v) = inner.parse::<u64>() {
-        return Some(v);
-    }
-    for op in ['+', '-'] {
-        if let Some((lhs, rhs)) = inner.split_once(op) {
-            let a = lhs.trim().parse::<u64>().ok()?;
-            let b = rhs.trim().parse::<u64>().ok()?;
-            return match op {
-                '+' => Some(a.saturating_add(b)),
-                '-' => a.checked_sub(b),
-                _ => None,
-            };
-        }
-    }
-    None
+    let expr = parse_expression(value).ok()?;
+    eval_constant_uint_expr(&expr)
 }
 
 pub(crate) fn merge_dfdl_props(mut base: DfdlProps, overlay: DfdlProps) -> DfdlProps {

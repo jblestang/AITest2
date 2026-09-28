@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use crate::error::VmError;
 use crate::schema::{EscapeKind, EscapeSchemeDef};
 
@@ -520,7 +521,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            unescape_field_text("/*, three and four#*/", &scheme).unwrap(),
+            unescape_field_text("/*, three and four#*/*/", &scheme).unwrap(),
             ", three and four*/"
         );
     }

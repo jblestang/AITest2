@@ -4,6 +4,7 @@ use crate::length_validate::*;
 use crate::schema::*;
 use crate::vm::encoding::hex_charset_order;
 use crate::vm::packed_decimal::*;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 pub(crate) fn encode_binary_number_u64(

@@ -9,6 +9,15 @@ use crate::vm::runtime::Cursor;
 use alloc::collections::BTreeMap;
 use alloc::string::ToString;
 
+fn f64_ceil(x: f64) -> f64 {
+    let truncated = x as i64 as f64;
+    if x > truncated {
+        truncated + 1.0
+    } else {
+        truncated
+    }
+}
+
 #[derive(Copy, Clone)]
 pub(crate) struct IvcEvalCtx<'a> {
     pub siblings: Option<&'a BTreeMap<alloc::string::String, SiblingState>>,
@@ -66,6 +75,15 @@ fn resolve_ivc_variable_depth(
     ctx: IvcEvalCtx<'_>,
     depth: usize,
 ) -> Result<alloc::string::String> {
+    if name.contains('/') {
+        return Err(VmError::InvalidValue {
+            message: ivc_sde_message(
+                ctx.element_name,
+                alloc::format!("Unable to parse expression. Variables cannot be used in path expressions: {name}"),
+            ),
+        }
+        .into());
+    }
     if depth > 8 {
         return Err(VmError::InvalidValue {
             message: ivc_sde_message(
@@ -123,21 +141,31 @@ fn resolve_ivc_variable_depth(
         }
         .into());
     };
-    let clean = raw_text.trim();
-    if clean.starts_with('{') && clean.ends_with('}') {
-        let inner = clean[1..clean.len() - 1].trim();
-        if let Ok(num) = inner.parse::<i64>() {
-            return Ok(num.to_string());
+    if let Ok(expr) = crate::expression::parse_expression(&raw_text) {
+        match expr {
+            crate::expression::Expr::Variable { ref local, .. } => {
+                let local_name = name.rsplit(':').next().unwrap_or(name);
+                if local != local_name {
+                    return resolve_ivc_variable_depth(local, ctx, depth + 1);
+                }
+            }
+            crate::expression::Expr::Literal(ref val) => {
+                return Ok(dfdl_value_to_string(val));
+            }
+            _ => {}
         }
-        if let Ok(f) = inner.parse::<f64>() {
-            return Ok(f.to_string());
-        }
-        if inner.starts_with('$') {
-            let ref_name = inner[1..].trim();
-            let local_ref = ref_name.rsplit(':').next().unwrap_or(ref_name);
-            let local_name = name.rsplit(':').next().unwrap_or(name);
-            if local_ref != local_name {
-                return resolve_ivc_variable_depth(ref_name, ctx, depth + 1);
+        if let Ok(Some(schema_expr)) = crate::schema::parse_input_value_calc_expression(&raw_text) {
+            let mut pool = crate::ir::StringPool::new();
+            let ir_expr = crate::ir::builder::intern_input_value_calc_expression(&schema_expr, &mut pool);
+            if let Ok(v) = eval_input_value_calc_expression(
+                &ir_expr,
+                ctx,
+                &pool,
+                &crate::length_validate::DaffodilTunables::default(),
+                ValueKind::String,
+                &IrProps::default(),
+            ) {
+                return Ok(dfdl_value_to_string(&v));
             }
         }
     }
@@ -159,11 +187,27 @@ pub(crate) fn parse_ivc_lexical_for_kind(
     }
     let trimmed = text.trim();
     if kind == ValueKind::Double {
+        if trimmed == "nan" || trimmed == "inf" || trimmed == "-inf" {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Schema Definition Error: Cannot convert string '{trimmed}' to xs:double"
+                ),
+            }
+            .into());
+        }
         if let Ok(f) = crate::vm::runtime::parse_float(trimmed) {
             return Ok(DfdlValue::Double(f));
         }
     }
     if kind == ValueKind::Float {
+        if trimmed == "nan" || trimmed == "inf" || trimmed == "-inf" {
+            return Err(VmError::InvalidValue {
+                message: alloc::format!(
+                    "Schema Definition Error: Cannot convert string '{trimmed}' to xs:float"
+                ),
+            }
+            .into());
+        }
         if let Ok(f) = crate::vm::runtime::parse_float(trimmed) {
             return Ok(DfdlValue::Float(f as f32));
         }
@@ -471,7 +515,7 @@ pub(crate) fn eval_input_value_calc_expression(
                 ValueKind::Double,
                 target_props,
             )?;
-            ivc_f64_to_value(value.ceil(), target_kind)
+            ivc_f64_to_value(f64_ceil(value), target_kind)
         }
         IrInputValueCalcExpression::ValueLength { sibling, units } => {
             let sib_name = strings.get(*sibling)?;

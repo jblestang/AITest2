@@ -214,13 +214,16 @@ pub fn run_parser_test_with_options(
                 outcome: TestOutcome::Fail(alloc::format!("decode error mismatch: {msg}")),
             });
         }
-        return match spec.decoder_with_config(config).decode_with_tdml_options(
+        let res = spec.decoder_with_config(config).decode_with_tdml_options(
             &document_data,
             frame_bits,
             transmission,
             tdml_regions.clone(),
-        ) {
+        );
+        eprintln!("TDML RUNNER DECODE RESULT FOR {}: {res:?}", test.name);
+        return match res {
             Ok(decoded) => {
+                eprintln!("DECODE_SUCCEEDED for {}: {decoded:?}", test.name);
                 let raw = super::super::validation::collect_post_decode_raw_facet_errors(
                     spec.schema(),
                     spec.program(),

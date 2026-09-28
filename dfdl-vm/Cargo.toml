@@ -11,6 +11,8 @@ default = ["std"]
 std = []
 
 [dependencies]
+pest = { version = "2.7", default-features = false }
+pest_derive = "2.7"
 regex-automata = { version = "0.4.18", default-features = false, features = ["alloc", "syntax", "unicode", "unicode-perl", "unicode-gencat", "unicode-word-boundary", "nfa-thompson", "meta"] }
 xml-no-std = "0.8.26"
 

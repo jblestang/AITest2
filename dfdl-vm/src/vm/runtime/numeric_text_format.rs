@@ -10,6 +10,7 @@ use super::property::{
 use super::scalar::encode_hex;
 use super::RuntimeConfig;
 use crate::ir::{IrProps, StringPool, ValueKind};
+use alloc::string::ToString;
 use crate::schema::*;
 use crate::value::DfdlValue;
 use crate::vm::text_number_format::TextNumberRoundingProps;

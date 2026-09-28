@@ -6,13 +6,17 @@ use crate::ir::{IrProps, StringPool};
 use alloc::string::{String, ToString};
 
 pub(crate) fn parse_sibling_property_expr(raw: &str) -> Option<alloc::string::String> {
-    let trimmed = raw.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
+    let expr = crate::expression::parse_expression(raw).ok()?;
+    if let crate::expression::Expr::Path(path) = expr {
+        if matches!(path.origin, crate::expression::PathOrigin::Parent(_)) {
+            if let Some(step) = path.steps.iter().find(|s| !matches!(s.test, crate::expression::StepTest::SelfNode)) {
+                if let crate::expression::StepTest::Name { local, .. } = &step.test {
+                    return Some(local.clone());
+                }
+            }
+        }
     }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    let path = inner.strip_prefix("../")?;
-    Some(path.rsplit(':').next().unwrap_or(path).trim().to_string())
+    None
 }
 
 pub(crate) fn sibling_string_from_encode_map(
@@ -128,18 +132,21 @@ pub(crate) fn resolve_encode_property_pattern(
 }
 
 fn parse_encode_dfdl_entities_sibling(raw: &str) -> Option<alloc::string::String> {
-    let trimmed = raw.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
+    let expr = crate::expression::parse_expression(raw).ok()?;
+    if let crate::expression::Expr::FunctionCall { func: crate::expression::FuncKind::Other(ref name), args } = expr {
+        if name == "dfdl:encodeDFDLEntities" && args.len() == 1 {
+            if let crate::expression::Expr::Path(ref path) = args[0] {
+                if matches!(path.origin, crate::expression::PathOrigin::Parent(_)) {
+                    if let Some(step) = path.steps.iter().find(|s| !matches!(s.test, crate::expression::StepTest::SelfNode)) {
+                        if let crate::expression::StepTest::Name { local, .. } = &step.test {
+                            return Some(local.clone());
+                        }
+                    }
+                }
+            }
+        }
     }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    let prefix = "dfdl:encodeDFDLEntities(";
-    if !inner.starts_with(prefix) || !inner.ends_with(')') {
-        return None;
-    }
-    let path = inner[prefix.len()..inner.len() - 1].trim();
-    let path = path.strip_prefix("../")?;
-    Some(path.rsplit(':').next().unwrap_or(path).trim().to_string())
+    None
 }
 
 pub fn resolve_output_new_line_for_encode(

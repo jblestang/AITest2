@@ -13,6 +13,7 @@ use super::property::{
 };
 use super::RuntimeConfig;
 use crate::ir::{IrProps, StringPool, ValueKind};
+use alloc::string::ToString;
 use crate::length_validate::DaffodilTunables;
 use crate::schema::{encode_property_delimiter, LengthKind, LengthUnits, Representation};
 use crate::value::DfdlValue;

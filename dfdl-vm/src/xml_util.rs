@@ -2,7 +2,7 @@
 
 use crate::error::{ParseError, Result};
 use alloc::collections::BTreeMap;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use xml_no_std::name::OwnedName;
 use xml_no_std::namespace::Namespace;
 use xml_no_std::reader::{EventReader, ParserConfig, XmlEvent};
@@ -412,7 +412,7 @@ fn rewrite_start_tag_attributes(tag: &str) -> String {
     if pairs.is_empty() {
         return tag.to_string();
     }
-    let mut deduped = BTreeMap::new();
+    let mut deduped = BTreeMap::<String, String>::new();
     for (k, v) in pairs {
         deduped.insert(k, v);
     }

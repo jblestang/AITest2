@@ -379,7 +379,7 @@ pub(crate) fn validate_escape_separator_distinct(
                 if let Some(esc) = scheme.escape_character.as_deref().filter(|s| !s.is_empty()) {
                     if alts.iter().any(|alt| alt == esc) {
                         return Err(SchemaError::InvalidProperty {
-                            message: "Schema Definition Error: The escape character cannot be the same as terminating markup for dfdl:separator or dfdl:terminator.".into(),
+                            message: "Schema Definition Error: dfdl:terminator and dfdl:separator properties may not begin with the dfdl:escapeCharacter property value. The escape character cannot be the same as terminating markup for dfdl:separator or dfdl:terminator.".into(),
                         });
                     }
                     if alts.iter().any(|alt| alt.starts_with(esc)) {

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::error::{Error, Result, VmError};
+use crate::expression::{parse_expression, Expr};
 use crate::ir::{ChoiceBranch, IrNode, IrProgram, IrProps, StringId, StringPool, ValueKind};
 use crate::schema::OccursCountKind;
 use crate::value::DfdlValue;
@@ -249,25 +250,57 @@ pub(crate) fn validate_choice_branch_element_name_upa_runtime(
 }
 
 pub(crate) fn parse_discriminator_path_step(step: &str) -> Result<(&str, Option<usize>)> {
-    let step = step.trim();
-    if let Some(open) = step.find('[') {
-        if !step.ends_with(']') {
+    let trimmed = step.trim();
+    if trimmed.is_empty() {
+        return Err(VmError::InvalidValue {
+            message: "invalid discriminator path step".into(),
+        }
+        .into());
+    }
+    if trimmed.starts_with('$') {
+        let open = trimmed.find('[').unwrap_or(trimmed.len());
+        return Ok((trimmed[..open].trim(), None));
+    }
+    if let Some(open) = trimmed.find('[') {
+        if !trimmed.ends_with(']') {
             return Err(VmError::InvalidValue {
                 message: "invalid discriminator path step".into(),
             }
             .into());
         }
-        let local = step[..open].trim();
-        let idx: usize =
-            step[open + 1..step.len() - 1]
-                .trim()
-                .parse()
-                .map_err(|_| VmError::InvalidValue {
-                    message: "invalid discriminator array index".into(),
-                })?;
-        return Ok((local, Some(idx)));
+        let expr = parse_expression(trimmed).map_err(|_| VmError::InvalidValue {
+            message: "invalid discriminator path step".into(),
+        })?;
+        if let Expr::Path(path) = expr {
+            if path.steps.len() == 1 {
+                let step_obj = &path.steps[0];
+                if let Some(pred) = &step_obj.predicate {
+                    let idx = match **pred {
+                        Expr::Literal(ref val) => match val {
+                            DfdlValue::Int(n) => *n as i64,
+                            DfdlValue::Long(n) => *n,
+                            DfdlValue::Integer(s) => s.parse().unwrap_or(0),
+                            _ => 0,
+                        },
+                        _ => 0,
+                    };
+                    if idx > 0 {
+                        return Ok((trimmed[..open].trim(), Some(idx as usize)));
+                    } else {
+                        return Err(VmError::InvalidValue {
+                            message: "invalid discriminator array index".into(),
+                        }
+                        .into());
+                    }
+                }
+            }
+        }
+        return Err(VmError::InvalidValue {
+            message: "invalid discriminator array index".into(),
+        }
+        .into());
     }
-    Ok((step, None))
+    Ok((trimmed, None))
 }
 
 pub(crate) fn single_or_array_item_at(
@@ -307,10 +340,17 @@ pub(crate) fn navigate_discriminator_path_step(
     local: &str,
     index: Option<usize>,
 ) -> Result<DfdlValue> {
+    if local.starts_with('$') {
+        return Err(VmError::InvalidValue {
+            message: alloc::format!("Schema Definition Error: Variables cannot be used in path expressions: {local}"),
+        }
+        .into());
+    }
+    let step_str = if local.contains(':') || local.starts_with("{}") { local.to_string() } else { alloc::format!("{{}}{local}") };
     let field =
         sequence_field_by_local_value(value, local).ok_or_else(|| VmError::InvalidValue {
             message: alloc::format!(
-                "Schema Definition Error: No element corresponding to step {local} found."
+                "Schema Definition Error: No element corresponding to step {step_str} found."
             ),
         })?;
     if let Some(idx) = index {
@@ -475,6 +515,34 @@ impl<'a> Decoder<'a> {
         self.initiator_present_at_cursor(cursor, props)
     }
 
+    pub(crate) fn node_initiator_props(&self, node_id: u32) -> Option<&IrProps> {
+        match self.ctx.program.node(node_id).ok()? {
+            IrNode::Element { props, child, .. } => {
+                if props.initiator.is_some() {
+                    Some(props)
+                } else if let Some(c) = child {
+                    self.node_initiator_props(*c).or(Some(props))
+                } else {
+                    Some(props)
+                }
+            }
+            IrNode::Sequence { props, .. } | IrNode::Choice { props, .. } => Some(props),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn node_initiator_present_at_cursor(
+        &self,
+        cursor: &Cursor<'_>,
+        node_id: u32,
+    ) -> Result<bool> {
+        if let Some(props) = self.node_initiator_props(node_id) {
+            self.initiator_present_at_cursor(cursor, props)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub(crate) fn initiator_present_at_cursor(
         &self,
         cursor: &Cursor<'_>,
@@ -584,21 +652,26 @@ impl<'a> Decoder<'a> {
 
         for branch in branches {
             let mut branch_cursor = cursor.clone();
-            let saved_discriminator_state = self.discriminator_committed_branch.get();
-            self.discriminator_committed_branch.set(false);
+            self.push_choice_pou(PouKind::Choice, false);
 
             if let Some(ref d_key) = dispatch_key {
                 if !choice_branch_discriminator_matches_name(self.ctx.program, branch, d_key) {
+                    self.pop_choice_pou();
                     continue;
                 }
-                self.discriminator_committed_branch.set(true);
+                self.mark_top_choice_pou_committed();
             } else if let Err(reason) = self.choice_branch_discriminator_matches_with_reason(branch.node, dot, cursor) {
                 let err = crate::error::Error::from(VmError::InvalidValue { message: reason });
+                if is_schema_definition_error(&err) {
+                    self.pop_choice_pou();
+                    return Err(err);
+                }
                 branch_errors.push(format_choice_branch_error(
                     branch,
                     self.ctx.strings(),
                     &err,
                 ));
+                self.pop_choice_pou();
                 continue;
             }
 
@@ -616,8 +689,7 @@ impl<'a> Decoder<'a> {
                 &child_stops,
             );
 
-            let branch_committed = self.discriminator_committed_branch.get();
-            self.discriminator_committed_branch.set(saved_discriminator_state);
+            let branch_committed = self.pop_choice_pou();
 
             match res {
                 Ok(val) => {
@@ -638,8 +710,6 @@ impl<'a> Decoder<'a> {
                         }
                     }
                     *cursor = branch_cursor;
-                    self.discriminator_committed_branch
-                        .set(saved_discriminator_state || branch_committed);
                     let disc_name = choice_branch_discriminator_for_infoset(
                         branch,
                         branches,

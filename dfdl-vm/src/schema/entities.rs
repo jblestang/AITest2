@@ -174,7 +174,7 @@ fn invalid_dfdl_entity_error(entity_token: &str, raw: &str) -> String {
     } else {
         raw.to_string()
     };
-    alloc::format!("Invalid DFDL Entity ({entity_token}) found in \"{context}\"")
+    alloc::format!("Invalid DFDL Entity ({entity_token}) found in \"{context}\". Did you mean \"%%\"?")
 }
 
 fn entity_reference_valid(entity_name: &str) -> bool {
@@ -864,7 +864,13 @@ fn eval_discriminator_dot_eq_with_err(
         return Ok(None);
     };
 
-    if left.starts_with('$') || right.starts_with('$') {
+    if left.starts_with('$')
+        || right.starts_with('$')
+        || (right.starts_with('.') && right != ".")
+        || (left.starts_with('.') && left != ".")
+        || left.contains('/')
+        || right.contains('/')
+    {
         return Ok(None);
     }
 
@@ -1062,16 +1068,35 @@ fn validate_no_bare_percent_in_delimiter(raw: &str) -> Result<(), String> {
 }
 
 pub fn validate_delimiter_property_value(raw: &str) -> Result<(), String> {
-    if raw.trim() == "%" {
-        return Err("Invalid DFDL Entity (%) found".into());
-    }
-    validate_entity_tokens_in_literal_lenient(raw)?;
-    validate_no_bare_percent_in_delimiter(raw)
+    validate_entity_tokens_in_literal_lenient(raw)
 }
 
 /// Validate delimiter property from the XSD attribute value (before `%%` collapse).
 pub fn validate_delimiter_schema_attribute(raw: &str) -> Result<(), String> {
-    validate_entity_tokens_in_literal_lenient(raw)
+    validate_entity_tokens_in_literal_lenient(raw)?;
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'%' {
+                i += 2;
+                continue;
+            }
+            if let Some(rel) = raw[i..].find(';') {
+                let entity_token = &raw[i..=i + rel];
+                let entity = &raw[i + 1..i + rel];
+                let entity_name = entity.trim_end_matches(['+', '*', '?']);
+                if entity_reference_valid(entity_name) {
+                    i += rel + 1;
+                    continue;
+                }
+                return Err(invalid_dfdl_entity_error(entity_token, raw));
+            }
+            return Err(invalid_dfdl_entity_error("%", raw));
+        }
+        i += 1;
+    }
+    Ok(())
 }
 
 /// True when alternative `alt_index` of a multi-alt delimiter may match with zero bytes consumed
@@ -2827,12 +2852,12 @@ mod tests {
 
     #[test]
     fn validate_percent_escape_in_delimiter() {
-        assert!(validate_delimiter_property_value("%%").is_ok());
-        assert!(validate_delimiter_property_value("%").is_err());
-        assert!(validate_delimiter_property_value("test%").is_err());
-        assert!(validate_delimiter_property_value("%SP;").is_ok());
-        assert!(validate_delimiter_property_value("%SP").is_err());
-        assert!(validate_delimiter_property_value("%%%SP;").is_ok());
+        assert!(validate_delimiter_schema_attribute("%%").is_ok());
+        assert!(validate_delimiter_schema_attribute("%").is_err());
+        assert!(validate_delimiter_schema_attribute("test%").is_err());
+        assert!(validate_delimiter_schema_attribute("%SP;").is_ok());
+        assert!(validate_delimiter_schema_attribute("%SP").is_err());
+        assert!(validate_delimiter_schema_attribute("%%%SP;").is_ok());
         assert!(validate_delimiter_es_restriction("terminator", "%ES; END").is_ok());
         assert!(validate_delimiter_es_restriction("terminator", "%ES;").is_err());
     }

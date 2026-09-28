@@ -1,0 +1,59 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+
+main = { SOI ~ "{"? ~ expr ~ "}"? ~ EOI }
+expr = { if_expr | or_expr }
+
+if_expr = { "if" ~ "(" ~ expr ~ ")" ~ "then" ~ expr ~ "else" ~ expr }
+
+or_expr = { and_expr ~ (or_op ~ and_expr)* }
+or_op = { "or" | "OR" }
+
+and_expr = { comp_expr ~ (and_op ~ comp_expr)* }
+and_op = { "and" | "AND" }
+
+comp_expr = { add_expr ~ (comp_op ~ add_expr)? }
+comp_op = { "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "!=" | "<=" | ">=" | "=" | "<" | ">" }
+
+add_expr = { mult_expr ~ (add_op ~ mult_expr)* }
+add_op = { "+" | "-" }
+
+mult_expr = { unary_expr ~ (mult_op ~ unary_expr)* }
+mult_op = { "*" | "div" | "mod" }
+
+unary_expr = { unary_op* ~ primary_expr }
+unary_op = { "+" | "-" }
+
+primary_expr = {
+    paren_expr
+  | func_call
+  | var_ref
+  | literal
+  | path_expr
+}
+
+paren_expr = { "(" ~ expr ~ ")" }
+
+func_call = { qname ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+
+var_ref = { "$" ~ qname }
+
+path_expr = { root_path | rel_path }
+root_path = { path_sep ~ rel_path? }
+rel_path = { path_step ~ (path_sep ~ path_step)* }
+path_sep = _{ "/" | "\\" }
+
+path_step = { axis? ~ step_test ~ predicate* }
+axis = { "@" | "attribute::" | "child::" | "self::" | "parent::" }
+step_test = { ".." | "." | "*" | qname }
+predicate = { "[" ~ expr ~ "]" }
+
+literal = { string_literal | number_literal | bool_literal }
+string_literal = { single_quote_str | double_quote_str }
+single_quote_str = { "'" ~ (!"'" ~ ANY)* ~ "'" }
+double_quote_str = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+number_literal = @ { ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+bool_literal = @ { "true" | "false" }
+
+qname = @ { (ncname ~ ":")? ~ ncname }
+ncname = @ { (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }

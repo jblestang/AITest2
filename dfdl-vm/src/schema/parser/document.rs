@@ -631,14 +631,17 @@ impl<'a> XsdParser<'a> {
                                 .map(|(_, v)| v.clone());
                             let mut default_val = default;
                             self.reader.skip_insignificant_ws()?;
-                            if default_val.is_none() && !self.reader.peek_is_end("defineVariable")? {
+                            if !self.reader.peek_is_end("defineVariable")? {
                                 let body = self.reader.read_text_until_end("defineVariable")?;
                                 let trimmed = body.trim();
                                 if !trimmed.is_empty() {
+                                    if default_val.is_some() {
+                                        return Err(crate::error::SchemaError::InvalidProperty {
+                                            message: "Schema Definition Error: Default value of variable was supplied both as attribute and element value".into(),
+                                        }.into());
+                                    }
                                     default_val = Some(trimmed.to_string());
                                 }
-                            } else if !self.reader.peek_is_end("defineVariable")? {
-                                self.reader.skip_current_subtree()?;
                             } else {
                                 self.expect_end_local("defineVariable")?;
                             }
@@ -1463,14 +1466,17 @@ impl<'a> XsdParser<'a> {
                 .map(|(_, v)| v.clone());
             let mut default_val = default;
             self.reader.skip_insignificant_ws()?;
-            if default_val.is_none() && !self.reader.peek_is_end("defineVariable")? {
+            if !self.reader.peek_is_end("defineVariable")? {
                 let body = self.reader.read_text_until_end("defineVariable")?;
                 let trimmed = body.trim();
                 if !trimmed.is_empty() {
+                    if default_val.is_some() {
+                        return Err(crate::error::SchemaError::InvalidProperty {
+                            message: "Schema Definition Error: Default value of variable was supplied both as attribute and element value".into(),
+                        }.into());
+                    }
                     default_val = Some(trimmed.to_string());
                 }
-            } else if !self.reader.peek_is_end("defineVariable")? {
-                self.reader.skip_current_subtree()?;
             } else {
                 self.expect_end_local("defineVariable")?;
             }

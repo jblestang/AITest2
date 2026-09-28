@@ -19,7 +19,7 @@ use crate::ir::{IrProgram, IrProps};
 use crate::schema::BitOrder;
 use crate::value::{DfdlValue, FieldDelimiterMeta};
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 
@@ -27,6 +27,20 @@ use core::cell::{Cell, RefCell};
 pub(crate) struct SiblingState {
     pub(crate) value: DfdlValue,
     pub(crate) content_bytes: usize,
+}
+
+/// Kind of Point of Uncertainty (POU) tracked on the decoder stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PouKind {
+    Choice,
+    Occurrence,
+}
+
+/// Commitment state for an active Point of Uncertainty (POU).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PouFrame {
+    pub kind: PouKind,
+    pub committed: bool,
 }
 
 /// DFDL decoder VM — executes compiled IR against an input byte stream.
@@ -58,6 +72,7 @@ pub struct Decoder<'a> {
     xpath_ancestor_frames: RefCell<Vec<BTreeMap<String, SiblingState>>>,
     /// Set when a choice branch discriminator evaluates true (commits outer choice).
     discriminator_committed_branch: Cell<bool>,
+    choice_pou_stack: RefCell<Vec<PouFrame>>,
     delimiter_occurrence_stack: RefCell<Vec<u64>>,
 }
 
@@ -82,7 +97,46 @@ impl<'a> Decoder<'a> {
             xpath_siblings: RefCell::new(BTreeMap::new()),
             xpath_ancestor_frames: RefCell::new(Vec::new()),
             discriminator_committed_branch: Cell::new(false),
+            choice_pou_stack: RefCell::new(Vec::new()),
             delimiter_occurrence_stack: RefCell::new(alloc::vec![1]),
+        }
+    }
+
+    pub(crate) fn push_choice_pou(&self, kind: PouKind, committed: bool) {
+        self.choice_pou_stack.borrow_mut().push(PouFrame { kind, committed });
+    }
+
+    pub(crate) fn mark_top_choice_pou_committed(&self) {
+        if let Some(top) = self.choice_pou_stack.borrow_mut().last_mut() {
+            top.committed = true;
+        }
+    }
+
+    pub(crate) fn pop_choice_pou(&self) -> bool {
+        self.choice_pou_stack.borrow_mut().pop().map(|f| f.committed).unwrap_or(false)
+    }
+
+    pub(crate) fn commit_nearest_undiscriminated_pou(&self) {
+        let mut stack = self.choice_pou_stack.borrow_mut();
+        if stack.is_empty() {
+            self.discriminator_committed_branch.set(true);
+            return;
+        }
+        for frame in stack.iter_mut().rev() {
+            if !frame.committed {
+                frame.committed = true;
+                if frame.kind == PouKind::Choice {
+                    return;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn is_current_choice_pou_committed(&self) -> bool {
+        if let Some(top) = self.choice_pou_stack.borrow().last() {
+            top.committed
+        } else {
+            self.discriminator_committed_branch.get()
         }
     }
 

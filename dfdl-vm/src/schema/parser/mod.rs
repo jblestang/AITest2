@@ -1,7 +1,6 @@
 pub(crate) mod decl;
 pub(crate) mod document;
 pub(crate) mod element;
-pub(crate) mod expr;
 pub(crate) mod props;
 pub mod qname;
 

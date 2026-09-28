@@ -162,16 +162,27 @@ pub(crate) fn check_mixed_encoding_adjacent_delimited_after_first(
     Err(runtime_processing_not_enough_data_at(6, &snippet))
 }
 
+/// Consumes a trailing text field terminator for fixed or explicit length simple elements.
+/// Checks the optional scan context for dynamically resolved stop delimiters before
+/// falling back to the raw string pool representation.
 pub(crate) fn consume_text_field_terminator_after_fixed_length(
     cursor: &mut Cursor<'_>,
     props: &IrProps,
     strings: &StringPool,
+    scan_ctx: Option<&SequenceChildScanContext<'_>>,
 ) -> Result<(), crate::error::VmError> {
     use crate::error::VmError;
     let Some(term_id) = props.terminator else {
         return Ok(());
     };
-    let term = strings.get(term_id)?;
+    let term = if let Some(resolved) = scan_ctx
+        .and_then(|c| c.resolved_stop_delimiters)
+        .and_then(|list| list.iter().find(|(id, _)| *id == term_id))
+    {
+        resolved.1.as_str()
+    } else {
+        strings.get(term_id)?
+    };
     if term.is_empty() {
         return Ok(());
     }
