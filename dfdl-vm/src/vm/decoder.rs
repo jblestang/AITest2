@@ -349,7 +349,56 @@ impl<'a> Decoder<'a> {
         self.xpath_siblings_snapshot()
     }
 
+    fn eval_discriminator_xpath_xs_cast_eq(&self, inner: &str, dot: &str) -> Result<Option<bool>> {
+        for prefix in ["xs:int(", "xs:integer(", "xs:long("] {
+            let Some(rest) = inner.strip_prefix(prefix) else {
+                continue;
+            };
+            let Some(paren_end) = rest.find(')') else {
+                continue;
+            };
+            let path = rest[..paren_end].trim();
+            let after = rest[paren_end + 1..].trim();
+            let Some(lit_raw) = after.strip_prefix("eq ").map(str::trim) else {
+                continue;
+            };
+            let lit = crate::schema::unquote_xpath_string_literal(lit_raw);
+            let expected = lit.parse::<i64>().map_err(|_| VmError::InvalidValue {
+                message: alloc::format!(
+                    "Schema Definition Error: discriminator literal `{lit}` is not an integer"
+                ),
+            })?;
+            let mut up = 0usize;
+            let mut path_rest = path;
+            while path_rest.starts_with("../") {
+                up += 1;
+                path_rest = &path_rest[3..];
+            }
+            let actual_text = if path_rest.contains('/') || path_rest.contains('[') {
+                self.xpath_discriminator_path_string(up, path_rest)?
+            } else if path_rest == "." {
+                Some(dot.to_string())
+            } else {
+                let local = path_rest.rsplit(':').next().unwrap_or(path_rest).trim();
+                let up_levels = up.saturating_sub(1);
+                self.lookup_xpath_sibling_state(local, up_levels)
+                    .map(|s| dfdl_value_dispatch_string(&s.value))
+            };
+            let Some(actual_text) = actual_text else {
+                return Ok(Some(false));
+            };
+            let Ok(actual) = actual_text.trim().parse::<i64>() else {
+                return Ok(Some(false));
+            };
+            return Ok(Some(actual == expected));
+        }
+        Ok(None)
+    }
+
     fn eval_discriminator_xpath_eq(&self, inner: &str, dot: &str) -> Result<Option<bool>> {
+        if let Some(b) = self.eval_discriminator_xpath_xs_cast_eq(inner, dot)? {
+            return Ok(Some(b));
+        }
         if inner.contains('*') || inner.contains('(') {
             return Ok(None);
         }
@@ -5487,7 +5536,7 @@ impl<'a> Decoder<'a> {
                 }
                 return Err(VmError::InvalidValue {
                     message: alloc::format!(
-                        "Parse Error. Failed to find infix separator. Separator '{pat}' not found"
+                        "Parse Error. infix separator. Delimiter not found!  Was looking for ({pat}) but found \"{found_display}\" instead"
                     ),
                 }
                 .into());
@@ -6999,7 +7048,7 @@ fn eval_input_value_calc_expression(
                     term, ctx, strings, tunables, target_kind, target_props,
                 )?);
             }
-            Ok(DfdlValue::Integer(sum.to_string()))
+            return constant_input_value(target_kind, sum);
         }
         IrInputValueCalcExpression::Sub(items) => {
             if items.len() != 2 {
@@ -7023,7 +7072,7 @@ fn eval_input_value_calc_expression(
             let b = eval_input_value_calc_to_i64(
                 &items[1], ctx, strings, tunables, target_kind, target_props,
             )?;
-            Ok(DfdlValue::Integer((a - b).to_string()))
+            return constant_input_value(target_kind, a - b);
         }
         IrInputValueCalcExpression::Mul(terms) => {
             if ivc_target_uses_float_math(target_kind) {
@@ -7041,7 +7090,7 @@ fn eval_input_value_calc_expression(
                     term, ctx, strings, tunables, target_kind, target_props,
                 )?);
             }
-            Ok(DfdlValue::Integer(product.to_string()))
+            return constant_input_value(target_kind, product);
         }
         IrInputValueCalcExpression::Div(left, right) => {
             if ivc_target_uses_float_math(target_kind) {
@@ -7772,6 +7821,19 @@ fn format_choice_branch_error(branch: &ChoiceBranch, strings: &StringPool, err: 
     if msg.contains("Init('") || msg.contains("initiator mismatch") {
         if let Some(id) = branch.initiator {
             if let Ok(pat) = strings.get(id) {
+                if msg.contains("Delimiter not found!") {
+                    let list_detail = alloc::format!(
+                        "Parse Error: Init('{pat}') - {branch_name}: Delimiter not found!"
+                    );
+                    let mut out = alloc::format!(
+                        "{branch_name}: Initiator '{pat}' not found. Alternative failed. Reason(s): List({list_detail})"
+                    );
+                    if let Some(idx) = msg.find("Was looking for") {
+                        out.push('\n');
+                        out.push_str(msg[idx..].trim_end());
+                    }
+                    return out;
+                }
                 if msg.contains("Was looking for") {
                     return alloc::format!(
                         "{branch_name}: Initiator '{pat}' not found. Alternative failed. Reason(s): List({msg})"

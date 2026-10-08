@@ -98,8 +98,8 @@ const SECTION00_BASELINE_PASS_MIN: usize = 150;
 const SECTION00_BASELINE_FAIL_MAX: usize = 0;
 
 /// Baseline for all `section02/**` TDML (validation + processing error suites).
-const SECTION02_BASELINE_PASS_MIN: usize = 78;
-const SECTION02_BASELINE_FAIL_MAX: usize = 18;
+const SECTION02_BASELINE_PASS_MIN: usize = 96;
+const SECTION02_BASELINE_FAIL_MAX: usize = 0;
 
 /// Baseline for all `section05/**` TDML.
 const SECTION05_BASELINE_PASS_MIN: usize = 793;

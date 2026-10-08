@@ -198,7 +198,7 @@ macro_rules! regression_gate {
 
 scan_test!(scan_section00, "section00");
 regression_gate!(daffodil_section00_regression_gate_scan, "section00", 146, 4);
-regression_gate!(daffodil_section02_regression_gate_scan, "section02", 77, 19);
+regression_gate!(daffodil_section02_regression_gate_scan, "section02", 96, 0);
 regression_gate!(daffodil_section05_regression_gate_scan, "section05", 793, 18);
 scan_test!(scan_section06, "section06");
 regression_gate!(daffodil_section06_regression_gate, "section06", 152, 26);

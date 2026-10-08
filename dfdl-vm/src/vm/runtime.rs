@@ -4058,8 +4058,14 @@ fn text_standard_infinity_nan_match(
 ) -> Option<&'static str> {
     let inf = strings
         .get(props.text_standard_infinity_rep)
+        .ok()
+        .filter(|s| !s.is_empty())
         .unwrap_or("Inf");
-    let nan = strings.get(props.text_standard_nan_rep).unwrap_or("NaN");
+    let nan = strings
+        .get(props.text_standard_nan_rep)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("NaN");
     let ic = props.ignore_case;
     let eq = |a: &str, b: &str| {
         if ic {
@@ -5804,7 +5810,9 @@ pub(crate) fn read_text_scalar(
             }
         }
         Float => {
+            let float_special = text_standard_infinity_nan_match(trimmed, props, strings).is_some();
             if props.length_kind == LengthKind::Delimited
+                && !float_special
                 && (trimmed.contains(':')
                     || trimmed.chars().any(|c| {
                         c.is_ascii_alphabetic() && c != 'e' && c != 'E'
@@ -5822,7 +5830,10 @@ pub(crate) fn read_text_scalar(
             Ok(v)
         }
         Double => {
+            let double_special =
+                text_standard_infinity_nan_match(trimmed, props, strings).is_some();
             if props.length_kind == LengthKind::Delimited
+                && !double_special
                 && (trimmed.contains(':')
                     || trimmed.chars().any(|c| {
                         c.is_ascii_alphabetic() && c != 'e' && c != 'E'

@@ -3492,6 +3492,12 @@ fn split_top_level_ivc_sub(s: &str) -> Option<alloc::vec::Vec<alloc::string::Str
         parts.push(current.trim().to_string());
     }
     if parts.len() <= 1 {
+        // Binary subtraction without spaces (e.g. `{ 5-3 }`).
+        if let Some(parts) = split_top_level_ivc_op(s, '-') {
+            if !parts[0].is_empty() {
+                return Some(parts);
+            }
+        }
         return None;
     }
     Some(parts)

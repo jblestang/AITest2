@@ -1,4 +1,4 @@
-use crate::ir::{IrNode, IrProgram, ValueKind};
+use crate::ir::{ir_props_has_input_value_calc, IrNode, IrProgram, ValueKind};
 use crate::schema::{SchemaDocument, TypeName, validate_union_membership};
 use crate::value::DfdlValue;
 use crate::vm::facet_validate::{
@@ -206,7 +206,7 @@ fn walk_particle(
                                         errors.push(alloc::format!(
                                             "'{lex}' of element 'ex:{ename}' is not valid"
                                         ));
-                                    } else if props.input_value_calc.is_some() {
+                                    } else if ir_props_has_input_value_calc(props) {
                                         errors.push(alloc::format!("Validation Error"));
                                         errors.push(alloc::format!(
                                             "Value '{lex}' is not facet-valid with respect to minExclusive '{min}'"
@@ -446,7 +446,7 @@ fn walk_particle(
                                             "{ename} failed facet checks due to: {r}"
                                         ));
                                     }
-                                } else if props.input_value_calc.is_some()
+                                } else if ir_props_has_input_value_calc(props)
                                     && rest.is_some_and(|r| {
                                         r.starts_with("facet minLength")
                                             || r.starts_with("facet maxLength")
@@ -772,6 +772,7 @@ fn value_lexical_any(value: &DfdlValue, kind: ValueKind) -> Option<alloc::string
     }
     match (kind, value) {
         (ValueKind::Int, DfdlValue::Int(v)) => Some(v.to_string()),
+        (ValueKind::Int, DfdlValue::Integer(v)) => Some(v.clone()),
         (ValueKind::Long, DfdlValue::Long(v)) => Some(v.to_string()),
         (ValueKind::Short, DfdlValue::Short(v)) => Some(v.to_string()),
         (ValueKind::Byte, DfdlValue::Byte(v)) => Some(v.to_string()),

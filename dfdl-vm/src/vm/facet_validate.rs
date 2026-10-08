@@ -855,6 +855,7 @@ fn numeric_value_i64(value: &DfdlValue) -> Option<i64> {
         DfdlValue::UnsignedShort(v) => Some(*v as i64),
         DfdlValue::UnsignedInt(v) => Some(*v as i64),
         DfdlValue::UnsignedLong(v) => i64::try_from(*v).ok(),
+        DfdlValue::Integer(lex) => lex.trim().parse().ok(),
         _ => None,
     }
 }
