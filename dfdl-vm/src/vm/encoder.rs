@@ -94,6 +94,17 @@ impl<'a> Encoder<'a> {
                 return Ok(Some(branch));
             }
         }
+        for branch in branches {
+            let Some(local) = choice_branch_element_local_name_enc(self, branch.node)? else {
+                continue;
+            };
+            if !map_has_local_key(map, &local).is_some() {
+                continue;
+            }
+            if choice_branch_is_hidden(self, branch.node)? {
+                return Ok(Some(branch));
+            }
+        }
         Ok(None)
     }
 
@@ -117,6 +128,27 @@ impl<'a> Encoder<'a> {
                 } else if props.output_value_calc.is_none() && !props.hidden {
                     let key = self.ctx.strings().get(*name)?.to_string();
                     map.insert(key, value.clone());
+                } else if props.hidden
+                    && (props.output_value_calc.is_some() || props.output_value_calc_conditional)
+                {
+                    let key = self.ctx.strings().get(*name)?.to_string();
+                    if map_has_local_key(&map, crate::xml_util::local_name_str(&key)).is_none() {
+                        let computed = eval_output_value_calc(
+                            self,
+                            props,
+                            &map,
+                            &[],
+                            choice_props,
+                        )?;
+                        let kind = match self.ctx.program.node(branch_node)? {
+                            IrNode::Element { kind, .. } => *kind,
+                            _ => crate::ir::ValueKind::String,
+                        };
+                        map.insert(
+                            key,
+                            ovc_value_for_element_kind(kind, computed),
+                        );
+                    }
                 }
                 let meta = crate::value::SequenceMeta::default();
                 self.encode_sequence_particle(
@@ -321,26 +353,24 @@ impl<'a> Encoder<'a> {
                             );
                         }
                     }
-                    if !choice_branches_are_all_hidden(self, branches)? {
-                        if let Some(branch) = self.select_choice_branch(branches, map)? {
-                            self.write_initiator(choice_props, out, bit_count, None, None)?;
-                            let branch_name = self.ctx.strings().get(branch.name)?;
-                            let local = crate::xml_util::local_name_str(branch_name);
-                            let map_key = map_has_local_key(map, local)
-                                .unwrap_or_else(|| branch_name.to_string());
-                            let branch_value = map
-                                .get(&map_key)
-                                .cloned()
-                                .unwrap_or_else(|| DfdlValue::sequence(BTreeMap::new()));
-                            return self.encode_choice_matched_branch(
-                                choice_props,
-                                branch.node,
-                                &branch_value,
-                                map,
-                                out,
-                                bit_count,
-                            );
-                        }
+                    if let Some(branch) = self.select_choice_branch(branches, map)? {
+                        self.write_initiator(choice_props, out, bit_count, None, None)?;
+                        let branch_name = self.ctx.strings().get(branch.name)?;
+                        let local = crate::xml_util::local_name_str(branch_name);
+                        let map_key = map_has_local_key(map, local)
+                            .unwrap_or_else(|| branch_name.to_string());
+                        let branch_value = map
+                            .get(&map_key)
+                            .cloned()
+                            .unwrap_or_else(|| DfdlValue::sequence(BTreeMap::new()));
+                        return self.encode_choice_matched_branch(
+                            choice_props,
+                            branch.node,
+                            &branch_value,
+                            map,
+                            out,
+                            bit_count,
+                        );
                     }
                 }
                 self.write_initiator(choice_props, out, bit_count, None, None)?;
@@ -902,26 +932,24 @@ impl<'a> Encoder<'a> {
                         );
                     }
                 }
-                if !choice_branches_are_all_hidden(self, branches)? {
-                    if let Some(branch) = self.select_choice_branch(branches, map)? {
-                        self.write_initiator(choice_props, out, bit_count, None, None)?;
-                        let branch_name = self.ctx.strings().get(branch.name)?;
-                        let local = crate::xml_util::local_name_str(branch_name);
-                        let map_key = map_has_local_key(map, local)
-                            .unwrap_or_else(|| branch_name.to_string());
-                        let branch_value = map
-                            .get(&map_key)
-                            .cloned()
-                            .unwrap_or_else(|| DfdlValue::sequence(BTreeMap::new()));
-                        return self.encode_choice_matched_branch(
-                            choice_props,
-                            branch.node,
-                            &branch_value,
-                            map,
-                            out,
-                            bit_count,
-                        );
-                    }
+                if let Some(branch) = self.select_choice_branch(branches, map)? {
+                    self.write_initiator(choice_props, out, bit_count, None, None)?;
+                    let branch_name = self.ctx.strings().get(branch.name)?;
+                    let local = crate::xml_util::local_name_str(branch_name);
+                    let map_key = map_has_local_key(map, local)
+                        .unwrap_or_else(|| branch_name.to_string());
+                    let branch_value = map
+                        .get(&map_key)
+                        .cloned()
+                        .unwrap_or_else(|| DfdlValue::sequence(BTreeMap::new()));
+                    return self.encode_choice_matched_branch(
+                        choice_props,
+                        branch.node,
+                        &branch_value,
+                        map,
+                        out,
+                        bit_count,
+                    );
                 }
                 self.write_initiator(choice_props, out, bit_count, None, None)?;
                 for branch in branches {
@@ -1408,15 +1436,6 @@ fn collect_ovc_elements_in_sequence_subtree(
                 child,
                 ..
             } => {
-                if props.output_value_calc_conditional && props.output_value_calc_literal.is_none() {
-                    let elem = enc.ctx.strings().get(*name)?;
-                    return Err(VmError::InvalidValue {
-                        message: alloc::format!(
-                            "Unparse Error: Element `{elem}` does not have a value, due to a circular dependency"
-                        ),
-                    }
-                    .into());
-                }
                 if props.output_value_calc.is_some() || props.output_value_calc_conditional {
                     let key = enc.ctx.strings().get(*name)?.to_string();
                     out.push(OvcPrecomputeEntry {
@@ -1431,6 +1450,11 @@ fn collect_ovc_elements_in_sequence_subtree(
             IrNode::Sequence { children: nested, .. } => {
                 collect_ovc_elements_in_sequence_subtree(enc, nested, out)?;
             }
+            IrNode::Choice { branches, .. } => {
+                for branch in branches {
+                    collect_ovc_elements_in_subtree(enc, branch.node, out)?;
+                }
+            }
             _ => {}
         }
     }
@@ -1443,8 +1467,37 @@ fn collect_ovc_elements_in_subtree(
     out: &mut Vec<OvcPrecomputeEntry>,
 ) -> Result<()> {
     match enc.ctx.program.node(node_id)? {
-        IrNode::Sequence { children, .. } => collect_ovc_elements_in_sequence_subtree(enc, children, out),
-        IrNode::Element { child: Some(c), .. } => collect_ovc_elements_in_subtree(enc, *c, out),
+        IrNode::Sequence { children, .. } => {
+            collect_ovc_elements_in_sequence_subtree(enc, children, out)
+        }
+        IrNode::Element {
+            name,
+            kind,
+            props,
+            child,
+            ..
+        } => {
+            if props.output_value_calc.is_some() || props.output_value_calc_conditional {
+                let key = enc.ctx.strings().get(*name)?.to_string();
+                out.push(OvcPrecomputeEntry {
+                    node_id,
+                    local: crate::xml_util::local_name_str(&key).to_string(),
+                    name_key: key,
+                    kind: *kind,
+                    props: props.clone(),
+                });
+            }
+            if let Some(c) = child {
+                collect_ovc_elements_in_subtree(enc, *c, out)?;
+            }
+            Ok(())
+        }
+        IrNode::Choice { branches, .. } => {
+            for branch in branches {
+                collect_ovc_elements_in_subtree(enc, branch.node, out)?;
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -1501,6 +1554,88 @@ fn ovc_deferred_to_encode_occurrence(props: &IrProps) -> bool {
     )
 }
 
+fn ir_node_in_subtree(program: &IrProgram, root: u32, target: u32) -> bool {
+    if root == target {
+        return true;
+    }
+    match program.node(root) {
+        Ok(IrNode::Sequence { children, .. }) => children
+            .iter()
+            .any(|&cid| ir_node_in_subtree(program, cid, target)),
+        Ok(IrNode::Choice { branches, .. }) => branches
+            .iter()
+            .any(|b| ir_node_in_subtree(program, b.node, target)),
+        Ok(IrNode::Element { child: Some(c), .. }) => ir_node_in_subtree(program, *c, target),
+        _ => false,
+    }
+}
+
+/// Do not precompute OVC for choice branches that are not selected in the infoset map.
+fn skip_ovc_precompute_for_unselected_choice_branch(
+    enc: &Encoder<'_>,
+    sequence_children: &[u32],
+    entry: &OvcPrecomputeEntry,
+    map: &BTreeMap<String, DfdlValue>,
+) -> Result<bool> {
+    if map_has_local_key(map, &entry.local).is_some() {
+        return Ok(false);
+    }
+    for &cid in sequence_children {
+        if skip_ovc_precompute_under_choice(enc, cid, entry.node_id, map)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn skip_ovc_precompute_under_choice(
+    enc: &Encoder<'_>,
+    node_id: u32,
+    target: u32,
+    map: &BTreeMap<String, DfdlValue>,
+) -> Result<bool> {
+    match enc.ctx.program.node(node_id)? {
+        IrNode::Choice { branches, .. } => {
+            let mut selected = Vec::new();
+            for branch in branches {
+                let Some(local) = choice_branch_element_local_name_enc(enc, branch.node)? else {
+                    continue;
+                };
+                if map_has_local_key(map, &local).is_some() {
+                    selected.push(branch.node);
+                }
+            }
+            if selected.is_empty() {
+                return Ok(false);
+            }
+            if selected
+                .iter()
+                .any(|&root| ir_node_in_subtree(enc.ctx.program, root, target))
+            {
+                return Ok(false);
+            }
+            for branch in branches {
+                if ir_node_in_subtree(enc.ctx.program, branch.node, target) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        IrNode::Sequence { children, .. } => {
+            for &child in children {
+                if skip_ovc_precompute_under_choice(enc, child, target, map)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        IrNode::Element { child: Some(c), .. } => {
+            skip_ovc_precompute_under_choice(enc, *c, target, map)
+        }
+        _ => Ok(false),
+    }
+}
+
 fn precompute_output_values<'a>(
     enc: &Encoder<'a>,
     children: &[u32],
@@ -1511,11 +1646,14 @@ fn precompute_output_values<'a>(
     let mut ovc_entries = Vec::new();
     collect_ovc_elements_in_sequence_subtree(enc, children, &mut ovc_entries)?;
     let mut effective = map.clone();
-    let max_passes = ovc_entries.len().saturating_mul(2).max(4);
+    let max_passes = ovc_entries.len().saturating_mul(4).max(8);
     for _pass in 0..max_passes {
         let mut progress = false;
         for entry in &ovc_entries {
             if ovc_deferred_to_encode_occurrence(&entry.props) {
+                continue;
+            }
+            if skip_ovc_precompute_for_unselected_choice_branch(enc, children, entry, map)? {
                 continue;
             }
             let computed = match eval_output_value_calc(
@@ -1555,6 +1693,9 @@ fn precompute_output_values<'a>(
     }
     for entry in &ovc_entries {
         if ovc_deferred_to_encode_occurrence(&entry.props) {
+            continue;
+        }
+        if skip_ovc_precompute_for_unselected_choice_branch(enc, children, entry, map)? {
             continue;
         }
         if effective.get(&entry.name_key).is_none() {
@@ -2100,6 +2241,50 @@ fn choice_branches_are_all_hidden(
         }
     }
     Ok(!branches.is_empty())
+}
+
+fn choice_branch_is_hidden(enc: &Encoder<'_>, branch_node: u32) -> Result<bool> {
+    match enc.ctx.program.node(branch_node)? {
+        IrNode::Element { props, .. } => Ok(props.hidden),
+        IrNode::Sequence { children, .. } => {
+            Ok(children.iter().all(|&cid| {
+                choice_branch_is_hidden(enc, cid).unwrap_or(false)
+            }))
+        }
+        IrNode::Choice { branches, .. } => Ok(branches.iter().all(|b| {
+            choice_branch_is_hidden(enc, b.node).unwrap_or(false)
+        })),
+        _ => Ok(false),
+    }
+}
+
+fn choice_branch_element_local_name_enc(
+    enc: &Encoder<'_>,
+    branch_node: u32,
+) -> Result<Option<String>> {
+    match enc.ctx.program.node(branch_node)? {
+        IrNode::Element { name, .. } => {
+            let ename = enc.ctx.strings().get(*name)?;
+            Ok(Some(crate::xml_util::local_name_str(ename).to_string()))
+        }
+        IrNode::Sequence { children, .. } => {
+            for &cid in children {
+                if let Some(k) = choice_branch_element_local_name_enc(enc, cid)? {
+                    return Ok(Some(k));
+                }
+            }
+            Ok(None)
+        }
+        IrNode::Choice { branches, .. } => {
+            for branch in branches {
+                if let Some(k) = choice_branch_element_local_name_enc(enc, branch.node)? {
+                    return Ok(Some(k));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
 }
 
 fn choice_branch_infoset_local_key_enc(enc: &Encoder<'_>, branch_node: u32) -> Result<Option<String>> {
@@ -3233,6 +3418,9 @@ fn value_byte_length(value: &DfdlValue) -> Result<usize> {
             }
         }
         DfdlValue::HexBinary(v) => Ok(v.len()),
+        DfdlValue::Int(v) => Ok(v.to_string().len()),
+        DfdlValue::Long(v) => Ok(v.to_string().len()),
+        DfdlValue::Integer(s) => Ok(s.len()),
         other => Err(VmError::InvalidValue {
             message: alloc::format!("valueLength on unsupported value `{other:?}`"),
         }

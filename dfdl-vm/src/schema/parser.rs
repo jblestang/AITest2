@@ -3838,13 +3838,22 @@ fn parse_output_value_calc_value_length_path(
     i64,
 )> {
     let trimmed = value.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return None;
-    }
-    let inner = trimmed[1..trimmed.len() - 1].trim();
-    let (func_expr, addend_str) = inner.rsplit_once('+')?;
-    let addend = addend_str.trim().parse::<i64>().ok()?;
-    let func_expr = func_expr.trim();
+    let inner = if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        trimmed[1..trimmed.len() - 1].trim()
+    } else {
+        trimmed
+    };
+    let inner = inner
+        .strip_prefix("xs:string(")
+        .and_then(|s| s.strip_suffix(')'))
+        .map(str::trim)
+        .unwrap_or(inner);
+    let (func_expr, addend) = match inner.rsplit_once('+') {
+        Some((left, right)) if right.trim().parse::<i64>().is_ok() => {
+            (left.trim(), right.trim().parse::<i64>().ok()?)
+        }
+        _ => (inner, 0),
+    };
     let rest = func_expr.strip_prefix("dfdl:valueLength(")?.strip_suffix(')')?;
     let arg_parts = split_top_level_commas(rest.trim());
     if arg_parts.len() != 2 {

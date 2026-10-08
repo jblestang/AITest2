@@ -295,17 +295,9 @@ fn choice_matched_branch_value(
         ) {
             return Ok(DfdlValue::sequence(BTreeMap::new()));
         }
-        if infoset_particle_can_absent(program, branch.node)? {
-            let value = infoset_particle_to_value(program, branch.node, node)?;
-            let branch_name = program
-                .strings
-                .get(branch.name)
-                .map_err(|e| e.to_string())?;
-            let mut map = BTreeMap::new();
-            insert_choice_branch_value(program, branch.node, branch_name, value, &mut map)?;
-            return Ok(DfdlValue::sequence(map));
-        }
     }
+    // Do not synthesize choice branch values for particles that may be absent from the
+    // infoset (hidden, OVC, optional). Unparse selects and fills those branches during encode.
     Err(alloc::format!(
         "infoset does not match any choice branch under `{}`",
         node.name
