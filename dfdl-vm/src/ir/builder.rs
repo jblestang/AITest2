@@ -794,7 +794,11 @@ impl<'a> IrBuilder<'a> {
                     .into());
                 }
                 validate_model_group_occurs("sequence", &sequence.props)?;
-                let ir_props = self.merge_props_full(inherited, &sequence.props, &DfdlProps::default())?;
+                let mut ir_props =
+                    self.merge_props_full(inherited, &sequence.props, &DfdlProps::default())?;
+                if sequence.props.hidden_group_ref.is_some() {
+                    ir_props.hidden = true;
+                }
                 let child_inherited =
                     particle_inherited_for_children(inherited, &sequence.props, &self.defaults);
                 let mut children = Vec::new();

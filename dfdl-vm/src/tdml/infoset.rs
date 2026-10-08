@@ -310,6 +310,10 @@ fn infoset_particle_to_value(
     node: &InfosetNode,
 ) -> Result<DfdlValue, String> {
     match program.node(node_id).map_err(|e| e.to_string())? {
+        IrNode::Sequence { children, props, .. } if props.hidden => {
+            let _ = (children, node);
+            Ok(DfdlValue::sequence(BTreeMap::new()))
+        }
         IrNode::Sequence { children, .. } => {
             infoset_sequence_children_to_value(program, children, node)
         }
