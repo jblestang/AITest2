@@ -665,7 +665,7 @@ fn validate_sequence_children(
             ));
         }
         for child_node in &infoset_children {
-            if enforce_element_form {
+            if enforce_element_form && qualified {
                 validate_element_form(
                     child_node,
                     qualified,
@@ -1072,3 +1072,4 @@ pub fn validate_unparse_value_map(
         _ => Ok(()),
     }
 }
+

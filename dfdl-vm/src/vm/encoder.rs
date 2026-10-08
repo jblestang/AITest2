@@ -154,12 +154,14 @@ impl<'a> Encoder<'a> {
                 self.encode_sequence_particle(
                     branch_node,
                     &map,
+                    &map,
                     choice_props,
                     out,
                     bit_count,
                     &meta,
                     Some(&map),
                     &[],
+                    false,
                 )?;
             }
             _ => {
@@ -231,6 +233,7 @@ impl<'a> Encoder<'a> {
                 let scope_lookup = merged_encode_lookup(encode_scope, map);
                 let effective = precompute_output_values(self, children, map, props)?;
                 let separator_lookup = merged_encode_lookup(Some(&scope_lookup), &effective);
+                let hidden_encode_context = false;
                 self.write_initiator(
                     props,
                     out,
@@ -292,15 +295,24 @@ impl<'a> Encoder<'a> {
                             Some(&separator_lookup),
                         )?;
                     }
+                    let hidden_context =
+                        hidden_encode_context || encode_particle_is_hidden_context(self, child)?;
+                    let choice_map = if hidden_context {
+                        BTreeMap::new()
+                    } else {
+                        encode_map_for_sequence_particle(self, child, children, map, props)?
+                    };
                     self.encode_sequence_particle(
                         child,
                         &effective,
+                        &choice_map,
                         props,
                         out,
                         bit_count,
                         &seq.meta,
                         Some(&scope_lookup),
                         children,
+                        hidden_context,
                     )?;
                     wrote_particle = true;
                 }
@@ -662,12 +674,14 @@ impl<'a> Encoder<'a> {
         &self,
         node_id: u32,
         map: &BTreeMap<String, DfdlValue>,
+        choice_map: &BTreeMap<String, DfdlValue>,
         parent_props: &IrProps,
         out: &mut Vec<u8>,
         bit_count: &mut u8,
         seq_meta: &crate::value::SequenceMeta,
         encode_scope: Option<&BTreeMap<String, DfdlValue>>,
         sequence_children: &[u32],
+        hidden_encode_context: bool,
     ) -> Result<()> {
         match self.ctx.program.node(node_id)? {
             IrNode::Element {
@@ -889,15 +903,30 @@ impl<'a> Encoder<'a> {
                             Some(&separator_lookup),
                         )?;
                     }
+                    let hidden_context = hidden_encode_context
+                        || encode_particle_is_hidden_context(self, child)?;
+                    let choice_map = if hidden_context {
+                        BTreeMap::new()
+                    } else {
+                        encode_map_for_sequence_particle(
+                            self,
+                            child,
+                            children,
+                            map,
+                            inner_props,
+                        )?
+                    };
                     self.encode_sequence_particle(
                         child,
                         &effective,
+                        &choice_map,
                         inner_props,
                         out,
                         bit_count,
                         seq_meta,
                         Some(&scope_lookup),
                         children,
+                        hidden_context,
                     )?;
                     wrote_particle = true;
                 }
@@ -914,7 +943,7 @@ impl<'a> Encoder<'a> {
                 let all_hidden = choice_branches_are_all_hidden(self, branches)?;
                 if !all_hidden {
                     for branch in branches {
-                        if map_has_local_key(map, "r2").is_some()
+                        if map_has_local_key(choice_map, "r2").is_some()
                             && matches!(
                                 self.ctx.program.node(branch.node).ok(),
                                 Some(IrNode::Sequence { children, .. }) if children.is_empty()
@@ -922,8 +951,8 @@ impl<'a> Encoder<'a> {
                         {
                             continue;
                         }
-                        if let Some(key) = choice_branch_data_key(self, branch.node, map) {
-                            let val = map.get(&key).ok_or(VmError::MissingField {
+                        if let Some(key) = choice_branch_data_key(self, branch.node, choice_map) {
+                            let val = choice_map.get(&key).ok_or(VmError::MissingField {
                                 name: key.clone(),
                             })?;
                             self.write_initiator(choice_props, out, bit_count, None, None)?;
@@ -937,7 +966,7 @@ impl<'a> Encoder<'a> {
                             );
                         }
                     }
-                    if let Some(branch) = self.select_choice_branch(branches, map)? {
+                    if let Some(branch) = self.select_choice_branch(branches, choice_map)? {
                         self.write_initiator(choice_props, out, bit_count, None, None)?;
                         let branch_name = self.ctx.strings().get(branch.name)?;
                         let local = crate::xml_util::local_name_str(branch_name);
@@ -1356,6 +1385,34 @@ fn child_skips_encode(enc: &Encoder<'_>, node_id: u32) -> Result<bool> {
     }
 }
 
+/// Hidden model groups do not appear in the infoset; unparse must not use sibling infoset keys.
+fn encode_particle_is_hidden_context(enc: &Encoder<'_>, node_id: u32) -> Result<bool> {
+    match enc.ctx.program.node(node_id)? {
+        IrNode::Sequence { props, .. } | IrNode::Choice { props, .. } => Ok(props.hidden),
+        IrNode::Element { props, .. } => Ok(props.hidden),
+        _ => Ok(false),
+    }
+}
+
+fn encode_map_for_sequence_particle(
+    enc: &Encoder<'_>,
+    particle_id: u32,
+    sequence_children: &[u32],
+    infoset_map: &BTreeMap<String, DfdlValue>,
+    parent_props: &IrProps,
+) -> Result<BTreeMap<String, DfdlValue>> {
+    if encode_particle_is_hidden_context(enc, particle_id)? {
+        return Ok(BTreeMap::new());
+    }
+    precompute_output_values_for_particle(
+        enc,
+        sequence_children,
+        infoset_map,
+        parent_props,
+        particle_id,
+    )
+}
+
 /// When a sequence separator applies between occurrences of one child, the occurrence encoder emits it.
 fn sequence_separator_deferred_to_child_occurrences(
     enc: &Encoder<'_>,
@@ -1465,6 +1522,157 @@ fn collect_ovc_elements_in_sequence_subtree(
         }
     }
     Ok(())
+}
+
+fn nested_map_for_branch_key(
+    map: &BTreeMap<String, DfdlValue>,
+    local: &str,
+) -> BTreeMap<String, DfdlValue> {
+    map_has_local_key(map, local)
+        .and_then(|k| map.get(&k))
+        .and_then(|v| v.sequence_fields().map(|f| f.clone()))
+        .unwrap_or_default()
+}
+
+/// Collect OVC elements along the infoset-selected path (for per-particle encode maps).
+fn collect_ovc_for_encode_context(
+    enc: &Encoder<'_>,
+    node_id: u32,
+    map: &BTreeMap<String, DfdlValue>,
+    out: &mut Vec<OvcPrecomputeEntry>,
+) -> Result<()> {
+    match enc.ctx.program.node(node_id)? {
+        IrNode::Choice { branches, .. } => {
+            if choice_branches_are_all_hidden(enc, branches)? {
+                let has_branch_key = branches.iter().any(|b| {
+                    choice_branch_element_local_name_enc(enc, b.node)
+                        .ok()
+                        .flatten()
+                        .and_then(|l| map_has_local_key(map, &l))
+                        .is_some()
+                });
+                if !has_branch_key {
+                    return Ok(());
+                }
+            }
+            for branch in branches {
+                let Some(local) = choice_branch_element_local_name_enc(enc, branch.node)? else {
+                    continue;
+                };
+                if map_has_local_key(map, &local).is_some() {
+                    return collect_ovc_for_encode_context(
+                        enc,
+                        branch.node,
+                        &nested_map_for_branch_key(map, &local),
+                        out,
+                    );
+                }
+            }
+            for branch in branches {
+                if choice_branch_is_hidden(enc, branch.node)? {
+                    collect_ovc_for_encode_context(enc, branch.node, map, out)?;
+                }
+            }
+            Ok(())
+        }
+        IrNode::Sequence { children, .. } => {
+            for &cid in children {
+                collect_ovc_for_encode_context(enc, cid, map, out)?;
+            }
+            Ok(())
+        }
+        IrNode::Element {
+            name,
+            kind,
+            props,
+            child,
+            ..
+        } => {
+            if props.output_value_calc.is_some() || props.output_value_calc_conditional {
+                let key = enc.ctx.strings().get(*name)?.to_string();
+                out.push(OvcPrecomputeEntry {
+                    node_id,
+                    local: crate::xml_util::local_name_str(&key).to_string(),
+                    name_key: key,
+                    kind: *kind,
+                    props: props.clone(),
+                });
+            }
+            if let Some(c) = child {
+                let ename = enc.ctx.strings().get(*name)?;
+                let child_map = nested_map_for_branch_key(
+                    map,
+                    crate::xml_util::local_name_str(ename),
+                );
+                let child_map = if child_map.is_empty() {
+                    map.clone()
+                } else {
+                    child_map
+                };
+                collect_ovc_for_encode_context(enc, *c, &child_map, out)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn ovc_entry_collides_with_choice_branch_name(
+    enc: &Encoder<'_>,
+    scope_root: u32,
+    entry_node: u32,
+    entry_local: &str,
+    map: &BTreeMap<String, DfdlValue>,
+) -> Result<bool> {
+    ovc_entry_collides_under(enc, scope_root, entry_node, entry_local, map)
+}
+
+fn ovc_entry_collides_under(
+    enc: &Encoder<'_>,
+    node_id: u32,
+    entry_node: u32,
+    entry_local: &str,
+    map: &BTreeMap<String, DfdlValue>,
+) -> Result<bool> {
+    match enc.ctx.program.node(node_id)? {
+        IrNode::Choice { branches, .. } => {
+            for branch in branches {
+                let Some(branch_local) =
+                    choice_branch_element_local_name_enc(enc, branch.node)?
+                else {
+                    continue;
+                };
+                if branch_local != entry_local {
+                    continue;
+                }
+                if ir_node_in_subtree(enc.ctx.program, branch.node, entry_node) {
+                    return Ok(false);
+                }
+                if map_has_local_key(map, &branch_local).is_some() {
+                    return Ok(false);
+                }
+                return Ok(true);
+            }
+            for branch in branches {
+                if ovc_entry_collides_under(enc, branch.node, entry_node, entry_local, map)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        IrNode::Sequence { children, .. } => {
+            for &cid in children {
+                if ovc_entry_collides_under(enc, cid, entry_node, entry_local, map)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        IrNode::Element { child: Some(c), .. } => {
+            ovc_entry_collides_under(enc, *c, entry_node, entry_local, map)
+        }
+        _ => Ok(false),
+    }
 }
 
 fn collect_ovc_elements_in_subtree(
@@ -1642,6 +1850,133 @@ fn skip_ovc_precompute_under_choice(
     }
 }
 
+fn apply_ovc_precompute_entries(
+    enc: &Encoder<'_>,
+    sequence_children: &[u32],
+    map: &BTreeMap<String, DfdlValue>,
+    parent_props: &IrProps,
+    ovc_entries: &[OvcPrecomputeEntry],
+    encode_scope_root: Option<u32>,
+    validate_resolved: bool,
+) -> Result<BTreeMap<String, DfdlValue>> {
+    let mut effective = map.clone();
+    let max_passes = ovc_entries.len().saturating_mul(4).max(8);
+    for _pass in 0..max_passes {
+        let mut progress = false;
+        for entry in ovc_entries {
+            if ovc_deferred_to_encode_occurrence(&entry.props) {
+                continue;
+            }
+            if skip_ovc_precompute_for_unselected_choice_branch(
+                enc,
+                sequence_children,
+                entry,
+                map,
+            )? {
+                continue;
+            }
+            if let Some(root) = encode_scope_root {
+                if ovc_entry_collides_with_choice_branch_name(
+                    enc,
+                    root,
+                    entry.node_id,
+                    &entry.local,
+                    map,
+                )? {
+                    continue;
+                }
+            }
+            let computed = match eval_output_value_calc(
+                enc,
+                &entry.props,
+                &effective,
+                sequence_children,
+                parent_props,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    if matches!(
+                        entry.props.output_value_calc,
+                        Some(OutputValueCalc::FnError)
+                    ) {
+                        return Err(e);
+                    }
+                    continue;
+                }
+            };
+            let computed = ovc_value_for_element_kind(entry.kind, computed);
+            if effective.get(&entry.name_key) == Some(&computed) {
+                continue;
+            }
+            // Hidden OVC must not replace infoset values at this sequence scope.
+            if map.contains_key(&entry.name_key) && entry.props.hidden {
+                continue;
+            }
+            effective.insert(entry.name_key.clone(), computed);
+            progress = true;
+        }
+        if !progress {
+            break;
+        }
+    }
+    if validate_resolved {
+        for entry in ovc_entries {
+            if ovc_deferred_to_encode_occurrence(&entry.props) {
+                continue;
+            }
+            if skip_ovc_precompute_for_unselected_choice_branch(
+                enc,
+                sequence_children,
+                entry,
+                map,
+            )? {
+                continue;
+            }
+            if let Some(root) = encode_scope_root {
+                if ovc_entry_collides_with_choice_branch_name(
+                    enc,
+                    root,
+                    entry.node_id,
+                    &entry.local,
+                    map,
+                )? {
+                    continue;
+                }
+            }
+            if effective.get(&entry.name_key).is_none() {
+                let elem = &entry.local;
+                return Err(VmError::InvalidValue {
+                    message: alloc::format!(
+                        "Unparse Error: Element `{elem}` does not have a value, due to a circular dependency"
+                    ),
+                }
+                .into());
+            }
+        }
+    }
+    Ok(effective)
+}
+
+fn precompute_output_values_for_particle(
+    enc: &Encoder<'_>,
+    sequence_children: &[u32],
+    map: &BTreeMap<String, DfdlValue>,
+    parent_props: &IrProps,
+    particle_root: u32,
+) -> Result<BTreeMap<String, DfdlValue>> {
+    let mut ovc_entries = Vec::new();
+    collect_ovc_for_encode_context(enc, particle_root, map, &mut ovc_entries)?;
+    apply_ovc_precompute_entries(
+        enc,
+        sequence_children,
+        map,
+        parent_props,
+        &ovc_entries,
+        Some(particle_root),
+        false,
+    )
+}
+
 fn precompute_output_values<'a>(
     enc: &Encoder<'a>,
     children: &[u32],
@@ -1681,12 +2016,9 @@ fn precompute_output_values<'a>(
                 }
             };
             let computed = ovc_value_for_element_kind(entry.kind, computed);
-            let prev = effective.get(&entry.name_key);
-            if prev == Some(&computed) {
+            if effective.get(&entry.name_key) == Some(&computed) {
                 continue;
             }
-            // Hidden OVC particles must not replace infoset values at this sequence scope
-            // (duplicate local names between hidden and regular group refs).
             if map.contains_key(&entry.name_key) && entry.props.hidden {
                 continue;
             }

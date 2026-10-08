@@ -3,7 +3,7 @@ use dfdl_vm::tdml::{parse_tdml, run_unparser_test, TestOutcome};
 #[test]
 fn choice_branch_e3_unparse() {
     let tdml = include_str!(
-        "../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section15/choice_groups/ChoiceBranches.tdml"
+        "../../third_party/daffodil/daffodil-test/src/test/resources/org/apache/daffodil/section15/choice_groups/ChoiceBranches.tdml"
     );
     let suite = parse_tdml(tdml).expect("parse");
     let test = suite
