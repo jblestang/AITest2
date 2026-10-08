@@ -337,40 +337,43 @@ impl<'a> Encoder<'a> {
                     );
                 }
                 if let Some(map) = value.sequence_fields() {
-                    for branch in branches {
-                        if let Some(key) = choice_branch_data_key(self, branch.node, map) {
-                            let val = map.get(&key).ok_or(VmError::MissingField {
-                                name: key.clone(),
-                            })?;
+                    let all_hidden = choice_branches_are_all_hidden(self, branches)?;
+                    if !all_hidden {
+                        for branch in branches {
+                            if let Some(key) = choice_branch_data_key(self, branch.node, map) {
+                                let val = map.get(&key).ok_or(VmError::MissingField {
+                                    name: key.clone(),
+                                })?;
+                                self.write_initiator(choice_props, out, bit_count, None, None)?;
+                                return self.encode_choice_matched_branch(
+                                    choice_props,
+                                    branch.node,
+                                    val,
+                                    map,
+                                    out,
+                                    bit_count,
+                                );
+                            }
+                        }
+                        if let Some(branch) = self.select_choice_branch(branches, map)? {
                             self.write_initiator(choice_props, out, bit_count, None, None)?;
+                            let branch_name = self.ctx.strings().get(branch.name)?;
+                            let local = crate::xml_util::local_name_str(branch_name);
+                            let map_key = map_has_local_key(map, local)
+                                .unwrap_or_else(|| branch_name.to_string());
+                            let branch_value = map
+                                .get(&map_key)
+                                .cloned()
+                                .unwrap_or_else(|| DfdlValue::sequence(BTreeMap::new()));
                             return self.encode_choice_matched_branch(
                                 choice_props,
                                 branch.node,
-                                val,
+                                &branch_value,
                                 map,
                                 out,
                                 bit_count,
                             );
                         }
-                    }
-                    if let Some(branch) = self.select_choice_branch(branches, map)? {
-                        self.write_initiator(choice_props, out, bit_count, None, None)?;
-                        let branch_name = self.ctx.strings().get(branch.name)?;
-                        let local = crate::xml_util::local_name_str(branch_name);
-                        let map_key = map_has_local_key(map, local)
-                            .unwrap_or_else(|| branch_name.to_string());
-                        let branch_value = map
-                            .get(&map_key)
-                            .cloned()
-                            .unwrap_or_else(|| DfdlValue::sequence(BTreeMap::new()));
-                        return self.encode_choice_matched_branch(
-                            choice_props,
-                            branch.node,
-                            &branch_value,
-                            map,
-                            out,
-                            bit_count,
-                        );
                     }
                 }
                 self.write_initiator(choice_props, out, bit_count, None, None)?;
@@ -908,48 +911,51 @@ impl<'a> Encoder<'a> {
                 Ok(())
             }
             IrNode::Choice { branches, props: choice_props, .. } => {
-                for branch in branches {
-                    if map_has_local_key(map, "r2").is_some()
-                        && matches!(
-                            self.ctx.program.node(branch.node).ok(),
-                            Some(IrNode::Sequence { children, .. }) if children.is_empty()
-                        )
-                    {
-                        continue;
+                let all_hidden = choice_branches_are_all_hidden(self, branches)?;
+                if !all_hidden {
+                    for branch in branches {
+                        if map_has_local_key(map, "r2").is_some()
+                            && matches!(
+                                self.ctx.program.node(branch.node).ok(),
+                                Some(IrNode::Sequence { children, .. }) if children.is_empty()
+                            )
+                        {
+                            continue;
+                        }
+                        if let Some(key) = choice_branch_data_key(self, branch.node, map) {
+                            let val = map.get(&key).ok_or(VmError::MissingField {
+                                name: key.clone(),
+                            })?;
+                            self.write_initiator(choice_props, out, bit_count, None, None)?;
+                            return self.encode_choice_matched_branch(
+                                choice_props,
+                                branch.node,
+                                val,
+                                map,
+                                out,
+                                bit_count,
+                            );
+                        }
                     }
-                    if let Some(key) = choice_branch_data_key(self, branch.node, map) {
-                        let val = map.get(&key).ok_or(VmError::MissingField {
-                            name: key.clone(),
-                        })?;
+                    if let Some(branch) = self.select_choice_branch(branches, map)? {
                         self.write_initiator(choice_props, out, bit_count, None, None)?;
+                        let branch_name = self.ctx.strings().get(branch.name)?;
+                        let local = crate::xml_util::local_name_str(branch_name);
+                        let map_key = map_has_local_key(map, local)
+                            .unwrap_or_else(|| branch_name.to_string());
+                        let branch_value = map
+                            .get(&map_key)
+                            .cloned()
+                            .unwrap_or_else(|| DfdlValue::sequence(BTreeMap::new()));
                         return self.encode_choice_matched_branch(
                             choice_props,
                             branch.node,
-                            val,
+                            &branch_value,
                             map,
                             out,
                             bit_count,
                         );
                     }
-                }
-                if let Some(branch) = self.select_choice_branch(branches, map)? {
-                    self.write_initiator(choice_props, out, bit_count, None, None)?;
-                    let branch_name = self.ctx.strings().get(branch.name)?;
-                    let local = crate::xml_util::local_name_str(branch_name);
-                    let map_key = map_has_local_key(map, local)
-                        .unwrap_or_else(|| branch_name.to_string());
-                    let branch_value = map
-                        .get(&map_key)
-                        .cloned()
-                        .unwrap_or_else(|| DfdlValue::sequence(BTreeMap::new()));
-                    return self.encode_choice_matched_branch(
-                        choice_props,
-                        branch.node,
-                        &branch_value,
-                        map,
-                        out,
-                        bit_count,
-                    );
                 }
                 self.write_initiator(choice_props, out, bit_count, None, None)?;
                 for branch in branches {
@@ -2232,11 +2238,7 @@ fn choice_branches_are_all_hidden(
     branches: &[crate::ir::ChoiceBranch],
 ) -> Result<bool> {
     for branch in branches {
-        let hidden = match enc.ctx.program.node(branch.node)? {
-            IrNode::Element { props, .. } => props.hidden,
-            _ => false,
-        };
-        if !hidden {
+        if !choice_branch_is_hidden(enc, branch.node)? {
             return Ok(false);
         }
     }
@@ -2246,7 +2248,10 @@ fn choice_branches_are_all_hidden(
 fn choice_branch_is_hidden(enc: &Encoder<'_>, branch_node: u32) -> Result<bool> {
     match enc.ctx.program.node(branch_node)? {
         IrNode::Element { props, .. } => Ok(props.hidden),
-        IrNode::Sequence { children, .. } => {
+        IrNode::Sequence { children, props, .. } => {
+            if props.hidden {
+                return Ok(true);
+            }
             Ok(children.iter().all(|&cid| {
                 choice_branch_is_hidden(enc, cid).unwrap_or(false)
             }))
