@@ -621,11 +621,6 @@ fn validate_sequence_children(
                 )
             {
                 let needed = min.saturating_sub(count);
-                if needed == 1 && min == 1 {
-                    return Err(format!(
-                        "Unparse Error: Expected element start event for {elem_name}, but received element end event for {parent_name}"
-                    ));
-                }
                 let end_event_for = if props.occurs_count_kind == OccursCountKind::Expression {
                     children
                         .get(child_idx + 1)

@@ -7621,7 +7621,9 @@ fn include_stop_sequence_delimiter_in_field_scan(
         return Ok(false);
     }
     if should_defer_postfix_sequence_separator(seq, pattern_id, field_props, strings)? {
-        return Ok(false);
+        // Postfix still terminates the final particle's value; defer only when a later
+        // sibling will consume the separator after this field (see Daffodil postfix scan).
+        return Ok(!ctx.has_following_sibling);
     }
     Ok(true)
 }
